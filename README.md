@@ -11,12 +11,17 @@ npm start          # build and launch
 npm test           # run the test suite
 npm run coverage   # tests with the 95% coverage gate
 npm run check      # typecheck + coverage; run this before pushing
+npm run gallery    # build and open the component gallery in your browser
 ```
 
 If `npm start` reports that Electron failed to install, run `node node_modules/electron/install.js`.
 
 ## What v0.1 does
 
+- **Platform modules:** every platform is a module in `src/main/modules`, with a manifest (id, label, colour, preload script, and whether users may add instances) and a `load()` hook that wires up its own view. The shell knows platforms only through this interface. The built-in modules are `discord`, `fluxer` and `web`. A new platform is a new module, with no changes to the shell. Modules are compiled in, not loaded from disk, since they run with full main-process rights.
+- **Your own server order:** servers and folders from every platform form one list in the rail. Drag them into any order; the order is saved in `rail-order.json`, and new servers join at the end. Each platform's Home and DM bubbles stay at the top.
+- **Module labels:** every rail icon carries a small label in its module's colour (Discord, Fluxer, Web), and the hover name says it too, e.g. "Alpha · Fluxer".
+- **Markdown and emoji:** messages render Discord-flavoured Markdown (headings, emphasis, spoilers, code, quotes, lists, links) and custom emoji. `:shortcodes:` become emoji, and emoji-only messages show large. An emoji picker with search, groups and the server's custom emoji sits in the composer and on reactions.
 - One `BaseWindow` with a shell rail view and one `WebContentsView` per platform, each in its own `persist:<id>` partition, with `contextIsolation` and `sandbox` on.
 - **Discord, hidden engine:** loads discord.com, hides its guild bar with CSS and reads the hidden guild items to build our rail, keeping their order and unread state. Server names and icons come from Discord's `GuildStore` through the store bridge, with DOM fallbacks. Navigation clicks the hidden items so Discord's own router handles it, with `pushState` + `popstate` as a fallback. It never calls `loadURL()`.
 - **DMs in the rail:** a Home entry plus unread DM bubbles (avatar and mention count, newest first, up to 10; mentions from any extra DMs are added to the Home badge). A small script in Discord's page (`storeBridge.ts`) reads its channel, read-state and user stores. It only reads them, and its output is validated in the preload and again in the main process. All DMs are also available through `listDirectConversations()` for a future Messages tab.
@@ -36,7 +41,8 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 
   Large servers (over 250 members) are subscribed to while open, so they deliver every message.
 
-  Everything that talks to Fluxer runs in the main process. The session token never reaches a web page and is stored encrypted with `safeStorage`. Multicord identifies itself to Fluxer honestly, as Multicord. Self-hosted instances can be added in `platforms.json` with `"kind": "fluxer"` and the instance URL. To remove a built-in platform, add `{ "id": "fluxer", "enabled": false }` (or `"discord"`).
+  Everything that talks to Fluxer runs in the main process. The session token never reaches a web page and is stored encrypted with `safeStorage`. Multicord identifies itself to Fluxer honestly, as Multicord. Self-hosted instances can be added in `platforms.json` with `"module": "fluxer"` and the instance URL. To remove a built-in platform, add `{ "id": "fluxer", "enabled": false }` (or `"discord"`).
+- **Component gallery:** `npm run gallery` opens `dist/gallery.html`, which shows every component with sample data. Use it to check designs without signing in anywhere.
 - **Extra platforms** as web views (shallow tier: one rail icon, unread state from the page title), configured in `platforms.json` in the app's user-data folder (`%APPDATA%\Multicord` on Windows):
 
   ```json
@@ -58,7 +64,10 @@ src/
   preload/discord/       Discord view preload (DOM hooks in dom.ts, store reads in storeBridge.ts)
   preload/shell.ts       contextBridge API for rail and picker
   preload/native.ts      bridge for native chat views (display state in, actions out)
-  renderer/              rail, tooltip, screen-share picker and native chat view
+  main/modules/          platform modules (discord, fluxer, web) and their registry
+  renderer/components/   the component library: server icons, channel lists, messages,
+                         markdown, reactions, emoji picker, forums, voice panel, forms
+  renderer/              rail, tooltip, screen-share picker, native chat view, gallery
   entries/               bundle entry points (thin; excluded from coverage)
 tests/                   Vitest; tests/mocks/electron.ts fakes the Electron API
 ```
