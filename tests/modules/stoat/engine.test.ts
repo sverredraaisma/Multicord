@@ -39,6 +39,7 @@ describe("Stoat engine", () => {
     await startStoatEngine(bridge, vi.fn());
     expect(bridge.request).toHaveBeenCalledWith({ type: "http", request: expect.objectContaining({ url: "https://stoat.chat/api/", method: "GET" }) });
     expect(bridge.render).toHaveBeenLastCalledWith(expect.objectContaining({ screen: "login", platform: "Stoat", identity: "email" }));
+    expect(bridge.request).toHaveBeenCalledWith({ type: "lockHosts", hosts: ["stoat.chat", "events.stoat.chat", "cdn.stoatusercontent.com"] });
     expect(bridge.emit).toHaveBeenCalledWith({ type: "account", account: { state: "signed-out" } });
     expect(bridge.emit).toHaveBeenCalledWith({ type: "homeBadge", badge: { unread: false, mentions: 0 } });
   });
@@ -65,5 +66,26 @@ describe("Stoat engine", () => {
     const adapter = await startStoatEngine(bridge, vi.fn());
     const pick = (adapter as unknown as { deps: { files: { pick(): Promise<{ filename: string }[]> } } }).deps.files.pick;
     expect((await pick()).map((f) => f.filename)).toEqual(["a.png"]);
+  });
+});
+
+describe("Stoat host lock", () => {
+  it("keeps working when the shell refuses the lock", async () => {
+    const { bridge } = fakeBridge();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const original = bridge.request.getMockImplementation()!;
+    bridge.request.mockImplementation(async (request: EngineRequest) => {
+      if (request.type === "lockHosts") throw new Error("A host lock can only narrow what the engine may reach");
+      return original(request);
+    });
+    await startStoatEngine(bridge, vi.fn());
+    expect(warn).toHaveBeenCalledWith("[stoat] host lock refused: A host lock can only narrow what the engine may reach");
+    expect(bridge.render).toHaveBeenLastCalledWith(expect.objectContaining({ screen: "login" }));
+    warn.mockRestore();
+  });
+
+  it("names each host once", async () => {
+    const { instanceHosts } = await import("../../../src/modules/stoat/rest");
+    expect(instanceHosts({ api: "https://chat.example/api", ws: "wss://chat.example/ws" })).toEqual(["chat.example"]);
   });
 });

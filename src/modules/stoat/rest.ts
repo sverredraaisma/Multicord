@@ -83,6 +83,12 @@ export async function discoverInstance(origin: string, fetchFn: typeof fetch): P
   return { api, ws, autumn };
 }
 
+/** The hosts an instance uses: its API, events WebSocket and file server. */
+export function instanceHosts(instance: StoatInstance): string[] {
+  const urls = [instance.api, instance.ws, ...(instance.autumn ? [instance.autumn] : [])];
+  return [...new Set(urls.map((url) => new URL(url).hostname.toLowerCase()))];
+}
+
 /** Throttled REST client for one instance; the session token never leaves the engine. */
 export class StoatRest {
   token: string | undefined;

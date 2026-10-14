@@ -4,7 +4,7 @@ import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { StoatEvents, type EventsStatus, type SocketFactory } from "./events";
-import { discoverInstance, StoatRest, type LoginResult, type RestOptions, type StoatInstance } from "./rest";
+import { discoverInstance, instanceHosts, StoatRest, type LoginResult, type RestOptions, type StoatInstance } from "./rest";
 import { StoatState, TYPING_MS } from "./state";
 import { ChannelType, TEXT_CHANNEL_TYPES, displayName, idTime, isId, type StoatChannel, type StoatFile, type StoatMessage } from "./types";
 
@@ -37,6 +37,8 @@ export interface StoatAdapterDeps {
   rest?: Partial<RestOptions>;
   /** Lets the user pick files; the engine reads only what was picked. */
   files?: { pick(): Promise<FileSource[]> };
+  /** Narrows what the engine may reach to these hosts, once they are known. */
+  lockHosts?(hosts: string[]): Promise<void>;
 }
 
 type Selection = { kind: "home" } | { kind: "server"; serverId: string };
@@ -204,6 +206,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     if (this.instance) return this.instance;
     try {
       this.instance = await discoverInstance(this.deps.def.url, this.deps.fetch);
+      // From here on the engine needs only this instance's own hosts.
+      await this.deps.lockHosts?.(instanceHosts(this.instance)).catch((error: unknown) => console.warn(`[stoat] host lock refused: ${messageOf(error)}`));
       this.rest = new StoatRest(this.instance, { fetch: this.deps.fetch, ...this.deps.rest });
       this.error = undefined;
       return this.instance;
