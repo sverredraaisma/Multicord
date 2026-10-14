@@ -94,8 +94,8 @@ let userData: string;
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-function senderEvent(view: InstanceType<typeof WebContentsView>) {
-  return { sender: view.webContents };
+function senderEvent(view: InstanceType<typeof WebContentsView>, url = "https://discord.com/channels/@me") {
+  return { sender: view.webContents, senderFrame: { url } };
 }
 
 async function shellWith(platformsJson?: unknown, platform: NodeJS.Platform = "win32") {
@@ -200,6 +200,8 @@ describe("createShell", () => {
 
     ipcMain.emit(IPC.discordState, senderEvent(railView), state);
     ipcMain.emit(IPC.discordState, senderEvent(discordView), { guilds: "bad" });
+    ipcMain.emit(IPC.discordState, senderEvent(discordView, "https://evil.example/"), state); // not Discord's page
+    ipcMain.emit(IPC.discordState, { sender: discordView.webContents, senderFrame: null }, state);
     expect(handle.registry.state().entries.filter((e) => e.kind === "server")).toHaveLength(0);
 
     ipcMain.emit(IPC.discordState, senderEvent(discordView), state);

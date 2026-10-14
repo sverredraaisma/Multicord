@@ -1,5 +1,5 @@
-import { ipcMain } from "electron";
-import { IPC, isDiscordState, isRelayedNotification } from "../../shared/ipc";
+import { ipcMain, type IpcMainEvent } from "electron";
+import { IPC, isDiscordPage, isDiscordState, isRelayedNotification } from "../../shared/ipc";
 import { DiscordAdapter } from "../adapters/discordAdapter";
 import { DISCORD } from "../platforms";
 import type { PlatformModule } from "./types";
@@ -31,11 +31,13 @@ export const discordModule: PlatformModule = {
       (id) => view.webContents.send(IPC.discordNotificationClick, id),
       (update) => view.webContents.send(IPC.discordActivity, update),
     );
+    // Only Discord's own page in this view speaks for Discord, not a site the view was led to.
+    const fromDiscord = (event: IpcMainEvent): boolean => event.sender === view.webContents && isDiscordPage(event.senderFrame?.url);
     ipcMain.on(IPC.discordState, (event, state) => {
-      if (event.sender === view.webContents && isDiscordState(state)) adapter.update(state);
+      if (fromDiscord(event) && isDiscordState(state)) adapter.update(state);
     });
     ipcMain.on(IPC.discordNotification, (event, notification) => {
-      if (event.sender === view.webContents && isRelayedNotification(notification)) adapter.relayNotification(notification);
+      if (fromDiscord(event) && isRelayedNotification(notification)) adapter.relayNotification(notification);
     });
     enableScreenShare();
     return { adapter, start: () => void view.webContents.loadURL(def.url) };

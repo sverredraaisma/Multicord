@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+// @vitest-environment-options {"url": "https://discord.com/channels/@me"}
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discordNotificationRelay } from "../../src/preload/discord/notificationRelay";
 import { discordScreenAudio } from "../../src/preload/discord/screenAudio";

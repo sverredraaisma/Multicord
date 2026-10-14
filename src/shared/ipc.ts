@@ -36,6 +36,17 @@ export const BRIDGE_EVENT = "multicord:stores";
 /** DOM events between the main-world notification relay and the preload. */
 export const NOTIFY_EVENT = "multicord:notification";
 export const NOTIFY_CLICK_EVENT = "multicord:notification-click";
+/** Whether a page is Discord's own (discord.com or a subdomain such as ptb.discord.com, over https). */
+export function isDiscordPage(url: string | undefined): boolean {
+  if (!url) return false;
+  try {
+    const { protocol, hostname } = new URL(url);
+    return protocol === "https:" && (hostname === "discord.com" || hostname.endsWith(".discord.com"));
+  } catch {
+    return false;
+  }
+}
+
 /** DOM event carrying a Rich Presence update from the isolated preload to the page. */
 export const ACTIVITY_EVENT = "multicord:activity";
 const MAX_ACTIVITY_JSON = 8192;

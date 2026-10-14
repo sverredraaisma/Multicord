@@ -279,3 +279,14 @@ describe("relayed notifications", () => {
     }
   });
 });
+
+describe("isDiscordPage", () => {
+  it("accepts Discord's own https pages only", async () => {
+    const { isDiscordPage } = await import("../../src/shared/ipc");
+    expect(isDiscordPage("https://discord.com/channels/@me")).toBe(true);
+    expect(isDiscordPage("https://ptb.discord.com/app")).toBe(true);
+    for (const url of ["http://discord.com/", "https://evildiscord.com/", "https://discord.com.evil.example/", "about:blank", "nonsense", undefined]) {
+      expect(isDiscordPage(url)).toBe(false);
+    }
+  });
+});

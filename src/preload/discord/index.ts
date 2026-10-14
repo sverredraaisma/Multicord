@@ -4,6 +4,7 @@ import {
   IPC,
   isActivityUpdate,
   isBridgePayload,
+  isDiscordPage,
   isDiscordTarget,
   isRelayedNotification,
   NOTIFY_CLICK_EVENT,
@@ -41,6 +42,8 @@ export function startDiscordPreload(
   win: Window,
   runInMainWorld?: MainWorldRunner,
 ): { publish(): void } {
+  // The view may end up on another site (a link followed in place): that page gets no bridge at all.
+  if (!isDiscordPage(win.location.href)) return { publish() {} };
   let last = "";
   let timer: ReturnType<typeof setTimeout> | undefined;
   let bridge: BridgePayload | undefined;

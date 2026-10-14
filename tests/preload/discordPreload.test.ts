@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+// @vitest-environment-options {"url": "https://discord.com/channels/@me"}
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { COMPACT_CLASS, STYLE_ID } from "../../src/preload/discord/dom";
 import {
@@ -121,5 +122,18 @@ describe("store bridge", () => {
       health: { guildBar: true },
       dms: [dm],
     });
+  });
+});
+
+describe("pages other than Discord's", () => {
+  it("get no bridge at all", () => {
+    const ipc = { send: vi.fn(), on: vi.fn() };
+    const run = vi.fn();
+    const foreign = { location: { href: "https://evil.example/" } } as unknown as Window;
+    const { publish } = startDiscordPreload(ipc, document, foreign, run);
+    publish();
+    expect(ipc.send).not.toHaveBeenCalled();
+    expect(ipc.on).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
   });
 });
