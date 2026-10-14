@@ -7,6 +7,7 @@ import {
   type NativeViewState,
   type NativeVoiceSession,
 } from "../../shared/native";
+import type { AccountStatus } from "../../shared/settings";
 import { solveAltcha } from "../fluxer/captcha";
 import { discoverInstance, type FluxerInstance } from "../fluxer/discovery";
 import { FluxerGateway, type GatewayStatus, type SocketFactory } from "../fluxer/gateway";
@@ -24,7 +25,7 @@ import {
   type FluxerEmoji,
   type FluxerMessage,
 } from "../fluxer/types";
-import type { PlatformDef } from "../platforms";
+import { FLUXER, type PlatformDef } from "../platforms";
 import { BaseAdapter } from "./baseAdapter";
 
 export const FOLDER_PREFIX = "folder:";
@@ -128,14 +129,32 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
+  /** One token per platform instance, so two accounts on one Fluxer instance stay apart. */
   private get secretKey(): string {
-    return `fluxer:${this.account.instance}:token`;
+    return `${this.deps.def.id}:${this.account.instance}:token`;
+  }
+
+  /**
+   * Tokens used to be stored per instance host only; move such a token to
+   * this instance's key. On fluxer.app that old key is the built-in
+   * account's own, so it never moves to another account there.
+   */
+  private loadToken(): string | undefined {
+    const token = this.deps.secrets.load(this.secretKey);
+    if (token !== undefined) return token;
+    const legacyKey = `fluxer:${this.account.instance}:token`;
+    if (legacyKey === this.secretKey || this.account.instance === new URL(FLUXER.url).host) return undefined;
+    const legacy = this.deps.secrets.load(legacyKey);
+    if (legacy === undefined) return undefined;
+    this.deps.secrets.save(this.secretKey, legacy);
+    this.deps.secrets.delete(legacyKey);
+    return legacy;
   }
 
   /** Discovers the instance and resumes a saved session, else shows the login screen. */
   async start(): Promise<void> {
     if (!(await this.ensureInstance())) return this.render();
-    const token = this.deps.secrets.load(this.secretKey);
+    const token = this.loadToken();
     if (token) this.openSession(token);
     else this.render();
   }
@@ -185,6 +204,17 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       case "logout":
         return this.logout();
     }
+  }
+
+  accountStatus(): AccountStatus {
+    const signedIn = this.screen === "connecting" || this.screen === "chat" || this.deps.secrets.load(this.secretKey) !== undefined;
+    if (!signedIn) return { state: "signed-out" };
+    return this.state.me ? { state: "signed-in", name: displayName(this.state.me) } : { state: "signed-in" };
+  }
+
+  /** Ends the session on the server too, so the token cannot be reused. */
+  signOut(): Promise<void> {
+    return this.logout();
   }
 
   setVisible(visible: boolean): void {

@@ -3,6 +3,7 @@ import { dialog, ipcMain, shell } from "electron";
 import { isNativeAction, NATIVE_IPC } from "../../shared/native";
 import { FluxerAdapter } from "../adapters/fluxerAdapter";
 import { uploadSource } from "../files";
+import { FLUXER } from "../platforms";
 import { decideWindowOpen } from "../sessionPolicy";
 import type { PlatformModule } from "./types";
 
@@ -14,6 +15,8 @@ export const fluxerModule: PlatformModule = {
     label: "Fluxer",
     color: "#4f8cf7",
     configurable: true,
+    defaultUrl: FLUXER.url,
+    usesVoiceSettings: true,
     preload: "preload-native.js",
   },
   load({ def, view, window, dist, platform, services, secrets, enableScreenShare }) {

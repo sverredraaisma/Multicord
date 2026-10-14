@@ -1,5 +1,6 @@
 import type { DirectConversation, HomeBadge, RailServer } from "../../shared/adapter";
-import { isSnowflake, type DiscordGuild, type DiscordState, type DiscordTarget, type TitleBadge } from "../../shared/ipc";
+import { isSnowflake, type DiscordGuild, type DiscordState, type DiscordTarget, type DiscordUser, type TitleBadge } from "../../shared/ipc";
+import type { AccountStatus } from "../../shared/settings";
 import { BaseAdapter } from "./baseAdapter";
 
 export const FOLDER_PREFIX = "folder:";
@@ -12,13 +13,19 @@ export class DiscordAdapter extends BaseAdapter {
   readonly capabilities = { directMessages: true, messagePreviews: false, voice: true, screenShare: true };
   private badge: TitleBadge = { unread: false, mentions: 0 };
   private directs: DirectConversation[] | undefined;
+  private user: DiscordUser | null | undefined;
 
-  constructor(private readonly navigate: (target: DiscordTarget) => void) {
-    super("discord", { platform: "discord", instance: "discord.com", accountId: "default" });
+  /** `id` tells accounts apart: each Discord account is its own platform instance. */
+  constructor(
+    private readonly navigate: (target: DiscordTarget) => void,
+    id = "discord",
+  ) {
+    super(id, { platform: id, instance: "discord.com", accountId: "default" });
   }
 
   update(state: DiscordState): void {
     this.badge = state.badge;
+    if (state.user !== undefined) this.user = state.user;
     if (state.dms) {
       this.directs = state.dms.map((dm) => ({
         key: dm.id,
@@ -93,6 +100,12 @@ export class DiscordAdapter extends BaseAdapter {
     const guildMentions = this.servers.reduce((sum, s) => sum + s.mentions, 0);
     const mentions = Math.max(0, this.badge.mentions - guildMentions);
     return { unread: mentions > 0, mentions };
+  }
+
+  /** Known once the store bridge reports; Discord's own client handles signing in. */
+  accountStatus(): AccountStatus {
+    if (this.user === undefined) return { state: "unknown" };
+    return this.user ? { state: "signed-in", name: this.user.name } : { state: "signed-out" };
   }
 
   async openHome(): Promise<void> {

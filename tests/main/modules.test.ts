@@ -9,7 +9,11 @@ describe("module registry", () => {
     expect(MODULES.map((m) => m.manifest.id)).toEqual(["discord", "fluxer", "web"]);
     expect(findModule("fluxer")!.manifest.label).toBe("Fluxer");
     expect(findModule("matrix")).toBeUndefined();
-    expect(configurableModules()).toEqual(["fluxer", "web"]);
+    expect(configurableModules()).toEqual([
+      { id: "discord", defaultUrl: "https://discord.com/app", fixedUrl: true },
+      { id: "fluxer", defaultUrl: "https://fluxer.app", fixedUrl: undefined },
+      { id: "web", defaultUrl: undefined, fixedUrl: undefined },
+    ]);
   });
 
   it("gives every module a label, colour and unique id", () => {

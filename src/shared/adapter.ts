@@ -1,3 +1,5 @@
+import type { AccountStatus } from "./settings";
+
 // Adapter contract from the integration study. Every platform plugs into the
 // shell through PlatformAdapter, either as an embedded web view or natively.
 
@@ -96,4 +98,9 @@ export interface PlatformAdapter {
   // Shell addition to the draft: the DM home entry (Discord's /channels/@me).
   homeBadge?(): HomeBadge;
   openHome?(): Promise<void>;
+
+  // Shell additions for the settings page: who is signed in, and signing out
+  // on this device. Without signOut the shell clears the platform's web session.
+  accountStatus?(): AccountStatus;
+  signOut?(): Promise<void>;
 }

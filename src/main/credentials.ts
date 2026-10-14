@@ -56,6 +56,16 @@ export class CredentialStore {
     this.writeAll(all);
   }
 
+  /** Forgets every secret whose key starts with `prefix`, e.g. a removed service's. */
+  deletePrefix(prefix: string): void {
+    for (const key of [...this.memory.keys()]) if (key.startsWith(prefix)) this.memory.delete(key);
+    const all = this.readAll();
+    const keys = Object.keys(all).filter((key) => key.startsWith(prefix));
+    if (keys.length === 0) return;
+    for (const key of keys) delete all[key];
+    this.writeAll(all);
+  }
+
   private readAll(): Record<string, unknown> {
     try {
       const parsed: unknown = JSON.parse(fs.readFileSync(this.file, "utf8"));

@@ -58,7 +58,7 @@ function installWebpack(exportsList: unknown[]) {
 }
 
 /** Collects one field of each bridge payload (DMs by default). */
-function listen(field: "dms" | "guilds" | "layout" = "dms") {
+function listen(field: "dms" | "guilds" | "layout" | "user" = "dms") {
   const received: unknown[] = [];
   document.addEventListener(EVENT, (e) => {
     const payload = JSON.parse((e as CustomEvent<string>).detail);
@@ -115,6 +115,22 @@ describe("discordStoreBridge", () => {
       { id: "300", title: "Named group", unread: false, mentions: 0, lastActivity: 0 },
       { id: "500", title: "Unknown user", unread: false, mentions: 0, lastActivity: 0 },
     ]);
+  });
+
+  it("reports the signed-in user, or null on the login screen", () => {
+    const stores = discordStores();
+    let me: unknown = { username: "ana", globalName: "Ana" };
+    Object.assign(stores.UserStore, { getCurrentUser: () => me });
+    installWebpack([stores.ChannelStore, stores.ReadStateStore, stores.UserStore]);
+    const received = listen("user");
+    discordStoreBridge(EVENT, 1000, 3);
+    me = null;
+    stores.UserStore.change();
+    vi.advanceTimersByTime(300);
+    Object.assign(stores.UserStore, { getCurrentUser: () => { throw new Error("changed shape"); } });
+    stores.UserStore.change();
+    vi.advanceTimersByTime(300);
+    expect(received).toEqual([{ name: "Ana" }, null, undefined]);
   });
 
   it("re-emits, debounced, when a store changes", () => {

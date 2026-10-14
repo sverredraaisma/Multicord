@@ -53,6 +53,11 @@ describe("validators", () => {
   it("validates discord state", () => {
     const badge = { unread: false, mentions: 0 };
     expect(isDiscordState({ guilds: [guild], badge })).toBe(true);
+    expect(isDiscordState({ guilds: [], badge, user: { name: "Ana" } })).toBe(true);
+    expect(isDiscordState({ guilds: [], badge, user: null })).toBe(true);
+    expect(isDiscordState({ guilds: [], badge, user: { name: 5 } })).toBe(false);
+    expect(isBridgePayload({ dms: [], guilds: [], user: { name: "x".repeat(201) } })).toBe(false);
+    expect(isBridgePayload({ dms: [], guilds: [], user: null })).toBe(true);
     expect(isDiscordState({ guilds: "nope", badge })).toBe(false);
     expect(isDiscordState({ guilds: [{}], badge })).toBe(false);
     expect(isDiscordState({ guilds: [], badge: {} })).toBe(false);

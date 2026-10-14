@@ -1,5 +1,6 @@
 import { discordModule } from "./discord";
 import { fluxerModule } from "./fluxer";
+import type { ModuleRule } from "../platforms";
 import type { PlatformModule } from "./types";
 import { webModule } from "./web";
 
@@ -14,7 +15,9 @@ export function findModule(id: string, modules: readonly PlatformModule[] = MODU
   return modules.find((m) => m.manifest.id === id);
 }
 
-/** Module ids users may instantiate from platforms.json. */
-export function configurableModules(modules: readonly PlatformModule[] = MODULES): string[] {
-  return modules.filter((m) => m.manifest.configurable).map((m) => m.manifest.id);
+/** Modules users may instantiate from platforms.json, with their address rules. */
+export function configurableModules(modules: readonly PlatformModule[] = MODULES): ModuleRule[] {
+  return modules
+    .filter((m) => m.manifest.configurable)
+    .map(({ manifest: { id, defaultUrl, fixedUrl } }) => ({ id, defaultUrl, fixedUrl }));
 }

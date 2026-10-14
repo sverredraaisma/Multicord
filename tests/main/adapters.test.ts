@@ -51,6 +51,19 @@ describe("DiscordAdapter", () => {
     expect(adapter.homeBadge()).toEqual({ unread: false, mentions: 0 });
   });
 
+  it("reports the signed-in user once the store bridge knows it", () => {
+    const adapter = new DiscordAdapter(vi.fn(), "discord-2");
+    expect(adapter.platform).toBe("discord-2");
+    expect(adapter.accountStatus()).toEqual({ state: "unknown" });
+    const badge = { unread: false, mentions: 0 };
+    adapter.update({ guilds: [], badge, user: { name: "Ana" } });
+    expect(adapter.accountStatus()).toEqual({ state: "signed-in", name: "Ana" });
+    adapter.update({ guilds: [], badge }); // DOM-only update: keeps what the bridge said
+    expect(adapter.accountStatus()).toEqual({ state: "signed-in", name: "Ana" });
+    adapter.update({ guilds: [], badge, user: null });
+    expect(adapter.accountStatus()).toEqual({ state: "signed-out" });
+  });
+
   it("navigates to home, guilds and DMs through the preload", async () => {
     const navigate = vi.fn();
     const adapter = new DiscordAdapter(navigate);

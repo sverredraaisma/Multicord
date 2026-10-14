@@ -157,10 +157,20 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
     }
   };
 
+  // Who is signed in, for the settings page; null on Discord's login screen.
+  const currentUser = () => {
+    try {
+      const me = stores!.UserStore.getCurrentUser?.();
+      return me ? { name: String(userName(me)).slice(0, MAX_TITLE) } : null;
+    } catch {
+      return undefined;
+    }
+  };
+
   const emit = (): void => {
     timer = undefined;
     try {
-      const payload = { dms: collectDms(), guilds: collectGuilds(), layout: collectLayout() };
+      const payload = { dms: collectDms(), guilds: collectGuilds(), layout: collectLayout(), user: currentUser() };
       document.dispatchEvent(new CustomEvent(eventName, { detail: JSON.stringify(payload) }));
     } catch {
       // A store changed shape; the rail keeps its last good state.

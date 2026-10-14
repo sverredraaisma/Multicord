@@ -122,6 +122,9 @@ describe("DM support", () => {
     `);
     expect(readGuilds(document, new Set(["999"])).map((g) => g.id)).toEqual(["111"]);
     const dm = { id: "999", title: "Ana", unread: true, mentions: 2, lastActivity: 1 };
+    expect(readState(document, { dms: [], guilds: [], user: { name: "Ana" } }).user).toEqual({ name: "Ana" });
+    expect(readState(document, { dms: [], guilds: [], user: null }).user).toBeNull();
+    expect(readState(document, { dms: [], guilds: [] })).not.toHaveProperty("user");
     const state = readState(document, { dms: [dm], guilds: [] });
     expect(state.guilds.map((g) => g.id)).toEqual(["111"]);
     expect(state.dms).toEqual([dm]);

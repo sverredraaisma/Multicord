@@ -10,6 +10,22 @@ export interface PlatformDef {
   iconUrl?: string;
 }
 
+/** A platform from the config, whether or not it is turned on. */
+export interface ConfiguredPlatform {
+  def: PlatformDef;
+  enabled: boolean;
+  builtIn: boolean;
+}
+
+/** What platforms.json may say about a module's instances. */
+export interface ModuleRule {
+  id: string;
+  /** Used when an entry has no url. */
+  defaultUrl?: string;
+  /** The module always uses defaultUrl, e.g. Discord. */
+  fixedUrl?: boolean;
+}
+
 export const DISCORD: PlatformDef = {
   id: "discord",
   name: "Discord",
@@ -26,43 +42,51 @@ export const FLUXER: PlatformDef = {
   module: "fluxer",
 };
 
-const BUILT_IN = [DISCORD, FLUXER];
-const PLATFORM_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const BUILT_IN = [DISCORD, FLUXER];
+export const PLATFORM_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
+export const MAX_NAME = 64;
 /** Modules users may instantiate; the shell passes the real list from main/modules. */
-const DEFAULT_MODULES = ["web", "fluxer"];
+const DEFAULT_MODULES: ModuleRule[] = [{ id: "web" }, { id: "fluxer", defaultUrl: FLUXER.url }];
 
 /**
- * Validates the user's platforms.json: a list of {id, name, url, iconUrl?, module?}
- * entries, each run by a configurable module ("web" by default; "fluxer" for a
- * self-hosted Fluxer instance at url). The older "kind" field is accepted too. A built-in platform
- * is turned off with {"id": "fluxer", "enabled": false}. Invalid entries are
- * skipped and reported rather than failing the whole file.
+ * Validates the user's platforms.json: a list of {id, name, url, iconUrl?,
+ * module?, enabled?} entries, each run by a configurable module ("web" by
+ * default; "fluxer" for a Fluxer instance at url; "discord" for another
+ * Discord account). The older "kind" field is accepted too. An entry with a
+ * built-in id only overrides its name or turns it off: {"id": "fluxer",
+ * "enabled": false}. Invalid entries are skipped and reported rather than
+ * failing the whole file.
  */
 export function parsePlatforms(
   raw: unknown,
-  modules: readonly string[] = DEFAULT_MODULES,
-): { platforms: PlatformDef[]; disabled: string[]; errors: string[] } {
-  const platforms: PlatformDef[] = [];
-  const disabled: string[] = [];
+  modules: readonly ModuleRule[] = DEFAULT_MODULES,
+): { entries: ConfiguredPlatform[]; errors: string[] } {
+  const builtIns = BUILT_IN.map((def) => ({ def: { ...def }, enabled: true, builtIn: true }));
+  const entries: ConfiguredPlatform[] = [];
   const errors: string[] = [];
-  if (!Array.isArray(raw)) return { platforms, disabled, errors: ["platforms.json must contain an array"] };
+  if (!Array.isArray(raw)) return { entries: builtIns, errors: ["platforms.json must contain an array"] };
 
-  const builtIn = new Set(BUILT_IN.map((p) => p.id));
-  const seen = new Set(builtIn);
+  const seen = new Set(BUILT_IN.map((p) => p.id));
+  const overridden = new Set<string>();
   raw.forEach((entry: unknown, index) => {
     const e = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
-    if (typeof e.id === "string" && builtIn.has(e.id) && e.enabled === false) {
-      disabled.push(e.id);
+    const builtIn = builtIns.find((b) => b.def.id === e.id);
+    if (builtIn && !overridden.has(builtIn.def.id)) {
+      overridden.add(builtIn.def.id);
+      if (e.enabled === false) builtIn.enabled = false;
+      if (typeof e.name === "string" && e.name.trim() !== "") builtIn.def.name = e.name.trim().slice(0, MAX_NAME);
       return;
     }
-    const module = e.module ?? e.kind ?? "web";
+    const moduleId = e.module ?? e.kind ?? "web";
+    const rule = modules.find((m) => m.id === moduleId);
+    const url = rule?.fixedUrl ? rule.defaultUrl : (e.url ?? rule?.defaultUrl);
     const problem =
       typeof e.id !== "string" || !PLATFORM_ID.test(e.id) ? "id must be lowercase letters, digits or dashes"
       : seen.has(e.id) ? `duplicate id "${e.id}"`
       : typeof e.name !== "string" || e.name.trim() === "" ? "name is required"
-      : !isHttpsUrl(e.url) ? "url must be an https URL"
+      : !rule ? `module must be one of ${modules.map((m) => `"${m.id}"`).join(", ")}`
+      : !isHttpsUrl(url) ? "url must be an https URL"
       : e.iconUrl !== undefined && !isHttpsUrl(e.iconUrl) ? "iconUrl must be an https URL"
-      : typeof module !== "string" || !modules.includes(module) ? `module must be one of ${modules.map((m) => `"${m}"`).join(", ")}`
       : undefined;
     if (problem) {
       errors.push(`entry ${index}: ${problem}`);
@@ -70,35 +94,46 @@ export function parsePlatforms(
     }
     const id = e.id as string;
     seen.add(id);
-    platforms.push({
-      id,
-      name: (e.name as string).trim(),
-      url: e.url as string,
-      partition: `persist:${id}`,
-      module: module as string,
-      iconUrl: e.iconUrl as string | undefined,
+    entries.push({
+      def: {
+        id,
+        name: (e.name as string).trim().slice(0, MAX_NAME),
+        url: url as string,
+        partition: `persist:${id}`,
+        module: rule!.id,
+        iconUrl: e.iconUrl as string | undefined,
+      },
+      enabled: e.enabled !== false,
+      builtIn: false,
     });
   });
-  return { platforms, disabled, errors };
+  return { entries: [...builtIns, ...entries], errors };
 }
 
-/** Discord and Fluxer come first; user platforms follow. A missing file is not an error. */
+/**
+ * Discord and Fluxer come first; user platforms follow. `platforms` holds the
+ * ones turned on, `all` every configured one. A missing file is not an error.
+ */
 export function loadPlatforms(
   readText: () => string | undefined,
-  modules?: readonly string[],
-): { platforms: PlatformDef[]; errors: string[] } {
+  modules?: readonly ModuleRule[],
+): { platforms: PlatformDef[]; all: ConfiguredPlatform[]; errors: string[] } {
   const text = readText();
-  if (text === undefined) return { platforms: [...BUILT_IN], errors: [] };
-  let raw: unknown;
-  try {
-    raw = JSON.parse(text);
-  } catch (error) {
-    return { platforms: [...BUILT_IN], errors: [`platforms.json is not valid JSON: ${(error as Error).message}`] };
+  let raw: unknown = [];
+  const errors: string[] = [];
+  if (text !== undefined) {
+    try {
+      raw = JSON.parse(text);
+    } catch (error) {
+      errors.push(`platforms.json is not valid JSON: ${(error as Error).message}`);
+    }
   }
   const parsed = parsePlatforms(raw, modules);
-  const platforms = [...BUILT_IN.filter((p) => !parsed.disabled.includes(p.id)), ...parsed.platforms];
-  if (platforms.length === 0) {
-    return { platforms: [...BUILT_IN], errors: [...parsed.errors, "at least one platform must stay enabled"] };
+  errors.push(...parsed.errors);
+  let all = parsed.entries;
+  if (!all.some((p) => p.enabled)) {
+    errors.push("at least one platform must stay enabled");
+    all = all.map((p) => (p.builtIn ? { ...p, enabled: true } : p));
   }
-  return { platforms, errors: parsed.errors };
+  return { platforms: all.filter((p) => p.enabled).map((p) => p.def), all, errors };
 }

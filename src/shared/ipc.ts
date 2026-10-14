@@ -9,6 +9,8 @@ export const IPC = {
   railReady: "shell:ready",
   railTooltip: "shell:tooltip",
   railReorder: "shell:reorder",
+  /** Rail -> main: open or close the settings page. */
+  railSettings: "shell:settings",
   tooltipShow: "tooltip:show",
   pickerSources: "picker:sources",
   pickerChoose: "picker:choose",
@@ -74,11 +76,17 @@ export interface LayoutEntry {
   guildIds: string[];
 }
 
+/** The signed-in Discord user; null when Discord's client has nobody signed in. */
+export interface DiscordUser {
+  name: string;
+}
+
 export interface BridgePayload {
   dms: DiscordDm[];
   guilds: GuildInfo[];
   /** Absent when SortedGuildStore was not found. */
   layout?: LayoutEntry[];
+  user?: DiscordUser | null;
 }
 
 export interface DiscordState {
@@ -87,6 +95,8 @@ export interface DiscordState {
   /** Absent until the store bridge has found Discord's stores. */
   dms?: DiscordDm[];
   folders?: DiscordFolder[];
+  /** Absent until the store bridge reports; null when signed out. */
+  user?: DiscordUser | null;
 }
 
 /** "home", a guild snowflake, "dm:<channel snowflake>" or "folder:<folder id>" (toggles it). */
@@ -118,6 +128,8 @@ export interface RailModule {
 export interface RailState {
   entries: RailEntry[];
   activeKey: string | null;
+  /** The settings page is showing instead of a platform. */
+  settingsOpen?: boolean;
 }
 
 export interface PickerSource {
@@ -241,9 +253,14 @@ export function isLayoutEntry(value: unknown): value is LayoutEntry {
   );
 }
 
+export function isDiscordUser(value: unknown): value is DiscordUser | null | undefined {
+  return value === undefined || value === null || (isRecord(value) && typeof value.name === "string" && value.name.length <= MAX_TEXT);
+}
+
 export function isBridgePayload(value: unknown): value is BridgePayload {
   return (
     isRecord(value) &&
+    isDiscordUser(value.user) &&
     isDiscordDmList(value.dms) &&
     Array.isArray(value.guilds) &&
     value.guilds.length <= MAX_GUILDS &&
@@ -260,6 +277,7 @@ export function isDiscordState(value: unknown): value is DiscordState {
     value.guilds.length <= MAX_GUILDS &&
     value.guilds.every(isDiscordGuild) &&
     isTitleBadge(value.badge) &&
+    isDiscordUser(value.user) &&
     (value.dms === undefined || isDiscordDmList(value.dms)) &&
     (value.folders === undefined ||
       (Array.isArray(value.folders) && value.folders.length <= MAX_GUILDS && value.folders.every(isDiscordFolder)))

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FluxerAdapter, type FluxerAdapterDeps } from "../../../src/main/adapters/fluxerAdapter";
 import type { GatewaySocket } from "../../../src/main/fluxer/gateway";
-import { FLUXER } from "../../../src/main/platforms";
+import { FLUXER, type PlatformDef } from "../../../src/main/platforms";
 import type { NativeViewState } from "../../../src/shared/native";
 import { ANA, ME, readyPayload } from "./fixtures";
 
@@ -34,7 +34,7 @@ function message(id: string, channelId: string, extra: Record<string, unknown> =
   return { id, channel_id: channelId, author: ANA, content: `m${id}`, timestamp: "2026-10-14T12:00:00Z", ...extra };
 }
 
-function setup(options: { token?: string; routes?: Handler[]; files?: FluxerAdapterDeps["files"] } = {}) {
+function setup(options: { token?: string; routes?: Handler[]; files?: FluxerAdapterDeps["files"]; def?: PlatformDef; secrets?: [string, string][] } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const routes: Handler[] = [...(options.routes ?? [])];
   const fetch = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -52,10 +52,10 @@ function setup(options: { token?: string; routes?: Handler[]; files?: FluxerAdap
     return { ok: reply.status < 300, status: reply.status, json: async () => reply.body } as Response;
   });
   const sockets: FakeSocket[] = [];
-  const secrets = new Map<string, string>(options.token ? [["fluxer:fluxer.app:token", options.token]] : []);
+  const secrets = new Map<string, string>(options.secrets ?? (options.token ? [["fluxer:fluxer.app:token", options.token]] : []));
   const renders: NativeViewState[] = [];
   const adapter = new FluxerAdapter({
-    def: FLUXER,
+    def: options.def ?? FLUXER,
     fetch: fetch as unknown as typeof globalThis.fetch,
     createSocket: () => {
       const socket = new FakeSocket();
@@ -1058,5 +1058,41 @@ describe("FluxerAdapter emoji", () => {
     expect(ctx.chat().customEmoji).toEqual([{ id: "55", name: "party", animated: false }]);
     await ctx.adapter.openServer("200");
     expect(ctx.chat().customEmoji).toEqual([]);
+  });
+});
+
+describe("accounts", () => {
+  it("reports who is signed in and signs out on the server", async () => {
+    const signedOut = setup();
+    expect(signedOut.adapter.accountStatus()).toEqual({ state: "signed-out" });
+
+    const { adapter, goOnline, calls } = setup({ token: "flx_saved" });
+    expect(adapter.accountStatus()).toEqual({ state: "signed-in" }); // a saved token, before connecting
+    await adapter.start();
+    await goOnline();
+    expect(adapter.accountStatus()).toEqual({ state: "signed-in", name: "me" });
+    await adapter.signOut();
+    expect(calls.some((c) => c.url.endsWith("/auth/logout"))).toBe(true);
+    expect(adapter.accountStatus()).toEqual({ state: "signed-out" });
+  });
+
+  it("keeps a second account on the same instance apart", async () => {
+    const second: PlatformDef = { ...FLUXER, id: "fluxer-2", name: "Second", partition: "persist:fluxer-2" };
+    const { adapter, sockets, secrets } = setup({ def: second, secrets: [["fluxer:fluxer.app:token", "flx_first"]] });
+    await adapter.start();
+    expect(sockets).toHaveLength(0); // the first account's token is not this one's
+    expect(secrets.get("fluxer:fluxer.app:token")).toBe("flx_first");
+  });
+
+  it("moves a self-hosted instance's token to its own key", async () => {
+    const own: PlatformDef = { id: "home", name: "Home", url: "https://chat.example", partition: "persist:home", module: "fluxer" };
+    const { adapter, sockets, secrets } = setup({ def: own, secrets: [["fluxer:chat.example:token", "flx_old"]] });
+    await adapter.start();
+    expect(sockets).toHaveLength(1);
+    expect(secrets.get("home:chat.example:token")).toBe("flx_old");
+    expect(secrets.has("fluxer:chat.example:token")).toBe(false);
+    const fresh = setup({ def: own });
+    await fresh.adapter.start();
+    expect(fresh.sockets).toHaveLength(0);
   });
 });

@@ -11,8 +11,13 @@ export interface ModuleManifest {
   /** Short name for the rail's module badge and tooltips. */
   label: string;
   color: string;
-  /** Whether users may add instances of this module in platforms.json. */
+  /** Whether users may add instances of this module (more services or accounts). */
   configurable: boolean;
+  /** Address prefilled for new instances; with fixedUrl, the only one allowed. */
+  defaultUrl?: string;
+  fixedUrl?: boolean;
+  /** The module runs calls itself and takes the voice settings (devices, processing). */
+  usesVoiceSettings?: boolean;
   /** Preload script for the module's view, relative to the build directory. */
   preload?: string;
 }

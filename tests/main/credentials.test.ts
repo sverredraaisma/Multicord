@@ -46,6 +46,18 @@ describe("CredentialStore", () => {
     expect(new CredentialStore(file, fakeBox(false)).load("k")).toBeUndefined();
   });
 
+  it("forgets every secret of a removed service", () => {
+    const store = new CredentialStore(file, fakeBox());
+    store.save("el:x:token", "1");
+    store.save("fluxer:x:token", "2");
+    store.deletePrefix("el:");
+    store.deletePrefix("none:");
+    expect(store.load("el:x:token")).toBeUndefined();
+    const fresh = new CredentialStore(file, fakeBox());
+    expect(fresh.load("el:x:token")).toBeUndefined();
+    expect(fresh.load("fluxer:x:token")).toBe("2");
+  });
+
   it("deletes secrets from memory and disk", () => {
     const store = new CredentialStore(file, fakeBox());
     store.save("a", "1");
