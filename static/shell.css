@@ -1,0 +1,98 @@
+:root {
+  --bg: #1e1f22;
+  --item: #313338;
+  --item-hover: #5865f2;
+  --text: #f2f3f5;
+  --muted: #b5bac1;
+  --badge: #f23f43;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.4 system-ui, sans-serif;
+}
+
+#rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  height: 100%;
+  padding: 12px 0;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+.rail-item {
+  position: relative;
+  flex: none;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--item);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-radius 0.15s, background 0.15s;
+}
+
+.rail-item:hover, .rail-item.active { border-radius: 16px; background: var(--item-hover); }
+.rail-item img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
+.rail-item .initials { font-weight: 600; font-size: 15px; }
+
+.rail-item.unread::before, .rail-item.active::before {
+  content: "";
+  position: absolute;
+  left: -12px;
+  top: 50%;
+  width: 4px;
+  height: 8px;
+  border-radius: 0 4px 4px 0;
+  background: var(--text);
+  transform: translateY(-50%);
+}
+
+.rail-item.active::before { height: 40px; }
+
+.badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  min-width: 16px;
+  padding: 0 4px;
+  border: 3px solid var(--bg);
+  border-radius: 8px;
+  background: var(--badge);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 10px;
+}
+
+.rail-separator { width: 32px; margin: 0; border: 0; border-top: 2px solid var(--item); }
+
+.picker-body { background: rgba(0, 0, 0, 0.85); }
+#picker { max-width: 960px; margin: 0 auto; padding: 32px; }
+.sources { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
+.source {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  background: var(--item);
+  color: var(--text);
+  cursor: pointer;
+}
+.source:hover, .source:focus-visible { border-color: var(--item-hover); }
+.source img { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
+.source span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#picker footer { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; color: var(--muted); }
+.cancel { padding: 8px 16px; border: 0; border-radius: 4px; background: var(--item); color: var(--text); cursor: pointer; }
