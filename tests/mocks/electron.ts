@@ -11,6 +11,7 @@ export class FakeWebContents extends EventEmitter {
   loadFile = vi.fn(async (_file: string) => {});
   close = vi.fn();
   reload = vi.fn();
+  sendInputEvent = vi.fn();
   setZoomFactor = vi.fn();
   windowOpenHandler?: (details: { url: string }) => { action: string };
 
@@ -59,6 +60,7 @@ export class BaseWindow extends EventEmitter {
   setTitle = vi.fn();
   isMaximized = vi.fn(() => false);
   isMinimized = vi.fn(() => false);
+  isVisible = vi.fn(() => true);
   isFocused = vi.fn(() => false);
 
   constructor(readonly options: Record<string, unknown>) {
@@ -143,6 +145,17 @@ export class Tray extends EventEmitter {
 export const Menu = { buildFromTemplate: (template: unknown[]) => ({ template }) };
 export const nativeImage = { createFromPath: (path: string) => ({ path }) };
 export const protocol = { registerSchemesAsPrivileged: vi.fn() };
+export const globalShortcut = {
+  callbacks: new Map<string, () => void>(),
+  taken: new Set<string>(),
+  register: vi.fn((accelerator: string, callback: () => void) => {
+    if (globalShortcut.taken.has(accelerator)) return false;
+    globalShortcut.callbacks.set(accelerator, callback);
+    return true;
+  }),
+  unregister: vi.fn((accelerator: string) => void globalShortcut.callbacks.delete(accelerator)),
+  unregisterAll: vi.fn(() => globalShortcut.callbacks.clear()),
+};
 export const shell = { openExternal: vi.fn(async (_url: string) => {}) };
 export const desktopCapturer = { getSources: vi.fn(async (_options: unknown) => [] as unknown[]) };
 export const safeStorage = {
@@ -194,6 +207,8 @@ export function resetElectron(): void {
   session.defaultSession = new FakeSession("default");
   ipcMain.removeAllListeners();
   ipcMain.handlers.clear();
+  globalShortcut.callbacks.clear();
+  globalShortcut.taken.clear();
   app.removeAllListeners();
   app.requestSingleInstanceLock.mockImplementation(() => true);
   vi.clearAllMocks();

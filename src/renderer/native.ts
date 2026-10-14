@@ -57,6 +57,41 @@ export class NativeView {
     void this.call?.configure(settings);
   }
 
+  /** The call in progress, if the voice server has connected us. */
+  private get liveCall() {
+    const voice = this.screen === "chat" ? this.lastState?.voice : undefined;
+    return voice?.token ? voice : undefined;
+  }
+
+  private setVoice(change: { mute?: boolean; deaf?: boolean }): void {
+    const voice = this.liveCall;
+    if (!voice) return;
+    const flags = { mute: voice.mute, deaf: voice.deaf, video: voice.video, stream: voice.stream, ...change };
+    if (flags.mute === voice.mute && flags.deaf === voice.deaf) return;
+    this.api.act({ type: "voiceState", ...flags });
+  }
+
+  /** A global shortcut toggles mute or deafen in the call in progress. */
+  voiceCommand(command: "toggleMute" | "toggleDeafen"): void {
+    const voice = this.liveCall;
+    if (!voice) return;
+    this.setVoice(command === "toggleMute" ? { mute: !voice.mute } : { deaf: !voice.deaf });
+  }
+
+  /**
+   * Push to talk while Multicord is in front: the key held unmutes, released
+   * (or the window losing focus, which hides the release) mutes again.
+   */
+  pushToTalk(code: string, down: boolean): void {
+    if (!this.voiceSettings?.pushToTalk || code !== this.voiceSettings.pushToTalk) return;
+    this.setVoice({ mute: !down });
+  }
+
+  /** The window lost focus: a held push-to-talk key's release will not arrive. */
+  releaseTalk(): void {
+    if (this.voiceSettings?.pushToTalk) this.setVoice({ mute: true });
+  }
+
   update(state: NativeViewState): void {
     if (state.screen !== this.screen || (state.screen === "prompt" && state.prompt.id !== this.promptId)) this.mount(state);
     switch (state.screen) {
@@ -407,5 +442,11 @@ export function startNative(doc: Document, api: NativeApi): void {
   api.onVoiceSettings((settings) => view.setVoiceSettings(settings));
   // Beside the unified Messages list, the conversation list here would repeat it.
   api.onCompact((compact) => doc.body.classList.toggle("compact", compact));
+  api.onVoiceCommand((command) => view.voiceCommand(command));
+  doc.addEventListener("keydown", (event) => {
+    if (!event.repeat) view.pushToTalk(event.code, true);
+  });
+  doc.addEventListener("keyup", (event) => view.pushToTalk(event.code, false));
+  doc.defaultView!.addEventListener("blur", () => view.releaseTalk());
   api.act({ type: "ready" });
 }

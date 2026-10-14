@@ -114,5 +114,10 @@ describe("messages", () => {
     listeners.get(IPC.viewCompact)!(null, true);
     listeners.get(IPC.viewCompact)!(null, "yes");
     expect(onCompact.mock.calls).toEqual([[true], [false]]);
+    const onVoiceCommand = vi.fn();
+    api.onVoiceCommand(onVoiceCommand);
+    listeners.get(SETTINGS_IPC.voiceCommand)!(null, "toggleMute");
+    listeners.get(SETTINGS_IPC.voiceCommand)!(null, "explode");
+    expect(onVoiceCommand.mock.calls).toEqual([["toggleMute"]]);
   });
 });

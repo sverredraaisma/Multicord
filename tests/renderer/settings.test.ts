@@ -795,3 +795,61 @@ describe("startSettings", () => {
     expect(startSettings(document, fakeApi().api)).toBeInstanceOf(SettingsPage);
   });
 });
+
+describe("keybinds", () => {
+  const key = (code: string, extra: Partial<KeyboardEventInit> = {}) => new KeyboardEvent("keydown", { code, key: code, bubbles: true, cancelable: true, ...extra });
+
+  it("builds accelerators from key presses", async () => {
+    const { acceleratorFromKey } = await import("../../src/renderer/settings");
+    const press = (code: string, mods: Partial<{ ctrlKey: boolean; altKey: boolean; shiftKey: boolean; metaKey: boolean }> = {}) =>
+      acceleratorFromKey({ code, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...mods });
+    expect(press("KeyM", { ctrlKey: true, shiftKey: true })).toBe("Ctrl+Shift+M");
+    expect(press("Digit5", { altKey: true })).toBe("Alt+5");
+    expect(press("F13")).toBe("F13");
+    expect(press("ArrowUp", { metaKey: true })).toBe("Super+Up");
+    expect(press("Backquote", { ctrlKey: true })).toBe("Ctrl+`");
+    expect(press("ShiftLeft", { shiftKey: true })).toBeUndefined();
+  });
+
+  it("records shortcuts, rejects plain keys, cancels on Escape and clears", () => {
+    mount(viewState({ shortcutErrors: ["toggleDeafen"] }));
+    const field = (label: string) => [...root.querySelectorAll<HTMLElement>(".key-field")].find((f) => f.textContent!.includes(label))!;
+    const mute = field("Toggle mute");
+    const button = mute.querySelector<HTMLButtonElement>(".key-button")!;
+    expect(button.textContent).toBe("Not set");
+    expect(field("Toggle deafen").querySelector(".key-hint")!.textContent).toBe("Another app already uses this shortcut.");
+    button.dispatchEvent(key("KeyM", { ctrlKey: true })); // not recording yet
+    expect(act).not.toHaveBeenCalled();
+    button.click();
+    expect(button.textContent).toBe("Press keys…");
+    button.dispatchEvent(key("ControlLeft", { key: "Control", ctrlKey: true })); // modifier alone: keep waiting
+    button.dispatchEvent(key("KeyM"));
+    expect(mute.querySelector(".key-hint")!.textContent).toMatch(/F13 to F24/);
+    button.dispatchEvent(key("KeyM", { ctrlKey: true, shiftKey: true }));
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { shortcuts: { toggleMute: "Ctrl+Shift+M" } } });
+    button.click();
+    button.dispatchEvent(key("Escape", { key: "Escape" }));
+    expect(button.textContent).toBe("Not set");
+    button.click();
+    button.dispatchEvent(new Event("blur"));
+    expect(button.classList.contains("recording")).toBe(false);
+
+    mount(viewState({ settings: { ...DEFAULT_SETTINGS, shortcuts: { toggleMute: "Ctrl+Shift+M", toggleDeafen: null, showApp: null }, voice: { ...DEFAULT_SETTINGS.voice, pushToTalk: "Backquote" } } }));
+    const set = field("Toggle mute");
+    expect(set.querySelector(".key-button")!.textContent).toBe("Ctrl+Shift+M");
+    button_(set, "Clear").click();
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { shortcuts: { toggleMute: null } } });
+
+    const talk = field("Push to talk");
+    expect(talk.querySelector(".key-button")!.textContent).toBe("Backquote");
+    const talkButton = talk.querySelector<HTMLButtonElement>(".key-button")!;
+    talkButton.click();
+    talkButton.dispatchEvent(key("ShiftLeft", { key: "Shift" }));
+    talkButton.dispatchEvent(key("F13"));
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { voice: { pushToTalk: "F13" } } });
+  });
+});
+
+function button_(scope: ParentNode, text: string): HTMLButtonElement {
+  return [...scope.querySelectorAll("button")].find((b) => b.textContent === text) as HTMLButtonElement;
+}

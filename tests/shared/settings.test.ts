@@ -143,3 +143,26 @@ describe("zoom and other general settings", () => {
     expect(parseSettings({ general: { streamerMode: "on" } }).general.streamerMode).toBe("on");
   });
 });
+
+describe("shortcuts and push to talk", () => {
+  it("accepts shortcuts with a modifier, or F13 to F24 alone", async () => {
+    const { isAccelerator, isPushToTalkKey } = await import("../../src/shared/settings");
+    for (const ok of ["Ctrl+Shift+M", "CommandOrControl+Alt+F5", "Super+Space", "F13", "F24", "Ctrl+`", "Alt+Shift+Ctrl+Super+1"]) expect(isAccelerator(ok)).toBe(true);
+    for (const bad of ["M", "Space", "F12", "Ctrl+", "Ctrl+Shift", "Hyper+M", 5, "Ctrl+M".repeat(20)]) expect(isAccelerator(bad)).toBe(false);
+    expect(isPushToTalkKey("Backquote")).toBe(true);
+    expect(isPushToTalkKey("Key A")).toBe(false);
+  });
+
+  it("reads, patches and clears shortcuts and the push-to-talk key", () => {
+    expect(DEFAULT_SETTINGS.shortcuts).toEqual({ toggleMute: null, toggleDeafen: null, showApp: null });
+    const parsed = parseSettings({ shortcuts: { toggleMute: "Ctrl+Shift+M", showApp: "M" }, voice: { pushToTalk: "Backquote" } });
+    expect(parsed.shortcuts).toEqual({ toggleMute: "Ctrl+Shift+M", toggleDeafen: null, showApp: null });
+    expect(parsed.voice.pushToTalk).toBe("Backquote");
+    expect(parseSettings({ voice: { pushToTalk: "bad key!" } }).voice).not.toHaveProperty("pushToTalk");
+    expect(isSettingsPatch({ shortcuts: { toggleMute: "Ctrl+M", showApp: null }, voice: { pushToTalk: null } })).toBe(true);
+    for (const bad of [{ shortcuts: 1 }, { shortcuts: { toggleMute: "M" } }, { shortcuts: { launch: "Ctrl+M" } }, { voice: { pushToTalk: "!" } }]) expect(isSettingsPatch(bad)).toBe(false);
+    const withKey = applySettingsPatch(DEFAULT_SETTINGS, { shortcuts: { toggleMute: "Ctrl+M" }, voice: { pushToTalk: "F13" } });
+    expect(withKey.shortcuts.toggleMute).toBe("Ctrl+M");
+    expect(applySettingsPatch(withKey, { voice: { pushToTalk: null } }).voice).not.toHaveProperty("pushToTalk");
+  });
+});

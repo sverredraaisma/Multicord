@@ -257,3 +257,8 @@
 .health-mark { font-weight: 700; }
 .health-check.ok .health-mark { color: var(--ok); }
 .health-check.failed .health-mark { color: var(--danger); }
+
+/* Keybinds */
+.key-button { min-width: 160px; font-family: ui-monospace, monospace; }
+.key-button.recording { box-shadow: inset 0 0 0 2px var(--accent); }
+.key-hint:empty { display: none; }

@@ -259,7 +259,14 @@ describe("helpers", () => {
     let push: (state: NativeViewState) => void = () => {};
     let pushVoice: (settings: VoiceSettings) => void = () => {};
     let pushCompact: (compact: boolean) => void = () => {};
-    const api: NativeApi = { onState: (cb) => (push = cb), act: vi.fn(), onVoiceSettings: (cb) => (pushVoice = cb), onCompact: (cb) => (pushCompact = cb) };
+    let voiceCommand: (command: "toggleMute" | "toggleDeafen") => void = () => {};
+    const api: NativeApi = {
+      onState: (cb) => (push = cb),
+      act: vi.fn(),
+      onVoiceSettings: (cb) => (pushVoice = cb),
+      onCompact: (cb) => (pushCompact = cb),
+      onVoiceCommand: (cb) => (voiceCommand = cb),
+    };
     startNative(document, api);
     expect(api.act).toHaveBeenCalledWith({ type: "ready" });
     push(login);
@@ -271,6 +278,28 @@ describe("helpers", () => {
     expect(document.body.classList.contains("compact")).toBe(true);
     pushCompact(false);
     expect(document.body.classList.contains("compact")).toBe(false);
+
+    // Voice shortcuts and push to talk reach the call in progress.
+    const live = { channelId: "7", channelName: "Lounge", guildName: "G", url: "wss://x", token: "t", mute: false, deaf: false, video: false, stream: false };
+    push(chat({ voice: live }));
+    voiceCommand("toggleMute");
+    expect(api.act).toHaveBeenLastCalledWith({ type: "voiceState", mute: true, deaf: false, video: false, stream: false });
+    voiceCommand("toggleDeafen");
+    expect(api.act).toHaveBeenLastCalledWith({ type: "voiceState", mute: false, deaf: true, video: false, stream: false });
+    pushVoice({ ...DEFAULT_SETTINGS.voice, pushToTalk: "Backquote" });
+    push(chat({ voice: { ...live, mute: true } }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { code: "Backquote" }));
+    expect(api.act).toHaveBeenLastCalledWith({ type: "voiceState", mute: false, deaf: false, video: false, stream: false });
+    push(chat({ voice: { ...live, mute: false } }));
+    const calls = (api.act as ReturnType<typeof vi.fn>).mock.calls.length;
+    document.dispatchEvent(new KeyboardEvent("keydown", { code: "Backquote", repeat: true }));
+    document.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyA" }));
+    expect((api.act as ReturnType<typeof vi.fn>).mock.calls.length).toBe(calls);
+    document.dispatchEvent(new KeyboardEvent("keyup", { code: "Backquote" }));
+    expect(api.act).toHaveBeenLastCalledWith({ type: "voiceState", mute: true, deaf: false, video: false, stream: false });
+    push(chat({ voice: { ...live, mute: false } }));
+    window.dispatchEvent(new Event("blur"));
+    expect(api.act).toHaveBeenLastCalledWith({ type: "voiceState", mute: true, deaf: false, video: false, stream: false });
   });
 });
 
@@ -723,5 +752,19 @@ describe("prompt steps", () => {
     expect(api.act).toHaveBeenLastCalledWith({ type: "prompt", id: "code", values: { code: "12345", password: " secret " } });
     root.querySelector<HTMLButtonElement>("button.link")!.click();
     expect(api.act).toHaveBeenLastCalledWith({ type: "cancelPrompt", id: "code" });
+  });
+});
+
+describe("voice shortcuts without a call", () => {
+  it("does nothing without a connected call or a push-to-talk key", () => {
+    view.update(chat({ voice: { channelId: "7", channelName: "L", guildName: "", mute: false, deaf: false, video: false, stream: false } }));
+    view.voiceCommand("toggleMute");
+    view.pushToTalk("Backquote", true);
+    view.releaseTalk();
+    view.setVoiceSettings({ ...DEFAULT_SETTINGS.voice, pushToTalk: "Backquote" });
+    view.pushToTalk("Backquote", true); // connecting: no token yet
+    view.update(login);
+    view.voiceCommand("toggleDeafen");
+    expect(act).not.toHaveBeenCalledWith(expect.objectContaining({ type: "voiceState" }));
   });
 });

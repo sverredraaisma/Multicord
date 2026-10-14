@@ -8,6 +8,8 @@ export const SETTINGS_IPC = {
   ready: "settings:ready",
   /** Main -> native views: the voice settings to use for calls. */
   voice: "settings:voice",
+  /** Main -> native views: a voice shortcut was pressed ("toggleMute" or "toggleDeafen"). */
+  voiceCommand: "settings:voice-command",
 } as const;
 
 /**
@@ -27,6 +29,13 @@ export interface VoiceSettings {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
+  /** While Multicord is in front: hold this key (a KeyboardEvent code) to talk; absent: voice activity. */
+  pushToTalk?: string;
+}
+
+/** A push-to-talk key, as KeyboardEvent.code names it, e.g. "Backquote" or "F13". */
+export function isPushToTalkKey(value: unknown): value is string {
+  return typeof value === "string" && /^[A-Za-z0-9]{1,24}$/.test(value);
 }
 
 export interface GeneralSettings {
@@ -77,21 +86,50 @@ export function stepZoom(zoom: number, direction: 1 | -1): number {
   return [...ZOOM_LEVELS].reverse().find((level) => level < zoom) ?? ZOOM_LEVELS[0];
 }
 
+/** System-wide keyboard shortcuts (Electron accelerators); null when unset. */
+export interface ShortcutSettings {
+  toggleMute: string | null;
+  toggleDeafen: string | null;
+  /** Shows Multicord, or hides it when it is in front. */
+  showApp: string | null;
+}
+
+export type ShortcutAction = keyof ShortcutSettings;
+
 export interface AppSettings {
   general: GeneralSettings;
   voice: VoiceSettings;
+  shortcuts: ShortcutSettings;
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
   general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto", openLinks: false, autoUpdate: true },
   voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  // Off by default: global shortcuts take keys away from every other app.
+  shortcuts: { toggleMute: null, toggleDeafen: null, showApp: null },
 };
+
+const MODIFIER = "(?:CommandOrControl|CmdOrCtrl|Control|Ctrl|Command|Cmd|Alt|Option|AltGr|Shift|Super|Meta)";
+const KEY = "(?:[A-Z0-9]|F(?:[1-9]|1[0-9]|2[0-4])|Space|Tab|Backspace|Delete|Insert|Home|End|PageUp|PageDown|Up|Down|Left|Right|Plus|[-=;',./\\[\\]`])";
+const WITH_MODIFIERS = new RegExp(`^(?:${MODIFIER}\\+){1,4}${KEY}$`);
+const LONE_KEY = /^F(?:1[3-9]|2[0-4])$/;
+
+/**
+ * A global shortcut: at least one modifier with a key, or one of F13-F24
+ * on its own, so a shortcut never swallows ordinary typing everywhere.
+ */
+export function isAccelerator(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 80 && (WITH_MODIFIERS.test(value) || LONE_KEY.test(value));
+}
+
+const SHORTCUT_KEYS: readonly ShortcutAction[] = ["toggleMute", "toggleDeafen", "showApp"];
 
 /** Device fields take null to go back to the system default. */
 export interface SettingsPatch {
   general?: Partial<GeneralSettings>;
+  shortcuts?: Partial<ShortcutSettings>;
   voice?: Partial<Record<"input" | "output" | "camera", DeviceChoice | null>> &
-    Partial<Pick<VoiceSettings, "echoCancellation" | "noiseSuppression" | "autoGainControl">>;
+    Partial<Pick<VoiceSettings, "echoCancellation" | "noiseSuppression" | "autoGainControl">> & { pushToTalk?: string | null };
 }
 
 const MAX_TEXT = 200;
@@ -134,6 +172,10 @@ export function parseSettings(raw: unknown): AppSettings {
   if (isRecord(raw.voice)) {
     for (const key of VOICE_FLAGS) if (typeof raw.voice[key] === "boolean") settings.voice[key] = raw.voice[key];
     for (const key of DEVICE_KEYS) if (isDeviceChoice(raw.voice[key])) settings.voice[key] = { ...raw.voice[key] };
+    if (isPushToTalkKey(raw.voice.pushToTalk)) settings.voice.pushToTalk = raw.voice.pushToTalk;
+  }
+  if (isRecord(raw.shortcuts)) {
+    for (const key of SHORTCUT_KEYS) if (isAccelerator(raw.shortcuts[key])) settings.shortcuts[key] = raw.shortcuts[key];
   }
   return settings;
 }
@@ -141,8 +183,14 @@ export function parseSettings(raw: unknown): AppSettings {
 /** Only known keys with the right types; anything else rejects the whole patch. */
 export function isSettingsPatch(value: unknown): value is SettingsPatch {
   if (!isRecord(value)) return false;
-  for (const key of Object.keys(value)) if (key !== "general" && key !== "voice") return false;
-  const { general, voice } = value;
+  for (const key of Object.keys(value)) if (key !== "general" && key !== "voice" && key !== "shortcuts") return false;
+  const { general, voice, shortcuts } = value;
+  if (shortcuts !== undefined) {
+    if (!isRecord(shortcuts)) return false;
+    for (const [key, v] of Object.entries(shortcuts)) {
+      if (!(SHORTCUT_KEYS as readonly string[]).includes(key) || (v !== null && !isAccelerator(v))) return false;
+    }
+  }
   if (general !== undefined) {
     if (!isRecord(general)) return false;
     for (const [key, v] of Object.entries(general)) {
@@ -156,6 +204,8 @@ export function isSettingsPatch(value: unknown): value is SettingsPatch {
         if (typeof v !== "boolean") return false;
       } else if ((DEVICE_KEYS as readonly string[]).includes(key)) {
         if (v !== null && !isDeviceChoice(v)) return false;
+      } else if (key === "pushToTalk") {
+        if (v !== null && !isPushToTalkKey(v)) return false;
       } else {
         return false;
       }
@@ -167,8 +217,9 @@ export function isSettingsPatch(value: unknown): value is SettingsPatch {
 export function applySettingsPatch(settings: AppSettings, patch: SettingsPatch): AppSettings {
   const next = structuredClone(settings);
   Object.assign(next.general, patch.general);
+  Object.assign(next.shortcuts, patch.shortcuts);
   for (const [key, value] of Object.entries(patch.voice ?? {})) {
-    if (value === null) delete next.voice[key as (typeof DEVICE_KEYS)[number]];
+    if (value === null) delete next.voice[key as (typeof DEVICE_KEYS)[number] | "pushToTalk"];
     else (next.voice as unknown as Record<string, unknown>)[key] = value;
   }
   return next;
@@ -226,6 +277,8 @@ export interface SettingsViewState {
   streaming?: boolean;
   /** App link schemes the running modules can open, e.g. ["discord"]. */
   linkSchemes?: string[];
+  /** Shortcuts another app already holds, so they could not be set. */
+  shortcutErrors?: ShortcutAction[];
   update?: UpdateStatus;
   /** The last action that could not be done, e.g. turning off the only service. */
   error?: string;

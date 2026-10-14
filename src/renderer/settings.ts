@@ -1,5 +1,5 @@
 import type { SettingsApi } from "../preload/settings";
-import { ZOOM_LEVELS, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
+import { isAccelerator, ZOOM_LEVELS, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
 import { el, initials, setColor } from "./components/dom";
 import { browserMediaEnv, playTestTone, startMeter, stopStream, type DeviceInfo, type MediaEnv, type Stop } from "./media";
 
@@ -53,6 +53,101 @@ export function switchRow(doc: Document, label: string, hint: string | undefined
   input.addEventListener("change", () => onChange(input.checked));
   row.append(text, input);
   return { row, input };
+}
+
+const KEY_NAMES: Record<string, string> = {
+  Space: "Space",
+  Tab: "Tab",
+  Backspace: "Backspace",
+  Delete: "Delete",
+  Insert: "Insert",
+  Home: "Home",
+  End: "End",
+  PageUp: "PageUp",
+  PageDown: "PageDown",
+  ArrowUp: "Up",
+  ArrowDown: "Down",
+  ArrowLeft: "Left",
+  ArrowRight: "Right",
+  Minus: "-",
+  Equal: "=",
+  Semicolon: ";",
+  Quote: "'",
+  Comma: ",",
+  Period: ".",
+  Slash: "/",
+  Backslash: "\\",
+  BracketLeft: "[",
+  BracketRight: "]",
+  Backquote: "`",
+};
+
+/** An Electron accelerator for a key press, e.g. "Ctrl+Shift+M"; undefined for a lone modifier. */
+export function acceleratorFromKey(event: { code: string; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; metaKey: boolean }): string | undefined {
+  const key = /^Key[A-Z]$/.test(event.code)
+    ? event.code.slice(3)
+    : /^Digit\d$/.test(event.code)
+      ? event.code.slice(5)
+      : /^F\d{1,2}$/.test(event.code)
+        ? event.code
+        : KEY_NAMES[event.code];
+  if (!key) return undefined;
+  const parts = [event.ctrlKey && "Ctrl", event.altKey && "Alt", event.shiftKey && "Shift", event.metaKey && "Super"].filter(Boolean) as string[];
+  return [...parts, key].join("+");
+}
+
+/**
+ * A field that records a key press: a button showing the current value,
+ * which on click waits for the next key (Escape cancels), and Clear.
+ */
+export function keyField(
+  doc: Document,
+  label: string,
+  read: (event: KeyboardEvent) => string | undefined | "invalid",
+  onSet: (value: string | null) => void,
+): { row: HTMLElement; set(value: string | null, problem?: string): void } {
+  const row = el(doc, "div", "field key-field");
+  const control = el(doc, "div", "field-control");
+  const button = el(doc, "button", "secondary key-button");
+  button.type = "button";
+  const clear = el(doc, "button", "secondary", "Clear");
+  clear.type = "button";
+  const hint = el(doc, "small", "hint key-hint");
+  let value: string | null = null;
+  const show = (): void => {
+    button.textContent = value ?? "Not set";
+    button.classList.remove("recording");
+    clear.hidden = value === null;
+  };
+  button.addEventListener("click", () => {
+    button.textContent = "Press keys…";
+    button.classList.add("recording");
+  });
+  button.addEventListener("keydown", (event) => {
+    if (!button.classList.contains("recording")) return;
+    event.preventDefault();
+    if (event.key === "Escape") return show();
+    const answer = read(event);
+    if (answer === undefined) return; // a modifier on its own: wait for the key
+    if (answer === "invalid") {
+      hint.textContent = "Use Ctrl, Alt or Shift with a key, or one of F13 to F24.";
+      return;
+    }
+    hint.textContent = "";
+    onSet(answer);
+  });
+  button.addEventListener("blur", show);
+  clear.addEventListener("click", () => onSet(null));
+  control.append(button, clear);
+  row.append(el(doc, "span", "field-label", label), control, hint);
+  return {
+    row,
+    set(next, problem) {
+      value = next;
+      hint.textContent = problem ?? "";
+      show();
+    },
+  };
 }
 
 /** What the About page says about updating. */
@@ -142,6 +237,7 @@ export class SettingsPage {
     streamingNote: HTMLElement;
     links: { row: HTMLElement; input: HTMLInputElement; label: HTMLElement };
     autoUpdate: HTMLInputElement;
+    keys: Record<ShortcutAction | "pushToTalk", { set(value: string | null, problem?: string): void }>;
     updateStatus: HTMLElement;
     checkUpdates: HTMLButtonElement;
     installUpdate: HTMLButtonElement;
@@ -280,6 +376,37 @@ export class SettingsPage {
     }
     voice.append(el(doc, "p", "hint", "Processing changes apply the next time your microphone starts."));
 
+    voice.append(
+      el(doc, "h2", undefined, "Keybinds"),
+      el(doc, "p", "hint", "System-wide shortcuts work while Multicord is in the background. Mute and deafen act on Fluxer calls and send Discord its own shortcuts."),
+    );
+    const shortcut = (action: ShortcutAction, label: string) => {
+      const field = keyField(
+        doc,
+        label,
+        (event) => {
+          const accelerator = acceleratorFromKey(event);
+          if (!accelerator) return undefined;
+          return isAccelerator(accelerator) ? accelerator : "invalid";
+        },
+        (value) => this.api.act({ type: "update", patch: { shortcuts: { [action]: value } } }),
+      );
+      voice.append(field.row);
+      return field;
+    };
+    const keys = {
+      toggleMute: shortcut("toggleMute", "Toggle mute"),
+      toggleDeafen: shortcut("toggleDeafen", "Toggle deafen"),
+      showApp: shortcut("showApp", "Show or hide Multicord"),
+      pushToTalk: keyField(
+        doc,
+        "Push to talk (while Multicord is in front)",
+        (event) => (["Control", "Alt", "Shift", "Meta"].includes(event.key) ? undefined : event.code),
+        (value) => this.update({ voice: { pushToTalk: value } }),
+      ),
+    };
+    voice.append(keys.pushToTalk.row, el(doc, "p", "hint", "With a push-to-talk key set, hold it to talk in Fluxer calls; Discord keeps its own push-to-talk setting."));
+
     // General
     const general = sections.get("general")!;
     const generalInputs = {} as SettingsPage["parts"]["general"];
@@ -383,6 +510,7 @@ export class SettingsPage {
       streamingNote,
       links: { ...links, label: links.row.querySelector<HTMLElement>(".switch-label")! },
       autoUpdate: autoUpdate.input,
+      keys,
       updateStatus,
       checkUpdates,
       installUpdate,
@@ -443,6 +571,11 @@ export class SettingsPage {
     parts.links.label.textContent = `Open ${schemes.map((scheme) => `${scheme}://`).join(", ")} links in Multicord`;
     parts.links.input.checked = general.openLinks;
     parts.autoUpdate.checked = general.autoUpdate;
+    const taken = new Set(state.shortcutErrors ?? []);
+    for (const action of ["toggleMute", "toggleDeafen", "showApp"] as const) {
+      parts.keys[action].set(state.settings.shortcuts[action], taken.has(action) ? "Another app already uses this shortcut." : undefined);
+    }
+    parts.keys.pushToTalk.set(voice.pushToTalk ?? null);
     this.renderUpdate(state.update);
     parts.general.launchAtLogin.disabled = !state.launchAtLoginSupported;
     parts.launchHint.hidden = state.launchAtLoginSupported;

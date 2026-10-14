@@ -11,6 +11,8 @@ export interface NativeApi {
   onVoiceSettings(cb: (settings: VoiceSettings) => void): void;
   /** Whether the view sits beside the unified Messages list, which replaces its sidebar. */
   onCompact(cb: (compact: boolean) => void): void;
+  /** A global voice shortcut was pressed. */
+  onVoiceCommand(cb: (command: "toggleMute" | "toggleDeafen") => void): void;
 }
 
 export function createNativeApi(ipc: PreloadIpc): NativeApi {
@@ -19,5 +21,9 @@ export function createNativeApi(ipc: PreloadIpc): NativeApi {
     act: (action) => ipc.send(NATIVE_IPC.action, action),
     onVoiceSettings: (cb) => ipc.on(SETTINGS_IPC.voice, (_event, settings) => cb(settings as VoiceSettings)),
     onCompact: (cb) => ipc.on(IPC.viewCompact, (_event, compact) => cb(compact === true)),
+    onVoiceCommand: (cb) =>
+      ipc.on(SETTINGS_IPC.voiceCommand, (_event, command) => {
+        if (command === "toggleMute" || command === "toggleDeafen") cb(command);
+      }),
   };
 }

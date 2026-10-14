@@ -4,6 +4,7 @@ import {
   app,
   BaseWindow,
   desktopCapturer,
+  globalShortcut,
   ipcMain,
   Menu,
   nativeImage,
@@ -42,6 +43,7 @@ import { PlatformRegistry } from "./registry";
 import { createDisplayMediaHandler } from "./screenShare";
 import { SettingsController } from "./settingsController";
 import { SettingsStore } from "./settingsStore";
+import { GlobalShortcuts, inputModifiers } from "./shortcuts";
 import { listProcesses, StreamerWatch } from "./streamer";
 import { Updater } from "./updater";
 import { decideWindowOpen, isPermissionAllowed } from "./sessionPolicy";
@@ -441,6 +443,7 @@ export async function createShell(
     get linkSchemes() {
       return linkSchemes;
     },
+    shortcutErrors: () => shortcutErrors,
     openService: showPlatform,
     clearSession: async (id) => {
       await session.fromPartition(`persist:${id}`).clearStorageData();
@@ -488,9 +491,30 @@ export async function createShell(
   updater.changed.on(() => {
     if (mode === "settings") settings.refresh();
   });
+
+  // Global shortcuts: voice ones go to every module that runs calls, in the way its page understands.
+  const runShortcut = (action: "toggleMute" | "toggleDeafen" | "showApp"): void => {
+    if (action === "showApp") {
+      if (window.isVisible() && window.isFocused()) window.hide();
+      else show();
+      return;
+    }
+    for (const [id, view] of views) {
+      const manifest = manifests.get(id);
+      if (manifest?.usesVoiceSettings) view.webContents.send(SETTINGS_IPC.voiceCommand, action);
+      const keys = manifest?.voiceKeys?.[action];
+      if (!keys) continue;
+      const modifiers = inputModifiers(keys, platform);
+      view.webContents.sendInputEvent({ type: "keyDown", keyCode: keys.keyCode, modifiers });
+      view.webContents.sendInputEvent({ type: "keyUp", keyCode: keys.keyCode, modifiers });
+    }
+  };
+  const shortcuts = new GlobalShortcuts(globalShortcut, runShortcut);
+  let shortcutErrors = shortcuts.apply(settingsStore.get().shortcuts);
   updater.setAutomatic(general().autoUpdate);
 
   settingsStore.changed.on(({ settings: next, patch }) => {
+    if (patch.shortcuts) shortcutErrors = shortcuts.apply(next.shortcuts);
     if (patch.general?.autoUpdate !== undefined) updater.setAutomatic(next.general.autoUpdate);
     if (patch.general?.openLinks !== undefined) registerLinks(next.general.openLinks);
     if (patch.general?.railGrouping !== undefined) registry.setGrouping(next.general.railGrouping);
@@ -698,6 +722,7 @@ export function startApp(dist: string): void {
   });
   app.on("activate", () => handle?.show());
   app.on("before-quit", () => handle?.setQuitting());
+  app.on("will-quit", () => globalShortcut.unregisterAll());
 
   void app.whenReady().then(async () => {
     installHardening();

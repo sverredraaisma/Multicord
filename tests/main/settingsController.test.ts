@@ -107,6 +107,11 @@ describe("settings state", () => {
     await bare.handle({ type: "installUpdate" });
   });
 
+  it("reports shortcuts another app holds", () => {
+    expect(controller({}, { shortcutErrors: () => ["toggleMute"] }).settings.state().shortcutErrors).toEqual(["toggleMute"]);
+    expect(controller({}, { shortcutErrors: () => [] }).settings.state()).not.toHaveProperty("shortcutErrors");
+  });
+
   it("lists the app link schemes the modules open", () => {
     expect(controller({}, { linkSchemes: ["discord"] }).settings.state().linkSchemes).toEqual(["discord"]);
     expect(controller({}, { linkSchemes: [] }).settings.state()).not.toHaveProperty("linkSchemes");

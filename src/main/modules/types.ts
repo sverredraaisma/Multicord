@@ -2,6 +2,7 @@ import type { BaseWindow, Session, WebContentsView } from "electron";
 import type { PlatformAdapter } from "../../shared/adapter";
 import type { SecretBox, SecretStore } from "../credentials";
 import type { PlatformDef } from "../platforms";
+import type { PageKeys } from "../shortcuts";
 
 /** Describes a platform module; the rail shows `label` in `color` next to its servers. */
 export interface ModuleManifest {
@@ -21,6 +22,8 @@ export interface ModuleManifest {
   preload?: string;
   /** URL schemes the module opens (e.g. "discord"), when the user lets Multicord handle them. */
   protocols?: string[];
+  /** Keys the module's own page uses for mute and deafen, sent to it when the global shortcuts fire. */
+  voiceKeys?: Partial<Record<"toggleMute" | "toggleDeafen", PageKeys>>;
   /**
    * Native modules: the engine bundle (dist/engines/<engine>.js) that runs
    * the module's logic in a sandboxed engine, and the view it renders in.

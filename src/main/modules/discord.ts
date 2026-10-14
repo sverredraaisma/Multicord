@@ -16,6 +16,11 @@ export const discordModule: PlatformModule = {
     fixedUrl: true,
     preload: "preload-discord.js",
     protocols: ["discord"],
+    // Discord's own default keybinds for mute and deafen.
+    voiceKeys: {
+      toggleMute: { keyCode: "M", modifiers: ["commandOrControl", "shift"] },
+      toggleDeafen: { keyCode: "D", modifiers: ["commandOrControl", "shift"] },
+    },
   },
   load({ def, view, enableScreenShare }) {
     const adapter = new DiscordAdapter(

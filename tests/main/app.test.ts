@@ -1159,3 +1159,37 @@ describe("Discord notifications", () => {
     expect(electron.Notification.instances[1]!.options).toEqual({ title: "New message", body: "On Discord" });
   });
 });
+
+describe("global shortcuts", () => {
+  it("registers the user's shortcuts and routes them to calls and the window", async () => {
+    electron.globalShortcut.taken.add("Ctrl+Shift+D");
+    const { handle, window, discordView } = await shellWith();
+    const fluxerView = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    expect(electron.globalShortcut.register).not.toHaveBeenCalled(); // none set by default
+    handle.settingsStore.update({ shortcuts: { toggleMute: "Ctrl+Shift+M", toggleDeafen: "Ctrl+Shift+D", showApp: "F13" } });
+    expect(handle.settings.state().shortcutErrors).toEqual(["toggleDeafen"]);
+
+    electron.globalShortcut.callbacks.get("Ctrl+Shift+M")!();
+    expect(fluxerView.webContents.send).toHaveBeenCalledWith(SETTINGS_IPC.voiceCommand, "toggleMute");
+    expect(discordView.webContents.sendInputEvent.mock.calls).toEqual([
+      [{ type: "keyDown", keyCode: "M", modifiers: ["control", "shift"] }],
+      [{ type: "keyUp", keyCode: "M", modifiers: ["control", "shift"] }],
+    ]);
+
+    window.isFocused.mockReturnValue(true);
+    electron.globalShortcut.callbacks.get("F13")!();
+    expect(window.hide).toHaveBeenCalled();
+    window.isFocused.mockReturnValue(false);
+    electron.globalShortcut.callbacks.get("F13")!();
+    expect(window.show).toHaveBeenCalled();
+
+    handle.settingsStore.update({ shortcuts: { toggleMute: null } });
+    expect(electron.globalShortcut.callbacks.has("Ctrl+Shift+M")).toBe(false);
+  });
+
+  it("drops every shortcut when the app quits", () => {
+    startApp(DIST);
+    app.emit("will-quit");
+    expect(electron.globalShortcut.unregisterAll).toHaveBeenCalled();
+  });
+});

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { PlatformAdapter } from "../shared/adapter";
-import type { ModuleInfo, ServiceInfo, SettingsAction, SettingsViewState, UpdateStatus } from "../shared/settings";
+import type { ModuleInfo, ServiceInfo, SettingsAction, SettingsViewState, ShortcutAction, UpdateStatus } from "../shared/settings";
 import { configurableModules } from "./modules/index";
 import type { PlatformModule } from "./modules/types";
 import { loadPlatforms } from "./platforms";
@@ -22,6 +22,8 @@ export interface SettingsDeps {
   streaming?(): boolean;
   /** App link schemes the running modules can open. */
   linkSchemes?: string[];
+  /** Shortcuts another app already holds. */
+  shortcutErrors?(): ShortcutAction[];
   updates?: { status: UpdateStatus; check(): Promise<void>; install(): void };
   /** Shows a running service, e.g. to sign in. */
   openService(id: string): void;
@@ -123,6 +125,8 @@ export class SettingsController {
     if (this.deps.streaming?.()) state.streaming = true;
     if (this.deps.linkSchemes?.length) state.linkSchemes = this.deps.linkSchemes;
     if (this.deps.updates) state.update = this.deps.updates.status;
+    const shortcutErrors = this.deps.shortcutErrors?.() ?? [];
+    if (shortcutErrors.length > 0) state.shortcutErrors = shortcutErrors;
     if (this.error) state.error = this.error;
     return state;
   }
