@@ -30,7 +30,7 @@ import {
   type PickerChoice,
   type PickerRequest,
 } from "../shared/ipc";
-import type { ActivityUpdate, PlatformAdapter, PlatformNotification } from "../shared/adapter";
+import type { ActivityUpdate, HealthCheck, PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
 import { isSettingsAction, serviceSettings, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
@@ -44,6 +44,7 @@ import { PlatformRegistry } from "./registry";
 import { createDisplayMediaHandler } from "./screenShare";
 import { SettingsController } from "./settingsController";
 import { SettingsStore } from "./settingsStore";
+import { HealthWatch } from "./healthWatch";
 import { GlobalPushToTalk, loadKeyHook } from "./pushToTalk";
 import { createRichPresence } from "./richPresence";
 import { createGameDetector, DETECTED_SOURCE } from "./gameDetection";
@@ -700,6 +701,33 @@ export async function createShell(
       notify(id, { title: "Incoming call", body: `${call.from} is calling you on ${name}`, target: call.conversationKey, railKey: `dm:${call.conversationKey}` }, true);
     });
   }
+
+  // Integration points that stop working (e.g. Discord's hooks after a Discord update) are reported once.
+  const healthWatch = new HealthWatch({
+    checks: () => {
+      const all = new Map<string, { signedIn: boolean; checks: HealthCheck[] }>();
+      for (const [id, adapter] of adapters) {
+        const checks = adapter.health?.() ?? [];
+        if (checks.length > 0) all.set(id, { signedIn: adapter.accountStatus?.().state === "signed-in", checks });
+      }
+      return all;
+    },
+    onBroken: (id, broken) => {
+      const name = platforms.find((p) => p.id === id)?.name ?? id;
+      console.warn(`[${id}] stopped working: ${broken.map((c) => c.name).join(", ")}`);
+      if (!notificationsOn(id) || !Notification.isSupported()) return;
+      const note = new Notification({ title: `Part of ${name} stopped working`, body: `${broken.map((c) => c.name).join(", ")}. Settings > Diagnostics has the details.` });
+      shownNotifications.add(note);
+      note.on("close", () => shownNotifications.delete(note));
+      note.on("click", () => {
+        shownNotifications.delete(note);
+        show();
+        setSettingsOpen(true);
+      });
+      note.show();
+    },
+  });
+  healthWatch.start();
 
   const tray = new Tray(nativeImage.createFromPath(path.join(paths.dist, "icon.png")));
   tray.setToolTip(APP_NAME);

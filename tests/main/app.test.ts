@@ -43,6 +43,16 @@ vi.mock("../../src/main/gameDetection", async (importOriginal) => ({
     return { start: detector.start, stop: detector.stop };
   },
 }));
+// The health watch's timer must not run in tests; they call its parts directly.
+const health = vi.hoisted(() => ({ deps: undefined as undefined | import("../../src/main/healthWatch").HealthWatchDeps }));
+vi.mock("../../src/main/healthWatch", () => ({
+  HealthWatch: class {
+    constructor(deps: import("../../src/main/healthWatch").HealthWatchDeps) {
+      health.deps = deps;
+    }
+    start() {}
+  },
+}));
 // Rich Presence must not open the real discord-ipc pipes in tests.
 const rpc = vi.hoisted(() => ({
   onActivity: undefined as undefined | ((update: unknown) => void),
@@ -1312,5 +1322,33 @@ describe("push to talk in the background", () => {
     handle.settingsStore.update({ voice: { pushToTalkGlobal: false } });
     expect(keyHook.listeners.size).toBe(0);
     app.emit("will-quit");
+  });
+});
+
+describe("health watch", () => {
+  it("collects services' checks and tells the user when one breaks", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { handle, window } = await shellWith();
+    const discord = handle.adapters.get("discord")!;
+    vi.spyOn(discord, "health").mockReturnValue([{ name: "Server list", ok: false }]);
+    const checks = health.deps!.checks();
+    expect(checks.get("discord")).toEqual({ signedIn: false, checks: [{ name: "Server list", ok: false }] });
+    expect(checks.has("fluxer")).toBe(true); // engines report theirs too
+
+    health.deps!.onBroken("discord", [{ name: "Server list", ok: false }]);
+    expect(warn).toHaveBeenCalledWith("[discord] stopped working: Server list");
+    const note = electron.Notification.instances.at(-1)!;
+    expect(note.options).toEqual({ title: "Part of Discord stopped working", body: "Server list. Settings > Diagnostics has the details." });
+    note.emit("click");
+    expect(window.show).toHaveBeenCalled();
+    expect(handle.settings.state()).toBeDefined();
+    note.emit("close");
+
+    handle.settingsStore.update({ services: { discord: { notifications: false } } });
+    const before = electron.Notification.instances.length;
+    health.deps!.onBroken("discord", [{ name: "Server list", ok: false }]);
+    health.deps!.onBroken("gone", [{ name: "X", ok: false }]);
+    expect(electron.Notification.instances.length).toBe(before + 1);
+    expect(electron.Notification.instances.at(-1)!.options).toMatchObject({ title: "Part of gone stopped working" });
   });
 });
