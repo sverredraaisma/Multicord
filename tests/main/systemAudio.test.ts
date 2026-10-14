@@ -49,7 +49,8 @@ describe("SystemAudio", () => {
     });
     expect(new SystemAudio(() => broken.venmic, () => []).available()).toBe(false);
     new SystemAudio(() => undefined, () => []).stop(); // nothing to stop
-    // Not installed here (venmic ships for Linux only).
-    expect(loadVenmic()).toBeUndefined();
+    // venmic installs on Linux only.
+    if (process.platform === "linux") expect(typeof loadVenmic()?.PatchBay).toBe("function");
+    else expect(loadVenmic()).toBeUndefined();
   });
 });
