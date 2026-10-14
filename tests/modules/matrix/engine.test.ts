@@ -45,6 +45,8 @@ describe("Matrix engine", () => {
       "https://x.org/_matrix/client/v1/auth_metadata",
       "https://x.org/_matrix/client/unstable/org.matrix.msc2965/auth_metadata",
       "https://x.org/_matrix/client/unstable/org.matrix.msc2965/auth_issuer",
+      // The call services the server names, so the host lock can include them.
+      "https://x.org/.well-known/matrix/client",
     ]);
     expect(bridge.render).toHaveBeenLastCalledWith(expect.objectContaining({ screen: "prompt", platform: "Matrix", prompt: expect.objectContaining({ id: "login" }) }));
     expect(bridge.emit).toHaveBeenCalledWith({ type: "account", account: { state: "signed-out" } });
@@ -57,6 +59,8 @@ describe("Matrix engine", () => {
     const api = {
       check: vi.fn(async () => {}),
       sync: vi.fn(() => new Promise(() => {})),
+      rtcFoci: vi.fn(async () => []),
+      rtcTransports: vi.fn(async () => []),
     } as unknown as MatrixApi;
     const createApi = vi.fn(() => api);
     await startMatrixEngine(bridge, { createApi });
@@ -71,7 +75,7 @@ describe("Matrix engine", () => {
 describe("Matrix engine wiring", () => {
   it("passes encryption on, and lets the client refresh OAuth tokens through the adapter", async () => {
     const { bridge } = fakeBridge({ session: SESSION });
-    const api = { check: vi.fn(async () => {}), sync: vi.fn(() => new Promise(() => {})) } as unknown as MatrixApi;
+    const api = { check: vi.fn(async () => {}), sync: vi.fn(() => new Promise(() => {})), rtcFoci: vi.fn(async () => []), rtcTransports: vi.fn(async () => []) } as unknown as MatrixApi;
     let options: MatrixClientOptions | undefined;
     const createApi = vi.fn((_fetch: typeof fetch, o: MatrixClientOptions) => ((options = o), api));
     const oauth = { discover: vi.fn() } as unknown as MatrixOAuth;
@@ -98,7 +102,7 @@ describe("Matrix host lock", () => {
       return original(request);
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const api = { check: vi.fn(async () => {}), sync: vi.fn(() => new Promise(() => {})) } as unknown as MatrixApi;
+    const api = { check: vi.fn(async () => {}), sync: vi.fn(() => new Promise(() => {})), rtcFoci: vi.fn(async () => []), rtcTransports: vi.fn(async () => []) } as unknown as MatrixApi;
     await startMatrixEngine(bridge, { createApi: () => api });
     expect(api.check).toHaveBeenCalled();
     warn.mockRestore();

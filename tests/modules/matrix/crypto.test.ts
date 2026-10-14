@@ -1,7 +1,7 @@
-import { BackupDecryptionKey, DecryptionErrorCode, DeviceId, initAsync, MegolmDecryptionError, OlmMachine, RequestType, RoomMessageRequest, ShieldColor, UserId } from "@matrix-org/matrix-sdk-crypto-wasm";
+import { BackupDecryptionKey, DecryptionErrorCode, DeviceId, initAsync, MegolmDecryptionError, OlmMachine, ProcessedToDeviceEventType, RequestType, RoomMessageRequest, ShieldColor, UserId } from "@matrix-org/matrix-sdk-crypto-wasm";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { MxEncryptedEvent } from "../../../src/modules/matrix/api";
-import { decryptBackedUpKey, decryptionProblem, deleteCryptoStore, openE2ee, STORE_SUFFIXES, type CryptoHttp, type MatrixE2ee } from "../../../src/modules/matrix/crypto";
+import { decryptBackedUpKey, decryptionProblem, deleteCryptoStore, MatrixE2ee, openE2ee, STORE_SUFFIXES, type CryptoHttp } from "../../../src/modules/matrix/crypto";
 import { decodeRecoveryKey, encodeRecoveryKey, encryptBytes, encryptSecret, keyFromPassphrase, SECRET_STORAGE_ALGORITHM } from "../../../src/modules/matrix/recovery";
 import { parseEvent } from "../../../src/modules/matrix/events";
 import { FakeHomeserver } from "./fakeHomeserver";
@@ -496,5 +496,101 @@ describe("crypto edge cases", () => {
     server.failNext = { path: "/v3/room_keys/version", error: "offline" as unknown as Error };
     await old.e2ee.loadBackup();
     expect(log).toHaveBeenCalledWith("Key backup not checked: offline");
+  });
+});
+
+describe("encrypted to-device messages", () => {
+  const TYPE = "io.element.call.encryption_keys";
+
+  it("sends a message Olm-encrypted, and the other side learns which device sent it", async () => {
+    const server = new FakeHomeserver();
+    const alice = await device(server, ALICE, "ALICEDEV");
+    const bob = await device(server, BOB, "BOBDEV");
+    const received = vi.fn();
+    bob.onToDevice(TYPE, received);
+    await alice.sendToDevices(TYPE, [{ userId: BOB, deviceId: "BOBDEV" }, { userId: BOB, deviceId: "GONE" }, { userId: "not a user", deviceId: "X" }], { room_id: ROOM, n: 1 });
+    // Only the encrypted copy went out, to the device that exists.
+    const sent = server.calls.filter((c) => c.path.startsWith("/v3/sendToDevice/"));
+    expect(sent.map((c) => c.path)).toEqual([expect.stringMatching(/^\/v3\/sendToDevice\/m\.room\.encrypted\//)]);
+    await bob.receiveSync(server.sync(BOB, "BOBDEV"));
+    expect(received).toHaveBeenCalledWith({ userId: ALICE, deviceId: "ALICEDEV", content: { room_id: ROOM, n: 1 } });
+
+    // Bob knows Alice's device now; a second message names it at once.
+    await alice.sendToDevices(TYPE, [{ userId: BOB, deviceId: "BOBDEV" }], { room_id: ROOM, n: 2 });
+    await bob.receiveSync(server.sync(BOB, "BOBDEV"));
+    expect(received).toHaveBeenLastCalledWith({ userId: ALICE, deviceId: "ALICEDEV", content: { room_id: ROOM, n: 2 } });
+  });
+
+  it("drops messages sent in the clear, of other types, or from a device it cannot find", async () => {
+    const server = new FakeHomeserver();
+    const alice = await device(server, ALICE, "ALICEDEV");
+    const log = vi.fn();
+    const bob = await openE2ee({ userId: BOB, deviceId: "BOBDEV", http: server.http(BOB, "BOBDEV"), accountData: server.account(BOB), log });
+    await bob.receiveSync(server.sync(BOB, "BOBDEV"));
+    const received = vi.fn();
+    bob.onToDevice(TYPE, received);
+    server.deliver(BOB, "BOBDEV", { type: TYPE, sender: ALICE, content: { room_id: ROOM } });
+    await alice.sendToDevices("m.other", [{ userId: BOB, deviceId: "BOBDEV" }], { a: 1 });
+    await bob.receiveSync(server.sync(BOB, "BOBDEV"));
+    expect(received).not.toHaveBeenCalled();
+  });
+
+  /** A crypto state over a stand-in machine that decrypts one to-device event, naming no device. */
+  function withDecrypted(rawEvent: string, devices: { deviceId: string; key?: string }[]) {
+    const http = vi.fn(async (): Promise<Record<string, unknown>> => ({}));
+    const machine = {
+      registerRoomKeyUpdatedCallback: vi.fn(),
+      registerReceiveSecretCallback: vi.fn(),
+      receiveSyncChanges: vi.fn(async () => [
+        { type: ProcessedToDeviceEventType.Decrypted, rawEvent, encryptionInfo: { sender: new UserId(ALICE), senderDevice: undefined, senderCurve25519Key: "KEY-A" } },
+      ]),
+      outgoingRequests: vi.fn(async () => []),
+      updateTrackedUsers: vi.fn(async () => {}),
+      queryKeysForUsers: vi.fn(() => ({ id: undefined, type: RequestType.KeysQuery, body: "{}" })),
+      getUserDevices: vi.fn(async () => ({
+        devices: () => devices.map((d) => ({ deviceId: new DeviceId(d.deviceId), curve25519Key: d.key ? { toBase64: () => d.key } : undefined })),
+      })),
+    };
+    const log = vi.fn();
+    const e2ee = new MatrixE2ee(machine as unknown as OlmMachine, { userId: BOB, deviceId: "BOBDEV", http, accountData: async () => undefined, log });
+    const received = vi.fn();
+    e2ee.onToDevice(TYPE, received);
+    const sync = { toDevice: "[]", changed: [], left: [], oneTimeKeys: {} };
+    return { e2ee, machine, http, log, received, sync };
+  }
+
+  it("looks a sender's device up by its key when the library does not name it", async () => {
+    const ctx = withDecrypted(JSON.stringify({ type: TYPE, sender: ALICE, content: { a: 1 } }), [{ deviceId: "OTHER" }, { deviceId: "ALICEDEV", key: "KEY-A" }]);
+    await ctx.e2ee.receiveSync(ctx.sync);
+    expect(ctx.http).toHaveBeenCalledWith("POST", "/v3/keys/query", {});
+    expect(ctx.received).toHaveBeenCalledWith({ userId: ALICE, deviceId: "ALICEDEV", content: { a: 1 } });
+  });
+
+  it("drops a message from a device it cannot find, and malformed or unwanted ones", async () => {
+    const unknown = withDecrypted(JSON.stringify({ type: TYPE, sender: ALICE, content: {} }), [{ deviceId: "ALICEDEV", key: "KEY-B" }]);
+    await unknown.e2ee.receiveSync(unknown.sync);
+    expect(unknown.received).not.toHaveBeenCalled();
+    expect(unknown.log).toHaveBeenCalledWith(`Dropped ${TYPE} from an unknown device`);
+    for (const raw of [JSON.stringify({ type: TYPE, content: "x" }), JSON.stringify({ content: {} }), "[]", JSON.stringify({ type: "m.other", content: {} })]) {
+      const ctx = withDecrypted(raw, []);
+      await ctx.e2ee.receiveSync(ctx.sync);
+      expect(ctx.received).not.toHaveBeenCalled();
+      expect(ctx.machine.getUserDevices).not.toHaveBeenCalled();
+    }
+  });
+
+  it("skips devices it cannot encrypt for, and sends nothing when none is left", async () => {
+    const server = new FakeHomeserver();
+    const log = vi.fn();
+    const alice = await openE2ee({ userId: ALICE, deviceId: "ALICEDEV", http: server.http(ALICE, "ALICEDEV"), accountData: server.account(ALICE), log });
+    await alice.receiveSync(server.sync(ALICE, "ALICEDEV"));
+    await device(server, BOB, "BOBDEV");
+    // Bob's device has no one-time or fallback keys left: no Olm session can be made.
+    const bob = server.devices.get(BOB)!.get("BOBDEV")!;
+    bob.oneTimeKeys.clear();
+    bob.fallbackKeys.clear();
+    await alice.sendToDevices(TYPE, [{ userId: BOB, deviceId: "BOBDEV" }], { a: 1 });
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/^Not sent to a device: /));
+    expect(server.calls.some((c) => c.path.startsWith("/v3/sendToDevice/"))).toBe(false);
   });
 });

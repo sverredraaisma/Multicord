@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   applyState,
+  CALL_MEMBERSHIP_EXPIRY_MS,
+  CALL_MEMBER_TYPE,
+  liveKitServices,
+  MAX_CALL_MEMBERS,
+  parseCallMember,
+  serviceUrl,
   cleanName,
   emptyState,
   eventId,
@@ -335,5 +341,102 @@ describe("rooms without counts", () => {
   it("leaves unread counts out when the server sends none", () => {
     const sync = parseSync({ next_batch: "s", rooms: { join: { "!r:x.org": { timeline: { events: [] } } } } });
     expect(sync.joined[0]).not.toHaveProperty("unread");
+  });
+});
+
+describe("call memberships", () => {
+  const member = (content: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    type: CALL_MEMBER_TYPE,
+    state_key: "_@ana:x.org_ANADEV_m.call",
+    sender: "@ana:x.org",
+    origin_server_ts: 5000,
+    event_id: "$m1",
+    content,
+    ...extra,
+  });
+  const joined = {
+    application: "m.call",
+    call_id: "",
+    scope: "m.room",
+    device_id: "ANADEV",
+    expires: 3600_000,
+    focus_active: { type: "livekit", focus_selection: "multi_sfu" },
+    foci_preferred: [{ type: "other" }, { type: "livekit", livekit_service_url: "https://jwt.call.x.org/" }],
+    "m.call.intent": "video",
+  };
+
+  it("reads a device's membership: its sender, device, times and call service", () => {
+    expect(parseCallMember(member(joined))).toEqual({
+      stateKey: "_@ana:x.org_ANADEV_m.call",
+      member: { user: "@ana:x.org", deviceId: "ANADEV", createdTs: 5000, expiresAt: 3605_000, focus: "https://jwt.call.x.org", intent: "video" },
+    });
+    // A renewal keeps the start time; without `expires` Element Call's four hours apply, and at most a week.
+    const renewed = parseCallMember(member({ ...joined, created_ts: 1000, expires: undefined, foci_preferred: undefined, "m.call.intent": "" }))!.member!;
+    expect(renewed).toEqual({ user: "@ana:x.org", deviceId: "ANADEV", createdTs: 1000, expiresAt: 1000 + CALL_MEMBERSHIP_EXPIRY_MS });
+    expect(parseCallMember(member({ ...joined, expires: 1e12 }))!.member!.expiresAt).toBe(5000 + 7 * 24 * 3600_000);
+  });
+
+  it("counts left, malformed and other calls as no membership", () => {
+    const none = (content: Record<string, unknown>, extra: Record<string, unknown> = {}) => expect(parseCallMember(member(content, extra))).toEqual({ stateKey: "_@ana:x.org_ANADEV_m.call", member: null });
+    none({});
+    none({ memberships: [] }); // the deprecated form
+    none({ ...joined, application: "m.other" });
+    none({ ...joined, call_id: "breakout" });
+    none({ ...joined, scope: "m.user" });
+    none({ ...joined, device_id: "" });
+    none({ ...joined, device_id: "x".repeat(256) });
+    none({ ...joined, focus_active: undefined });
+    none({ ...joined, focus_active: { type: 1 } });
+    none({ ...joined, created_ts: -1 });
+    none({ ...joined, expires: 0 });
+    none({ ...joined, expires: Number.POSITIVE_INFINITY });
+    none(joined, { sender: "ana" });
+    none(joined, { origin_server_ts: "late" });
+    none(joined, { content: "nope" });
+  });
+
+  it("ignores other events", () => {
+    expect(parseCallMember(member(joined, { type: "m.room.member" }))).toBeUndefined();
+    expect(parseCallMember(member(joined, { state_key: undefined }))).toBeUndefined();
+    expect(parseCallMember(member(joined, { state_key: "k".repeat(601) }))).toBeUndefined();
+    expect(parseCallMember("x")).toBeUndefined();
+  });
+
+  it("checks call service URLs", () => {
+    expect(serviceUrl("https://jwt.x.org/livekit/jwt//")).toBe("https://jwt.x.org/livekit/jwt");
+    for (const bad of ["http://jwt.x.org", "https://u:p@jwt.x.org", "https://jwt.x.org/?a=1", "https://jwt.x.org/#a", "nope", 5, `https://x.org/${"a".repeat(2048)}`]) expect(serviceUrl(bad)).toBeUndefined();
+    expect(liveKitServices([{ type: "livekit", livekit_service_url: "https://a.x.org" }, { type: "livekit", livekit_service_url: "https://a.x.org/" }, { type: "livekit" }, null, { type: "livekit", livekit_service_url: "https://b.x.org" }])).toEqual([
+      "https://a.x.org",
+      "https://b.x.org",
+    ]);
+    expect(liveKitServices("x")).toEqual([]);
+  });
+
+  it("collects membership changes from a sync's state and timeline, the last one per state key winning", () => {
+    const sync = parseSync({
+      next_batch: "n",
+      rooms: {
+        join: {
+          "!r:x.org": {
+            state: { events: [member(joined), member(joined, { state_key: "__proto__", sender: "@bo:x.org" })] },
+            timeline: { events: [member({}), ev()] },
+          },
+          "!quiet:x.org": { timeline: { events: [ev()] } },
+        },
+      },
+    });
+    const [room, quiet] = sync.joined;
+    expect(room!.calls).toEqual(new Map([["_@ana:x.org_ANADEV_m.call", null], ["__proto__", expect.objectContaining({ user: "@bo:x.org" })]]));
+    expect(room!.timeline).toHaveLength(1);
+    expect(quiet!.calls).toBeUndefined();
+  });
+
+  it("keeps a bounded number of state keys per room", () => {
+    const events = Array.from({ length: MAX_CALL_MEMBERS * 2 + 5 }, (_, i) => member(joined, { state_key: `k${i}` }));
+    const sync = parseSync({ next_batch: "n", rooms: { join: { "!r:x.org": { state: { events }, timeline: { events: [member({}, { state_key: "k0" })] } } } } });
+    const calls = sync.joined[0]!.calls!;
+    expect(calls.size).toBe(MAX_CALL_MEMBERS * 2);
+    // Known keys still update.
+    expect(calls.get("k0")).toBeNull();
   });
 });

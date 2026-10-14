@@ -1,8 +1,28 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import { MatrixError, type MatrixApi, type MxCryptoSync, type MxEncryptedEvent, type MxEncryption, type MxEvent, type MxOAuthSession, type MxPage, type MxRoomUpdate, type MxSession, type MxSync } from "../../../src/modules/matrix/api";
+import type { DirectConversation, IncomingCall, PlatformNotification } from "../../../src/shared/adapter";
+import {
+  MatrixError,
+  type MatrixApi,
+  type MxCryptoSync,
+  type MxEncryptedEvent,
+  type MxEncryption,
+  type MxCallMember,
+  type MxEvent,
+  type MxLiveKitGrant,
+  type MxOAuthSession,
+  type MxOpenIdToken,
+  type MxPage,
+  type MxRoomUpdate,
+  type MxSession,
+  type MxSync,
+} from "../../../src/modules/matrix/api";
 import {
   ALGORITHM_NOTICE,
+  CALL_JOIN_TIMEOUT_MS,
+  ENCRYPTED_CALL_NOTICE,
+  OTHER_SERVER_LABEL,
+  RING_WINDOW_MS,
+  TOKEN_CALL_NOTICE,
   AVATAR_LIMIT,
   ENCRYPTED_NOTICE,
   ENCRYPTED_TEXT,
@@ -16,7 +36,7 @@ import {
   TOKEN_NOTICE,
   UNVERIFIED_LABEL,
 } from "../../../src/modules/matrix/adapter";
-import type { E2ee, E2eeOptions, E2eeStatus, RecoveryResult, RoomEncryption } from "../../../src/modules/matrix/crypto";
+import type { DeviceRef, E2ee, E2eeOptions, E2eeStatus, RecoveryResult, RoomEncryption, SecureToDevice } from "../../../src/modules/matrix/crypto";
 import type { Verification, VerificationState } from "../../../src/modules/matrix/verification";
 import { OAuthError, type DeviceGrant, type DevicePoll, type OAuthServer, type OAuthTokens } from "../../../src/modules/matrix/oauth";
 import { MAX_DIRECTS } from "../../../src/shared/engine";
@@ -28,6 +48,7 @@ const ANA = "@ana:x.org";
 const BASE = "https://hs.x.org";
 const SESSION: MxSession = { baseUrl: BASE, accessToken: "tok", userId: ME, deviceId: "D", ownDevice: true };
 const SESSION_JSON = JSON.stringify(SESSION);
+const OPENID: MxOpenIdToken = { access_token: "oid", token_type: "Bearer", matrix_server_name: "x.org", expires_in: 3600 };
 
 const flush = async () => {
   for (let i = 0; i < 500; i++) await Promise.resolve();
@@ -95,6 +116,14 @@ class FakeMatrixApi implements MatrixApi {
   markRead = vi.fn(async (_s: MxSession, _room: string, _id: string) => {});
   thumbnail = vi.fn(async (_s: MxSession, _mxc: string): Promise<string | undefined> => undefined);
   logout = vi.fn(async (_s: MxSession) => {});
+  rtcFoci = vi.fn(async (_url: string): Promise<string[]> => []);
+  rtcTransports = vi.fn(async (_s: MxSession): Promise<string[]> => []);
+  supports = vi.fn(async (_s: MxSession, _feature: string) => false);
+  openIdToken = vi.fn(async (_s: MxSession): Promise<MxOpenIdToken> => OPENID);
+  sendState = vi.fn(async (_s: MxSession, _room: string, _type: string, _key: string, _content: Record<string, unknown>) => `$state${this.sendState.mock.calls.length}`);
+  sendDelayedState = vi.fn(async (_s: MxSession, _room: string, _type: string, _key: string, _content: Record<string, unknown>, _delay: number) => "delay1");
+  updateDelayed = vi.fn(async (_s: MxSession, _id: string, _action: "restart" | "send" | "cancel") => {});
+  liveKitGrant = vi.fn(async (_url: string, _room: string, _device: string, _token: MxOpenIdToken): Promise<MxLiveKitGrant> => ({ url: "wss://sfu.call.x.org", jwt: "jwt1" }));
 
   /** Answers the pending (or next) /sync. */
   push(next: MxSync | Error): void {
@@ -1397,6 +1426,9 @@ class FakeE2ee implements E2ee {
   requestVerification = vi.fn(async (): Promise<Verification> => this.outgoing);
   onVerification = vi.fn((callback: (verification: Verification) => void) => void (this.requested = callback));
   onStatus = vi.fn((callback: () => void) => void (this.statusChanged = callback));
+  sendToDevices = vi.fn(async (_type: string, _targets: DeviceRef[], _content: Record<string, unknown>) => {});
+  toDevice = new Map<string, (event: SecureToDevice) => void>();
+  onToDevice = vi.fn((type: string, callback: (event: SecureToDevice) => void) => void this.toDevice.set(type, callback));
   close = vi.fn();
 }
 
@@ -2118,5 +2150,512 @@ describe("decrypting again", () => {
     ctx.e2ee.keys(["S1"]);
     await flush();
     expect(ctx.e2ee.decrypt.mock.calls.map(([, e]) => e.id)).toEqual(["$c2"]);
+  });
+});
+
+// --- Calls ------------------------------------------------------------------------------
+
+const FOCUS = "https://jwt.call.x.org";
+const callMember = (user: string, deviceId: string, extra: Partial<MxCallMember> = {}): MxCallMember => ({ user, deviceId, createdTs: Date.now(), expiresAt: Date.now() + 3_600_000, focus: FOCUS, ...extra });
+const BO_KEY = "_@bo:x.org_BD_m.call";
+const MY_KEY = "_@me:x.org_D_m.call";
+const callSync = (roomId: string, ...entries: [string, MxCallMember | null][]) => sync({ joined: [room(roomId, { calls: new Map(entries) })] });
+
+/** A signed-in adapter whose homeserver names a call service. */
+async function withCalls(options: { session?: MxSession; lock?: boolean; secrets?: Record<string, string>; first?: MxSync } = {}) {
+  const lockHosts = vi.fn(async (_hosts: string[]) => {});
+  const log = vi.fn();
+  const ctx = setup({ session: JSON.stringify(options.session ?? SESSION), ...options.secrets }, false, { log, ...(options.lock ? { lockHosts } : {}) });
+  ctx.api.rtcFoci.mockResolvedValue([FOCUS]);
+  const calls: IncomingCall[] = [];
+  ctx.adapter.onIncomingCall((call) => calls.push(call));
+  ctx.api.push(options.first ?? initialSync());
+  await ctx.adapter.start();
+  await flush();
+  const callItem = (name: string) => ctx.chat().sidebar.find((i) => i.kind === "voice" && i.name === name);
+  const join = async (name: string) => {
+    await ctx.act({ type: "joinVoice", channelId: callItem(name)!.id });
+    await flush();
+  };
+  /** Starts joining without waiting for it to finish. */
+  const begin = async (name: string) => {
+    const joining = ctx.act({ type: "joinVoice", channelId: callItem(name)!.id });
+    await flush();
+    return joining;
+  };
+  const voice = () => ctx.chat().voice;
+  return { ...ctx, lockHosts, log, calls, callItem, join, begin, voice };
+}
+
+const anyCall = (state: NativeViewState) => (state.screen === "chat" ? state.sidebar.find((i) => i.kind === "voice")!.id : "");
+
+describe("call services and the host lock", () => {
+  it("looks up the call services before locking, and allows them and known LiveKit servers", async () => {
+    const lockHosts = vi.fn(async (_hosts: string[]) => {});
+    const ctx = setup({ session: SESSION_JSON, rtc: JSON.stringify({ foci: ["https://old.x.org"], sfu: ["sfu.call.x.org", "Bad_Host!", 5] }) }, false, { lockHosts });
+    ctx.api.rtcTransports.mockResolvedValue(["https://mrtc.x.org/livekit/jwt"]);
+    ctx.api.rtcFoci.mockResolvedValue([FOCUS, "https://mrtc.x.org/livekit/jwt"]);
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    await flush();
+    expect(ctx.api.rtcTransports).toHaveBeenCalledWith(SESSION);
+    expect(lockHosts).toHaveBeenCalledWith(["x.org", "hs.x.org", "mrtc.x.org", "jwt.call.x.org", "sfu.call.x.org"]);
+    expect(JSON.parse(ctx.secrets.get("rtc")!)).toEqual({ foci: ["https://mrtc.x.org/livekit/jwt", FOCUS], sfu: ["sfu.call.x.org"] });
+  });
+
+  it("keeps the stored services when the lookup finds none, and ignores a stored record it cannot read", async () => {
+    const lockHosts = vi.fn(async (_hosts: string[]) => {});
+    const ctx = setup({ session: SESSION_JSON, rtc: JSON.stringify({ foci: [FOCUS, "http://bad"], sfu: "x" }) }, false, { lockHosts });
+    ctx.api.rtcTransports.mockRejectedValue(new Error("offline"));
+    ctx.api.rtcFoci.mockRejectedValue(new Error("offline"));
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    expect(lockHosts).toHaveBeenCalledWith(["x.org", "hs.x.org", "jwt.call.x.org"]);
+    const broken = setup({ rtc: "{" }, false, { lockHosts: vi.fn(async () => {}) });
+    await broken.adapter.start();
+    expect(broken.secrets.get("rtc")).toBe("{");
+  });
+
+  it("includes the call service in the lock before signing in", async () => {
+    const lockHosts = vi.fn(async (_hosts: string[]) => {});
+    const ctx = setup({}, false, { lockHosts });
+    ctx.api.rtcFoci.mockResolvedValue([FOCUS]);
+    await ctx.adapter.start();
+    expect(ctx.api.rtcTransports).not.toHaveBeenCalled();
+    expect(lockHosts).toHaveBeenCalledWith(["x.org", "hs.x.org", "jwt.call.x.org"]);
+  });
+});
+
+describe("calls in rooms", () => {
+  it("lists ongoing calls with who is in them, and offers to start one in the open room", async () => {
+    const ctx = await withCalls();
+    expect(ctx.chat().sidebar.some((i) => i.kind === "voice")).toBe(false);
+    await ctx.open("Lounge");
+    expect(ctx.callItem("Start a call in Lounge")).toMatchObject({ kind: "voice", active: false });
+    await ctx.live(
+      callSync(
+        "!lounge:x.org",
+        ["_@ana:x.org_A1_m.call", callMember(ANA, "A1")],
+        ["_@ana:x.org_A2_m.call", callMember(ANA, "A2")],
+        ["old", callMember(BO, "B1", { expiresAt: Date.now() - 1 })],
+        ["gone", callMember("@cy:x.org", "C1")],
+      ),
+    );
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { state: { members: { "@cy:x.org": { membership: "leave" } } } })] }));
+    const sidebar = ctx.chat().sidebar;
+    const calls = sidebar.findIndex((i) => i.kind === "category" && i.name === "Calls");
+    expect(sidebar[calls + 1]).toMatchObject({ name: "Lounge", kind: "voice", members: [{ name: "Ana", muted: false, video: false }] });
+    expect(ctx.callItem("Start a call in Lounge")).toBeUndefined();
+    expect(sidebar.findIndex((i) => i.name === "Direct messages")).toBeGreaterThan(calls);
+    // The memberships end.
+    await ctx.live(callSync("!lounge:x.org", ["_@ana:x.org_A1_m.call", null], ["_@ana:x.org_A2_m.call", null]));
+    expect(ctx.callItem("Lounge")).toBeUndefined();
+  });
+
+  it("offers no new call where the homeserver names no call service, but joins others' calls", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Lounge");
+    expect(ctx.chat().sidebar.some((i) => i.kind === "voice")).toBe(false);
+    await ctx.live(callSync("!lounge:x.org", ["k", callMember(ANA, "A1")]));
+    await ctx.act({ type: "joinVoice", channelId: anyCall(ctx.last()) });
+    await flush();
+    expect(ctx.api.liveKitGrant).toHaveBeenCalledWith(FOCUS, "!lounge:x.org", "D", OPENID);
+  });
+
+  it("shows profile pictures it has", async () => {
+    const ctx = await withCalls();
+    (ctx.adapter as unknown as { avatars: Map<string, string> }).avatars.set("mxc://x.org/bo", "data:image/png;base64,AA");
+    await ctx.live(callSync("!dm:x.org", [BO_KEY, callMember(BO, "BD", { createdTs: 1 })]));
+    expect(ctx.callItem("Bo")!.members).toEqual([{ name: "Bo", avatarUrl: "data:image/png;base64,AA", muted: false, video: false }]);
+  });
+});
+
+describe("joining a call", () => {
+  it("joins an unencrypted DM's call, rings the other side, and leaves again", async () => {
+    const ctx = await withCalls();
+    await ctx.open("Bo");
+    let grant!: (g: MxLiveKitGrant) => void;
+    ctx.api.liveKitGrant.mockImplementationOnce(() => new Promise((resolve) => (grant = resolve)));
+    const joining = ctx.begin("Start a call in Bo");
+    await flush();
+    // Connecting: the view waits for the grant.
+    expect(ctx.voice()).toEqual({ channelId: expect.any(String), channelName: "Bo", guildName: "", mute: false, deaf: false, video: false, stream: false });
+    expect(ctx.api.encryption).toHaveBeenCalledWith(SESSION, "!dm:x.org");
+    grant({ url: "wss://sfu.call.x.org/", jwt: "jwt1" });
+    await joining;
+    await flush();
+    expect(ctx.voice()).toMatchObject({ url: "wss://sfu.call.x.org/", token: "jwt1" });
+    expect(ctx.voice()).not.toHaveProperty("e2ee");
+    expect(ctx.api.sendState).toHaveBeenCalledWith(SESSION, "!dm:x.org", "org.matrix.msc3401.call.member", MY_KEY, expect.objectContaining({ application: "m.call", device_id: "D" }));
+    expect(ctx.api.send).toHaveBeenCalledWith(
+      SESSION,
+      "!dm:x.org",
+      expect.objectContaining({ notification_type: "ring", "m.relates_to": { event_id: "$state1", rel_type: "m.reference" } }),
+      "org.matrix.msc4075.rtc.notification",
+    );
+    expect(ctx.callItem("Bo")).toMatchObject({ active: true });
+    // Our own membership comes back in the sync.
+    await ctx.live(callSync("!dm:x.org", [MY_KEY, callMember(ME, "D")]));
+    expect(ctx.callItem("Bo")!.members).toEqual([{ name: "Me", muted: false, video: false }]);
+    // Joining it again does nothing.
+    await ctx.join("Bo");
+    expect(ctx.api.openIdToken).toHaveBeenCalledTimes(1);
+
+    await ctx.act({ type: "voiceState", mute: true, deaf: false, video: true, stream: false });
+    expect(ctx.voice()).toMatchObject({ mute: true, video: true });
+    await ctx.act({ type: "leaveVoice" });
+    await flush();
+    expect(ctx.voice()).toBeNull();
+    expect(ctx.api.sendState).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", "org.matrix.msc3401.call.member", MY_KEY, {});
+    // Without a call, these change nothing.
+    await ctx.act({ type: "voiceState", mute: true, deaf: true, video: false, stream: false });
+    await ctx.act({ type: "leaveVoice" });
+    expect(ctx.voice()).toBeNull();
+  });
+
+  it("logs a ring it could not send, and does not ring when someone is already in the call", async () => {
+    const ctx = await withCalls();
+    await ctx.open("Bo");
+    ctx.api.send.mockRejectedValueOnce(new Error("offline"));
+    await ctx.join("Start a call in Bo");
+    expect(ctx.log).toHaveBeenCalledWith("Ring not sent: offline");
+    await ctx.act({ type: "leaveVoice" });
+    await ctx.live(callSync("!dm:x.org", [BO_KEY, callMember(BO, "BD", { createdTs: 1 })]));
+    ctx.api.send.mockClear();
+    await ctx.join("Bo");
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    // Rooms other than DMs do not ring.
+    await ctx.open("Lounge");
+    await ctx.join("Start a call in Lounge");
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    // The DM call was left for this one.
+    expect(ctx.voice()).toMatchObject({ channelName: "Lounge" });
+    expect(ctx.api.sendState).toHaveBeenCalledWith(SESSION, "!dm:x.org", "org.matrix.msc3401.call.member", MY_KEY, {});
+  });
+
+  it("ends the call when the view's connection fails, or the room is left", async () => {
+    const ctx = await withCalls();
+    await ctx.open("Lounge");
+    await ctx.join("Start a call in Lounge");
+    await ctx.act({ type: "voiceError", message: "Disconnected from voice" });
+    expect(ctx.voice()).toBeNull();
+    expect(ctx.chat().error).toBe("The call ended: Disconnected from voice");
+    await ctx.join("Start a call in Lounge");
+    await ctx.live(sync({ left: ["!lounge:x.org"] }));
+    expect(ctx.voice()).toBeNull();
+    expect(ctx.chat().error).toBe("You left the room, so you left its call too.");
+  });
+
+  it("leaves an unencrypted call once the room turns encrypted", async () => {
+    const ctx = await withCalls();
+    await ctx.open("Lounge");
+    await ctx.join("Start a call in Lounge");
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { state: { encrypted: true, encryption: { algorithm: "m.megolm.v1.aes-sha2" }, members: {} } })] }));
+    expect(ctx.voice()).toBeNull();
+    expect(ctx.chat().error).toBe("This room is now end-to-end encrypted. Join the call again to encrypt it too.");
+  });
+
+  it("says why it cannot join", async () => {
+    // A token copied from Element is Element's device.
+    const token = await withCalls({ session: { ...SESSION, ownDevice: false } });
+    await token.open("Lounge");
+    await token.join("Start a call in Lounge");
+    expect(token.chat().error).toBe(TOKEN_CALL_NOTICE);
+    expect(token.voice()).toBeNull();
+
+    // Encrypted rooms need encryption, which this build lacks.
+    const plain = await withCalls();
+    await plain.open("Secret");
+    await plain.join("Start a call in Secret");
+    expect(plain.chat().error).toBe(ENCRYPTED_CALL_NOTICE);
+
+    // A room that turned out to be encrypted when asked.
+    await plain.open("Lounge");
+    plain.api.encryption.mockResolvedValueOnce({ algorithm: "m.megolm.v1.aes-sha2" });
+    await plain.join("Start a call in Lounge");
+    expect(plain.chat().error).toBe(ENCRYPTED_CALL_NOTICE);
+
+    // The server cannot say whether the room is encrypted.
+    const unsure = await withCalls();
+    await unsure.open("Lounge");
+    unsure.api.encryption.mockRejectedValueOnce(new Error("offline"));
+    await unsure.join("Start a call in Lounge");
+    expect(unsure.chat().error).toBe("Could not check whether this room is encrypted, so Multicord did not join its call: offline");
+    expect(unsure.api.openIdToken).not.toHaveBeenCalled();
+  });
+
+  it("says when the homeserver has no call service, or one found after starting", async () => {
+    const none = await signedIn();
+    await none.live(callSync("!lounge:x.org", ["k", callMember(ANA, "A1", { focus: undefined })]));
+    await none.act({ type: "joinVoice", channelId: anyCall(none.last()) });
+    await flush();
+    expect(none.chat().error).toBe("x.org offers no calls: its homeserver names no call service (MatrixRTC with LiveKit), which Element Call needs as well.");
+
+    const lockHosts = vi.fn(async (_hosts: string[]) => {});
+    const late = setup({ session: SESSION_JSON }, false, { lockHosts });
+    late.api.push(initialSync());
+    await late.adapter.start();
+    await flush();
+    // Found after the lock: not reachable until the next start.
+    (late.adapter as unknown as { rtc: { foci: string[]; sfu: string[] } }).rtc = { foci: [FOCUS], sfu: [] };
+    await late.open("Lounge");
+    await late.act({ type: "joinVoice", channelId: anyCall(late.last()) });
+    await flush();
+    expect(late.chat().error).toBe("The call service jwt.call.x.org is new to Multicord, which fixes the hosts it may reach when it starts. Restart Multicord to use it.");
+  });
+
+  it("learns a new LiveKit server's host for the next start", async () => {
+    const ctx = await withCalls({ lock: true });
+    await ctx.open("Lounge");
+    await ctx.join("Start a call in Lounge");
+    expect(ctx.voice()).toBeNull();
+    expect(ctx.chat().error).toBe(
+      "The call server sfu.call.x.org is new to Multicord, which fixes the hosts it may reach (and so calls) when it starts. Restart Multicord once to allow it; calls work from then on.",
+    );
+    expect(JSON.parse(ctx.secrets.get("rtc")!)).toEqual({ foci: [FOCUS], sfu: ["sfu.call.x.org"] });
+    expect(ctx.api.sendState).not.toHaveBeenCalled();
+  });
+
+  it("still says so when the host cannot be stored", async () => {
+    const ctx = await withCalls({ lock: true });
+    ctx.secrets.set = () => {
+      throw new Error("disk full");
+    };
+    await ctx.open("Lounge");
+    await ctx.join("Start a call in Lounge");
+    expect(ctx.chat().error).toContain("Restart Multicord once to allow it");
+  });
+
+  it("joins once the LiveKit server is allowed", async () => {
+    const ctx = await withCalls({ lock: true, secrets: { rtc: JSON.stringify({ foci: [FOCUS], sfu: ["sfu.call.x.org"] }) } });
+    expect(ctx.lockHosts).toHaveBeenCalledWith(["x.org", "hs.x.org", "jwt.call.x.org", "sfu.call.x.org"]);
+    await ctx.open("Lounge");
+    await ctx.join("Start a call in Lounge");
+    expect(ctx.voice()).toMatchObject({ token: "jwt1" });
+  });
+
+  it("carries on when the shell refuses the lock", async () => {
+    const lockHosts = vi.fn(async (_hosts: string[]) => {
+      throw new Error("A host lock can only narrow");
+    });
+    const ctx = setup({ session: SESSION_JSON }, false, { lockHosts, log: vi.fn() });
+    ctx.api.rtcFoci.mockResolvedValue([FOCUS]);
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    await flush();
+    await ctx.open("Lounge");
+    await ctx.act({ type: "joinVoice", channelId: anyCall(ctx.last()) });
+    await flush();
+    expect(ctx.chat().voice).toMatchObject({ token: "jwt1" });
+  });
+
+  it("reports a failed join and cleans up", async () => {
+    const ctx = await withCalls();
+    await ctx.open("Lounge");
+    ctx.api.openIdToken.mockRejectedValueOnce(new MatrixError(429, "M_LIMIT_EXCEEDED", "slow down"));
+    await ctx.join("Start a call in Lounge");
+    expect(ctx.chat().error).toBe("Could not join the call: Too many attempts. Wait a while and try again.");
+    expect(ctx.voice()).toBeNull();
+  });
+
+  it("gives up when the call service does not answer", async () => {
+    vi.useFakeTimers();
+    const ctx = await withCalls();
+    await ctx.open("Lounge");
+    ctx.api.liveKitGrant.mockImplementationOnce(() => new Promise(() => {}));
+    void ctx.begin("Start a call in Lounge");
+    await flush();
+    await vi.advanceTimersByTimeAsync(CALL_JOIN_TIMEOUT_MS);
+    expect(ctx.voice()).toBeNull();
+    expect(ctx.chat().error).toBe("Could not join the call: the call service did not answer.");
+  });
+
+  it("does not time out a call that joined, and drops a join the user moved on from", async () => {
+    vi.useFakeTimers();
+    const ctx = await withCalls();
+    await ctx.open("Lounge");
+    await ctx.join("Start a call in Lounge");
+    await vi.advanceTimersByTimeAsync(CALL_JOIN_TIMEOUT_MS);
+    expect(ctx.voice()).toMatchObject({ token: "jwt1" });
+    await ctx.act({ type: "leaveVoice" });
+
+    // Asked twice while the encryption check ran: the first is dropped.
+    let answer!: (e: MxEncryption | undefined) => void;
+    ctx.api.encryption.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    const joining = ctx.act({ type: "joinVoice", channelId: ctx.callItem("Start a call in Lounge")!.id });
+    await flush();
+    await ctx.act({ type: "joinVoice", channelId: ctx.callItem("Start a call in Lounge")!.id });
+    answer(undefined);
+    await joining;
+    await flush();
+    expect(ctx.api.openIdToken).toHaveBeenCalledTimes(2);
+
+    // Left while getting access: the failure is not shown.
+    await ctx.act({ type: "leaveVoice" });
+    let fail!: (e: Error) => void;
+    ctx.api.openIdToken.mockImplementationOnce(() => new Promise((_resolve, reject) => (fail = reject)));
+    const failing = ctx.begin("Start a call in Lounge");
+    await flush();
+    await ctx.act({ type: "leaveVoice" });
+    fail(new Error("late"));
+    await failing;
+    await flush();
+    expect(ctx.chat().error).toBeUndefined();
+
+    // Left while joining succeeded.
+    let grant!: (g: MxLiveKitGrant) => void;
+    ctx.api.liveKitGrant.mockImplementationOnce(() => new Promise((resolve) => (grant = resolve)));
+    const late = ctx.begin("Start a call in Lounge");
+    await flush();
+    await ctx.act({ type: "leaveVoice" });
+    grant({ url: "wss://sfu.call.x.org/", jwt: "late" });
+    await late;
+    await flush();
+    expect(ctx.voice()).toBeNull();
+  });
+
+  it("leaves when the membership cannot be kept", async () => {
+    vi.useFakeTimers();
+    const ctx = await withCalls();
+    ctx.api.supports.mockResolvedValue(true);
+    await ctx.open("Lounge");
+    await ctx.join("Start a call in Lounge");
+    expect(ctx.api.sendDelayedState).toHaveBeenCalled();
+    ctx.api.updateDelayed.mockRejectedValueOnce(new MatrixError(404, "M_NOT_FOUND", "gone"));
+    ctx.api.sendState.mockRejectedValueOnce(new MatrixError(403, "M_FORBIDDEN", "not allowed"));
+    await vi.advanceTimersByTimeAsync(4000);
+    await flush();
+    expect(ctx.voice()).toBeNull();
+    expect(ctx.chat().error).toBe("The call membership was lost: not allowed");
+  });
+
+  it("ignores joins of unknown entries", async () => {
+    const ctx = await withCalls();
+    await ctx.act({ type: "joinVoice", channelId: "999" });
+    await ctx.act({ type: "joinVoice", channelId: ctx.item("Lounge").id });
+    expect(ctx.voice()).toBeNull();
+  });
+
+  it("uses the call service the people in the call use, and marks those it cannot reach", async () => {
+    const ctx = await withCalls();
+    await ctx.live(
+      callSync(
+        "!lounge:x.org",
+        ["a", callMember(ANA, "A1", { focus: "https://other.x.org" })],
+        ["b", callMember(BO, "B1", { focus: "https://other.x.org" })],
+        ["c", callMember("@cy:x.org", "C1")],
+        ["d", callMember("@dee:x.org", "D1", { focus: undefined })],
+      ),
+    );
+    await ctx.join("Lounge");
+    expect(ctx.api.liveKitGrant).toHaveBeenCalledWith("https://other.x.org", "!lounge:x.org", "D", OPENID);
+    expect(ctx.callItem("Lounge")!.members!.map((m) => m.name)).toEqual(["Ana", "@bo:x.org", `@cy:x.org · ${OTHER_SERVER_LABEL}`, "@dee:x.org"]);
+  });
+
+  it("leaves the call when signing out, and drops it when the session ends", async () => {
+    const ctx = await withCalls();
+    await ctx.open("Lounge");
+    await ctx.join("Start a call in Lounge");
+    await ctx.act({ type: "logout" });
+    await flush();
+    expect(ctx.api.sendState).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", "org.matrix.msc3401.call.member", MY_KEY, {});
+
+    const ended = await withCalls();
+    await ended.open("Lounge");
+    await ended.join("Start a call in Lounge");
+    await ended.live(new MatrixError(401, "M_UNKNOWN_TOKEN", "gone"));
+    await flush();
+    expect(ended.api.sendState).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("ringing", () => {
+  it("rings when someone starts a call in a DM, until it ends or is joined", async () => {
+    const ctx = await withCalls();
+    await ctx.live(callSync("!dm:x.org", [BO_KEY, callMember(BO, "BD", { intent: "video" })]));
+    expect(ctx.calls).toEqual([{ conversationKey: "!dm:x.org", from: "Bo", video: true }]);
+    expect(ctx.callItem("Bo")).toMatchObject({ unread: true, mentions: 1 });
+    expect(ctx.chat().error).toBe("📞 Bo is calling. Join under Calls in the sidebar.");
+    // A second device joining does not ring again.
+    await ctx.live(callSync("!dm:x.org", ["_@bo:x.org_B2_m.call", callMember(BO, "B2")]));
+    expect(ctx.calls).toHaveLength(1);
+    await ctx.live(callSync("!dm:x.org", [BO_KEY, null], ["_@bo:x.org_B2_m.call", null]));
+    expect(ctx.chat().error).toBeUndefined();
+
+    await ctx.live(callSync("!dm:x.org", [BO_KEY, callMember(BO, "BD")]));
+    expect(ctx.calls[1]).toEqual({ conversationKey: "!dm:x.org", from: "Bo", video: false });
+    await ctx.join("Bo");
+    expect(ctx.chat().error).toBeUndefined();
+  });
+
+  it("stops ringing when the DM is left", async () => {
+    const ctx = await withCalls();
+    await ctx.live(callSync("!dm:x.org", [BO_KEY, callMember(BO, "BD")]));
+    await ctx.live(sync({ left: ["!dm:x.org"] }));
+    expect(ctx.chat().error).toBeUndefined();
+  });
+
+  it("does not ring for old calls, calls seen at start, our own, or rooms", async () => {
+    const first = initialSync();
+    first.joined[0]!.calls = new Map([[BO_KEY, callMember(BO, "BD")]]);
+    const ctx = await withCalls({ first });
+    expect(ctx.calls).toHaveLength(0);
+    await ctx.live(callSync("!dm:x.org", [BO_KEY, null]));
+    await ctx.live(callSync("!dm:x.org", [BO_KEY, callMember(BO, "BD", { createdTs: Date.now() - RING_WINDOW_MS - 1 })]));
+    await ctx.live(callSync("!dm:x.org", [BO_KEY, null]));
+    // We are in it on another device.
+    await ctx.live(callSync("!dm:x.org", ["_@me:x.org_PHONE_m.call", callMember(ME, "PHONE")], [BO_KEY, callMember(BO, "BD")]));
+    await ctx.live(callSync("!lounge:x.org", ["a", callMember(ANA, "A1")]));
+    expect(ctx.calls).toHaveLength(0);
+  });
+});
+
+describe("encrypted calls", () => {
+  it("joins encrypted, shares media keys over Olm and passes everyone's keys to the view", async () => {
+    const ctx = await withCrypto();
+    const calls = (roomId: string, ...entries: [string, MxCallMember | null][]) => ctx.live(sync({ joined: [room(roomId, { calls: new Map(entries) })] }));
+    await calls("!dm:x.org", [BO_KEY, callMember(BO, "BD", { createdTs: 1 })]);
+    await ctx.act({ type: "joinVoice", channelId: anyCall(ctx.last()) });
+    await flush();
+    const voice = () => ctx.chat().voice!;
+    expect(voice().e2ee!.keys).toEqual([{ participant: "@me:x.org:D", index: 0, key: expect.any(String) }]);
+    expect(ctx.e2ee.sendToDevices).toHaveBeenCalledWith("io.element.call.encryption_keys", [{ userId: BO, deviceId: "BD" }], expect.objectContaining({ room_id: "!dm:x.org" }));
+    // Bo's key arrives over Olm.
+    const key = btoa("k".repeat(16));
+    ctx.e2ee.toDevice.get("io.element.call.encryption_keys")!({ userId: BO, deviceId: "BD", content: { room_id: "!dm:x.org", media_key: { index: 0, key }, member: { claimed_device_id: "BD" } } });
+    expect(voice().e2ee!.keys).toContainEqual({ participant: "@bo:x.org:BD", index: 0, key });
+    // Ana joins: she gets the current key.
+    await calls("!dm:x.org", ["_@ana:x.org_AD_m.call", callMember(ANA, "AD")]);
+    expect(ctx.e2ee.sendToDevices).toHaveBeenLastCalledWith("io.element.call.encryption_keys", [{ userId: ANA, deviceId: "AD" }], expect.anything());
+    // Our own membership is no participant, but its server time is ours.
+    await calls("!dm:x.org", [MY_KEY, callMember(ME, "D")]);
+    expect(ctx.e2ee.sendToDevices).toHaveBeenCalledTimes(2);
+    // Changes in other rooms change nothing here.
+    await calls("!sec:x.org", ["x", callMember(ANA, "AD")]);
+    expect(ctx.e2ee.sendToDevices).toHaveBeenCalledTimes(2);
+    await ctx.act({ type: "leaveVoice" });
+    // Keys after leaving go nowhere.
+    ctx.e2ee.toDevice.get("io.element.call.encryption_keys")!({ userId: BO, deviceId: "BD", content: {} });
+    expect(ctx.chat().voice).toBeNull();
+  });
+
+  it("refuses an encrypted room's call while encryption could not start", async () => {
+    const crypto = { open: vi.fn(async (): Promise<E2ee> => Promise.reject(new Error("no IndexedDB"))), deleteStore: vi.fn(async () => {}) };
+    const ctx = setup({ session: SESSION_JSON }, false, { crypto, log: vi.fn() });
+    ctx.api.rtcFoci.mockResolvedValue([FOCUS]);
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    await flush();
+    await ctx.open("Secret");
+    await ctx.act({ type: "joinVoice", channelId: anyCall(ctx.last()) });
+    await flush();
+    expect(ctx.chat().error).toBe(
+      "🔒 This room is end-to-end encrypted, and so are its calls, but encryption could not start (no IndexedDB). Multicord never joins an encrypted room's call unencrypted; restart Multicord to try again.",
+    );
+    // Without a reason given.
+    (ctx.adapter as unknown as { cryptoProblem: string | undefined }).cryptoProblem = undefined;
+    await ctx.act({ type: "joinVoice", channelId: anyCall(ctx.last()) });
+    await flush();
+    expect(ctx.chat().error).toContain("but encryption could not start. Multicord never joins");
   });
 });

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MatrixError, matrixErrcode, type MxSession } from "../../../src/modules/matrix/api";
-import { createMatrixClient, httpsBase, MAX_THUMBNAIL_BYTES, REFRESH_MARGIN_MS, SYNC_FILTER } from "../../../src/modules/matrix/client";
+import { createMatrixClient, httpsBase, liveKitUrl, MAX_THUMBNAIL_BYTES, REFRESH_MARGIN_MS, SYNC_FILTER } from "../../../src/modules/matrix/client";
 
 const BASE = "https://hs.x.org";
 const SESSION: MxSession = { baseUrl: BASE, accessToken: "tok", userId: "@me:x.org", deviceId: "D", ownDevice: true };
@@ -394,5 +394,117 @@ describe("refreshing before expiry", () => {
     finish();
     await Promise.all(sends);
     expect(refresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("calls", () => {
+  const TOKEN = { access_token: "oid", token_type: "Bearer", matrix_server_name: "x.org", expires_in: 3600 };
+
+  it("asks for call memberships in the sync timeline", () => {
+    expect(JSON.parse(SYNC_FILTER).room.timeline.types).toContain("org.matrix.msc3401.call.member");
+  });
+
+  it("reads the call services a server's .well-known names", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({ "org.matrix.msc4143.rtc_foci": [{ type: "livekit", livekit_service_url: "https://jwt.call.x.org" }, { type: "nextgen" }] }));
+    expect(await client.rtcFoci("https://x.org/page")).toEqual(["https://jwt.call.x.org"]);
+    expect(callOf(fetchFn).url.href).toBe("https://x.org/.well-known/matrix/client");
+  });
+
+  it.each([
+    ["no document", () => new Response("", { status: 404 })],
+    ["invalid JSON", () => new Response("{", { status: 200 })],
+    ["no foci", () => json({ "m.homeserver": {} })],
+    ["a list", () => json([])],
+  ])("finds no call service with %s", async (_name, respond) => {
+    const { client } = fakeFetch(respond);
+    expect(await client.rtcFoci("https://x.org")).toEqual([]);
+  });
+
+  it("does not look up servers that are not https", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({}));
+    expect(await client.rtcFoci("http://x.org")).toEqual([]);
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("reads the homeserver's own call services, if it has the endpoint", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({ rtc_transports: [{ type: "livekit", livekit_service_url: "https://mrtc.x.org/livekit/jwt" }] }));
+    expect(await client.rtcTransports(SESSION)).toEqual(["https://mrtc.x.org/livekit/jwt"]);
+    const { url, init } = callOf(fetchFn);
+    expect(url.href).toBe(`${BASE}/_matrix/client/unstable/org.matrix.msc4143/rtc/transports`);
+    expect(init.headers.Authorization).toBe("Bearer tok");
+    for (const status of [400, 404, 405]) {
+      const { client: missing } = fakeFetch(() => json({ errcode: "M_UNRECOGNIZED" }, status));
+      expect(await missing.rtcTransports(SESSION)).toEqual([]);
+    }
+    const { client: down } = fakeFetch(() => json({ errcode: "M_UNKNOWN" }, 502));
+    await expect(down.rtcTransports(SESSION)).rejects.toMatchObject({ status: 502 });
+  });
+
+  it("checks unstable features", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({ versions: ["v1.11"], unstable_features: { "org.matrix.msc4140": true, "org.matrix.msc4354": false } }));
+    expect(await client.supports(SESSION, "org.matrix.msc4140")).toBe(true);
+    expect(await client.supports(SESSION, "org.matrix.msc4354")).toBe(false);
+    expect(callOf(fetchFn).url.href).toBe(`${BASE}/_matrix/client/versions`);
+    const { client: bare } = fakeFetch(() => json({ versions: [] }));
+    expect(await bare.supports(SESSION, "org.matrix.msc4140")).toBe(false);
+  });
+
+  it("gets an OpenID token, checking its fields", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({ ...TOKEN, extra: 1 }));
+    expect(await client.openIdToken(SESSION)).toEqual(TOKEN);
+    const { url, init, body } = callOf(fetchFn);
+    expect(url.pathname).toBe("/_matrix/client/v3/user/%40me%3Ax.org/openid/request_token");
+    expect([init.method, body]).toEqual(["POST", {}]);
+    for (const bad of [{ access_token: "" }, { token_type: 5 }, { matrix_server_name: "x".repeat(256) }, { expires_in: 0 }, { expires_in: 1.5 }, { expires_in: "1" }]) {
+      const { client: broken } = fakeFetch(() => json({ ...TOKEN, ...bad }));
+      await expect(broken.openIdToken(SESSION)).rejects.toThrow("unreadable OpenID token");
+    }
+  });
+
+  it("sets state events, now or delayed", async () => {
+    const { client, fetchFn } = fakeFetch((url) => json(url.searchParams.has("org.matrix.msc4140.delay") ? { delay_id: "d1" } : { event_id: "$s1" }));
+    expect(await client.sendState(SESSION, "!r:x.org", "org.matrix.msc3401.call.member", "_@me:x.org_D_m.call", { a: 1 })).toBe("$s1");
+    let call = callOf(fetchFn);
+    expect(call.url.pathname).toBe("/_matrix/client/v3/rooms/!r%3Ax.org/state/org.matrix.msc3401.call.member/_%40me%3Ax.org_D_m.call");
+    expect([call.init.method, call.body]).toEqual(["PUT", { a: 1 }]);
+    expect(await client.sendDelayedState(SESSION, "!r:x.org", "t", "k", {}, 18000)).toBe("d1");
+    call = callOf(fetchFn, 1);
+    expect(call.url.searchParams.get("org.matrix.msc4140.delay")).toBe("18000");
+    const { client: broken } = fakeFetch(() => json({}));
+    await expect(broken.sendState(SESSION, "!r:x.org", "t", "k", {})).rejects.toThrow("unreadable");
+    await expect(broken.sendDelayedState(SESSION, "!r:x.org", "t", "k", {}, 1)).rejects.toThrow("unreadable");
+  });
+
+  it("restarts, sends and cancels delayed events, with the action in the body on older servers", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({}));
+    await client.updateDelayed(SESSION, "d/1", "restart");
+    expect(callOf(fetchFn).url.pathname).toBe("/_matrix/client/unstable/org.matrix.msc4140/delayed_events/d%2F1/restart");
+    const old = fakeFetch((url) => (url.pathname.endsWith("/send") ? json({ errcode: "M_UNRECOGNIZED" }, 404) : json({})));
+    await old.client.updateDelayed(SESSION, "d1", "send");
+    const retry = callOf(old.fetchFn, 1);
+    expect([retry.url.pathname, retry.body]).toEqual(["/_matrix/client/unstable/org.matrix.msc4140/delayed_events/d1", { action: "send" }]);
+    const gone = fakeFetch(() => json({ errcode: "M_NOT_FOUND" }, 404));
+    await expect(gone.client.updateDelayed(SESSION, "d1", "cancel")).rejects.toMatchObject({ errcode: "M_NOT_FOUND" });
+    expect(gone.fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks the call service for access, without the homeserver token", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({ url: "wss://sfu.call.x.org", jwt: "a.b-c_d" }));
+    expect(await client.liveKitGrant("https://jwt.call.x.org", "!r:x.org", "D", TOKEN)).toEqual({ url: "wss://sfu.call.x.org/", jwt: "a.b-c_d" });
+    const { url, init, body } = callOf(fetchFn);
+    expect(url.href).toBe("https://jwt.call.x.org/sfu/get");
+    expect(init.headers.Authorization).toBeUndefined();
+    expect(body).toEqual({ room: "!r:x.org", openid_token: TOKEN, device_id: "D" });
+    const refused = fakeFetch(() => json({ errcode: "M_FORBIDDEN", error: "no" }, 403));
+    await expect(refused.client.liveKitGrant("https://jwt.call.x.org", "!r:x.org", "D", TOKEN)).rejects.toMatchObject({ status: 403, errcode: "M_FORBIDDEN" });
+    for (const bad of [{ url: "ws://sfu.x.org", jwt: "a" }, { url: "wss://u:p@sfu.x.org", jwt: "a" }, { url: "nope", jwt: "a" }, { url: 5, jwt: "a" }, { url: "wss://sfu.x.org", jwt: "a b" }, { url: "wss://sfu.x.org" }]) {
+      const { client: broken } = fakeFetch(() => json(bad));
+      await expect(broken.liveKitGrant("https://jwt.call.x.org", "!r:x.org", "D", TOKEN)).rejects.toThrow("unreadable answer");
+    }
+  });
+
+  it("checks LiveKit server addresses", () => {
+    expect(liveKitUrl("https://sfu.x.org/lk")).toBe("https://sfu.x.org/lk");
+    expect(liveKitUrl(`wss://sfu.x.org/${"a".repeat(2048)}`)).toBeUndefined();
   });
 });

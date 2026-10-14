@@ -3,12 +3,13 @@ import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../share
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { MAX_DIRECTS } from "../../shared/engine";
 import { escapeMarkdown } from "../../shared/markdown";
-import type { NativeAction, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState, NativeVoiceMember, NativeVoiceSession } from "../../shared/native";
 import type { AccountStatus } from "../../shared/settings";
 import {
   MatrixError,
   matrixErrcode,
   type MatrixApi,
+  type MxCallMember,
   type MxContent,
   type MxEncryptedEvent,
   type MxEncryption,
@@ -20,8 +21,9 @@ import {
   type MxSession,
   type MxSync,
 } from "./api";
+import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, ringContent, type CallParticipant } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
-import { cleanName, userId } from "./events";
+import { cleanName, MAX_CALL_MEMBERS, serviceUrl, userId } from "./events";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 import type { Verification, VerificationState } from "./verification";
 
@@ -54,6 +56,20 @@ export const TOKEN_NOTICE =
 export const ALGORITHM_NOTICE = "🔒 This room uses an encryption algorithm Multicord does not support, so nothing can be sent here from Multicord.";
 export const UNVERIFIED_LABEL = "unverified device";
 const CONNECTION_LOST = "Connection lost. Reconnecting…";
+/** The LiveKit services and SFU hosts known for this instance, stored so the next start's host lock includes them. */
+const RTC_KEY = "rtc";
+const MAX_RTC_HOSTS = 10;
+/** Sidebar entries for a room's call: "#call:" and the room id. */
+const CALL_ENTRY = "#call:";
+/** How long joining a call may take before it is given up. */
+export const CALL_JOIN_TIMEOUT_MS = 20_000;
+/** A DM call rings only when it started this recently, not when an old one is seen after a restart. */
+export const RING_WINDOW_MS = 120_000;
+export const TOKEN_CALL_NOTICE =
+  "With an access token, Multicord shares Element's device, so it cannot join calls as a device of its own. Sign out and sign in with your account (in the browser or with a password) to make calls.";
+export const ENCRYPTED_CALL_NOTICE =
+  "🔒 This room is end-to-end encrypted, and so are its calls, which this build of Multicord cannot encrypt. Multicord never joins an encrypted room's call unencrypted: join it in Element.";
+export const OTHER_SERVER_LABEL = "other call server";
 
 export interface MatrixInstanceDef {
   id: string;
@@ -135,6 +151,33 @@ interface Room {
   lastActivity: number;
   /** The last event we sent a read receipt for. */
   lastRead?: string;
+  /** Call memberships by state key, expired ones included (they are filtered when read). */
+  calls: Map<string, MxCallMember>;
+}
+
+/** What is stored under RTC_KEY. */
+interface RtcHosts {
+  /** LiveKit services (MatrixRTC foci), the homeserver's preferred first. */
+  foci: string[];
+  /** Hosts of LiveKit servers (SFUs) the services sent us to. */
+  sfu: string[];
+}
+
+const HOSTNAME = /^[a-z0-9]([a-z0-9-]{0,62}\.)*[a-z0-9-]{1,63}$/;
+
+/** Stored LiveKit services and SFU hosts, if they are ones we wrote. */
+function parseRtc(text: string | undefined): RtcHosts {
+  try {
+    const value: unknown = text ? JSON.parse(text) : undefined;
+    const { foci, sfu } = (value ?? {}) as Record<string, unknown>;
+    const strings = (list: unknown): unknown[] => (Array.isArray(list) ? list.slice(0, MAX_RTC_HOSTS) : []);
+    return {
+      foci: strings(foci).flatMap((url) => serviceUrl(url) ?? []),
+      sfu: strings(sfu).filter((host): host is string => typeof host === "string" && host.length <= 253 && HOSTNAME.test(host)),
+    };
+  } catch {
+    return { foci: [], sfu: [] };
+  }
 }
 
 /** What the user sees for Matrix error codes. */
@@ -275,6 +318,17 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private visible = false;
   /** Counts sign-ins and sign-outs, so a sync loop or task started for one session stops for the next. */
   private generation = 0;
+  private rtc: RtcHosts = { foci: [], sfu: [] };
+  /** The hosts the engine locked itself to (and so its view); undefined while it is not locked. */
+  private lockedHosts: string[] | undefined;
+  /** Our device's call, joining or joined; one at a time. */
+  private call: MatrixCall | undefined;
+  /** Counts joins and leaves, so a join that finishes after the user moved on is dropped. */
+  private callAttempt = 0;
+  private callTimer: ReturnType<typeof setTimeout> | undefined;
+  private callFlags = { mute: false, deaf: false, video: false, stream: false };
+  /** A DM whose call is ringing, named in the banner. */
+  private ringing: string | undefined;
   private readonly delay: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
 
@@ -286,6 +340,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   /** Resumes a saved session, else starts signing in. */
   async start(): Promise<void> {
+    this.rtc = parseRtc(await this.deps.secrets.load(RTC_KEY));
     const saved = parseSession(await this.deps.secrets.load(SESSION_KEY));
     if (!saved) return this.showSignIn();
     this.hasSession = true;
@@ -296,13 +351,50 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return new URL(this.deps.def.url).host;
   }
 
-  /** From here on the engine needs only these hosts; a refused lock is logged and changes nothing. */
+  /**
+   * From here on the engine needs only these hosts, plus those of the call
+   * services and their LiveKit servers: the view, which carries calls,
+   * reaches no more than the engine. A refused lock is logged and changes nothing.
+   */
   private async lockToHosts(hosts: string[]): Promise<void> {
-    await this.deps.lockHosts?.(hosts).catch((error: unknown) => this.log(`host lock refused: ${friendly(error)}`));
+    if (!this.deps.lockHosts) return;
+    const all = [...new Set([...hosts, ...hostsOf(...this.rtc.foci), ...this.rtc.sfu])];
+    try {
+      await this.deps.lockHosts(all);
+      this.lockedHosts = all;
+    } catch (error) {
+      this.log(`host lock refused: ${friendly(error)}`);
+    }
+  }
+
+  /** Whether the engine and its view may reach a host. */
+  private hostAllowed(host: string): boolean {
+    return this.lockedHosts?.includes(host.toLowerCase()) ?? true;
+  }
+
+  /**
+   * Looks up the call services (MatrixRTC foci) before the host lock: the
+   * homeserver's own list (with a session) first, then the server's
+   * .well-known. A failed lookup keeps what was stored.
+   */
+  private async discoverFoci(session?: MxSession): Promise<void> {
+    const [offered, known] = await Promise.all([
+      session ? this.deps.api.rtcTransports(session).catch((): string[] => []) : [],
+      this.deps.api.rtcFoci(this.deps.def.url).catch((): string[] => []),
+    ]);
+    const foci = [...new Set([...offered, ...known])].slice(0, MAX_RTC_HOSTS);
+    if (foci.length > 0) await this.saveRtc({ ...this.rtc, foci });
+  }
+
+  private async saveRtc(rtc: RtcHosts): Promise<void> {
+    const before = JSON.stringify(this.rtc);
+    this.rtc = rtc;
+    if (JSON.stringify(rtc) !== before) await this.deps.secrets.save(RTC_KEY, JSON.stringify(rtc)).catch(() => undefined);
   }
 
   private async resume(saved: MxSession): Promise<void> {
     this.connecting(`Connecting to ${this.host()}…`);
+    await this.discoverFoci(saved);
     await this.lockToHosts(hostsOf(this.deps.def.url, saved.baseUrl, saved.oauth?.tokenEndpoint, saved.oauth?.revocationEndpoint));
     try {
       await this.deps.api.check(saved);
@@ -327,6 +419,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     }
     // Discovery never throws: without an account server, the other ways remain.
     this.oauthServer = await this.deps.oauth?.discover(this.baseUrl).catch(() => undefined);
+    await this.discoverFoci();
     const server = this.oauthServer;
     await this.lockToHosts(hostsOf(this.deps.def.url, this.baseUrl, server?.issuer, server?.deviceEndpoint, server?.tokenEndpoint, server?.registrationEndpoint, server?.revocationEndpoint));
     this.step = this.signInSteps()[0]!;
@@ -424,6 +517,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   async signOut(): Promise<void> {
     const session = this.session;
+    // The membership goes while the session can still send it.
+    await this.leaveCall(undefined);
     this.generation++;
     // A token copied from another app is that app's device: ending it would sign that app out too.
     if (session?.ownDevice) {
@@ -447,6 +542,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   /** The server no longer accepts the token, e.g. after signing out elsewhere. */
   private async sessionEnded(): Promise<void> {
     this.generation++;
+    // The server no longer takes our requests; the membership expires (or its delayed leave fires) by itself.
+    this.call?.abandon();
+    this.call = undefined;
+    this.ringing = undefined;
+    clearTimeout(this.callTimer);
     await this.forgetSession();
     this.rooms.clear();
     this.dmUsers.clear();
@@ -498,8 +598,16 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.loadOlder();
       case "logout":
         return this.signOut();
+      case "joinVoice":
+        return this.joinCall(action.channelId);
+      case "leaveVoice":
+        return this.leaveCall(undefined);
+      case "voiceState":
+        return this.setCallFlags(action);
+      case "voiceError":
+        return this.leaveCall(`The call ended: ${action.message}`);
       default:
-        // Reactions, uploads, typing, forums and voice are not offered for Matrix.
+        // Reactions, uploads, typing and forums are not offered for Matrix.
         return;
     }
   }
@@ -781,6 +889,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       crypto.onKeys((sessions) => void this.retryDecryption(new Set(sessions)));
       crypto.onStatus(() => void this.refreshCryptoStatus(crypto));
       crypto.onVerification((verification) => this.verificationRequested(crypto, verification));
+      crypto.onToDevice(CALL_KEYS_TYPE, (event) => this.call?.keys?.receive(event));
     } catch (error) {
       this.cryptoProblem = messageOf(error);
       this.log(`Encryption could not start: ${this.cryptoProblem}`);
@@ -1107,7 +1216,22 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private room(id: string): Room {
     let room = this.rooms.get(id);
     if (!room) {
-      room = { id, local: this.local(id), name: "", alias: "", avatar: "", encrypted: false, members: new Map(), heroes: [], events: [], edits: new Map(), notifications: 0, highlights: 0, lastActivity: 0 };
+      room = {
+        id,
+        local: this.local(id),
+        name: "",
+        alias: "",
+        avatar: "",
+        encrypted: false,
+        members: new Map(),
+        heroes: [],
+        events: [],
+        edits: new Map(),
+        notifications: 0,
+        highlights: 0,
+        lastActivity: 0,
+        calls: new Map(),
+      };
       this.rooms.set(id, room);
     }
     return room;
@@ -1135,11 +1259,20 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     for (const id of sync.left) {
       this.rooms.delete(id);
       if (this.selected === id) this.selected = undefined;
+      if (this.ringing === id) this.ringing = undefined;
+      if (this.call?.roomId === id) void this.leaveCall("You left the room, so you left its call too.");
     }
+    let callChanged = false;
     for (const update of sync.joined) {
       const fresh = !this.rooms.has(update.roomId);
       const room = this.room(update.roomId);
       this.applyState(room, update.state);
+      if (update.calls) {
+        this.applyCalls(room, update.calls, !initial);
+        callChanged ||= room.id === this.call?.roomId;
+      }
+      // A call joined unencrypted does not carry on once the room turns encrypted.
+      if (room.encrypted && this.call?.roomId === room.id && !this.call.encrypted) void this.leaveCall("This room is now end-to-end encrypted. Join the call again to encrypt it too.");
       if (update.heroes) room.heroes = update.heroes;
       if (update.unread) {
         room.notifications = update.unread.notifications;
@@ -1160,6 +1293,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (this.error === CONNECTION_LOST) this.error = undefined;
     const open = this.selectedRoom();
     if (open && this.visible) this.markRead(open);
+    // Whoever joined the call gets our media key; when someone left, everyone gets a new one.
+    const call = this.call;
+    if (callChanged && call?.grant) void call.keys?.update(this.participants(this.rooms.get(call.roomId)!));
     this.publish();
     void this.loadAvatars();
   }
@@ -1339,7 +1475,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
    * server is asked first; if it cannot answer, nothing is sent. Into an
    * encrypted room nothing goes without working encryption.
    */
-  private async sendContent(session: MxSession, room: Room, content: Record<string, unknown>): Promise<string> {
+  private async sendContent(session: MxSession, room: Room, content: Record<string, unknown>, type = "m.room.message"): Promise<string> {
     if (!room.encrypted) {
       const encryption = await this.deps.api.encryption(session, room.id);
       if (encryption) {
@@ -1347,7 +1483,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         room.encryption = encryption;
       }
     }
-    if (!room.encrypted) return this.deps.api.send(session, room.id, content);
+    if (!room.encrypted) return type === "m.room.message" ? this.deps.api.send(session, room.id, content) : this.deps.api.send(session, room.id, content, type);
     const lock = this.lock(room);
     if (lock) {
       this.render();
@@ -1355,7 +1491,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     }
     // The member list (who gets the room key) is fetched in full once; lazy-loaded syncs only name some members.
     room.memberIds ??= new Set(await this.deps.api.members(session, room.id));
-    const encrypted = await this.crypto!.encrypt(room.id, { encryption: room.encryption!, history: room.history }, [...room.memberIds], "m.room.message", content);
+    const encrypted = await this.crypto!.encrypt(room.id, { encryption: room.encryption!, history: room.history }, [...room.memberIds], type, content);
     return this.deps.api.send(session, room.id, encrypted, "m.room.encrypted");
   }
 
@@ -1410,6 +1546,232 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       this.removeEvent(room, target.id);
       this.publish();
     });
+  }
+
+  // --- Calls --------------------------------------------------------------------------
+
+  /** The devices in a room's call now: memberships not expired, of people still in the room, one per device. */
+  private activeMembers(room: Room): MxCallMember[] {
+    const now = Date.now();
+    const seen = new Set<string>();
+    const active: MxCallMember[] = [];
+    for (const member of room.calls.values()) {
+      const membership = room.members.get(member.user)?.membership;
+      const key = `${member.user}|${member.deviceId}`;
+      if (member.expiresAt <= now || (membership !== undefined && membership !== "join") || seen.has(key)) continue;
+      seen.add(key);
+      active.push(member);
+    }
+    return active.sort((a, b) => a.createdTs - b.createdTs).slice(0, MAX_CALL_MEMBERS);
+  }
+
+  /** Other people's devices in a room's call. */
+  private othersInCall(room: Room): MxCallMember[] {
+    return this.activeMembers(room).filter((m) => m.user !== this.session!.userId);
+  }
+
+  /** The other devices in a room's call, for the media key exchange (our other devices included). */
+  private participants(room: Room): CallParticipant[] {
+    const { userId: me, deviceId } = this.session!;
+    return this.activeMembers(room)
+      .filter((m) => m.user !== me || m.deviceId !== deviceId)
+      .map((m) => ({ userId: m.user, deviceId: m.deviceId, createdTs: m.createdTs }));
+  }
+
+  /** Applies call membership changes; a call starting in a DM rings, unless we are in it on some device. */
+  private applyCalls(room: Room, changes: Map<string, MxCallMember | null>, live: boolean): void {
+    const { userId: me, deviceId } = this.session!;
+    const before = this.othersInCall(room).length;
+    for (const [key, member] of changes) {
+      if (!member) {
+        room.calls.delete(key);
+        continue;
+      }
+      room.calls.set(key, member);
+      if (member.user === me && member.deviceId === deviceId && this.call?.roomId === room.id) this.call.ownMembership(member.createdTs);
+    }
+    if (!this.dmUsers.has(room.id)) return;
+    const others = this.othersInCall(room);
+    if (others.length === 0) {
+      if (this.ringing === room.id) this.ringing = undefined;
+      return;
+    }
+    const caller = others[0]!;
+    const inCall = this.call?.roomId === room.id || this.activeMembers(room).some((m) => m.user === me);
+    if (!live || before > 0 || inCall || Date.now() - caller.createdTs > RING_WINDOW_MS) return;
+    this.ringing = room.id;
+    this.incomingCalls.emit({ conversationKey: room.id, from: this.memberName(room, caller.user), video: caller.intent === "video" });
+  }
+
+  /**
+   * The call service to use in a room: one the people already in the call
+   * use (the most used first), so we hear them, else the homeserver's own;
+   * only services on hosts the engine may reach.
+   */
+  private pickFocus(room: Room): string | undefined {
+    const counts = new Map<string, number>();
+    for (const member of this.othersInCall(room)) if (member.focus) counts.set(member.focus, (counts.get(member.focus) ?? 0) + 1);
+    const used = [...counts].sort((a, b) => b[1] - a[1]).map(([focus]) => focus);
+    return [...used, ...this.rtc.foci].find((focus) => this.hostAllowed(new URL(focus).hostname));
+  }
+
+  /** Why we cannot join a room's call, or how: encrypted or not, and through which call service. */
+  private async callReady(session: MxSession, room: Room): Promise<string | { encrypted: boolean; focus: string }> {
+    if (!session.ownDevice || session.deviceId === "") return TOKEN_CALL_NOTICE;
+    if (!room.encrypted) {
+      // As with sending, the server is asked: our state may be stale, and an encrypted room's call must not be joined unencrypted.
+      try {
+        const encryption = await this.deps.api.encryption(session, room.id);
+        if (encryption) {
+          room.encrypted = true;
+          room.encryption = encryption;
+        }
+      } catch (error) {
+        return `Could not check whether this room is encrypted, so Multicord did not join its call: ${friendly(error)}`;
+      }
+    }
+    if (room.encrypted && !this.crypto) {
+      if (!this.deps.crypto) return ENCRYPTED_CALL_NOTICE;
+      const why = this.cryptoProblem ? ` (${this.cryptoProblem})` : "";
+      return `🔒 This room is end-to-end encrypted, and so are its calls, but encryption could not start${why}. Multicord never joins an encrypted room's call unencrypted; restart Multicord to try again.`;
+    }
+    const focus = this.pickFocus(room);
+    if (focus) return { encrypted: room.encrypted, focus };
+    if (this.rtc.foci.length === 0) return `${this.host()} offers no calls: its homeserver names no call service (MatrixRTC with LiveKit), which Element Call needs as well.`;
+    return `The call service ${new URL(this.rtc.foci[0]!).host} is new to Multicord, which fixes the hosts it may reach when it starts. Restart Multicord to use it.`;
+  }
+
+  private async joinCall(local: string): Promise<void> {
+    const entry = this.byLocal.get(local) ?? "";
+    const room = entry.startsWith(CALL_ENTRY) ? this.rooms.get(entry.slice(CALL_ENTRY.length)) : undefined;
+    const session = this.session;
+    if (!room || !session || this.step !== "chat" || this.call?.roomId === room.id) return;
+    await this.leaveCall(undefined);
+    const attempt = ++this.callAttempt;
+    this.error = undefined;
+    const ready = await this.callReady(session, room);
+    if (attempt !== this.callAttempt || session !== this.session) return;
+    if (typeof ready === "string") {
+      this.error = ready;
+      return this.render();
+    }
+    const call = new MatrixCall({
+      api: this.deps.api,
+      session,
+      roomId: room.id,
+      focus: ready.focus,
+      intent: "audio",
+      e2ee: ready.encrypted ? this.crypto : undefined,
+      allowHost: (host) => this.hostAllowed(host),
+      changed: () => this.render(),
+      // A call reports failure only before it is left, and every call is left before the next one starts.
+      failed: (message) => void this.leaveCall(message),
+      log: this.log,
+    });
+    this.call = call;
+    this.callFlags = { mute: false, deaf: false, video: false, stream: false };
+    if (this.ringing === room.id) this.ringing = undefined;
+    this.render();
+    // Cleared once joined, and by leaving.
+    this.callTimer = setTimeout(() => void this.leaveCall("Could not join the call: the call service did not answer."), CALL_JOIN_TIMEOUT_MS);
+    try {
+      await call.join();
+    } catch (error) {
+      if (call !== this.call) return;
+      if (!(error instanceof HostNotAllowedError)) return this.leaveCall(`Could not join the call: ${friendly(error)}`);
+      // The LiveKit server is known only now; the next start allows it.
+      await this.saveRtc({ ...this.rtc, sfu: [...new Set([...this.rtc.sfu, error.host])].slice(-MAX_RTC_HOSTS) });
+      return this.leaveCall(
+        `The call server ${error.host} is new to Multicord, which fixes the hosts it may reach (and so calls) when it starts. Restart Multicord once to allow it; calls work from then on.`,
+      );
+    }
+    if (call !== this.call) return;
+    clearTimeout(this.callTimer);
+    void call.keys?.update(this.participants(room));
+    // A call starting in a DM rings the other side, as Element does.
+    if (this.dmUsers.has(room.id) && this.othersInCall(room).length === 0) {
+      void this.sendContent(session, room, ringContent(call.membershipEventId!, "audio", Date.now()), RTC_NOTIFICATION_TYPE).catch((error: unknown) => this.log(`Ring not sent: ${friendly(error)}`));
+    }
+    this.render();
+  }
+
+  /** Leaves our call, if any: the view hangs up at once, the membership goes after. */
+  private async leaveCall(error: string | undefined): Promise<void> {
+    const call = this.call;
+    if (!call) return;
+    this.callAttempt++;
+    this.call = undefined;
+    clearTimeout(this.callTimer);
+    if (error) this.error = error;
+    this.render();
+    await call.leave();
+  }
+
+  private setCallFlags(flags: { mute: boolean; deaf: boolean; video: boolean; stream: boolean }): void {
+    if (!this.call) return;
+    this.callFlags = { mute: flags.mute, deaf: flags.deaf, video: flags.video, stream: flags.stream };
+    this.render();
+  }
+
+  /** Who is in a room's call, one row per person; people on a call service we do not use cannot be heard, and say so. */
+  private callMembers(room: Room): NativeVoiceMember[] {
+    const shown = new Set<string>();
+    const rows: NativeVoiceMember[] = [];
+    for (const member of this.activeMembers(room)) {
+      if (shown.has(member.user)) continue;
+      shown.add(member.user);
+      const elsewhere = this.call?.roomId === room.id && member.focus !== undefined && member.focus !== this.call.focus;
+      const row: NativeVoiceMember = { name: `${this.memberName(room, member.user)}${elsewhere ? ` · ${OTHER_SERVER_LABEL}` : ""}`, muted: false, video: false };
+      const avatar = this.avatars.get(room.members.get(member.user)?.avatar ?? "");
+      if (avatar) row.avatarUrl = avatar;
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /** The sidebar's calls: ours first, then ongoing ones; and a way to start one in the open room. */
+  private callItems(): NativeSidebarItem[] {
+    const ours = this.call?.roomId;
+    const rooms = [...this.rooms.values()]
+      .filter((room) => room.id === ours || this.activeMembers(room).length > 0)
+      .sort((a, b) => Number(b.id === ours) - Number(a.id === ours) || b.lastActivity - a.lastActivity);
+    const items = rooms.map(
+      (room): NativeSidebarItem => ({
+        id: this.local(CALL_ENTRY + room.id),
+        name: this.title(room),
+        kind: "voice",
+        unread: room.id === this.ringing,
+        mentions: room.id === this.ringing ? 1 : 0,
+        active: room.id === ours,
+        members: this.callMembers(room),
+      }),
+    );
+    const open = this.selectedRoom();
+    if (open && !rooms.includes(open) && this.rtc.foci.length > 0) {
+      items.push({ id: this.local(CALL_ENTRY + open.id), name: `Start a call in ${this.title(open)}`, kind: "voice", unread: false, mentions: 0, active: false });
+    }
+    return items;
+  }
+
+  private voiceSession(): NativeVoiceSession | null {
+    const call = this.call;
+    if (!call) return null;
+    // Leaving the room leaves its call, so the room is there.
+    const room = this.rooms.get(call.roomId)!;
+    const voice: NativeVoiceSession = { channelId: this.local(CALL_ENTRY + call.roomId), channelName: this.title(room), guildName: "", ...this.callFlags };
+    if (call.grant) {
+      voice.url = call.grant.url;
+      voice.token = call.grant.jwt;
+    }
+    // Encrypted or not is decided once, when joining; the view then never connects without encryption.
+    if (call.keys) voice.e2ee = { keys: call.keys.keys() };
+    return voice;
+  }
+
+  /** The banner while a DM call rings and nothing else needs saying. */
+  private ringText(): string | undefined {
+    const room = this.ringing ? this.rooms.get(this.ringing) : undefined;
+    return room ? `📞 ${this.title(room)} is calling. Join under Calls in the sidebar.` : undefined;
   }
 
   // --- Output -------------------------------------------------------------------
@@ -1532,6 +1894,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (status && !status.verified) security.push(entry(VERIFY_ENTRY, "🔑 Verify this device"), entry(DEVICE_ENTRY, "📱 Verify with another device"));
     if (status?.verified && status.restorable) security.push(entry(VERIFY_ENTRY, "🔑 Restore older messages"));
     if (security.length) sidebar.push(category("security", "Encryption"), ...security);
+    const calls = this.callItems();
+    if (calls.length) sidebar.push(category("calls", "Calls"), ...calls);
     if (dms.length) sidebar.push(category("dms", "Direct messages"), ...dms.map((r) => this.sidebarItem(r, true)));
     if (rooms.length) sidebar.push(category("rooms", "Rooms"), ...rooms.map((r) => this.sidebarItem(r, false)));
     const room = this.selectedRoom();
@@ -1556,8 +1920,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             ...(locked ? { locked } : {}),
           }
         : null,
-      voice: null,
-      error: this.error,
+      voice: this.voiceSession(),
+      error: this.error ?? this.ringText(),
     };
   }
 

@@ -2,7 +2,7 @@
 // the network is untrusted: ids, names and bodies are checked for type and
 // length, and whatever does not fit is dropped rather than passed on.
 
-import type { MxContent, MxCryptoSync, MxEncryption, MxEvent, MxMember, MxPage, MxRoomState, MxRoomUpdate, MxSync } from "./api";
+import type { MxCallMember, MxContent, MxCryptoSync, MxEncryption, MxEvent, MxMember, MxPage, MxRoomState, MxRoomUpdate, MxSync } from "./api";
 
 /** Room ids are used in rail keys (at most 200 characters with the instance prefix). */
 export const MAX_ROOM_ID = 150;
@@ -210,18 +210,99 @@ export function applyState(state: MxRoomState, raw: unknown): void {
   }
 }
 
+// --- Calls (MatrixRTC) ------------------------------------------------------------
+
+/** The call membership state event Element Call sends, one per device (MSC3401/MSC4143). */
+export const CALL_MEMBER_TYPE = "org.matrix.msc3401.call.member";
+/** A membership counts this long after it started unless its device renews it, as Element Call's default. */
+export const CALL_MEMBERSHIP_EXPIRY_MS = 4 * 3600 * 1000;
+/** Longest lifetime a membership may claim; calls renew long before this. */
+const MAX_CALL_EXPIRES_MS = 7 * 24 * 3600 * 1000;
+const MAX_STATE_KEY = 600;
+const MAX_SERVICE_URL = 2048;
+const MAX_FOCI = 10;
+/** Calls with more devices than this show only the first ones. */
+export const MAX_CALL_MEMBERS = 100;
+
+/** A LiveKit service URL: https, no credentials, query or fragment, no trailing slash (paths are appended to it). */
+export function serviceUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > MAX_SERVICE_URL) return undefined;
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash) return undefined;
+    return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The LiveKit services in a list of MatrixRTC transports (foci), in order, without repeats. */
+export function liveKitServices(value: unknown): string[] {
+  const urls = list(value, MAX_FOCI).flatMap((focus) => (isRecord(focus) && focus.type === "livekit" ? (serviceUrl(focus.livekit_service_url) ?? []) : []));
+  return [...new Set(urls)];
+}
+
+const timestamp = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
+
+/**
+ * A call membership state event: its state key, and the membership, or null
+ * when the device left (empty content) or the event is not a membership of
+ * the room's call (another application, a breakout call, a malformed or the
+ * deprecated "memberships" form). Undefined when it is no such event.
+ */
+export function parseCallMember(raw: unknown): { stateKey: string; member: MxCallMember | null } | undefined {
+  if (!isRecord(raw) || raw.type !== CALL_MEMBER_TYPE || typeof raw.state_key !== "string" || raw.state_key.length > MAX_STATE_KEY) return undefined;
+  const stateKey = raw.state_key;
+  const user = userId(raw.sender);
+  const ts = timestamp(raw.origin_server_ts);
+  const content = isRecord(raw.content) ? raw.content : {};
+  const { device_id: deviceId, focus_active: active, created_ts: created, expires } = content;
+  const valid =
+    user !== undefined &&
+    ts !== undefined &&
+    content.application === "m.call" &&
+    content.call_id === "" &&
+    (content.scope === undefined || content.scope === "m.room") &&
+    typeof deviceId === "string" &&
+    deviceId !== "" &&
+    deviceId.length <= MAX_ID &&
+    isRecord(active) &&
+    typeof active.type === "string" &&
+    (created === undefined || timestamp(created) !== undefined) &&
+    (expires === undefined || (typeof expires === "number" && Number.isFinite(expires) && expires > 0));
+  if (!valid) return { stateKey, member: null };
+  const createdTs = (created as number | undefined) ?? ts;
+  const member: MxCallMember = { user, deviceId, createdTs, expiresAt: createdTs + Math.min((expires as number | undefined) ?? CALL_MEMBERSHIP_EXPIRY_MS, MAX_CALL_EXPIRES_MS) };
+  const [focus] = liveKitServices(content.foci_preferred);
+  if (focus) member.focus = focus;
+  const intent = content["m.call.intent"];
+  if (typeof intent === "string" && intent !== "" && intent.length <= 32) member.intent = intent;
+  return { stateKey, member };
+}
+
 function parseRoom(id: string, raw: Record<string, unknown>): MxRoomUpdate {
   const state = emptyState();
-  for (const event of list(isRecord(raw.state) ? raw.state.events : undefined, MAX_EVENTS)) applyState(state, event);
+  // A Map: state keys are the sender's to choose, "__proto__" included.
+  const calls = new Map<string, MxCallMember | null>();
+  const call = (event: unknown): void => {
+    const parsed = parseCallMember(event);
+    if (parsed && (calls.has(parsed.stateKey) || calls.size < MAX_CALL_MEMBERS * 2)) calls.set(parsed.stateKey, parsed.member);
+  };
+  for (const event of list(isRecord(raw.state) ? raw.state.events : undefined, MAX_EVENTS)) {
+    applyState(state, event);
+    call(event);
+  }
   const timelineRaw = isRecord(raw.timeline) ? raw.timeline : {};
   const timeline: MxEvent[] = [];
   for (const event of list(timelineRaw.events, MAX_EVENTS)) {
     // State changes can arrive in the timeline too; they apply in order.
     applyState(state, event);
+    call(event);
     const parsed = parseEvent(event);
     if (parsed) timeline.push(parsed);
   }
   const update: MxRoomUpdate = { roomId: id, state, timeline, limited: timelineRaw.limited === true };
+  if (calls.size) update.calls = calls;
   if (typeof timelineRaw.prev_batch === "string" && timelineRaw.prev_batch.length <= MAX_TOKEN) update.prevBatch = timelineRaw.prev_batch;
   if (isRecord(raw.unread_notifications)) {
     update.unread = { notifications: count(raw.unread_notifications.notification_count), highlights: count(raw.unread_notifications.highlight_count) };

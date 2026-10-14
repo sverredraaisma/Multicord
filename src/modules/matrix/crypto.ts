@@ -11,6 +11,7 @@
 
 import {
   BackupDecryptionKey,
+  CollectStrategy,
   DecryptionErrorCode,
   DecryptionSettings,
   DeviceId,
@@ -27,6 +28,7 @@ import {
   TrustRequirement,
   UserId,
   VerificationRequestPhase,
+  type DecryptedToDeviceEvent,
   type KeysBackupRequest,
   type KeysClaimRequest,
   type KeysQueryRequest,
@@ -107,7 +109,26 @@ export interface E2ee {
   onVerification(callback: (verification: Verification) => void): void;
   /** Calls back when status() may have changed by itself, e.g. after a verification. */
   onStatus(callback: () => void): void;
+  /** Sends an event to these devices, each copy encrypted with Olm; devices without keys are skipped. */
+  sendToDevices(type: string, targets: DeviceRef[], content: Record<string, unknown>): Promise<void>;
+  /**
+   * Calls back with to-device events of this type that arrived encrypted
+   * with Olm, naming the device whose keys they were encrypted with (looked
+   * up by its key, not taken from the event). Events sent in the clear, or
+   * from a device we cannot find, are dropped.
+   */
+  onToDevice(type: string, callback: (event: SecureToDevice) => void): void;
   close(): void;
+}
+
+export interface DeviceRef {
+  userId: string;
+  deviceId: string;
+}
+
+/** A to-device event that arrived Olm-encrypted, from a known device. */
+export interface SecureToDevice extends DeviceRef {
+  content: Record<string, unknown>;
 }
 
 const HISTORY: Record<string, HistoryVisibility> = {
@@ -218,6 +239,8 @@ export class MatrixE2ee implements E2ee {
   private statusCallback: () => void = () => {};
   /** Verifications still going, checked for timeouts at each sync. */
   private readonly flows = new Map<string, SasFlow>();
+  private readonly toDevice = new Map<string, (event: SecureToDevice) => void>();
+  private txn = 0;
 
   constructor(
     private readonly machine: OlmMachine,
@@ -281,7 +304,10 @@ export class MatrixE2ee implements E2ee {
       sync.fallbackKeys ? new Set(sync.fallbackKeys) : undefined,
       this.settings(),
     );
-    for (const event of processed) await this.verificationRequested(event);
+    for (const event of processed) {
+      await this.verificationRequested(event);
+      await this.encryptedToDevice(event);
+    }
     // Each sync returns within half a minute, often enough to notice a verification gone quiet.
     for (const [id, flow] of this.flows) if (!(await flow.expireIfDue())) this.flows.delete(id);
     await this.flush();
@@ -304,6 +330,61 @@ export class MatrixE2ee implements E2ee {
     const flow = new SasFlow(request, this.flowHost(), name ? `${name} (${deviceId})` : deviceId);
     this.flows.set(flowId, flow);
     this.verificationCallback?.(flow);
+  }
+
+  onToDevice(type: string, callback: (event: SecureToDevice) => void): void {
+    this.toDevice.set(type, callback);
+  }
+
+  /** Hands an Olm-encrypted to-device event to whoever listens for its type, with the device that sent it. */
+  private async encryptedToDevice(event: ProcessedToDeviceEvent): Promise<void> {
+    if (event.type !== ProcessedToDeviceEventType.Decrypted) return;
+    const decrypted = event as DecryptedToDeviceEvent;
+    // The library wrote this JSON from the plaintext it decrypted; the fields are still the sender's.
+    const raw: unknown = JSON.parse(decrypted.rawEvent);
+    if (!isRecord(raw) || typeof raw.type !== "string" || !isRecord(raw.content)) return;
+    const callback = this.toDevice.get(raw.type);
+    if (!callback) return;
+    const info = decrypted.encryptionInfo;
+    const userId = info.sender.toString();
+    // The library names the device when it knows the key the message came with; otherwise it is looked up.
+    const deviceId = info.senderDevice?.toString() ?? (await this.deviceWithKey(userId, info.senderCurve25519Key));
+    if (!deviceId) return this.options.log?.(`Dropped ${raw.type.slice(0, 64)} from an unknown device`);
+    callback({ userId, deviceId, content: raw.content });
+  }
+
+  /** The user's device with this Curve25519 key, after asking the server for the user's devices. */
+  private async deviceWithKey(userId: string, key: string): Promise<string | undefined> {
+    // The library consumes the UserId objects it is given, so each call gets its own.
+    await this.machine.updateTrackedUsers([new UserId(userId)]);
+    await this.send(this.machine.queryKeysForUsers([new UserId(userId)]));
+    const devices = (await this.machine.getUserDevices(new UserId(userId))).devices();
+    return devices.find((device) => device.curve25519Key?.toBase64() === key)?.deviceId.toString();
+  }
+
+  async sendToDevices(type: string, targets: DeviceRef[], content: Record<string, unknown>): Promise<void> {
+    const users = [...new Set(targets.map((target) => target.userId))];
+    await this.machine.updateTrackedUsers(userIds(users));
+    // Learn the devices (keys/query), then set up Olm sessions with those that have none.
+    await this.flush();
+    const claim = await this.machine.getMissingSessions(userIds(users));
+    if (claim) await this.send(claim);
+    const byUser = new Map<string, [string, unknown][]>();
+    for (const target of targets) {
+      const user = toUserId(target.userId);
+      const device = user && (await this.machine.getDevice(user, new DeviceId(target.deviceId)));
+      if (!device || device.isBlacklisted()) continue;
+      try {
+        const encrypted: unknown = JSON.parse(await device.encryptToDeviceEvent(type, content, CollectStrategy.allDevices()));
+        byUser.set(target.userId, [...(byUser.get(target.userId) ?? []), [target.deviceId, encrypted]]);
+      } catch (error) {
+        this.options.log?.(`Not sent to a device: ${messageOf(error)}`);
+      }
+    }
+    if (byUser.size === 0) return;
+    // fromEntries: device ids are the other side's to choose, "__proto__" included.
+    const messages = Object.fromEntries([...byUser].map(([user, devices]) => [user, Object.fromEntries(devices)]));
+    await this.options.http("PUT", `/v3/sendToDevice/m.room.encrypted/mc${Date.now().toString(36)}.${++this.txn}`, { messages });
   }
 
   private flowHost(): FlowHost {

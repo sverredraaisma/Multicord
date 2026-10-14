@@ -1,5 +1,5 @@
-import { MatrixError, type MatrixApi, type MxEncryption, type MxLoginFlows, type MxPage, type MxSession, type MxSync } from "./api";
-import { eventId, isRecord, parseEncryption, parseMembers, parseMxc, parsePage, parseSync, userId } from "./events";
+import { MatrixError, type MatrixApi, type MxEncryption, type MxLiveKitGrant, type MxLoginFlows, type MxOpenIdToken, type MxPage, type MxSession, type MxSync } from "./api";
+import { CALL_MEMBER_TYPE, eventId, isRecord, liveKitServices, parseEncryption, parseMembers, parseMxc, parsePage, parseSync, userId } from "./events";
 
 const CLIENT = "/_matrix/client/v3";
 /** Timeline events kept per room in a sync, and the event types asked for. */
@@ -19,14 +19,15 @@ const TIMELINE_TYPES = [
 /**
  * What /sync returns: members only as needed (lazy loading), no presence,
  * typing or receipts, and of the account data only the DM list. To-device
- * messages and device lists come unfiltered, for encryption.
+ * messages and device lists come unfiltered, for encryption. The timeline
+ * also carries call memberships as they change.
  */
 export const SYNC_FILTER = JSON.stringify({
   presence: { not_types: ["*"] },
   account_data: { types: ["m.direct"] },
   room: {
     state: { lazy_load_members: true },
-    timeline: { limit: TIMELINE_LIMIT, types: TIMELINE_TYPES, lazy_load_members: true },
+    timeline: { limit: TIMELINE_LIMIT, types: [...TIMELINE_TYPES, CALL_MEMBER_TYPE], lazy_load_members: true },
     ephemeral: { not_types: ["*"] },
     account_data: { not_types: ["*"] },
   },
@@ -271,5 +272,88 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
     async logout(session) {
       await authed(session, `${CLIENT}/logout`, { method: "POST", body: {} });
     },
+
+    async rtcFoci(serverUrl) {
+      const server = httpsBase(serverUrl);
+      if (!server) return [];
+      const response = await fetchFn(`${new URL(server).origin}/.well-known/matrix/client`, { headers: { Accept: "application/json" } });
+      const body: unknown = response.ok ? await response.json().catch(() => undefined) : undefined;
+      return isRecord(body) ? liveKitServices(body["org.matrix.msc4143.rtc_foci"]) : [];
+    },
+
+    async rtcTransports(session) {
+      try {
+        const body = await authed(session, `${UNSTABLE_RTC}/rtc/transports`);
+        return liveKitServices(body.rtc_transports);
+      } catch (error) {
+        // Most homeservers do not have the endpoint (yet).
+        if (error instanceof MatrixError && (error.status === 404 || error.status === 400 || error.status === 405)) return [];
+        throw error;
+      }
+    },
+
+    async supports(session, feature) {
+      const body = await authed(session, "/_matrix/client/versions");
+      return isRecord(body.unstable_features) && body.unstable_features[feature] === true;
+    },
+
+    async openIdToken(session): Promise<MxOpenIdToken> {
+      const body = await authed(session, `${CLIENT}/user/${encodeURIComponent(session.userId)}/openid/request_token`, { method: "POST", body: {} });
+      const { access_token: accessToken, token_type: tokenType, matrix_server_name: serverName, expires_in: expiresIn } = body;
+      const text = (value: unknown, max: number): value is string => typeof value === "string" && value !== "" && value.length <= max;
+      if (!text(accessToken, MAX_ACCESS_TOKEN) || !text(tokenType, 64) || !text(serverName, 255) || typeof expiresIn !== "number" || !Number.isSafeInteger(expiresIn) || expiresIn <= 0) {
+        throw new Error("The homeserver sent an unreadable OpenID token");
+      }
+      return { access_token: accessToken, token_type: tokenType, matrix_server_name: serverName, expires_in: expiresIn };
+    },
+
+    async sendState(session, roomId, type, stateKey, content) {
+      const body = await authed(session, `${room(roomId)}/state/${encodeURIComponent(type)}/${encodeURIComponent(stateKey)}`, { method: "PUT", body: content });
+      const id = eventId(body.event_id);
+      if (!id) throw new Error("The homeserver sent an unreadable response");
+      return id;
+    },
+
+    async sendDelayedState(session, roomId, type, stateKey, content, delayMs) {
+      const query = { [`${DELAYED_EVENTS}.delay`]: String(delayMs) };
+      const body = await authed(session, `${room(roomId)}/state/${encodeURIComponent(type)}/${encodeURIComponent(stateKey)}`, { method: "PUT", body: content, query });
+      const id = body.delay_id;
+      if (typeof id !== "string" || id === "" || id.length > 255) throw new Error("The homeserver sent an unreadable response");
+      return id;
+    },
+
+    async updateDelayed(session, delayId, action) {
+      const path = `/_matrix/client/unstable/${DELAYED_EVENTS}/delayed_events/${encodeURIComponent(delayId)}`;
+      try {
+        await authed(session, `${path}/${action}`, { method: "POST", body: {} });
+      } catch (error) {
+        // Servers from before the action moved into the path take it in the body.
+        if (!(error instanceof MatrixError && error.errcode === "M_UNRECOGNIZED")) throw error;
+        await authed(session, path, { method: "POST", body: { action } });
+      }
+    },
+
+    async liveKitGrant(serviceUrl, roomId, deviceId, token): Promise<MxLiveKitGrant> {
+      const body = await call(serviceUrl, "/sfu/get", { method: "POST", body: { room: roomId, openid_token: token, device_id: deviceId } });
+      const url = liveKitUrl(body.url);
+      const jwt = body.jwt;
+      if (!url || typeof jwt !== "string" || !/^[A-Za-z0-9_.-]{1,8192}$/.test(jwt)) throw new Error("The call service sent an unreadable answer");
+      return { url, jwt };
+    },
   };
+}
+
+const UNSTABLE_RTC = "/_matrix/client/unstable/org.matrix.msc4143";
+/** Delayed events (MSC4140): the leave Element Call schedules, sent by the server should the client vanish. */
+const DELAYED_EVENTS = "org.matrix.msc4140";
+
+/** A LiveKit server's address: wss (or https, which LiveKit turns into wss), no credentials. */
+export function liveKitUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 2048) return undefined;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "wss:" || url.protocol === "https:") && !url.username && !url.password ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
 }

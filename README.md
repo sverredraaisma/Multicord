@@ -92,6 +92,13 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 
   With an access token, Multicord is using Element's own device, so encrypted rooms stay locked and nothing is ever sent unencrypted into them.
 
+  **Calls.** Calls work the way Element Call makes them (MatrixRTC with LiveKit), in the native view with the same controls as Fluxer calls:
+  - ongoing calls and who is in them show under Calls, a call can be started in any room, and calls starting in a DM ring;
+  - in encrypted rooms, audio and video are end-to-end encrypted with per-device keys exchanged over Olm, as Element Call does, and Multicord never joins an encrypted room's call unencrypted;
+  - the engine's host lock includes the call service. The call's media server is learned on the first call and allowed after one restart.
+
+  Calls haven't been tested against real Element Call clients yet, and access-token sessions can't make calls.
+
   Telegram gives API credentials per app (my.telegram.org, "API development tools"). Builds can include them via the `MULTICORD_TELEGRAM_API_ID` and `MULTICORD_TELEGRAM_API_HASH` environment variables; otherwise Multicord asks for an API ID and hash on first sign-in and stores them encrypted.
 - **Component gallery:** `npm run gallery` opens `dist/gallery.html`, which shows every component with sample data. Use it to check designs without signing in anywhere.
 - **Extra platforms** as web views (shallow tier: one rail icon, unread state from the page title). Settings offers the open-source platforms from the study by name, each with its own label and colour and its public instance prefilled (self-hosted instances take their own address): Matrix (through Element web), Stoat, Spacebar and Nerimity, plus any other web chat app. Settings writes them to `platforms.json` in the app's user-data folder (`%APPDATA%\Multicord` on Windows), which can also be edited by hand:
