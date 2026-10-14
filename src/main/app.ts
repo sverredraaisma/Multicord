@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   app,
   BaseWindow,
@@ -52,7 +53,7 @@ import { GlobalShortcuts, inputModifiers } from "./shortcuts";
 import { inputKeyCode } from "../shared/keys";
 import { listProcesses, StreamerWatch } from "./streamer";
 import { Updater } from "./updater";
-import { decideWindowOpen, isPermissionAllowed } from "./sessionPolicy";
+import { decideWindowOpen, isPermissionAllowed, isPlatformPage } from "./sessionPolicy";
 import { toChromeUserAgent } from "./userAgent";
 import { parseWindowState, serializeWindowState } from "./windowState";
 
@@ -90,13 +91,24 @@ function secureView(preload?: string, partition?: string): WebContentsView {
   });
 }
 
-/** Platform sessions; notifications follow the user's setting at the time they are asked for. */
-export function configureSession(ses: Session, notificationsAllowed: () => boolean = () => true): void {
-  const allowed = (permission: string): boolean =>
-    isPermissionAllowed(permission) && (permission !== "notifications" || notificationsAllowed());
+/**
+ * Platform sessions: permissions only for the platform's own pages, and
+ * notifications as the user's settings say at the time they are asked for.
+ */
+export function configureSession(
+  ses: Session,
+  platformUrl: string,
+  notificationsAllowed: () => boolean = () => true,
+  /** Multicord's own page shown in the view (native modules), which gets the platform's permissions too. */
+  ownPage?: string,
+): void {
+  const page = (url: string | undefined): boolean => isPlatformPage(url, platformUrl) || (ownPage !== undefined && url !== undefined && url.split(/[?#]/)[0] === ownPage);
+  const allowed = (permission: string, url: string | undefined): boolean =>
+    page(url) && isPermissionAllowed(permission) && (permission !== "notifications" || notificationsAllowed());
   ses.setUserAgent(toChromeUserAgent(ses.getUserAgent(), APP_NAME));
-  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(allowed(permission)));
-  ses.setPermissionCheckHandler((_wc, permission) => allowed(permission));
+  ses.setPermissionRequestHandler((_wc, permission, callback, details) => callback(allowed(permission, details.requestingUrl)));
+  // Checks name the frame's URL in details; its origin alone says nothing for file: pages.
+  ses.setPermissionCheckHandler((_wc, permission, requestingOrigin, details) => allowed(permission, details?.requestingUrl ?? requestingOrigin));
 }
 
 /**
@@ -302,7 +314,8 @@ export async function createShell(
       continue;
     }
     const ses = session.fromPartition(def.partition);
-    configureSession(ses, () => notificationsOn(def.id));
+    const native = module.manifest.engine !== undefined;
+    configureSession(ses, def.url, () => notificationsOn(def.id), native ? pathToFileURL(path.join(paths.dist, "native.html")).href : undefined);
     ses.setSpellCheckerEnabled(general().spellcheck);
     platformSessions.push(ses);
     const { preload } = module.manifest;

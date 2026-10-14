@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { pathToFileURL } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -146,10 +147,28 @@ describe("createShell", () => {
     const ses = session.fromPartition("persist:discord");
     expect(ses.setUserAgent.mock.calls[0]![0]).not.toMatch(/Electron|Multicord/);
     const callback = vi.fn();
-    (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "notifications", callback);
-    (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "geolocation", callback);
-    expect(callback.mock.calls).toEqual([[true], [false]]);
-    expect((ses.permissionCheckHandler as (...a: unknown[]) => boolean)(null, "media")).toBe(true);
+    const request = ses.permissionRequestHandler as (...a: unknown[]) => void;
+    const check = ses.permissionCheckHandler as (...a: unknown[]) => boolean;
+    const from = (requestingUrl: string) => ({ requestingUrl });
+    request(null, "notifications", callback, from("https://discord.com/channels/@me"));
+    request(null, "geolocation", callback, from("https://discord.com/app"));
+    // A page the view navigated to, or a foreign frame, gets nothing.
+    request(null, "media", callback, from("https://evil.example/"));
+    request(null, "media", callback, from("http://discord.com/"));
+    request(null, "media", callback, {});
+    expect(callback.mock.calls).toEqual([[true], [false], [false], [false], [false]]);
+    expect(check(null, "media", "https://discord.com")).toBe(true);
+    expect(check(null, "media", "https://cdn.discord.com")).toBe(true);
+    expect(check(null, "media", "https://evil.example")).toBe(false);
+
+    // Native modules show Multicord's own page, which needs the microphone for calls.
+    const fluxer = session.fromPartition("persist:fluxer").permissionCheckHandler as (...a: unknown[]) => boolean;
+    const own = pathToFileURL(path.join(DIST, "native.html")).href;
+    expect(fluxer(null, "media", own)).toBe(true);
+    expect(fluxer(null, "media", `${own}?x#y`)).toBe(true);
+    expect(fluxer(null, "media", pathToFileURL(path.join(DIST, "other.html")).href)).toBe(false);
+    expect(fluxer(null, "media", undefined)).toBe(false);
+    expect(check(null, "media", own)).toBe(false); // Discord shows no page of ours
   });
 
   it("restores saved window state", async () => {
@@ -796,13 +815,13 @@ describe("settings", () => {
   it("turns notifications off for platform pages and native notifications", async () => {
     const { handle } = await shellWith();
     const ses = session.fromPartition("persist:discord");
-    const check = ses.permissionCheckHandler as (...a: unknown[]) => boolean;
-    expect(check(null, "notifications")).toBe(true);
+    const check = (permission: string) => (ses.permissionCheckHandler as (...a: unknown[]) => boolean)(null, permission, "https://discord.com");
+    expect(check("notifications")).toBe(true);
     handle.settingsStore.update({ general: { notifications: false } });
-    expect(check(null, "notifications")).toBe(false);
-    expect(check(null, "media")).toBe(true);
+    expect(check("notifications")).toBe(false);
+    expect(check("media")).toBe(true);
     const callback = vi.fn();
-    (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "notifications", callback);
+    (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "notifications", callback, { requestingUrl: "https://discord.com/app" });
     expect(callback).toHaveBeenCalledWith(false);
 
     const fluxer = handle.adapters.get("fluxer") as unknown as { notifications: { emit(n: unknown): void } };

@@ -85,3 +85,18 @@ describe("messages layout", () => {
     expect(splitContent({ x: 0, y: 0, width: 200, height: 10 }).conversation.width).toBe(0);
   });
 });
+
+describe("isPlatformPage", () => {
+  it("accepts the platform's own https site, and siblings under a parent it owns", async () => {
+    const { isPlatformPage } = await import("../../src/main/sessionPolicy");
+    expect(isPlatformPage("https://discord.com/app", "https://discord.com/app")).toBe(true);
+    expect(isPlatformPage("https://media.discord.com/x", "https://discord.com/app")).toBe(true);
+    expect(isPlatformPage("https://call.element.io/room", "https://app.element.io")).toBe(true);
+    expect(isPlatformPage("https://evildiscord.com/", "https://discord.com/app")).toBe(false);
+    expect(isPlatformPage("https://other.github.io/", "https://me.github.io/chat")).toBe(false);
+    expect(isPlatformPage("https://me.github.io/x", "https://me.github.io/chat")).toBe(true);
+    expect(isPlatformPage("http://discord.com/", "https://discord.com/app")).toBe(false);
+    expect(isPlatformPage("not a url", "https://discord.com/app")).toBe(false);
+    expect(isPlatformPage(undefined, "https://discord.com/app")).toBe(false);
+  });
+});
