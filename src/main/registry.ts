@@ -1,13 +1,17 @@
-import type { PlatformAdapter, RailServer } from "../shared/adapter";
+import type { DirectConversation, PlatformAdapter, RailServer } from "../shared/adapter";
 import type { RailEntry, RailState } from "../shared/ipc";
 import { Emitter } from "./adapters/emitter";
 
 export const HOME_KEY = "home";
+export const DM_PREFIX = "dm:";
+/** Unread DMs shown as rail bubbles; mentions beyond this fold into the home badge. */
+export const MAX_DM_BUBBLES = 10;
 
 interface Registered {
   adapter: PlatformAdapter;
   name: string;
   servers: RailEntry[];
+  directs: DirectConversation[];
 }
 
 export function railKey(platform: string, local: string): string {
@@ -27,9 +31,9 @@ export class PlatformRegistry {
   private activeKey: string | null = null;
 
   async add(adapter: PlatformAdapter, name: string): Promise<void> {
-    const registered: Registered = { adapter, name, servers: [] };
+    const registered: Registered = { adapter, name, servers: [], directs: [] };
     this.platforms.set(adapter.platform, registered);
-    const apply = (servers: RailServer[]): void => {
+    const applyServers = (servers: RailServer[]): void => {
       registered.servers = servers.map((s) => ({
         key: railKey(adapter.platform, s.key),
         platform: adapter.platform,
@@ -41,8 +45,14 @@ export class PlatformRegistry {
       }));
       this.emit();
     };
-    adapter.onServersChanged(apply);
-    apply(await adapter.listServers());
+    const applyDirects = (directs: DirectConversation[]): void => {
+      registered.directs = directs;
+      this.emit();
+    };
+    adapter.onServersChanged(applyServers);
+    adapter.onDirectsChanged(applyDirects);
+    registered.directs = await adapter.listDirectConversations();
+    applyServers(await adapter.listServers());
   }
 
   onChange(cb: (state: RailState) => void): () => void {
@@ -51,17 +61,32 @@ export class PlatformRegistry {
 
   state(): RailState {
     const entries: RailEntry[] = [];
-    for (const { adapter, name, servers } of this.platforms.values()) {
+    for (const { adapter, name, servers, directs } of this.platforms.values()) {
       if (adapter.openHome) {
+        const unreadDms = directs.filter((d) => d.unread).sort((a, b) => b.lastActivity - a.lastActivity);
+        const shown = unreadDms.slice(0, MAX_DM_BUBBLES);
+        const hidden = unreadDms.slice(MAX_DM_BUBBLES);
         const badge = adapter.homeBadge?.() ?? { unread: false, mentions: 0 };
+        const hiddenMentions = hidden.reduce((sum, d) => sum + d.mentions, 0);
         entries.push({
           key: railKey(adapter.platform, HOME_KEY),
           platform: adapter.platform,
           kind: "home",
           name: `${name} direct messages`,
-          unread: badge.unread,
-          mentions: badge.mentions,
+          unread: badge.unread || hidden.length > 0,
+          mentions: badge.mentions + hiddenMentions,
         });
+        for (const dm of shown) {
+          entries.push({
+            key: railKey(adapter.platform, DM_PREFIX + dm.key),
+            platform: adapter.platform,
+            kind: "dm",
+            name: dm.title,
+            iconUrl: dm.avatarUrl,
+            unread: dm.unread,
+            mentions: dm.mentions,
+          });
+        }
       }
       entries.push(...servers);
     }
@@ -83,6 +108,7 @@ export class PlatformRegistry {
     if (!parts || !registered) return undefined;
     const { adapter } = registered;
     if (parts.local === HOME_KEY && adapter.openHome) await adapter.openHome();
+    else if (parts.local.startsWith(DM_PREFIX)) await adapter.openConversation(parts.local.slice(DM_PREFIX.length));
     else await adapter.openServer(parts.local);
     this.activeKey = key;
     this.emit();

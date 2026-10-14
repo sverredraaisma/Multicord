@@ -1,14 +1,15 @@
-import type { HomeBadge } from "../../shared/adapter";
+import type { DirectConversation, HomeBadge } from "../../shared/adapter";
 import { isSnowflake, type DiscordState, type DiscordTarget, type TitleBadge } from "../../shared/ipc";
 import { WebViewAdapter } from "./webViewAdapter";
 
 /**
  * Hidden-engine adapter: Discord's web client does all the work; the preload
- * reports its guild bar and we send navigation back.
+ * reports its guild bar and DMs, and we send navigation back.
  */
 export class DiscordAdapter extends WebViewAdapter {
   readonly capabilities = { directMessages: true, messagePreviews: false, voice: true, screenShare: true };
   private badge: TitleBadge = { unread: false, mentions: 0 };
+  private directs: DirectConversation[] | undefined;
 
   constructor(private readonly navigate: (target: DiscordTarget) => void) {
     super("discord", { platform: "discord", instance: "discord.com", accountId: "default" });
@@ -16,6 +17,18 @@ export class DiscordAdapter extends WebViewAdapter {
 
   update(state: DiscordState): void {
     this.badge = state.badge;
+    if (state.dms) {
+      this.directs = state.dms.map((dm) => ({
+        key: dm.id,
+        account: this.account,
+        title: dm.title,
+        avatarUrl: dm.avatarUrl,
+        lastActivity: dm.lastActivity,
+        unread: dm.unread,
+        mentions: dm.mentions,
+      }));
+      this.directsChanged.emit(this.directs);
+    }
     this.setServers(
       state.guilds.map((g) => ({
         key: g.id,
@@ -28,8 +41,16 @@ export class DiscordAdapter extends WebViewAdapter {
     );
   }
 
-  /** The title count covers all mentions; whatever the guilds do not account for are DMs. */
+  override async listDirectConversations(): Promise<DirectConversation[]> {
+    return this.directs ?? [];
+  }
+
+  /**
+   * Mentions not covered by DM bubbles. Once DMs are known they carry their
+   * own badges; before that, whatever the title count leaves after guilds.
+   */
   homeBadge(): HomeBadge {
+    if (this.directs) return { unread: false, mentions: 0 };
     const guildMentions = this.servers.reduce((sum, s) => sum + s.mentions, 0);
     const mentions = Math.max(0, this.badge.mentions - guildMentions);
     return { unread: mentions > 0, mentions };
@@ -44,8 +65,8 @@ export class DiscordAdapter extends WebViewAdapter {
     this.navigate(key);
   }
 
-  async openConversation(_key: string): Promise<void> {
-    // DM bubbles (study level 2) are the next milestone.
-    throw new Error("Discord conversations are not supported yet");
+  async openConversation(key: string): Promise<void> {
+    if (!isSnowflake(key)) throw new Error(`Not a Discord channel id: ${key}`);
+    this.navigate(`dm:${key}`);
   }
 }

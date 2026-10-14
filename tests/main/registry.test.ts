@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DiscordAdapter } from "../../src/main/adapters/discordAdapter";
 import { GenericWebAdapter } from "../../src/main/adapters/genericWebAdapter";
-import { PlatformRegistry, railKey, splitRailKey } from "../../src/main/registry";
+import { MAX_DM_BUBBLES, PlatformRegistry, railKey, splitRailKey } from "../../src/main/registry";
 import type { PlatformAdapter } from "../../src/shared/adapter";
 
 async function setup() {
@@ -60,12 +60,61 @@ describe("PlatformRegistry", () => {
     expect(await registry.open("garbage")).toBeUndefined();
   });
 
+  it("shows unread DMs as bubbles after home, newest first", async () => {
+    const { registry, discord, navigate } = await setup();
+    const dm = (id: string, lastActivity: number, unread: boolean, mentions = 0) => ({
+      id,
+      title: `User ${id}`,
+      unread,
+      mentions,
+      lastActivity,
+    });
+    discord.update({
+      guilds: [{ id: "1", name: "One", unread: false, mentions: 0 }],
+      badge: { unread: true, mentions: 3 },
+      dms: [dm("10", 100, true, 1), dm("11", 300, true, 2), dm("12", 200, false)],
+    });
+    const entries = registry.state().entries;
+    expect(entries.map((e) => [e.key, e.kind])).toEqual([
+      ["discord:home", "home"],
+      ["discord:dm:11", "dm"],
+      ["discord:dm:10", "dm"],
+      ["discord:1", "server"],
+      ["element:app", "server"],
+    ]);
+    expect(entries[0]).toMatchObject({ unread: false, mentions: 0 });
+    expect(entries[1]).toMatchObject({ name: "User 11", mentions: 2 });
+    expect(registry.totals().mentions).toBe(3);
+
+    expect(await registry.open("discord:dm:11")).toBe("discord");
+    expect(navigate).toHaveBeenLastCalledWith("dm:11");
+    expect(registry.state().activeKey).toBe("discord:dm:11");
+  });
+
+  it("folds unread DMs beyond the bubble limit into the home badge", async () => {
+    const { registry, discord } = await setup();
+    const dms = Array.from({ length: MAX_DM_BUBBLES + 2 }, (_, i) => ({
+      id: String(100 + i),
+      title: `User ${i}`,
+      unread: true,
+      mentions: 1,
+      lastActivity: 1000 - i,
+    }));
+    discord.update({ guilds: [], badge: { unread: true, mentions: dms.length }, dms });
+    const entries = registry.state().entries;
+    expect(entries.filter((e) => e.kind === "dm")).toHaveLength(MAX_DM_BUBBLES);
+    expect(entries[0]).toMatchObject({ kind: "home", unread: true, mentions: 2 });
+    expect(registry.totals().mentions).toBe(dms.length);
+  });
+
   it("handles adapters without a home and without a home badge", async () => {
     const registry = new PlatformRegistry();
     const adapter = {
       platform: "custom",
       listServers: async () => [],
+      listDirectConversations: async () => [],
       onServersChanged: () => () => {},
+      onDirectsChanged: () => () => {},
       openHome: vi.fn(async () => {}),
       openServer: vi.fn(async () => {}),
     } as unknown as PlatformAdapter;

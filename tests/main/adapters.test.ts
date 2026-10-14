@@ -51,14 +51,44 @@ describe("DiscordAdapter", () => {
     expect(adapter.homeBadge()).toEqual({ unread: false, mentions: 0 });
   });
 
-  it("navigates to home and guilds through the preload", async () => {
+  it("navigates to home, guilds and DMs through the preload", async () => {
     const navigate = vi.fn();
     const adapter = new DiscordAdapter(navigate);
     await adapter.openHome();
     await adapter.openServer("42");
-    expect(navigate.mock.calls).toEqual([["home"], ["42"]]);
+    await adapter.openConversation("77");
+    expect(navigate.mock.calls).toEqual([["home"], ["42"], ["dm:77"]]);
     await expect(adapter.openServer("../x")).rejects.toThrow("Not a Discord guild id");
-    await expect(adapter.openConversation("1")).rejects.toThrow("not supported yet");
+    await expect(adapter.openConversation("@me")).rejects.toThrow("Not a Discord channel id");
+  });
+
+  it("exposes DMs once the store bridge reports them", async () => {
+    const adapter = new DiscordAdapter(vi.fn());
+    const directsChanged = vi.fn();
+    adapter.onDirectsChanged(directsChanged);
+
+    adapter.update({ guilds: [], badge: { unread: true, mentions: 4 } });
+    expect(await adapter.listDirectConversations()).toEqual([]);
+    expect(directsChanged).not.toHaveBeenCalled();
+    expect(adapter.homeBadge()).toEqual({ unread: true, mentions: 4 });
+
+    const dm = { id: "9", title: "Ana", avatarUrl: "https://cdn/a.png", unread: true, mentions: 4, lastActivity: 1000 };
+    adapter.update({ guilds: [], badge: { unread: true, mentions: 4 }, dms: [dm] });
+    const directs = await adapter.listDirectConversations();
+    expect(directs).toEqual([
+      {
+        key: "9",
+        account: { platform: "discord", instance: "discord.com", accountId: "default" },
+        title: "Ana",
+        avatarUrl: "https://cdn/a.png",
+        lastActivity: 1000,
+        unread: true,
+        mentions: 4,
+      },
+    ]);
+    expect(directsChanged).toHaveBeenCalledWith(directs);
+    // DM bubbles carry their own badges now.
+    expect(adapter.homeBadge()).toEqual({ unread: false, mentions: 0 });
   });
 
   it("implements the rest of the adapter contract", async () => {

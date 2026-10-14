@@ -11,6 +11,9 @@ export const IPC = {
   pickerChoose: "picker:choose",
 } as const;
 
+/** DOM event the main-world store bridge uses to hand DM data to the preload. */
+export const DM_EVENT = "multicord:dms";
+
 export interface DiscordGuild {
   id: string;
   name: string;
@@ -24,18 +27,29 @@ export interface TitleBadge {
   mentions: number;
 }
 
+export interface DiscordDm {
+  id: string; // channel snowflake
+  title: string;
+  avatarUrl?: string;
+  unread: boolean;
+  mentions: number;
+  lastActivity: number; // epoch ms
+}
+
 export interface DiscordState {
   guilds: DiscordGuild[];
   badge: TitleBadge;
+  /** Absent until the store bridge has found Discord's stores. */
+  dms?: DiscordDm[];
 }
 
-/** "home" for the DM list, or a guild snowflake. */
+/** "home" for the DM list, a guild snowflake, or "dm:<channel snowflake>". */
 export type DiscordTarget = "home" | string;
 
 export interface RailEntry {
   key: string;
   platform: string;
-  kind: "home" | "server";
+  kind: "home" | "dm" | "server";
   name: string;
   iconUrl?: string;
   unread: boolean;
@@ -64,6 +78,8 @@ export interface PickerChoice {
 }
 
 const MAX_GUILDS = 1000;
+export const MAX_DMS = 200;
+const MAX_TEXT = 200;
 const SNOWFLAKE = /^\d{1,20}$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -93,17 +109,36 @@ export function isDiscordGuild(value: unknown): value is DiscordGuild {
   );
 }
 
+export function isDiscordDm(value: unknown): value is DiscordDm {
+  return (
+    isRecord(value) &&
+    isSnowflake(value.id) &&
+    typeof value.title === "string" &&
+    value.title.length <= MAX_TEXT &&
+    (value.avatarUrl === undefined || isHttpsUrl(value.avatarUrl)) &&
+    typeof value.unread === "boolean" &&
+    isCount(value.mentions) &&
+    isCount(value.lastActivity)
+  );
+}
+
+export function isDiscordDmList(value: unknown): value is DiscordDm[] {
+  return Array.isArray(value) && value.length <= MAX_DMS && value.every(isDiscordDm);
+}
+
 export function isDiscordState(value: unknown): value is DiscordState {
   return (
     isRecord(value) &&
     Array.isArray(value.guilds) &&
     value.guilds.length <= MAX_GUILDS &&
     value.guilds.every(isDiscordGuild) &&
-    isTitleBadge(value.badge)
+    isTitleBadge(value.badge) &&
+    (value.dms === undefined || isDiscordDmList(value.dms))
   );
 }
 
 export function isDiscordTarget(value: unknown): value is DiscordTarget {
+  if (typeof value === "string" && value.startsWith("dm:")) return isSnowflake(value.slice(3));
   return value === "home" || isSnowflake(value);
 }
 

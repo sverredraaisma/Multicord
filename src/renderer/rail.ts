@@ -39,18 +39,26 @@ function renderEntry(doc: Document, entry: RailEntry, active: boolean, onOpen: (
   return button;
 }
 
-/** Renders the unified rail; a separator marks each change of platform. */
+function needsSeparator(previous: RailEntry | undefined, entry: RailEntry): boolean {
+  if (!previous) return false;
+  return previous.platform !== entry.platform || (previous.kind !== "server" && entry.kind === "server");
+}
+
+/**
+ * Renders the unified rail. Separators mark each change of platform and the
+ * step from a platform's home and DM bubbles to its servers.
+ */
 export function renderRail(root: HTMLElement, state: RailState, onOpen: (key: string) => void): void {
   const doc = root.ownerDocument;
   const children: HTMLElement[] = [];
-  let platform: string | undefined;
+  let previous: RailEntry | undefined;
   for (const entry of state.entries) {
-    if (platform !== undefined && entry.platform !== platform) {
+    if (needsSeparator(previous, entry)) {
       const separator = doc.createElement("hr");
       separator.className = "rail-separator";
       children.push(separator);
     }
-    platform = entry.platform;
+    previous = entry;
     children.push(renderEntry(doc, entry, entry.key === state.activeKey, onOpen));
   }
   root.replaceChildren(...children);

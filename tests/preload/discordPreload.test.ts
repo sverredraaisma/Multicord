@@ -1,8 +1,15 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STYLE_ID } from "../../src/preload/discord/dom";
-import { PUBLISH_DELAY_MS, startDiscordPreload, type PreloadIpc } from "../../src/preload/discord/index";
-import { IPC } from "../../src/shared/ipc";
+import {
+  BRIDGE_MAX_ATTEMPTS,
+  BRIDGE_RETRY_MS,
+  PUBLISH_DELAY_MS,
+  startDiscordPreload,
+  type PreloadIpc,
+} from "../../src/preload/discord/index";
+import { discordStoreBridge } from "../../src/preload/discord/storeBridge";
+import { DM_EVENT, IPC } from "../../src/shared/ipc";
 
 function fakeIpc() {
   const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
@@ -70,5 +77,32 @@ describe("startDiscordPreload", () => {
     expect(click).not.toHaveBeenCalled();
     ipc.emit(IPC.discordNavigate, "1");
     expect(click).toHaveBeenCalledOnce();
+  });
+});
+
+describe("DM bridge", () => {
+  const dm = { id: "9", title: "Ana", unread: true, mentions: 1, lastActivity: 5 };
+  const fire = (detail: unknown) => document.dispatchEvent(new CustomEvent(DM_EVENT, { detail }));
+
+  it("starts the store bridge in the main world", () => {
+    const run = vi.fn();
+    startDiscordPreload(fakeIpc(), document, window, run);
+    expect(run).toHaveBeenCalledWith(discordStoreBridge, [DM_EVENT, BRIDGE_RETRY_MS, BRIDGE_MAX_ATTEMPTS]);
+  });
+
+  it("publishes validated DMs with the guild state", () => {
+    const ipc = fakeIpc();
+    startDiscordPreload(ipc, document, window);
+    vi.advanceTimersByTime(PUBLISH_DELAY_MS);
+
+    fire({ not: "a string" });
+    fire("{broken json");
+    fire(JSON.stringify([{ id: "nope" }]));
+    vi.advanceTimersByTime(PUBLISH_DELAY_MS);
+    expect(ipc.send).toHaveBeenCalledTimes(1);
+
+    fire(JSON.stringify([dm]));
+    vi.advanceTimersByTime(PUBLISH_DELAY_MS);
+    expect(ipc.send).toHaveBeenLastCalledWith(IPC.discordState, expect.objectContaining({ dms: [dm] }));
   });
 });

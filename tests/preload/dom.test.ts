@@ -113,3 +113,39 @@ describe("navigate", () => {
     window.removeEventListener("popstate", popstate);
   });
 });
+
+describe("DM support", () => {
+  it("excludes known DM channels from the guild list", () => {
+    guildBar(`
+      <div data-list-item-id="guildsnav___111" aria-label="Guild"></div>
+      <div data-list-item-id="guildsnav___999" aria-label="2 mentions, Ana"></div>
+    `);
+    expect(readGuilds(document, new Set(["999"])).map((g) => g.id)).toEqual(["111"]);
+    const dm = { id: "999", title: "Ana", unread: true, mentions: 2, lastActivity: 1 };
+    const state = readState(document, [dm]);
+    expect(state.guilds.map((g) => g.id)).toEqual(["111"]);
+    expect(state.dms).toEqual([dm]);
+    expect(readState(document)).not.toHaveProperty("dms");
+  });
+
+  it("maps DM targets to their route", () => {
+    expect(targetPath("dm:55")).toBe("/channels/@me/55");
+  });
+
+  it("prefers a link to the route, then the guild bar blob", () => {
+    document.body.innerHTML = `
+      <a href="/channels/@me/55">Ana</a>
+      <nav class="guilds_a"><div data-list-item-id="guildsnav___55"></div><div data-list-item-id="guildsnav___66"></div></nav>`;
+    const link = vi.fn((e: Event) => e.preventDefault());
+    document.querySelector("a")!.addEventListener("click", link);
+    const blob = vi.fn();
+    document.querySelector('[data-list-item-id="guildsnav___66"]')!.addEventListener("click", blob);
+
+    expect(navigate(document, window, "dm:55")).toBe("click");
+    expect(link).toHaveBeenCalledOnce();
+    expect(navigate(document, window, "dm:66")).toBe("click");
+    expect(blob).toHaveBeenCalledOnce();
+    expect(navigate(document, window, "dm:77")).toBe("history");
+    expect(window.location.pathname).toBe("/channels/@me/77");
+  });
+});

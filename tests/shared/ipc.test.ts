@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_DMS,
+  isDiscordDm,
+  isDiscordDmList,
   isDiscordGuild,
   isDiscordState,
   isDiscordTarget,
@@ -83,5 +86,37 @@ describe("parseTitleBadge", () => {
     ["Element", { unread: false, mentions: 0 }],
   ])("parses %j", (title, expected) => {
     expect(parseTitleBadge(title)).toEqual(expected);
+  });
+});
+
+describe("DM validators", () => {
+  const dm = { id: "9", title: "Ana", unread: true, mentions: 1, lastActivity: 5 };
+
+  it("validates DMs and DM lists", () => {
+    expect(isDiscordDm(dm)).toBe(true);
+    expect(isDiscordDm({ ...dm, avatarUrl: "https://cdn/a.png" })).toBe(true);
+    expect(isDiscordDm({ ...dm, avatarUrl: "http://cdn/a.png" })).toBe(false);
+    expect(isDiscordDm({ ...dm, id: "x" })).toBe(false);
+    expect(isDiscordDm({ ...dm, title: 5 })).toBe(false);
+    expect(isDiscordDm({ ...dm, title: "x".repeat(201) })).toBe(false);
+    expect(isDiscordDm({ ...dm, unread: "yes" })).toBe(false);
+    expect(isDiscordDm({ ...dm, mentions: -1 })).toBe(false);
+    expect(isDiscordDm({ ...dm, lastActivity: 1.5 })).toBe(false);
+    expect(isDiscordDm(null)).toBe(false);
+    expect(isDiscordDmList([dm])).toBe(true);
+    expect(isDiscordDmList(Array(MAX_DMS + 1).fill(dm))).toBe(false);
+    expect(isDiscordDmList("x")).toBe(false);
+  });
+
+  it("accepts optional DMs on discord state", () => {
+    const base = { guilds: [], badge: { unread: false, mentions: 0 } };
+    expect(isDiscordState({ ...base, dms: [dm] })).toBe(true);
+    expect(isDiscordState({ ...base, dms: [{}] })).toBe(false);
+  });
+
+  it("accepts DM navigation targets", () => {
+    expect(isDiscordTarget("dm:123")).toBe(true);
+    expect(isDiscordTarget("dm:abc")).toBe(false);
+    expect(isDiscordTarget("dm:")).toBe(false);
   });
 });

@@ -39,7 +39,13 @@ describe("renderRail", () => {
     expect(items[1]!.querySelector("img")!.getAttribute("src")).toBe("https://x/icon.png");
     expect(items[2]!.querySelector(".initials")!.textContent).toBe("E");
     expect(items[2]!.querySelector(".badge")!.textContent).toBe("99+");
-    expect(root.querySelectorAll(".rail-separator")).toHaveLength(1);
+    expect([...root.children].map((c) => (c.tagName === "HR" ? "|" : (c as HTMLElement).dataset.key))).toEqual([
+      "discord:home",
+      "|",
+      "discord:1",
+      "|",
+      "element:app",
+    ]);
 
     items[2]!.click();
     expect(onOpen).toHaveBeenCalledWith("element:app");
@@ -56,11 +62,41 @@ describe("renderRail", () => {
 describe("startRail", () => {
   it("renders pushed state, opens entries and signals readiness", () => {
     let push: (s: RailState) => void = () => {};
-    const api = { onRail: (cb: (s: RailState) => void) => (push = cb), open: vi.fn(), ready: vi.fn() } as unknown as ShellApi;
+    const api = {
+      onRail: (cb: (s: RailState) => void) => (push = cb),
+      open: vi.fn(),
+      ready: vi.fn(),
+    } as unknown as ShellApi;
     startRail(document, api);
     expect(api.ready).toHaveBeenCalled();
     push(state);
-    document.querySelector<HTMLButtonElement>(".rail-item")!.click();
+    const home = document.querySelector<HTMLButtonElement>(".rail-item")!;
+    home.click();
     expect(api.open).toHaveBeenCalledWith("discord:home");
+  });
+});
+
+describe("DM bubbles", () => {
+  it("renders DMs between home and servers with their avatar", () => {
+    const root = document.getElementById("rail")!;
+    renderRail(
+      root,
+      {
+        activeKey: null,
+        entries: [
+          { key: "discord:home", platform: "discord", kind: "home", name: "Home", unread: false, mentions: 0 },
+          { key: "discord:dm:5", platform: "discord", kind: "dm", name: "Ana", iconUrl: "https://cdn/a.png", unread: true, mentions: 3 },
+          { key: "discord:dm:6", platform: "discord", kind: "dm", name: "Bo Chen", unread: true, mentions: 0 },
+          { key: "discord:1", platform: "discord", kind: "server", name: "S", unread: false, mentions: 0 },
+        ],
+      },
+      vi.fn(),
+    );
+    const kinds = [...root.children].map((c) => (c.tagName === "HR" ? "|" : (c as HTMLElement).dataset.kind));
+    expect(kinds).toEqual(["home", "dm", "dm", "|", "server"]);
+    const dm = root.querySelector<HTMLElement>('[data-key="discord:dm:5"]')!;
+    expect(dm.querySelector("img")!.getAttribute("src")).toBe("https://cdn/a.png");
+    expect(dm.querySelector(".badge")!.textContent).toBe("3");
+    expect(root.querySelector('[data-key="discord:dm:6"] .initials')!.textContent).toBe("BC");
   });
 });

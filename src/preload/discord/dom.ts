@@ -5,7 +5,14 @@
 // Selectors here are the hooks most likely to break when Discord ships a
 // redesign; keep them in this file so a health check can target them.
 
-import { isSnowflake, parseTitleBadge, type DiscordGuild, type DiscordState, type DiscordTarget } from "../../shared/ipc";
+import {
+  isSnowflake,
+  parseTitleBadge,
+  type DiscordDm,
+  type DiscordGuild,
+  type DiscordState,
+  type DiscordTarget,
+} from "../../shared/ipc";
 
 export const GUILD_ITEM_PREFIX = "guildsnav___";
 export const STYLE_ID = "multicord-style";
@@ -55,11 +62,12 @@ function badgeCount(item: Element): number {
   return Number.isNaN(value) ? 0 : value;
 }
 
-export function readGuilds(doc: Document): DiscordGuild[] {
+/** Reads the hidden guild bar; ids in `exclude` (unread DM blobs) are not guilds. */
+export function readGuilds(doc: Document, exclude: ReadonlySet<string> = new Set()): DiscordGuild[] {
   const guilds = new Map<string, DiscordGuild>();
   for (const item of doc.querySelectorAll(`[data-list-item-id^="${GUILD_ITEM_PREFIX}"]`)) {
     const id = item.getAttribute("data-list-item-id")!.slice(GUILD_ITEM_PREFIX.length);
-    if (!isSnowflake(id) || guilds.has(id)) continue;
+    if (!isSnowflake(id) || guilds.has(id) || exclude.has(id)) continue;
     const parsed = parseGuildLabel(item.getAttribute("aria-label") ?? "");
     const icon = item.querySelector("img")?.getAttribute("src") ?? undefined;
     const mentions = Math.max(parsed.mentions, badgeCount(item));
@@ -74,25 +82,35 @@ export function readGuilds(doc: Document): DiscordGuild[] {
   return [...guilds.values()];
 }
 
-export function readState(doc: Document): DiscordState {
-  return { guilds: readGuilds(doc), badge: parseTitleBadge(doc.title) };
+export function readState(doc: Document, dms?: DiscordDm[]): DiscordState {
+  const exclude = new Set(dms?.map((dm) => dm.id));
+  const state: DiscordState = { guilds: readGuilds(doc, exclude), badge: parseTitleBadge(doc.title) };
+  if (dms) state.dms = dms;
+  return state;
 }
 
 export function targetPath(target: DiscordTarget): string {
-  return target === "home" ? "/channels/@me" : `/channels/${target}`;
+  if (target === "home") return "/channels/@me";
+  if (target.startsWith("dm:")) return `/channels/@me/${target.slice(3)}`;
+  return `/channels/${target}`;
 }
 
 /**
- * Navigates without reloading: clicks the hidden guild bar item so Discord's
- * router handles it, else falls back to pushState plus popstate.
+ * Navigates without reloading, preferring elements Discord's router already
+ * handles: a link to the route (the DM sidebar), then the hidden guild bar
+ * item (guilds, home and unread DM blobs), else pushState plus popstate.
  */
 export function navigate(doc: Document, win: Window, target: DiscordTarget): "click" | "history" {
-  const item = doc.querySelector<HTMLElement>(`[data-list-item-id="${GUILD_ITEM_PREFIX}${target}"]`);
-  if (item) {
-    item.click();
+  const path = targetPath(target);
+  const itemId = target.startsWith("dm:") ? target.slice(3) : target;
+  const element =
+    doc.querySelector<HTMLElement>(`a[href="${path}"]`) ??
+    doc.querySelector<HTMLElement>(`[data-list-item-id="${GUILD_ITEM_PREFIX}${itemId}"]`);
+  if (element) {
+    element.click();
     return "click";
   }
-  win.history.pushState({}, "", targetPath(target));
+  win.history.pushState({}, "", path);
   win.dispatchEvent(new PopStateEvent("popstate", { state: {} }));
   return "history";
 }
