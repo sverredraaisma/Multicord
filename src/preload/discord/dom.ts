@@ -275,6 +275,7 @@ export function readState(doc: Document, bridge?: BridgePayload): DiscordState {
 export function targetPath(target: DiscordTarget): string {
   if (target === "home") return "/channels/@me";
   if (target.startsWith("dm:")) return `/channels/@me/${target.slice(3)}`;
+  if (target.startsWith("channel:")) return `/channels/${target.slice(8)}`;
   return `/channels/${target}`;
 }
 
@@ -293,9 +294,10 @@ export function navigate(doc: Document, win: Window, target: DiscordTarget): "cl
   }
   const path = targetPath(target);
   const itemId = target.startsWith("dm:") ? target.slice(3) : target;
+  // A channel has no guild bar item of its own: its sidebar link, else the router.
   const element =
     doc.querySelector<HTMLElement>(`a[href="${path}"]`) ??
-    doc.querySelector<HTMLElement>(`[data-list-item-id="${GUILD_ITEM_PREFIX}${itemId}"]`);
+    (target.startsWith("channel:") ? null : doc.querySelector<HTMLElement>(`[data-list-item-id="${GUILD_ITEM_PREFIX}${itemId}"]`));
   if (element) {
     element.click();
     return "click";

@@ -134,6 +134,8 @@ export interface ShellHandle {
   /** Created when the Messages page is first opened. */
   messagesView(): WebContentsView | undefined;
   setMessagesOpen(open: boolean): void;
+  /** Opens an app link (e.g. discord://) in the module that declares its scheme; false if none does. */
+  openLink(url: string): Promise<boolean>;
   show(): void;
   setQuitting(): void;
   layout(): void;
@@ -241,6 +243,8 @@ export async function createShell(
       }),
     );
 
+  /** Each running platform's module manifest. */
+  const manifests = new Map<string, PlatformModule["manifest"]>();
   let engines: EngineHub | undefined;
   /** A native module: its logic runs in a sandboxed engine and renders in our chat view. */
   const startEngineModule = (manifest: PlatformModule["manifest"], def: PlatformDef, view: WebContentsView, ses: Session) => {
@@ -312,6 +316,7 @@ export async function createShell(
         })
       : startEngineModule(module.manifest, def, view, ses);
     adapters.set(def.id, adapter);
+    manifests.set(def.id, module.manifest);
     await registry.add(adapter, def.name, { label: module.manifest.label, color: module.manifest.color });
     if (module.manifest.usesVoiceSettings) {
       const sendVoice = (): void => view.webContents.send(SETTINGS_IPC.voice, settingsStore.get().voice);
@@ -419,6 +424,9 @@ export async function createShell(
     launchAtLoginSupported: platform !== "linux",
     version: app.getVersion(),
     streaming,
+    get linkSchemes() {
+      return linkSchemes;
+    },
     openService: showPlatform,
     clearSession: async (id) => {
       await session.fromPartition(`persist:${id}`).clearStorageData();
@@ -433,7 +441,38 @@ export async function createShell(
     publish: (state: SettingsViewState) => settingsView?.webContents.send(SETTINGS_IPC.state, state),
   });
 
+  // App links: only when the user opts in, as an installed app may own the scheme.
+  const linkSchemes = [...new Set([...manifests.values()].flatMap((m) => m.protocols ?? []))];
+  const registerLinks = (on: boolean): void => {
+    // Unpackaged (development) runs need the app path, as with launch at login.
+    const args = app.isPackaged ? [] : [app.getAppPath()];
+    for (const scheme of linkSchemes) {
+      if (on) app.setAsDefaultProtocolClient(scheme, process.execPath, args);
+      else if (app.isDefaultProtocolClient(scheme, process.execPath, args)) app.removeAsDefaultProtocolClient(scheme, process.execPath, args);
+    }
+  };
+  registerLinks(general().openLinks);
+  const openLink = async (url: string): Promise<boolean> => {
+    if (!general().openLinks) return false;
+    let scheme: string;
+    try {
+      scheme = new URL(url).protocol.slice(0, -1);
+    } catch {
+      return false;
+    }
+    for (const [id, adapter] of adapters) {
+      if (!manifests.get(id)?.protocols?.includes(scheme) || !adapter.openLink) continue;
+      if (await adapter.openLink(url).catch(() => false)) {
+        show();
+        showPlatform(id);
+        return true;
+      }
+    }
+    return false;
+  };
+
   settingsStore.changed.on(({ settings: next, patch }) => {
+    if (patch.general?.openLinks !== undefined) registerLinks(next.general.openLinks);
     if (patch.general?.railGrouping !== undefined) registry.setGrouping(next.general.railGrouping);
     if (patch.general?.streamerMode !== undefined) {
       if (next.general.streamerMode === "auto") streamer.start();
@@ -596,12 +635,18 @@ export async function createShell(
     setSettingsOpen,
     messagesView: () => messagesView,
     setMessagesOpen,
+    openLink,
     show,
     setQuitting: () => {
       quitting = true;
     },
     layout,
   };
+}
+
+/** An app link (scheme://...) among command-line arguments; web links and file paths are not. */
+export function findAppLink(argv: readonly string[]): string | undefined {
+  return argv.find((arg) => /^[a-z][a-z0-9+.-]*:\/\//i.test(arg) && !/^(https?|file):/i.test(arg));
 }
 
 /** Lifecycle: single instance, tray-resident window, quit only from the tray or OS. */
@@ -615,12 +660,30 @@ export function startApp(dist: string): void {
   protocol.registerSchemesAsPrivileged([{ scheme: ENGINE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
   let handle: ShellHandle | undefined;
-  app.on("second-instance", () => handle?.show());
+  /** An app link that arrived before the shell was ready. */
+  let pendingLink: string | undefined;
+  const openLink = (url: string): void => {
+    if (handle) void handle.openLink(url);
+    else pendingLink = url;
+  };
+  app.on("second-instance", (_event, argv: string[] = []) => {
+    handle?.show();
+    const link = findAppLink(argv);
+    if (link) openLink(link);
+  });
+  // macOS delivers links as an event instead of arguments.
+  app.on("open-url", (event, url: string) => {
+    event.preventDefault();
+    openLink(url);
+  });
   app.on("activate", () => handle?.show());
   app.on("before-quit", () => handle?.setQuitting());
 
   void app.whenReady().then(async () => {
     installHardening();
     handle = await createShell({ dist, userData: app.getPath("userData") });
+    const link = pendingLink ?? findAppLink(process.argv);
+    pendingLink = undefined;
+    if (link) void handle.openLink(link);
   });
 }

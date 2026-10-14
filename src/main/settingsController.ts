@@ -20,6 +20,8 @@ export interface SettingsDeps {
   version: string;
   /** Whether streamer mode is hiding content right now. */
   streaming?(): boolean;
+  /** App link schemes the running modules can open. */
+  linkSchemes?: string[];
   /** Shows a running service, e.g. to sign in. */
   openService(id: string): void;
   /** Clears a service's web session (cookies, storage) and reloads it if running. */
@@ -118,6 +120,7 @@ export class SettingsController {
       version: this.deps.version,
     };
     if (this.deps.streaming?.()) state.streaming = true;
+    if (this.deps.linkSchemes?.length) state.linkSchemes = this.deps.linkSchemes;
     if (this.error) state.error = this.error;
     return state;
   }

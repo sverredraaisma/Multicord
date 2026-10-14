@@ -41,6 +41,8 @@ export interface GeneralSettings {
   zoom: number;
   /** Hide message content in notifications and previews: always, never, or while streaming software runs. */
   streamerMode: "auto" | "on" | "off";
+  /** Open app links (e.g. discord://) in Multicord; off by default, as an installed app may want them. */
+  openLinks: boolean;
 }
 
 /** Zoom steps, as browsers offer them. */
@@ -69,7 +71,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto" },
+  general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto", openLinks: false },
   voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
 };
 
@@ -90,6 +92,7 @@ const GENERAL_CHECKS: { [K in keyof GeneralSettings]: (value: unknown) => value 
   railGrouping: (v): v is GeneralSettings["railGrouping"] => v === "mixed" || v === "platform",
   zoom: (v): v is number => (ZOOM_LEVELS as readonly unknown[]).includes(v),
   streamerMode: (v): v is GeneralSettings["streamerMode"] => v === "auto" || v === "on" || v === "off",
+  openLinks: (v): v is boolean => typeof v === "boolean",
 };
 const GENERAL_KEYS = Object.keys(GENERAL_CHECKS) as (keyof GeneralSettings)[];
 const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl"] as const;
@@ -208,6 +211,8 @@ export interface SettingsViewState {
   version: string;
   /** Streamer mode is hiding message content right now. */
   streaming?: boolean;
+  /** App link schemes the running modules can open, e.g. ["discord"]. */
+  linkSchemes?: string[];
   /** The last action that could not be done, e.g. turning off the only service. */
   error?: string;
 }

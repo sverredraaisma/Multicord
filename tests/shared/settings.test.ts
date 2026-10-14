@@ -135,6 +135,8 @@ describe("zoom and other general settings", () => {
     expect(isSettingsPatch({ general: { railGrouping: true } })).toBe(false);
     expect(isSettingsPatch({ general: { streamerMode: "auto" } })).toBe(true);
     expect(isSettingsPatch({ general: { streamerMode: "loud" } })).toBe(false);
+    expect(isSettingsPatch({ general: { openLinks: true } })).toBe(true);
+    expect(isSettingsPatch({ general: { openLinks: "yes" } })).toBe(false);
     expect(parseSettings({ general: { streamerMode: "on" } }).general.streamerMode).toBe("on");
   });
 });

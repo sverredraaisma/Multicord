@@ -177,6 +177,9 @@ class FakeApp extends EventEmitter {
   relaunch = vi.fn();
   setLoginItemSettings = vi.fn();
   getAppPath = vi.fn(() => "/app");
+  setAsDefaultProtocolClient = vi.fn(() => true);
+  isDefaultProtocolClient = vi.fn(() => false);
+  removeAsDefaultProtocolClient = vi.fn(() => true);
   isPackaged = false;
 }
 export const app = new FakeApp();

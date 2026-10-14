@@ -6,6 +6,27 @@ import { BaseAdapter } from "../../shared/baseAdapter";
 export const FOLDER_PREFIX = "folder:";
 
 /**
+ * Where a discord:// link (as the official client registers it) points:
+ * discord://-/channels/@me, .../@me/<dm>, .../<guild> or .../<guild>/<channel>.
+ */
+export function discordLinkTarget(url: string): DiscordTarget | undefined {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  if (parsed.protocol !== "discord:") return undefined;
+  const parts = parsed.pathname.split("/").filter(Boolean);
+  if (parts[0] !== "channels" || parts.length > 3) return parts.length === 0 ? "home" : undefined;
+  const [, place, channel] = parts;
+  if (place === "@me") return channel === undefined ? "home" : isSnowflake(channel) ? `dm:${channel}` : undefined;
+  if (!isSnowflake(place)) return undefined;
+  if (channel === undefined) return place;
+  return isSnowflake(channel) ? `channel:${place}/${channel}` : undefined;
+}
+
+/**
  * Hidden-engine adapter: Discord's web client does all the work; the preload
  * reports its guild bar and DMs, and we send navigation back.
  */
@@ -142,6 +163,12 @@ export class DiscordAdapter extends BaseAdapter {
 
   async openHome(): Promise<void> {
     this.navigate("home");
+  }
+
+  async openLink(url: string): Promise<boolean> {
+    const target = discordLinkTarget(url);
+    if (target) this.navigate(target);
+    return target !== undefined;
   }
 
   async openServer(key: string): Promise<void> {

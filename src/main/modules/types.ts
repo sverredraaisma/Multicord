@@ -19,6 +19,8 @@ export interface ModuleManifest {
   usesVoiceSettings?: boolean;
   /** Preload script for the module's view, relative to the build directory. */
   preload?: string;
+  /** URL schemes the module opens (e.g. "discord"), when the user lets Multicord handle them. */
+  protocols?: string[];
   /**
    * Native modules: the engine bundle (dist/engines/<engine>.js) that runs
    * the module's logic in a sandboxed engine, and the view it renders in.

@@ -15,6 +15,7 @@ export const discordModule: PlatformModule = {
     defaultUrl: DISCORD.url,
     fixedUrl: true,
     preload: "preload-discord.js",
+    protocols: ["discord"],
   },
   load({ def, view, enableScreenShare }) {
     const adapter = new DiscordAdapter((target) => view.webContents.send(IPC.discordNavigate, target), def.id);

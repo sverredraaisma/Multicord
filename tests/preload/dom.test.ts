@@ -329,3 +329,21 @@ describe("health", () => {
     expect(readState(document).health).toEqual({ guildBar: false });
   });
 });
+
+describe("channel navigation", () => {
+  it("goes to a channel by its sidebar link, else through the router, never the guild item", async () => {
+    const { navigate, targetPath } = await import("../../src/preload/discord/dom");
+    expect(targetPath("channel:7/8")).toBe("/channels/7/8");
+    guildBar(`<div data-list-item-id="guildsnav___7" aria-label="Seven"></div>`);
+    const guildClick = vi.fn();
+    document.querySelector("[data-list-item-id]")!.addEventListener("click", guildClick);
+    expect(navigate(document, window, "channel:7/8")).toBe("history");
+    expect(guildClick).not.toHaveBeenCalled();
+    expect(window.location.pathname).toBe("/channels/7/8");
+    document.body.insertAdjacentHTML("beforeend", '<a href="/channels/7/9">general</a>');
+    const linkClick = vi.fn((event: Event) => event.preventDefault());
+    document.querySelector("a")!.addEventListener("click", linkClick);
+    expect(navigate(document, window, "channel:7/9")).toBe("click");
+    expect(linkClick).toHaveBeenCalled();
+  });
+});

@@ -120,6 +120,7 @@ export class SettingsPage {
     zoom: HTMLSelectElement;
     streamer: HTMLSelectElement;
     streamingNote: HTMLElement;
+    links: { row: HTMLElement; input: HTMLInputElement; label: HTMLElement };
     diagnostics: HTMLElement;
     launchHint: HTMLElement;
     secretsNote: HTMLElement;
@@ -297,7 +298,11 @@ export class SettingsPage {
     const streamingNote = el(doc, "small", "hint streaming-note", "Streamer mode is on: notifications and message previews hide what was said.");
     streamingNote.hidden = true;
     streamerRow.append(el(doc, "span", "field-label", "Streamer mode"), streamer, el(doc, "small", "hint", "Keeps message content out of notifications and the Messages list."), streamingNote);
-    general.append(grouping.row, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
+    const links = switchRow(doc, "Open app links in Multicord", "Off by default, so an installed app that also handles these links keeps them.", (on) =>
+      this.update({ general: { openLinks: on } }),
+    );
+    links.row.hidden = true;
+    general.append(grouping.row, links.row, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
     const launchHint = el(doc, "p", "hint", "Starting with your computer is not available on this system.");
     launchHint.hidden = true;
     const secretsNote = el(doc, "p", "notice", "This system has no secure storage for passwords, so you will need to sign in to Fluxer again after each restart.");
@@ -337,6 +342,7 @@ export class SettingsPage {
       zoom,
       streamer,
       streamingNote,
+      links: { ...links, label: links.row.querySelector<HTMLElement>(".switch-label")! },
       diagnostics,
       launchHint,
       secretsNote,
@@ -389,6 +395,10 @@ export class SettingsPage {
     parts.zoom.value = String(general.zoom);
     parts.streamer.value = general.streamerMode;
     parts.streamingNote.hidden = state.streaming !== true;
+    const schemes = state.linkSchemes ?? [];
+    parts.links.row.hidden = schemes.length === 0;
+    parts.links.label.textContent = `Open ${schemes.map((scheme) => `${scheme}://`).join(", ")} links in Multicord`;
+    parts.links.input.checked = general.openLinks;
     parts.general.launchAtLogin.disabled = !state.launchAtLoginSupported;
     parts.launchHint.hidden = state.launchAtLoginSupported;
     parts.secretsNote.hidden = state.secretsPersistent;

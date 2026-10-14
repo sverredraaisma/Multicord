@@ -12,7 +12,7 @@ vi.mock("../../src/main/streamer", async (importOriginal) => ({
 }));
 
 import * as electron from "../mocks/electron";
-import { APP_NAME, createShell, startApp } from "../../src/main/app";
+import { APP_NAME, createShell, findAppLink, startApp } from "../../src/main/app";
 import { IPC } from "../../src/shared/ipc";
 import { NATIVE_IPC } from "../../src/shared/native";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
@@ -1023,6 +1023,79 @@ describe("streamer mode", () => {
     } finally {
       processList.names = [];
       vi.useRealTimers();
+    }
+  });
+});
+
+describe("app links", () => {
+  it("finds an app link among arguments, not web links or files", () => {
+    expect(findAppLink(["electron.exe", ".", "--flag", "discord://-/channels/1"])).toBe("discord://-/channels/1");
+    expect(findAppLink(["https://discord.com", "file:///x", "C:\\Users\\x"])).toBeUndefined();
+  });
+
+  it("registers declared schemes only when the user opts in, and opens links in their module", async () => {
+    const { handle, discordView } = await shellWith();
+    expect(app.setAsDefaultProtocolClient).not.toHaveBeenCalled();
+    expect(await handle.openLink("discord://-/channels/@me/5")).toBe(false); // off: ignored
+    expect(handle.settings.state().linkSchemes).toEqual(["discord"]);
+
+    handle.settingsStore.update({ general: { openLinks: true } });
+    expect(app.setAsDefaultProtocolClient).toHaveBeenCalledWith("discord", process.execPath, ["/app"]);
+    handle.setMessagesOpen(true);
+    expect(await handle.openLink("discord://-/channels/@me/5")).toBe(true);
+    expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordNavigate, "dm:5");
+    expect(discordView.visible).toBe(true);
+    expect(await handle.openLink("discord://-/store")).toBe(false);
+    expect(await handle.openLink("matrix://room")).toBe(false);
+    expect(await handle.openLink("::not a url")).toBe(false);
+
+    app.isDefaultProtocolClient.mockReturnValueOnce(false).mockReturnValueOnce(true);
+    handle.settingsStore.update({ general: { openLinks: false } });
+    expect(app.removeAsDefaultProtocolClient).not.toHaveBeenCalled();
+    app.isPackaged = true;
+    handle.settingsStore.update({ general: { openLinks: false } });
+    expect(app.removeAsDefaultProtocolClient).toHaveBeenCalledWith("discord", process.execPath, []);
+    app.isPackaged = false;
+  });
+
+  it("opens links from a second launch, from macOS and from the first launch", async () => {
+    fs.writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ general: { openLinks: true } }));
+    app.getPath.mockReturnValue(userData);
+    const argv = process.argv;
+    process.argv = [...argv, "discord://-/channels/@me/1"];
+    try {
+      const early = { preventDefault: vi.fn() };
+      startApp(DIST);
+      app.emit("open-url", early, "discord://-/channels/@me/2"); // before the shell is ready
+      expect(early.preventDefault).toHaveBeenCalled();
+      await flush();
+      await flush();
+      const discordView = WebContentsView.instances.find((v) => v.options.webPreferences.partition === "persist:discord")!;
+      expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordNavigate, "dm:2");
+      app.emit("second-instance", {}, ["electron.exe", "discord://-/channels/@me/3"]);
+      app.emit("second-instance", {}, ["electron.exe"]);
+      app.emit("open-url", { preventDefault: vi.fn() }, "discord://-/channels/@me/4");
+      await flush();
+      expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordNavigate, "dm:3");
+      expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordNavigate, "dm:4");
+    } finally {
+      process.argv = argv;
+    }
+  });
+
+  it("opens a link given on the first launch", async () => {
+    fs.writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ general: { openLinks: true } }));
+    app.getPath.mockReturnValue(userData);
+    const argv = process.argv;
+    process.argv = [...argv, "discord://-/channels/@me/1"];
+    try {
+      startApp(DIST);
+      await flush();
+      await flush();
+      const discordView = WebContentsView.instances.find((v) => v.options.webPreferences.partition === "persist:discord")!;
+      expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordNavigate, "dm:1");
+    } finally {
+      process.argv = argv;
     }
   });
 });

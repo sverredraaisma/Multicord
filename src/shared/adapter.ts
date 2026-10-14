@@ -110,6 +110,8 @@ export interface PlatformAdapter {
   // Shell additions for the settings page: who is signed in, and signing out
   // on this device. Without signOut the shell clears the platform's web session.
   accountStatus?(): AccountStatus;
+  /** Opens a link of a scheme the module declares (e.g. discord://); false when it means nothing here. */
+  openLink?(url: string): Promise<boolean>;
   /** Whether the platform's integration points still work, for the diagnostics page. */
   health?(): HealthCheck[];
   onAccountChanged?(cb: (account: AccountStatus) => void): () => void;

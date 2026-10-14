@@ -246,3 +246,10 @@ describe("rail order validation", () => {
     expect(isRailOrder(Array(5001).fill("a:1"))).toBe(false);
   });
 });
+
+describe("channel targets", () => {
+  it("accepts a guild and channel pair only", () => {
+    expect(isDiscordTarget("channel:1/2")).toBe(true);
+    for (const bad of ["channel:1", "channel:1/x", "channel:1/2/3", "channel:/2", "channel:"]) expect(isDiscordTarget(bad)).toBe(false);
+  });
+});

@@ -93,6 +93,11 @@ describe("settings state", () => {
     expect(services.find((s) => s.id === "fluxer")).not.toHaveProperty("health");
   });
 
+  it("lists the app link schemes the modules open", () => {
+    expect(controller({}, { linkSchemes: ["discord"] }).settings.state().linkSchemes).toEqual(["discord"]);
+    expect(controller({}, { linkSchemes: [] }).settings.state()).not.toHaveProperty("linkSchemes");
+  });
+
   it("says when streamer mode is hiding content", () => {
     expect(controller({}, { streaming: () => true }).settings.state().streaming).toBe(true);
     expect(controller({}, { streaming: () => false }).settings.state()).not.toHaveProperty("streaming");

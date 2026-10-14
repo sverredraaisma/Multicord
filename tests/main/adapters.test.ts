@@ -222,3 +222,26 @@ describe("DiscordAdapter folders", () => {
     await expect(adapter.toggleGroup("folder:x")).rejects.toThrow("Not a Discord folder");
   });
 });
+
+describe("discord:// links", () => {
+  it("maps the official client's links to targets", async () => {
+    const { discordLinkTarget } = await import("../../src/main/adapters/discordAdapter");
+    expect(discordLinkTarget("discord://")).toBe("home");
+    expect(discordLinkTarget("discord://-/channels/@me")).toBe("home");
+    expect(discordLinkTarget("discord://-/channels/@me/42")).toBe("dm:42");
+    expect(discordLinkTarget("discord://-/channels/7")).toBe("7");
+    expect(discordLinkTarget("discord://-/channels/7/8")).toBe("channel:7/8");
+    for (const bad of ["not a url", "https://discord.com/channels/7", "discord://-/channels/@me/x", "discord://-/channels/x", "discord://-/channels/7/x", "discord://-/channels/7/8/9", "discord://-/store"]) {
+      expect(discordLinkTarget(bad)).toBeUndefined();
+    }
+  });
+
+  it("navigates to a link's target, or reports it cannot", async () => {
+    const navigate = vi.fn();
+    const adapter = new DiscordAdapter(navigate);
+    expect(await adapter.openLink("discord://-/channels/7/8")).toBe(true);
+    expect(navigate).toHaveBeenCalledWith("channel:7/8");
+    expect(await adapter.openLink("discord://-/store")).toBe(false);
+    expect(navigate).toHaveBeenCalledTimes(1);
+  });
+});

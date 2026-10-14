@@ -368,7 +368,7 @@ describe("banners", () => {
 describe("general and about", () => {
   it("general switches reflect state and send updates", () => {
     const state = viewState();
-    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, streamerMode: "on" };
+    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, streamerMode: "on", openLinks: false };
     mount(state);
     expect(switchFor("tray").checked).toBe(false);
     expect(switchFor("Start with").checked).toBe(true);
@@ -396,6 +396,17 @@ describe("general and about", () => {
     expect(q(".streaming-note").hidden).toBe(true);
     change(streamer, "off");
     expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { streamerMode: "off" } } });
+  });
+
+  it("offers app links only when a module opens them", () => {
+    mount(viewState());
+    expect(switchFor("links in Multicord").closest(".switch-row")!.hasAttribute("hidden")).toBe(true);
+    mount(viewState({ linkSchemes: ["discord"] }));
+    const row = [...root.querySelectorAll<HTMLElement>(".switch-row")].find((r) => r.textContent!.includes("discord://"))!;
+    expect(row.hidden).toBe(false);
+    expect(row.querySelector(".switch-label")!.textContent).toBe("Open discord:// links in Multicord");
+    change(row.querySelector("input")!, true);
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { openLinks: true } } });
   });
 
   it("says when streamer mode is hiding content", () => {

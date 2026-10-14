@@ -130,7 +130,10 @@ export interface DiscordState {
   health?: DiscordHealth;
 }
 
-/** "home", a guild snowflake, "dm:<channel snowflake>" or "folder:<folder id>" (toggles it). */
+/**
+ * "home", a guild snowflake, "dm:<channel snowflake>", "folder:<folder id>"
+ * (toggles it) or "channel:<guild>/<channel>" (a channel inside a guild).
+ */
 export type DiscordTarget = "home" | string;
 
 export interface RailEntry {
@@ -363,6 +366,10 @@ export function isDiscordTarget(value: unknown): value is DiscordTarget {
   if (typeof value !== "string") return false;
   if (value.startsWith("dm:")) return isSnowflake(value.slice(3));
   if (value.startsWith("folder:")) return isSnowflake(value.slice(7));
+  if (value.startsWith("channel:")) {
+    const [guild, channel, ...rest] = value.slice(8).split("/");
+    return rest.length === 0 && isSnowflake(guild) && isSnowflake(channel);
+  }
   return value === "home" || isSnowflake(value);
 }
 
