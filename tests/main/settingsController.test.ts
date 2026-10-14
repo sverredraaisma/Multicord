@@ -76,6 +76,10 @@ describe("settings state", () => {
       ["discord", true],
       ["fluxer", false],
       ["telegram", true],
+      ["matrix", false],
+      ["stoat", false],
+      ["spacebar", false],
+      ["nerimity", false],
       ["web", false],
     ]);
     expect(state).toMatchObject({ settings: DEFAULT_SETTINGS, restartNeeded: false, secretsPersistent: true, launchAtLoginSupported: true, version: "1.2.3" });
