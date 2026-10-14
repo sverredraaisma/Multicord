@@ -184,3 +184,133 @@ describe("guild names", () => {
     expect(readGuilds(document)[0]).toMatchObject({ name, mentions });
   });
 });
+
+describe("folders", () => {
+  const info = [
+    { id: "1", name: "Lone", iconUrl: "https://cdn/1.png" },
+    { id: "2", name: "Alpha", iconUrl: "https://cdn/2.png" },
+    { id: "3", name: "Beta", unread: true, mentions: 4 },
+    { id: "4", name: "Gamma", iconUrl: "https://cdn/4.png" },
+  ];
+
+  describe("from the store layout", () => {
+    it("nests rendered guilds under an expanded folder", () => {
+      guildBar(`
+        <div data-list-item-id="guildsnav___1"></div>
+        <div data-list-item-id="guildsnav___50" aria-expanded="true"></div>
+        <ul id="folder-items-50">
+          <div data-list-item-id="guildsnav___2" aria-label="unread, Alpha"></div>
+          <div data-list-item-id="guildsnav___3"></div>
+        </ul>`);
+      const state = readState(document, {
+        dms: [],
+        guilds: info,
+        layout: [{ guildIds: ["1"] }, { folderId: "50", name: "Games", color: "#ff0000", guildIds: ["2", "3"] }],
+      });
+      expect(state.guilds.map((g) => [g.id, g.folderId])).toEqual([["1", undefined], ["2", "50"], ["3", "50"]]);
+      expect(state.guilds[1]).toMatchObject({ name: "Alpha", unread: true });
+      expect(state.folders).toEqual([
+        {
+          id: "50",
+          name: "Games",
+          color: "#ff0000",
+          expanded: true,
+          unread: true,
+          mentions: 0,
+          iconUrls: ["https://cdn/2.png"],
+          index: 1,
+        },
+      ]);
+    });
+
+    it("keeps collapsed folders' guilds out of the bar but in the badge and preview", () => {
+      guildBar(`<div data-list-item-id="guildsnav___50" aria-expanded="false"><img src="https://cdn/mini.png"></div>`);
+      const state = readState(document, {
+        dms: [],
+        guilds: info,
+        layout: [{ folderId: "50", guildIds: ["2", "3", "4"] }],
+      });
+      expect(state.guilds).toEqual([]);
+      expect(state.folders).toEqual([
+        {
+          id: "50",
+          name: "Alpha, Beta, Gamma",
+          expanded: false,
+          unread: true,
+          mentions: 4,
+          iconUrls: ["https://cdn/2.png", "https://cdn/4.png"],
+          index: 0,
+        },
+      ]);
+    });
+
+    it("prefers the store's expanded flag, else falls back to rendered children", () => {
+      guildBar(`<div data-list-item-id="guildsnav___3"></div>`);
+      const expanded = (layout: Parameters<typeof readState>[1]) => readState(document, layout).folders![0]!.expanded;
+      expect(expanded({ dms: [], guilds: info, layout: [{ folderId: "50", expanded: false, guildIds: ["3"] }] })).toBe(false);
+      expect(expanded({ dms: [], guilds: info, layout: [{ folderId: "50", guildIds: ["3"] }] })).toBe(true);
+      expect(expanded({ dms: [], guilds: info, layout: [{ folderId: "50", guildIds: ["9"] }] })).toBe(false);
+    });
+
+    it("names guilds it knows nothing about by id and uses the header for empty folders", () => {
+      guildBar(`<div data-list-item-id="guildsnav___50"><div aria-expanded="false" aria-label="2 mentions, Header Name"></div></div>`);
+      const state = readState(document, { dms: [], guilds: [], layout: [{ guildIds: ["8"] }, { folderId: "50", guildIds: [] }] });
+      expect(state.guilds).toEqual([{ id: "8", name: "8", iconUrl: undefined, unread: false, mentions: 0 }]);
+      expect(state.folders![0]).toMatchObject({ name: "Header Name", expanded: false, unread: true, mentions: 2, index: 1 });
+    });
+
+    it("falls back to the DOM when the layout is empty", () => {
+      guildBar(`<div data-list-item-id="guildsnav___1"></div>`);
+      const state = readState(document, { dms: [], guilds: info, layout: [] });
+      expect(state.guilds.map((g) => g.name)).toEqual(["Lone"]);
+      expect(state).not.toHaveProperty("folders");
+    });
+  });
+
+  describe("from the DOM alone", () => {
+    it("recognises folder headers and their rendered guilds", () => {
+      guildBar(`
+        <div data-list-item-id="guildsnav___50" aria-expanded="true" aria-label="Games"></div>
+        <ul id="folder-items-50"><div data-list-item-id="guildsnav___2" aria-label="Alpha"></div></ul>
+        <div data-list-item-id="guildsnav___60" aria-expanded="false" aria-label="unread, Chill">
+          <img src="https://cdn/a.png"><img src="https://cdn/b.png"><img src="data:x">
+        </div>
+        <div data-list-item-id="guildsnav___1" aria-label="Lone"></div>`);
+      const state = readState(document);
+      expect(state.guilds.map((g) => [g.name, g.folderId])).toEqual([["Alpha", "50"], ["Lone", undefined]]);
+      expect(state.folders).toEqual([
+        { id: "50", name: "Games", expanded: true, unread: false, mentions: 0, iconUrls: [], index: 0 },
+        {
+          id: "60",
+          name: "Chill",
+          expanded: false,
+          unread: true,
+          mentions: 0,
+          iconUrls: ["https://cdn/a.png", "https://cdn/b.png"],
+          index: 1,
+        },
+      ]);
+    });
+
+    it("names unlabelled empty folders generically", () => {
+      guildBar(`<div data-list-item-id="guildsnav___50" aria-expanded="false"></div>`);
+      expect(readState(document).folders![0]!.name).toBe("Folder");
+    });
+
+    it("ignores folder-items containers with unusable ids", () => {
+      guildBar(`<ul id="folder-items-abc"><div data-list-item-id="guildsnav___2" aria-label="Alpha"></div></ul>`);
+      expect(readGuilds(document)[0]).not.toHaveProperty("folderId");
+    });
+  });
+
+  describe("toggling", () => {
+    it("clicks the hidden folder header", () => {
+      guildBar(`<div data-list-item-id="guildsnav___50" aria-expanded="false"></div>`);
+      const click = vi.fn();
+      document.querySelector("[aria-expanded]")!.addEventListener("click", click);
+      expect(navigate(document, window, "folder:50")).toBe("click");
+      expect(click).toHaveBeenCalledOnce();
+      expect(navigate(document, window, "folder:51")).toBe("none");
+    });
+  });
+});

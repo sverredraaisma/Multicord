@@ -6,6 +6,35 @@ export function initials(name: string): string {
   return words.slice(0, 3).map((w) => [...w][0]!.toUpperCase()).join("") || "?";
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** Discord-style folder glyph, drawn in the folder's colour. */
+function folderGlyph(doc: Document): SVGSVGElement {
+  const svg = doc.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "folder-glyph");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const path = doc.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", "M20 7H12L10 5H4C2.9 5 2 5.9 2 7V17C2 18.1 2.9 19 4 19H20C21.1 19 22 18.1 22 17V9C22 7.9 21.1 7 20 7Z");
+  svg.append(path);
+  return svg;
+}
+
+/** A collapsed group previews up to four member icons in a 2x2 grid. */
+function groupFace(doc: Document, entry: RailEntry): Element {
+  const previews = entry.previewIconUrls ?? [];
+  if (entry.expanded || previews.length === 0) return folderGlyph(doc);
+  const grid = doc.createElement("span");
+  grid.className = "folder-grid";
+  for (const url of previews.slice(0, 4)) {
+    const img = doc.createElement("img");
+    img.src = url;
+    img.alt = "";
+    grid.append(img);
+  }
+  return grid;
+}
+
 function renderEntry(doc: Document, entry: RailEntry, active: boolean, onOpen: (key: string) => void): HTMLElement {
   const button = doc.createElement("button");
   button.className = "rail-item";
@@ -16,7 +45,12 @@ function renderEntry(doc: Document, entry: RailEntry, active: boolean, onOpen: (
   button.classList.toggle("active", active);
   button.classList.toggle("unread", entry.unread);
 
-  if (entry.iconUrl) {
+  if (entry.kind === "group") {
+    button.classList.add("rail-folder");
+    button.setAttribute("aria-expanded", String(entry.expanded === true));
+    if (entry.color) button.style.setProperty("--folder-color", entry.color);
+    button.append(groupFace(doc, entry));
+  } else if (entry.iconUrl) {
     const img = doc.createElement("img");
     img.src = entry.iconUrl;
     img.alt = "";
@@ -39,27 +73,47 @@ function renderEntry(doc: Document, entry: RailEntry, active: boolean, onOpen: (
   return button;
 }
 
+const isPersonal = (entry: RailEntry): boolean => entry.kind === "home" || entry.kind === "dm";
+
 function needsSeparator(previous: RailEntry | undefined, entry: RailEntry): boolean {
   if (!previous) return false;
-  return previous.platform !== entry.platform || (previous.kind !== "server" && entry.kind === "server");
+  return previous.platform !== entry.platform || (isPersonal(previous) && !isPersonal(entry));
 }
 
 /**
  * Renders the unified rail. Separators mark each change of platform and the
- * step from a platform's home and DM bubbles to its servers.
+ * step from a platform's home and DM bubbles to its servers. An expanded
+ * group wraps its folder button and members in one tinted container, so
+ * grouped servers read as a folder rather than as loose servers.
  */
 export function renderRail(root: HTMLElement, state: RailState, onOpen: (key: string) => void): void {
   const doc = root.ownerDocument;
   const children: HTMLElement[] = [];
   let previous: RailEntry | undefined;
+  let openGroup: HTMLElement | undefined;
   for (const entry of state.entries) {
+    const element = renderEntry(doc, entry, entry.key === state.activeKey, onOpen);
+    if (entry.parentKey && openGroup?.dataset.group === entry.parentKey) {
+      openGroup.append(element);
+      continue;
+    }
+    openGroup = undefined;
     if (needsSeparator(previous, entry)) {
       const separator = doc.createElement("hr");
       separator.className = "rail-separator";
       children.push(separator);
     }
     previous = entry;
-    children.push(renderEntry(doc, entry, entry.key === state.activeKey, onOpen));
+    if (entry.kind === "group" && entry.expanded) {
+      openGroup = doc.createElement("div");
+      openGroup.className = "rail-folder-open";
+      openGroup.dataset.group = entry.key;
+      if (entry.color) openGroup.style.setProperty("--folder-color", entry.color);
+      openGroup.append(element);
+      children.push(openGroup);
+    } else {
+      children.push(element);
+    }
   }
   root.replaceChildren(...children);
 }

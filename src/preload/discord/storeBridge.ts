@@ -101,28 +101,66 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
       .slice(0, MAX_DMS);
   };
 
-  // Names and icons only; order and unread state still come from the guild bar.
+  // Names and icons, plus read state when GuildReadStateStore offers it.
   const collectGuilds = () => {
-    const { GuildStore } = stores!;
+    const { GuildStore, GuildReadStateStore } = stores!;
     if (!GuildStore) return [];
     try {
       return Object.values<any>(GuildStore.getGuilds?.() ?? {})
         .filter((g) => g && typeof g.id === "string" && typeof g.name === "string")
         .slice(0, MAX_GUILDS)
-        .map((g) => ({
-          id: g.id,
-          name: g.name.slice(0, MAX_TITLE),
-          iconUrl: g.icon ? `https://cdn.discordapp.com/icons/${g.id}/${g.icon}.png?size=96` : undefined,
-        }));
+        .map((g) => {
+          const unread = GuildReadStateStore?.hasUnread?.(g.id);
+          const mentions = GuildReadStateStore?.getMentionCount?.(g.id);
+          return {
+            id: g.id,
+            name: g.name.slice(0, MAX_TITLE),
+            iconUrl: g.icon ? `https://cdn.discordapp.com/icons/${g.id}/${g.icon}.png?size=96` : undefined,
+            unread: typeof unread === "boolean" ? unread : undefined,
+            mentions: Number.isInteger(mentions) && mentions >= 0 ? mentions : undefined,
+          };
+        });
     } catch {
       return [];
+    }
+  };
+
+  const hexColor = (color: unknown): string | undefined =>
+    typeof color === "number" && Number.isInteger(color) && color >= 0 && color <= 0xffffff
+      ? `#${color.toString(16).padStart(6, "0")}`
+      : undefined;
+
+  // The guild bar's slots in order: folders with their guilds, and lone guilds.
+  const collectLayout = () => {
+    const { SortedGuildStore, ExpandedGuildFolderStore } = stores!;
+    if (!SortedGuildStore) return undefined;
+    try {
+      const folders: any[] = SortedGuildStore.getGuildFolders?.() ?? [];
+      return folders
+        .filter((f) => f && Array.isArray(f.guildIds))
+        .slice(0, MAX_GUILDS)
+        .map((f) => {
+          const guildIds = f.guildIds.filter((id: unknown) => typeof id === "string" && /^\d{1,20}$/.test(id));
+          const folderId = f.folderId == null ? "" : String(f.folderId);
+          if (!/^\d{1,20}$/.test(folderId)) return { guildIds };
+          const expanded = ExpandedGuildFolderStore?.isFolderExpanded?.(f.folderId);
+          return {
+            folderId,
+            name: typeof f.folderName === "string" ? f.folderName.slice(0, MAX_TITLE) : undefined,
+            color: hexColor(f.folderColor),
+            expanded: typeof expanded === "boolean" ? expanded : undefined,
+            guildIds,
+          };
+        });
+    } catch {
+      return undefined;
     }
   };
 
   const emit = (): void => {
     timer = undefined;
     try {
-      const payload = { dms: collectDms(), guilds: collectGuilds() };
+      const payload = { dms: collectDms(), guilds: collectGuilds(), layout: collectLayout() };
       document.dispatchEvent(new CustomEvent(eventName, { detail: JSON.stringify(payload) }));
     } catch {
       // A store changed shape; the rail keeps its last good state.
@@ -137,7 +175,10 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
   const attach = (): void => {
     attempts++;
     try {
-      stores = findStores(["ChannelStore", "ReadStateStore", "UserStore"], ["GuildStore"]);
+      stores = findStores(
+        ["ChannelStore", "ReadStateStore", "UserStore"],
+        ["GuildStore", "GuildReadStateStore", "SortedGuildStore", "ExpandedGuildFolderStore"],
+      );
     } catch {
       stores = undefined;
     }

@@ -22,6 +22,20 @@ export interface DiscordGuild {
   iconUrl?: string;
   unread: boolean;
   mentions: number;
+  /** Set when the guild sits inside a folder; such guilds follow their folder. */
+  folderId?: string;
+}
+
+/** A guild folder; it sits in the bar just before `guilds[index]`. */
+export interface DiscordFolder {
+  id: string;
+  name: string;
+  color?: string; // "#rrggbb"
+  expanded: boolean;
+  unread: boolean;
+  mentions: number;
+  iconUrls: string[]; // up to four previews for the collapsed tile
+  index: number;
 }
 
 export interface TitleBadge {
@@ -38,16 +52,32 @@ export interface DiscordDm {
   lastActivity: number; // epoch ms
 }
 
-/** Guild details from Discord's GuildStore, used to name the guild bar's items. */
+/**
+ * Guild details from Discord's stores. Read state is included when the store
+ * offers it, which covers guilds hidden inside collapsed folders.
+ */
 export interface GuildInfo {
   id: string;
   name: string;
   iconUrl?: string;
+  unread?: boolean;
+  mentions?: number;
+}
+
+/** One slot of the guild bar from SortedGuildStore: a folder, or a lone guild without folderId. */
+export interface LayoutEntry {
+  folderId?: string;
+  name?: string;
+  color?: string;
+  expanded?: boolean;
+  guildIds: string[];
 }
 
 export interface BridgePayload {
   dms: DiscordDm[];
   guilds: GuildInfo[];
+  /** Absent when SortedGuildStore was not found. */
+  layout?: LayoutEntry[];
 }
 
 export interface DiscordState {
@@ -55,19 +85,26 @@ export interface DiscordState {
   badge: TitleBadge;
   /** Absent until the store bridge has found Discord's stores. */
   dms?: DiscordDm[];
+  folders?: DiscordFolder[];
 }
 
-/** "home" for the DM list, a guild snowflake, or "dm:<channel snowflake>". */
+/** "home", a guild snowflake, "dm:<channel snowflake>" or "folder:<folder id>" (toggles it). */
 export type DiscordTarget = "home" | string;
 
 export interface RailEntry {
   key: string;
   platform: string;
-  kind: "home" | "dm" | "server";
+  kind: "home" | "dm" | "server" | "group";
   name: string;
   iconUrl?: string;
   unread: boolean;
   mentions: number;
+  /** Groups (Discord folders) only. */
+  color?: string;
+  expanded?: boolean;
+  previewIconUrls?: string[];
+  /** Set on servers shown inside an expanded group. */
+  parentKey?: string;
 }
 
 export interface RailState {
@@ -101,6 +138,9 @@ export const MAX_GUILDS = 1000;
 export const MAX_DMS = 200;
 const MAX_TEXT = 200;
 const SNOWFLAKE = /^\d{1,20}$/;
+const COLOR = /^#[0-9a-f]{6}$/i;
+const MAX_PREVIEWS = 4;
+const MAX_FOLDER_GUILDS = 200;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -125,7 +165,29 @@ export function isDiscordGuild(value: unknown): value is DiscordGuild {
     typeof value.name === "string" &&
     (value.iconUrl === undefined || isHttpsUrl(value.iconUrl)) &&
     typeof value.unread === "boolean" &&
-    isCount(value.mentions)
+    isCount(value.mentions) &&
+    (value.folderId === undefined || isSnowflake(value.folderId))
+  );
+}
+
+function isOptionalColor(value: unknown): boolean {
+  return value === undefined || (typeof value === "string" && COLOR.test(value));
+}
+
+export function isDiscordFolder(value: unknown): value is DiscordFolder {
+  return (
+    isRecord(value) &&
+    isSnowflake(value.id) &&
+    typeof value.name === "string" &&
+    value.name.length <= MAX_TEXT &&
+    isOptionalColor(value.color) &&
+    typeof value.expanded === "boolean" &&
+    typeof value.unread === "boolean" &&
+    isCount(value.mentions) &&
+    Array.isArray(value.iconUrls) &&
+    value.iconUrls.length <= MAX_PREVIEWS &&
+    value.iconUrls.every(isHttpsUrl) &&
+    isCount(value.index)
   );
 }
 
@@ -152,7 +214,22 @@ export function isGuildInfo(value: unknown): value is GuildInfo {
     isSnowflake(value.id) &&
     typeof value.name === "string" &&
     value.name.length <= MAX_TEXT &&
-    (value.iconUrl === undefined || isHttpsUrl(value.iconUrl))
+    (value.iconUrl === undefined || isHttpsUrl(value.iconUrl)) &&
+    (value.unread === undefined || typeof value.unread === "boolean") &&
+    (value.mentions === undefined || isCount(value.mentions))
+  );
+}
+
+export function isLayoutEntry(value: unknown): value is LayoutEntry {
+  return (
+    isRecord(value) &&
+    (value.folderId === undefined || isSnowflake(value.folderId)) &&
+    (value.name === undefined || (typeof value.name === "string" && value.name.length <= MAX_TEXT)) &&
+    isOptionalColor(value.color) &&
+    (value.expanded === undefined || typeof value.expanded === "boolean") &&
+    Array.isArray(value.guildIds) &&
+    value.guildIds.length <= MAX_FOLDER_GUILDS &&
+    value.guildIds.every(isSnowflake)
   );
 }
 
@@ -162,7 +239,9 @@ export function isBridgePayload(value: unknown): value is BridgePayload {
     isDiscordDmList(value.dms) &&
     Array.isArray(value.guilds) &&
     value.guilds.length <= MAX_GUILDS &&
-    value.guilds.every(isGuildInfo)
+    value.guilds.every(isGuildInfo) &&
+    (value.layout === undefined ||
+      (Array.isArray(value.layout) && value.layout.length <= MAX_GUILDS && value.layout.every(isLayoutEntry)))
   );
 }
 
@@ -173,12 +252,16 @@ export function isDiscordState(value: unknown): value is DiscordState {
     value.guilds.length <= MAX_GUILDS &&
     value.guilds.every(isDiscordGuild) &&
     isTitleBadge(value.badge) &&
-    (value.dms === undefined || isDiscordDmList(value.dms))
+    (value.dms === undefined || isDiscordDmList(value.dms)) &&
+    (value.folders === undefined ||
+      (Array.isArray(value.folders) && value.folders.length <= MAX_GUILDS && value.folders.every(isDiscordFolder)))
   );
 }
 
 export function isDiscordTarget(value: unknown): value is DiscordTarget {
-  if (typeof value === "string" && value.startsWith("dm:")) return isSnowflake(value.slice(3));
+  if (typeof value !== "string") return false;
+  if (value.startsWith("dm:")) return isSnowflake(value.slice(3));
+  if (value.startsWith("folder:")) return isSnowflake(value.slice(7));
   return value === "home" || isSnowflake(value);
 }
 

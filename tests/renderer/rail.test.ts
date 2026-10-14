@@ -151,3 +151,98 @@ describe("attachTooltips", () => {
     expect(tooltip).toHaveBeenCalledWith({ text: "", y: expect.any(Number) });
   });
 });
+
+describe("folders", () => {
+  const entry = (over: Partial<RailState["entries"][number]>): RailState["entries"][number] => ({
+    key: "discord:x",
+    platform: "discord",
+    kind: "server",
+    name: "x",
+    unread: false,
+    mentions: 0,
+    ...over,
+  });
+
+  function render(entries: RailState["entries"], onOpen = vi.fn()) {
+    const root = document.getElementById("rail")!;
+    renderRail(root, { entries, activeKey: "discord:2" }, onOpen);
+    return root;
+  }
+
+  it("draws a collapsed folder as a tinted tile previewing its servers", () => {
+    const onOpen = vi.fn();
+    const root = render(
+      [
+        entry({ key: "discord:home", kind: "home", name: "Home" }),
+        entry({
+          key: "discord:folder:60",
+          kind: "group",
+          name: "Chill",
+          color: "#00ff00",
+          expanded: false,
+          previewIconUrls: ["https://cdn/a.png", "https://cdn/b.png", "https://cdn/c.png", "https://cdn/d.png", "https://cdn/e.png"],
+          unread: true,
+          mentions: 5,
+        }),
+      ],
+      onOpen,
+    );
+    const tile = root.querySelector<HTMLButtonElement>('[data-kind="group"]')!;
+    expect(tile.classList.contains("rail-folder")).toBe(true);
+    expect(tile.getAttribute("aria-expanded")).toBe("false");
+    expect(tile.getAttribute("aria-label")).toBe("Chill");
+    expect(tile.style.getPropertyValue("--folder-color")).toBe("#00ff00");
+    expect(tile.querySelectorAll(".folder-grid img")).toHaveLength(4);
+    expect(tile.querySelector(".badge")!.textContent).toBe("5");
+    expect(root.querySelector("hr")).not.toBeNull(); // home -> folder separator
+    tile.click();
+    expect(onOpen).toHaveBeenCalledWith("discord:folder:60");
+  });
+
+  it("shows a folder glyph when a collapsed folder has no icons", () => {
+    const root = render([entry({ key: "discord:folder:60", kind: "group", name: "Empty", expanded: false })]);
+    expect(root.querySelector(".rail-folder .folder-glyph")).not.toBeNull();
+    expect(root.querySelector<HTMLElement>(".rail-folder")!.style.getPropertyValue("--folder-color")).toBe("");
+  });
+
+  it("wraps an expanded folder and its servers in one container", () => {
+    const root = render([
+      entry({ key: "discord:1", name: "Lone" }),
+      entry({ key: "discord:folder:50", kind: "group", name: "Games", color: "#ff0000", expanded: true, previewIconUrls: ["https://cdn/a.png"] }),
+      entry({ key: "discord:2", name: "Alpha", parentKey: "discord:folder:50" }),
+      entry({ key: "discord:3", name: "Beta", parentKey: "discord:folder:50" }),
+      entry({ key: "discord:4", name: "After" }),
+      entry({ key: "discord:5", name: "Orphan", parentKey: "discord:folder:99" }),
+    ]);
+    const top = [...root.children].map((c) => (c as HTMLElement).dataset.key ?? (c as HTMLElement).dataset.group);
+    expect(top).toEqual(["discord:1", "discord:folder:50", "discord:4", "discord:5"]);
+
+    const open = root.querySelector<HTMLElement>(".rail-folder-open")!;
+    expect(open.style.getPropertyValue("--folder-color")).toBe("#ff0000");
+    expect([...open.children].map((c) => (c as HTMLElement).dataset.key)).toEqual([
+      "discord:folder:50",
+      "discord:2",
+      "discord:3",
+    ]);
+    const header = open.querySelector<HTMLElement>('[data-kind="group"]')!;
+    expect(header.getAttribute("aria-expanded")).toBe("true");
+    expect(header.querySelector(".folder-glyph")).not.toBeNull();
+    expect(open.querySelector('[data-key="discord:2"]')!.classList.contains("active")).toBe(true);
+  });
+
+  it("shows names of servers inside folders on hover", () => {
+    const root = render([
+      entry({ key: "discord:folder:50", kind: "group", name: "Games", expanded: true }),
+      entry({ key: "discord:2", name: "Alpha", parentKey: "discord:folder:50" }),
+    ]);
+    const tooltip = vi.fn();
+    attachTooltips(root, tooltip);
+    root.querySelector('[data-key="discord:2"]')!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(tooltip).toHaveBeenCalledWith({ text: "Alpha", y: expect.any(Number) });
+  });
+
+  it("leaves an expanded folder without a colour untinted", () => {
+    const root = render([entry({ key: "discord:folder:50", kind: "group", name: "Games", expanded: true })]);
+    expect(root.querySelector<HTMLElement>(".rail-folder-open")!.style.getPropertyValue("--folder-color")).toBe("");
+  });
+});

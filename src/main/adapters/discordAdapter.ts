@@ -1,6 +1,8 @@
-import type { DirectConversation, HomeBadge } from "../../shared/adapter";
-import { isSnowflake, type DiscordState, type DiscordTarget, type TitleBadge } from "../../shared/ipc";
+import type { DirectConversation, HomeBadge, RailServer } from "../../shared/adapter";
+import { isSnowflake, type DiscordGuild, type DiscordState, type DiscordTarget, type TitleBadge } from "../../shared/ipc";
 import { WebViewAdapter } from "./webViewAdapter";
+
+export const FOLDER_PREFIX = "folder:";
 
 /**
  * Hidden-engine adapter: Discord's web client does all the work; the preload
@@ -29,16 +31,53 @@ export class DiscordAdapter extends WebViewAdapter {
       }));
       this.directsChanged.emit(this.directs);
     }
-    this.setServers(
-      state.guilds.map((g) => ({
-        key: g.id,
-        account: this.account,
-        name: g.name,
-        iconUrl: g.iconUrl,
-        unread: g.unread,
-        mentions: g.mentions,
-      })),
-    );
+    this.setServers(this.toServers(state));
+  }
+
+  /** Nests guilds under their folders; a folder sits before `guilds[folder.index]`. */
+  private toServers(state: DiscordState): RailServer[] {
+    const server = (g: DiscordGuild): RailServer => ({
+      key: g.id,
+      account: this.account,
+      name: g.name,
+      iconUrl: g.iconUrl,
+      unread: g.unread,
+      mentions: g.mentions,
+    });
+    const folders = state.folders ?? [];
+    const groups = new Map<string, RailServer>();
+    const servers: RailServer[] = [];
+    const placeFolders = (index: number): void => {
+      for (const f of folders.filter((folder) => folder.index === index)) {
+        const group: RailServer = {
+          key: FOLDER_PREFIX + f.id,
+          account: this.account,
+          name: f.name,
+          unread: f.unread,
+          mentions: f.mentions,
+          kind: "group",
+          children: [],
+          expanded: f.expanded,
+          color: f.color,
+          previewIconUrls: f.iconUrls,
+        };
+        groups.set(f.id, group);
+        servers.push(group);
+      }
+    };
+    state.guilds.forEach((g, index) => {
+      placeFolders(index);
+      const group = g.folderId ? groups.get(g.folderId) : undefined;
+      (group?.children ?? servers).push(server(g));
+    });
+    placeFolders(state.guilds.length);
+    return servers;
+  }
+
+  async toggleGroup(key: string): Promise<void> {
+    const id = key.startsWith(FOLDER_PREFIX) ? key.slice(FOLDER_PREFIX.length) : "";
+    if (!isSnowflake(id)) throw new Error(`Not a Discord folder: ${key}`);
+    this.navigate(`folder:${id}`);
   }
 
   override async listDirectConversations(): Promise<DirectConversation[]> {

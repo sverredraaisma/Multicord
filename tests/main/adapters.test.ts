@@ -127,3 +127,48 @@ describe("GenericWebAdapter", () => {
     await expect(adapter.openConversation("x")).rejects.toThrow("Element conversations are not supported");
   });
 });
+
+describe("DiscordAdapter folders", () => {
+  const guild = (id: string, folderId?: string) => ({ id, name: `G${id}`, unread: false, mentions: 0, folderId });
+  const folder = (id: string, index: number, expanded: boolean) => ({
+    id,
+    name: `F${id}`,
+    color: "#123456",
+    expanded,
+    unread: true,
+    mentions: 1,
+    iconUrls: ["https://cdn/x.png"],
+    index,
+  });
+
+  it("nests folder members and keeps folders in bar order", async () => {
+    const adapter = new DiscordAdapter(vi.fn());
+    adapter.update({
+      guilds: [guild("1"), guild("2", "50"), guild("3", "50"), guild("4"), guild("5", "99")],
+      folders: [folder("50", 1, true), folder("60", 4, false), folder("70", 5, false)],
+      badge: { unread: false, mentions: 0 },
+    });
+    const servers = await adapter.listServers();
+    expect(servers.map((s) => s.key)).toEqual(["1", "folder:50", "4", "folder:60", "5", "folder:70"]);
+    expect(servers[1]).toMatchObject({
+      kind: "group",
+      name: "F50",
+      expanded: true,
+      color: "#123456",
+      previewIconUrls: ["https://cdn/x.png"],
+      unread: true,
+      mentions: 1,
+    });
+    expect(servers[1]!.children!.map((c) => c.key)).toEqual(["2", "3"]);
+    expect(servers[3]!.children).toEqual([]);
+  });
+
+  it("toggles folders through the preload", async () => {
+    const navigate = vi.fn();
+    const adapter = new DiscordAdapter(navigate);
+    await adapter.toggleGroup("folder:50");
+    expect(navigate).toHaveBeenCalledWith("folder:50");
+    await expect(adapter.toggleGroup("50")).rejects.toThrow("Not a Discord folder");
+    await expect(adapter.toggleGroup("folder:x")).rejects.toThrow("Not a Discord folder");
+  });
+});

@@ -24,6 +24,48 @@ export function splitRailKey(key: string): { platform: string; local: string } |
   return { platform: key.slice(0, at), local: key.slice(at + 1) };
 }
 
+/**
+ * Flattens servers for the rail. A group's own badge only counts while it is
+ * collapsed; once expanded its children carry their badges, as in Discord.
+ */
+export function flattenServers(platform: string, servers: RailServer[]): RailEntry[] {
+  const entries: RailEntry[] = [];
+  const server = (s: RailServer, parentKey?: string): RailEntry => {
+    const entry: RailEntry = {
+      key: railKey(platform, s.key),
+      platform,
+      kind: "server",
+      name: s.name,
+      iconUrl: s.iconUrl,
+      unread: s.unread,
+      mentions: s.mentions,
+    };
+    if (parentKey) entry.parentKey = parentKey;
+    return entry;
+  };
+  for (const s of servers) {
+    if (s.kind !== "group") {
+      entries.push(server(s));
+      continue;
+    }
+    const key = railKey(platform, s.key);
+    const expanded = s.expanded === true;
+    entries.push({
+      key,
+      platform,
+      kind: "group",
+      name: s.name,
+      color: s.color,
+      expanded,
+      previewIconUrls: s.previewIconUrls ?? [],
+      unread: !expanded && s.unread,
+      mentions: expanded ? 0 : s.mentions,
+    });
+    if (expanded) for (const child of s.children ?? []) entries.push(server(child, key));
+  }
+  return entries;
+}
+
 /** Aggregates every adapter into one rail; adding a platform never touches shell code. */
 export class PlatformRegistry {
   private readonly platforms = new Map<string, Registered>();
@@ -34,15 +76,7 @@ export class PlatformRegistry {
     const registered: Registered = { adapter, name, servers: [], directs: [] };
     this.platforms.set(adapter.platform, registered);
     const applyServers = (servers: RailServer[]): void => {
-      registered.servers = servers.map((s) => ({
-        key: railKey(adapter.platform, s.key),
-        platform: adapter.platform,
-        kind: "server",
-        name: s.name,
-        iconUrl: s.iconUrl,
-        unread: s.unread,
-        mentions: s.mentions,
-      }));
+      registered.servers = flattenServers(adapter.platform, servers);
       this.emit();
     };
     const applyDirects = (directs: DirectConversation[]): void => {
@@ -101,12 +135,19 @@ export class PlatformRegistry {
     };
   }
 
-  /** Routes a rail click to its adapter; returns the platform whose view must be shown. */
+  /**
+   * Routes a rail click to its adapter; returns the platform whose view must
+   * be shown. Clicking a group only expands or collapses it.
+   */
   async open(key: string): Promise<string | undefined> {
     const parts = splitRailKey(key);
     const registered = parts && this.platforms.get(parts.platform);
     if (!parts || !registered) return undefined;
     const { adapter } = registered;
+    if (registered.servers.some((e) => e.key === key && e.kind === "group")) {
+      await adapter.toggleGroup?.(parts.local);
+      return undefined;
+    }
     if (parts.local === HOME_KEY && adapter.openHome) await adapter.openHome();
     else if (parts.local.startsWith(DM_PREFIX)) await adapter.openConversation(parts.local.slice(DM_PREFIX.length));
     else await adapter.openServer(parts.local);

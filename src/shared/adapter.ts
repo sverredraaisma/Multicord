@@ -16,6 +16,15 @@ export interface RailServer {
   iconUrl?: string;
   unread: boolean;
   mentions: number;
+  /**
+   * A group of servers: a Discord folder, later a Matrix space. Groups carry
+   * their children and the platform's own expanded state.
+   */
+  kind?: "server" | "group";
+  children?: RailServer[];
+  expanded?: boolean;
+  color?: string;
+  previewIconUrls?: string[];
 }
 
 export interface DirectConversation {
@@ -72,6 +81,9 @@ export interface PlatformAdapter {
   // Navigation: web-view adapters route inside their SPA; native ones open our view.
   openServer(key: string): Promise<void>;
   openConversation(key: string): Promise<void>;
+
+  // Expands or collapses a group returned by listServers().
+  toggleGroup?(key: string): Promise<void>;
 
   // Shell addition to the draft: the DM home entry (Discord's /channels/@me).
   homeBadge?(): HomeBadge;

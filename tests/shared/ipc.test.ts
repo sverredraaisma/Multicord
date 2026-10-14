@@ -5,6 +5,8 @@ import {
   isDiscordDmList,
   isTooltipRequest,
   isBridgePayload,
+  isDiscordFolder,
+  isLayoutEntry,
   isGuildInfo,
   MAX_GUILDS,
   isDiscordGuild,
@@ -156,5 +158,62 @@ describe("bridge payload validators", () => {
     expect(isBridgePayload({ dms: [], guilds: "x" })).toBe(false);
     expect(isBridgePayload({ dms: "x", guilds: [] })).toBe(false);
     expect(isBridgePayload([])).toBe(false);
+  });
+});
+
+describe("folder validators", () => {
+  const folder = { id: "5", name: "Games", expanded: false, unread: true, mentions: 2, iconUrls: ["https://cdn/a.png"], index: 0 };
+
+  it("validates folders", () => {
+    expect(isDiscordFolder(folder)).toBe(true);
+    expect(isDiscordFolder({ ...folder, color: "#aabbcc" })).toBe(true);
+    expect(isDiscordFolder({ ...folder, color: "red" })).toBe(false);
+    expect(isDiscordFolder({ ...folder, id: "x" })).toBe(false);
+    expect(isDiscordFolder({ ...folder, name: 1 })).toBe(false);
+    expect(isDiscordFolder({ ...folder, name: "x".repeat(201) })).toBe(false);
+    expect(isDiscordFolder({ ...folder, expanded: "no" })).toBe(false);
+    expect(isDiscordFolder({ ...folder, unread: 0 })).toBe(false);
+    expect(isDiscordFolder({ ...folder, mentions: -2 })).toBe(false);
+    expect(isDiscordFolder({ ...folder, iconUrls: "x" })).toBe(false);
+    expect(isDiscordFolder({ ...folder, iconUrls: Array(5).fill("https://cdn/a.png") })).toBe(false);
+    expect(isDiscordFolder({ ...folder, iconUrls: ["javascript:x"] })).toBe(false);
+    expect(isDiscordFolder({ ...folder, index: -1 })).toBe(false);
+    expect(isDiscordFolder(null)).toBe(false);
+  });
+
+  it("validates guild folder ids and folders on state", () => {
+    const base = { badge: { unread: false, mentions: 0 } };
+    const guild = { id: "1", name: "G", unread: false, mentions: 0 };
+    expect(isDiscordState({ ...base, guilds: [{ ...guild, folderId: "5" }], folders: [folder] })).toBe(true);
+    expect(isDiscordState({ ...base, guilds: [{ ...guild, folderId: "x" }] })).toBe(false);
+    expect(isDiscordState({ ...base, guilds: [], folders: [{}] })).toBe(false);
+    expect(isDiscordState({ ...base, guilds: [], folders: "x" })).toBe(false);
+  });
+
+  it("validates layout entries and guild read state from the bridge", () => {
+    const entry = { folderId: "5", name: "Games", color: "#112233", expanded: true, guildIds: ["1", "2"] };
+    expect(isLayoutEntry(entry)).toBe(true);
+    expect(isLayoutEntry({ guildIds: ["1"] })).toBe(true);
+    expect(isLayoutEntry({ ...entry, folderId: "x" })).toBe(false);
+    expect(isLayoutEntry({ ...entry, name: 1 })).toBe(false);
+    expect(isLayoutEntry({ ...entry, name: "x".repeat(201) })).toBe(false);
+    expect(isLayoutEntry({ ...entry, color: "#12" })).toBe(false);
+    expect(isLayoutEntry({ ...entry, expanded: 1 })).toBe(false);
+    expect(isLayoutEntry({ ...entry, guildIds: ["x"] })).toBe(false);
+    expect(isLayoutEntry({ ...entry, guildIds: Array(201).fill("1") })).toBe(false);
+    expect(isLayoutEntry(null)).toBe(false);
+
+    expect(isBridgePayload({ dms: [], guilds: [], layout: [entry] })).toBe(true);
+    expect(isBridgePayload({ dms: [], guilds: [], layout: [{}] })).toBe(false);
+    expect(isBridgePayload({ dms: [], guilds: [], layout: "x" })).toBe(false);
+    expect(isGuildInfo({ id: "1", name: "G", unread: true, mentions: 3 })).toBe(true);
+    expect(isGuildInfo({ id: "1", name: "G", unread: "yes" })).toBe(false);
+    expect(isGuildInfo({ id: "1", name: "G", mentions: -1 })).toBe(false);
+  });
+
+  it("accepts folder toggle targets", () => {
+    expect(isDiscordTarget("folder:123")).toBe(true);
+    expect(isDiscordTarget("folder:abc")).toBe(false);
+    expect(isDiscordTarget(42)).toBe(false);
   });
 });

@@ -124,3 +124,36 @@ html:has(.tooltip-body), .tooltip-body { background: transparent; overflow: hidd
   border-right-color: #111214;
   transform: translateY(-50%);
 }
+
+/* Server folders: collapsed tiles preview their servers; expanded folders tint a container. */
+.rail-folder {
+  --folder-color: #5865f2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--folder-color) 30%, var(--item));
+}
+.rail-folder:hover { background: color-mix(in srgb, var(--folder-color) 45%, var(--item)); }
+.folder-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 16px);
+  grid-auto-rows: 16px;
+  gap: 4px;
+}
+.folder-grid img { width: 16px; height: 16px; border-radius: 50%; }
+.folder-glyph { width: 24px; height: 24px; fill: var(--folder-color); }
+.rail-folder-open {
+  --folder-color: #5865f2;
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 48px;
+  padding-bottom: 8px;
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--folder-color) 25%, transparent);
+}
+.rail-folder-open > .rail-folder { background: transparent; }
+.rail-folder-open > .rail-folder:hover { background: color-mix(in srgb, var(--folder-color) 20%, transparent); }

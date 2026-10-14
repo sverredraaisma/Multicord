@@ -58,7 +58,7 @@ function installWebpack(exportsList: unknown[]) {
 }
 
 /** Collects one field of each bridge payload (DMs by default). */
-function listen(field: "dms" | "guilds" = "dms") {
+function listen(field: "dms" | "guilds" | "layout" = "dms") {
   const received: unknown[] = [];
   document.addEventListener(EVENT, (e) => {
     const payload = JSON.parse((e as CustomEvent<string>).detail);
@@ -258,6 +258,85 @@ describe("discordStoreBridge", () => {
 
       expect(guilds).toEqual([[], [], []]);
       expect((dms as unknown[][]).map((d) => d.length)).toEqual([4, 4, 4]);
+    });
+  });
+  describe("guild layout", () => {
+    function layoutStores(folders: unknown, extra: unknown[] = []) {
+      const stores = discordStores();
+      installWebpack([
+        stores.ChannelStore,
+        stores.ReadStateStore,
+        stores.UserStore,
+        store("SortedGuildStore", { getGuildFolders: () => folders }),
+        ...extra,
+      ]);
+    }
+
+    it("reads folders, colours and expanded state in bar order", () => {
+      layoutStores(
+        [
+          { guildIds: ["1"] },
+          { folderId: 4242, folderName: "Games", folderColor: 0x00ff7f, guildIds: ["2", "3", 7] },
+          { folderId: 99, folderName: null, guildIds: ["4"] },
+          { folderId: -1, guildIds: ["5"] }, // unusable id: guilds become lone guilds
+          null,
+          { folderId: 1, guildIds: "nope" },
+        ],
+        [store("ExpandedGuildFolderStore", { isFolderExpanded: (id: number) => (id === 4242 ? true : undefined) })],
+      );
+      const received = listen("layout");
+      discordStoreBridge(EVENT, 1000, 1);
+      expect(received).toEqual([
+        [
+          { guildIds: ["1"] },
+          { folderId: "4242", name: "Games", color: "#00ff7f", expanded: true, guildIds: ["2", "3"] },
+          { folderId: "99", guildIds: ["4"] },
+          { guildIds: ["5"] },
+        ],
+      ]);
+    });
+
+    it("omits the layout when SortedGuildStore is missing or broken", () => {
+      const stores = discordStores();
+      installWebpack([stores.ChannelStore, stores.ReadStateStore, stores.UserStore]);
+      const received = listen("layout");
+      discordStoreBridge(EVENT, 1000, 1);
+      layoutStores(undefined);
+      discordStoreBridge(EVENT, 1000, 1);
+      const throwing = () => {
+        throw new Error("changed");
+      };
+      const broken = discordStores();
+      installWebpack([
+        broken.ChannelStore,
+        broken.ReadStateStore,
+        broken.UserStore,
+        store("SortedGuildStore", { getGuildFolders: throwing }),
+      ]);
+      discordStoreBridge(EVENT, 1000, 1);
+      expect(received).toEqual([undefined, [], undefined]);
+    });
+
+    it("adds guild read state when GuildReadStateStore offers it", () => {
+      const stores = discordStores();
+      installWebpack([
+        stores.ChannelStore,
+        stores.ReadStateStore,
+        stores.UserStore,
+        store("GuildStore", { getGuilds: () => ({ 1: { id: "1", name: "A" }, 2: { id: "2", name: "B" } }) }),
+        store("GuildReadStateStore", {
+          hasUnread: (id: string) => (id === "1" ? true : "maybe"),
+          getMentionCount: (id: string) => (id === "1" ? 3 : -1),
+        }),
+      ]);
+      const received = listen("guilds");
+      discordStoreBridge(EVENT, 1000, 1);
+      expect(received).toEqual([
+        [
+          { id: "1", name: "A", unread: true, mentions: 3 },
+          { id: "2", name: "B" },
+        ],
+      ]);
     });
   });
 });

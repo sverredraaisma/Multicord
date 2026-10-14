@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DiscordAdapter } from "../../src/main/adapters/discordAdapter";
 import { GenericWebAdapter } from "../../src/main/adapters/genericWebAdapter";
-import { MAX_DM_BUBBLES, PlatformRegistry, railKey, splitRailKey } from "../../src/main/registry";
+import { flattenServers, MAX_DM_BUBBLES, PlatformRegistry, railKey, splitRailKey } from "../../src/main/registry";
 import type { PlatformAdapter } from "../../src/shared/adapter";
 
 async function setup() {
@@ -124,5 +124,80 @@ describe("PlatformRegistry", () => {
     ]);
     await registry.open("custom:home");
     expect(adapter.openHome).toHaveBeenCalled();
+  });
+});
+
+describe("groups", () => {
+  const account = { platform: "discord", instance: "discord.com", accountId: "default" };
+  const server = (key: string, mentions = 0) => ({ key, account, name: key, unread: mentions > 0, mentions });
+
+  it("flattens expanded groups with their children and hides collapsed groups' children", () => {
+    const entries = flattenServers("discord", [
+      server("1"),
+      { ...server("folder:50", 3), kind: "group", expanded: true, color: "#ff0000", children: [server("2", 3)] },
+      { ...server("folder:60", 2), kind: "group", expanded: false, previewIconUrls: ["https://cdn/a.png"], children: [server("3", 2)] },
+      { ...server("folder:70"), kind: "group" },
+    ]);
+    expect(entries).toEqual([
+      { key: "discord:1", platform: "discord", kind: "server", name: "1", iconUrl: undefined, unread: false, mentions: 0 },
+      {
+        key: "discord:folder:50",
+        platform: "discord",
+        kind: "group",
+        name: "folder:50",
+        color: "#ff0000",
+        expanded: true,
+        previewIconUrls: [],
+        unread: false,
+        mentions: 0,
+      },
+      {
+        key: "discord:2",
+        platform: "discord",
+        kind: "server",
+        name: "2",
+        iconUrl: undefined,
+        unread: true,
+        mentions: 3,
+        parentKey: "discord:folder:50",
+      },
+      {
+        key: "discord:folder:60",
+        platform: "discord",
+        kind: "group",
+        name: "folder:60",
+        color: undefined,
+        expanded: false,
+        previewIconUrls: ["https://cdn/a.png"],
+        unread: true,
+        mentions: 2,
+      },
+      {
+        key: "discord:folder:70",
+        platform: "discord",
+        kind: "group",
+        name: "folder:70",
+        color: undefined,
+        expanded: false,
+        previewIconUrls: [],
+        unread: false,
+        mentions: 0,
+      },
+    ]);
+  });
+
+  it("toggles groups on open without switching views", async () => {
+    const { registry, discord, navigate } = await setup();
+    discord.update({
+      guilds: [{ id: "2", name: "G", unread: false, mentions: 0, folderId: "50" }],
+      folders: [{ id: "50", name: "F", expanded: true, unread: false, mentions: 0, iconUrls: [], index: 0 }],
+      badge: { unread: false, mentions: 0 },
+    });
+    expect(await registry.open("discord:folder:50")).toBeUndefined();
+    expect(navigate).toHaveBeenCalledWith("folder:50");
+    expect(registry.state().activeKey).toBeNull();
+
+    expect(await registry.open("discord:2")).toBe("discord");
+    expect(registry.state().activeKey).toBe("discord:2");
   });
 });
