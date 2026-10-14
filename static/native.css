@@ -125,7 +125,11 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
 
 /* Beside the unified Messages list: the conversation only. */
 .compact .chat { grid-template-columns: 1fr; }
+.compact .chat:has(.voice-panel:not([hidden])) { grid-template-rows: auto 1fr; }
+/* Beside the Messages list the sidebar would repeat it; only a call in progress stays, above the conversation. */
 .compact .sidebar { display: none; }
+.compact .sidebar:has(> .voice-panel:not([hidden])) { display: flex; }
+.compact .sidebar > :not(.voice-panel) { display: none; }
 
 @media (max-width: 640px) {
   .chat { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
