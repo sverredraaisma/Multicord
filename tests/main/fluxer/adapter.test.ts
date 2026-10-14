@@ -514,3 +514,52 @@ describe("FluxerAdapter chat", () => {
     expect(ctx.chat().me).toBe("");
   });
 });
+
+describe("FluxerAdapter notifications", () => {
+  async function online() {
+    const ctx = setup({ token: "flx" });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    const notes = vi.fn();
+    ctx.adapter.onNotification(notes);
+    return { ...ctx, notes };
+  }
+
+  it("notifies for DMs, mentions and @everyone but not other chatter", async () => {
+    const { adapter, notes } = await online();
+    adapter.state.apply("MESSAGE_CREATE", message("801", "900", { content: "hi <@1>" }));
+    adapter.state.apply("MESSAGE_CREATE", message("802", "901", { content: "", attachments: [{ id: "5", filename: "a.png" }] }));
+    adapter.state.apply("MESSAGE_CREATE", message("803", "111", { mentions: [{ id: "1" }] }));
+    adapter.state.apply("MESSAGE_CREATE", message("804", "113", { mention_everyone: true, content: "" }));
+    adapter.state.apply("MESSAGE_CREATE", message("805", "211")); // plain guild message
+    adapter.state.apply("MESSAGE_CREATE", message("806", "900", { author: ME })); // our own
+    expect(notes.mock.calls.map(([n]) => n)).toEqual([
+      { title: "Ana", body: "hi @me", target: "900", railKey: "dm:900", inView: false },
+      { title: "Ana in Group", body: "Sent an attachment", target: "901", railKey: "dm:901", inView: false },
+      { title: "Ana in #general (Alpha)", body: "m803", target: "111", railKey: "100", inView: false },
+      { title: "Ana in #lobby (Alpha)", body: "New message", target: "113", railKey: "100", inView: false },
+    ]);
+  });
+
+  it("marks notifications for the open, visible conversation", async () => {
+    const { adapter, notes } = await online();
+    await adapter.openConversation("900");
+    adapter.setVisible(true);
+    adapter.state.apply("MESSAGE_CREATE", message("801", "900"));
+    expect(notes.mock.calls[0]![0]).toMatchObject({ inView: true });
+  });
+
+  it("skips messages in unknown channels or before READY", async () => {
+    const { adapter, notes } = await online();
+    adapter.state.apply("MESSAGE_CREATE", message("801", "404", { mention_everyone: true }));
+    adapter.state.me = undefined;
+    adapter.state.apply("MESSAGE_CREATE", message("802", "900"));
+    expect(notes).not.toHaveBeenCalled();
+  });
+
+  it("opens guild channels from a notification inside their guild", async () => {
+    const { adapter, chat } = await online();
+    await adapter.openConversation("111");
+    expect(chat()).toMatchObject({ title: "Alpha", channel: { id: "111" } });
+  });
+});

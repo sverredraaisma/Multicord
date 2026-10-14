@@ -153,9 +153,22 @@ export function resetElectron(): void {
   WebContentsView.instances = [];
   BaseWindow.instances = [];
   Tray.instances = [];
+  Notification.instances = [];
+  Notification.isSupported.mockImplementation(() => true);
   sessions.clear();
   ipcMain.removeAllListeners();
   app.removeAllListeners();
   app.requestSingleInstanceLock.mockImplementation(() => true);
   vi.clearAllMocks();
+}
+
+export class Notification extends EventEmitter {
+  static instances: Notification[] = [];
+  static isSupported = vi.fn(() => true);
+  show = vi.fn();
+
+  constructor(readonly options: { title: string; body: string }) {
+    super();
+    Notification.instances.push(this);
+  }
 }

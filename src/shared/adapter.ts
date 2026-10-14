@@ -47,7 +47,12 @@ export interface IncomingCall {
 export interface PlatformNotification {
   title: string;
   body: string;
+  /** Conversation to open on click, passed to openConversation(). */
   target: string;
+  /** Rail entry to highlight once opened, e.g. a guild key or "dm:<id>". */
+  railKey?: string;
+  /** The conversation is already on screen in the platform's view. */
+  inView?: boolean;
 }
 
 /** Badge for a platform's "home" (DM) entry in the rail. */

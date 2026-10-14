@@ -201,3 +201,16 @@ describe("groups", () => {
     expect(registry.state().activeKey).toBe("discord:2");
   });
 });
+
+describe("openNotification", () => {
+  it("opens the conversation and highlights its rail entry", async () => {
+    const { registry, discord } = await setup();
+    const open = vi.spyOn(discord, "openConversation").mockResolvedValue();
+    expect(await registry.openNotification("discord", { title: "t", body: "b", target: "77", railKey: "dm:77" })).toBe("discord");
+    expect(open).toHaveBeenCalledWith("77");
+    expect(registry.state().activeKey).toBe("discord:dm:77");
+    expect(await registry.openNotification("discord", { title: "t", body: "b", target: "78" })).toBe("discord");
+    expect(registry.state().activeKey).toBe("discord:dm:77");
+    expect(await registry.openNotification("nope", { title: "t", body: "b", target: "1" })).toBeUndefined();
+  });
+});

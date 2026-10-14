@@ -1,4 +1,4 @@
-import type { DirectConversation, PlatformAdapter, RailServer } from "../shared/adapter";
+import type { DirectConversation, PlatformAdapter, PlatformNotification, RailServer } from "../shared/adapter";
 import type { RailEntry, RailState } from "../shared/ipc";
 import { Emitter } from "./adapters/emitter";
 
@@ -154,6 +154,16 @@ export class PlatformRegistry {
     this.activeKey = key;
     this.emit();
     return parts.platform;
+  }
+
+  /** Opens a notification's conversation; returns the platform whose view must be shown. */
+  async openNotification(platform: string, notification: PlatformNotification): Promise<string | undefined> {
+    const registered = this.platforms.get(platform);
+    if (!registered) return undefined;
+    await registered.adapter.openConversation(notification.target);
+    if (notification.railKey) this.activeKey = railKey(platform, notification.railKey);
+    this.emit();
+    return platform;
   }
 
   private emit(): void {

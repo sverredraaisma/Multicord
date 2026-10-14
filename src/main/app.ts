@@ -7,6 +7,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  Notification,
   safeStorage,
   session,
   shell,
@@ -277,6 +278,32 @@ export async function createShell(
     window.show();
     window.focus();
   };
+
+  // Native adapters' notifications; Discord's own page shows its notifications itself.
+  // Shown notifications stay referenced so their click handlers survive GC.
+  const shownNotifications = new Set<Notification>();
+  for (const [id, adapter] of adapters) {
+    adapter.onNotification((n) => {
+      if (n.inView && window.isFocused() && activePlatform === id) return;
+      if (!Notification.isSupported()) return;
+      const note = new Notification({ title: n.title, body: n.body });
+      shownNotifications.add(note);
+      note.on("close", () => shownNotifications.delete(note));
+      note.on("click", () => {
+        shownNotifications.delete(note);
+        show();
+        registry
+          .openNotification(id, n)
+          .then((target) => {
+            if (!target) return;
+            activePlatform = target;
+            layout();
+          })
+          .catch((error: Error) => console.warn(`[${id}] could not open notification: ${error.message}`));
+      });
+      note.show();
+    });
+  }
 
   const tray = new Tray(nativeImage.createFromPath(path.join(paths.dist, "icon.png")));
   tray.setToolTip(APP_NAME);

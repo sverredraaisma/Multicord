@@ -71,6 +71,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     this.state.changed.on(() => this.schedulePublish());
     this.state.incoming.on((message) => {
       if (message.channelId === this.selectedChannelId) this.ackSoon(message.channelId);
+      this.notify(message);
     });
   }
 
@@ -143,8 +144,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     }
   }
 
+  /** Opens any text channel: a DM at home, or a guild channel inside its guild. */
   async openConversation(key: string): Promise<void> {
-    this.selection = { kind: "home" };
+    const guildId = this.state.channels.get(key)?.guildId;
+    this.selection = guildId ? { kind: "guild", guildId } : { kind: "home" };
     await this.selectChannel(key);
   }
 
@@ -334,6 +337,27 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         void this.rest?.ack(channelId, last).catch(() => undefined);
       }, ACK_DELAY_MS),
     );
+  }
+
+  /** DMs and mentions notify, like Fluxer's default notification settings. */
+  private notify(message: FluxerMessage): void {
+    const channel = this.state.channels.get(message.channelId);
+    const me = this.state.me;
+    if (!channel || !me) return;
+    const isDm = channel.type === ChannelType.Dm || channel.type === ChannelType.GroupDm;
+    if (!isDm && !message.mentionEveryone && !message.mentionIds.includes(me.id)) return;
+    const author = displayName(this.state.users.get(message.author.id) ?? message.author);
+    const guild = channel.guildId ? this.state.guilds.get(channel.guildId) : undefined;
+    const where =
+      channel.type === ChannelType.Dm ? "" : guild ? ` in #${channel.name ?? channel.id} (${guild.name})` : ` in ${this.channelTitle(channel)}`;
+    const text = this.renderContent(message.content).trim();
+    this.notifications.emit({
+      title: `${author}${where}`,
+      body: (text || (message.attachments.length ? "Sent an attachment" : "New message")).slice(0, 200),
+      target: channel.id,
+      railKey: guild ? guild.id : `dm:${channel.id}`,
+      inView: this.visible && this.selectedChannelId === channel.id,
+    });
   }
 
   // --- Rail and view ---------------------------------------------------------

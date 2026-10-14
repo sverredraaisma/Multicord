@@ -393,6 +393,66 @@ describe("native Fluxer platform", () => {
   });
 });
 
+describe("notifications", () => {
+  async function withNotifier() {
+    const ctx = await shellWith();
+    const fluxer = ctx.handle.adapters.get("fluxer") as unknown as {
+      notifications: { emit(n: unknown): void };
+      openConversation(key: string): Promise<void>;
+    };
+    const open = vi.spyOn(fluxer, "openConversation").mockResolvedValue();
+    const emit = (n: Record<string, unknown>) => fluxer.notifications.emit({ title: "Ana", body: "hi", target: "900", ...n });
+    return { ...ctx, emit, open };
+  }
+
+  it("shows native notifications and opens the conversation on click", async () => {
+    const { handle, window, emit, open } = await withNotifier();
+    emit({ railKey: "dm:900" });
+    const note = electron.Notification.instances[0]!;
+    expect(note.options).toEqual({ title: "Ana", body: "hi" });
+    expect(note.show).toHaveBeenCalled();
+    note.emit("click");
+    await flush();
+    expect(window.show).toHaveBeenCalled();
+    expect(open).toHaveBeenCalledWith("900");
+    const fluxerView = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    expect(fluxerView.visible).toBe(true);
+    expect(handle.registry.state().activeKey).toBe("fluxer:dm:900");
+
+    emit({});
+    electron.Notification.instances[1]!.emit("close");
+  });
+
+  it("stays quiet for the conversation already in front", async () => {
+    const { window, railView, emit } = await withNotifier();
+    ipcMain.emit(IPC.railOpen, senderEvent(railView), "fluxer:home");
+    await flush();
+    window.isFocused.mockReturnValue(true);
+    emit({ inView: true });
+    expect(electron.Notification.instances).toHaveLength(0);
+    window.isFocused.mockReturnValue(false);
+    emit({ inView: true });
+    expect(electron.Notification.instances).toHaveLength(1);
+  });
+
+  it("does nothing where notifications are unsupported", async () => {
+    const { emit } = await withNotifier();
+    electron.Notification.isSupported.mockReturnValue(false);
+    emit({});
+    expect(electron.Notification.instances).toHaveLength(0);
+  });
+
+  it("logs notifications that fail to open", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { emit, open } = await withNotifier();
+    open.mockRejectedValue(new Error("gone"));
+    emit({});
+    electron.Notification.instances[0]!.emit("click");
+    await flush();
+    expect(warn).toHaveBeenCalledWith("[fluxer] could not open notification: gone");
+  });
+});
+
 describe("startApp", () => {
   it("quits when another instance holds the lock", () => {
     app.requestSingleInstanceLock.mockReturnValue(false);
