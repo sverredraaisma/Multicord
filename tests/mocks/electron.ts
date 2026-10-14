@@ -88,6 +88,8 @@ export class FakeSession {
   protocolHandlers = new Map<string, (request: { url: string }) => unknown>();
   protocol = { handle: vi.fn((scheme: string, handler: (request: { url: string }) => unknown) => void this.protocolHandlers.set(scheme, handler)) };
   beforeRequest?: (details: { url: string }, callback: (response: { cancel: boolean }) => void) => void;
+  /** Public addresses unless a test says otherwise. */
+  resolveHost = vi.fn(async (_host: string) => ({ endpoints: [{ address: "93.184.216.34", family: "ipv4" }] }));
   webRequest = {
     onBeforeRequest: vi.fn((listener: (details: { url: string }, callback: (response: { cancel: boolean }) => void) => void) => {
       this.beforeRequest = listener;

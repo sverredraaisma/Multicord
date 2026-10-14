@@ -216,3 +216,30 @@ describe("readCapped", () => {
     expect((await readCapped(new Response(null), 10)).byteLength).toBe(0);
   });
 });
+
+describe("createAddressGuard", () => {
+  it("refuses names that resolve to private addresses, remembering answers for a while", async () => {
+    const { createAddressGuard } = await import("../../src/main/netPolicy");
+    let clock = 0;
+    const answers: Record<string, string[]> = { "public.example": ["93.184.216.34", "2606:2800:220:1::1"], "sneaky.example": ["93.184.216.34", "192.168.1.10"], "v6.example": ["::1"] };
+    const resolve = vi.fn(async (host: string) => {
+      if (!(host in answers)) throw new Error("NXDOMAIN");
+      return answers[host]!;
+    });
+    const guard = createAddressGuard(resolve, () => clock);
+    expect(await guard("https://public.example/a")).toBe(true);
+    expect(await guard("wss://sneaky.example/socket")).toBe(false);
+    expect(await guard("https://v6.example/")).toBe(false);
+    expect(await guard("https://missing.example/")).toBe(true); // fails by itself later
+    expect(await guard("https://93.184.216.34/")).toBe(true); // literals: judged by checkUrl
+    expect(await guard("https://[2606:2800::1]/")).toBe(true);
+    expect(await guard("not a url")).toBe(false);
+    await guard("https://public.example/b");
+    expect(resolve).toHaveBeenCalledTimes(4);
+    clock = 61_000;
+    await guard("https://public.example/c");
+    expect(resolve).toHaveBeenCalledTimes(5);
+    for (let i = 0; i < 501; i++) await guard(`https://h${i}.example/`);
+    expect(resolve).toHaveBeenCalledTimes(506);
+  });
+});

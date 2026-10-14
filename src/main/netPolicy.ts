@@ -72,6 +72,38 @@ export function narrowHosts(current: readonly string[] | undefined, requested: r
   return hosts;
 }
 
+/** How long a name's resolved addresses are trusted. */
+const RESOLVE_TTL_MS = 60_000;
+
+/**
+ * Checks that a host name does not resolve to this machine or the local
+ * network (a public name can point anywhere). Answers are remembered for a
+ * minute; a name that does not resolve is let through, as the request will
+ * fail on its own.
+ */
+export function createAddressGuard(resolve: (host: string) => Promise<string[]>, now: () => number = Date.now) {
+  const cache = new Map<string, { at: number; ok: Promise<boolean> }>();
+  return (url: string): Promise<boolean> => {
+    let host: string;
+    try {
+      host = new URL(url).hostname.toLowerCase();
+    } catch {
+      return Promise.resolve(false);
+    }
+    // Literal addresses were judged by checkUrl already.
+    if (/^[\d.]+$/.test(host) || host.startsWith("[")) return Promise.resolve(true);
+    const hit = cache.get(host);
+    if (hit && now() - hit.at < RESOLVE_TTL_MS) return hit.ok;
+    const ok = resolve(host).then(
+      (addresses) => !addresses.some((address) => isPrivateHost(address.includes(":") ? `[${address}]` : address)),
+      () => true,
+    );
+    cache.set(host, { at: now(), ok });
+    if (cache.size > 500) cache.delete(cache.keys().next().value!);
+    return ok;
+  };
+}
+
 export interface UrlPolicy {
   schemes: readonly string[];
   /** When set, the only hosts allowed. */

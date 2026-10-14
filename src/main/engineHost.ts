@@ -21,7 +21,7 @@ import { isNativeAction, NATIVE_IPC } from "../shared/native";
 import type { AccountStatus } from "../shared/settings";
 import type { SecretStore } from "./credentials";
 import { contentTypeFor, readRange } from "./files";
-import { checkUrl, narrowHosts, performHttp, type UrlPolicy } from "./netPolicy";
+import { checkUrl, createAddressGuard, narrowHosts, performHttp, type UrlPolicy } from "./netPolicy";
 import type { PlatformDef } from "./platforms";
 
 /**
@@ -300,7 +300,14 @@ export class EngineHub {
         return allowed.hosts;
       },
     };
-    http.webRequest.onBeforeRequest((details, callback) => callback({ cancel: checkUrl(details.url, httpPolicy) !== undefined }));
+    // Names are checked by what they resolve to as well: a public name can point at the local network.
+    const publicAddress = createAddressGuard(async (host) => (await http.resolveHost(host)).endpoints.map((e) => e.address));
+    const decide = (url: string, policy: UrlPolicy, local: boolean, callback: (response: { cancel: boolean }) => void): void => {
+      if (local) return callback({ cancel: false });
+      if (checkUrl(url, policy) !== undefined) return callback({ cancel: true });
+      void publicAddress(url).then((ok) => callback({ cancel: !ok }));
+    };
+    http.webRequest.onBeforeRequest((details, callback) => decide(details.url, httpPolicy, false, callback));
     // The module's view shows what the engine renders (images, a call's server): it may reach no more than the engine.
     const viewPolicy: UrlPolicy = {
       schemes: ["https:", "wss:"],
@@ -311,7 +318,7 @@ export class EngineHub {
     spec.view.webContents.session.webRequest.onBeforeRequest((details, callback) => {
       const { protocol } = new URL(details.url);
       const local = protocol === "file:" || protocol === "data:" || protocol === "blob:" || protocol === "devtools:";
-      callback({ cancel: !local && checkUrl(details.url, viewPolicy) !== undefined });
+      decide(details.url, viewPolicy, local, callback);
     });
     const running: Running = {
       spec,
@@ -367,10 +374,13 @@ export class EngineHub {
         return allowed.hosts;
       },
     };
+    const publicAddress = createAddressGuard(async (host) => (await ses.resolveHost(host)).endpoints.map((e) => e.address));
     ses.webRequest.onBeforeRequest((details, callback) => {
       const { protocol } = new URL(details.url);
       const own = protocol === `${ENGINE_SCHEME}:` || protocol === "blob:" || protocol === "data:";
-      callback({ cancel: !own && checkUrl(details.url, socketPolicy) !== undefined });
+      if (own) return callback({ cancel: false });
+      if (checkUrl(details.url, socketPolicy) !== undefined) return callback({ cancel: true });
+      void publicAddress(details.url).then((ok) => callback({ cancel: !ok }));
     });
   }
 
