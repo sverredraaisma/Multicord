@@ -267,7 +267,8 @@ describe("modules and ordering", () => {
     renderRail(root, ordered, vi.fn());
     const alpha = root.querySelector<HTMLElement>('[data-key="fluxer:5"]')!;
     const label = alpha.querySelector<HTMLElement>(".module-label")!;
-    expect(label.textContent).toBe("Fluxer");
+    expect(label.textContent).toBe("F");
+    expect(label.dataset.module).toBe("Fluxer");
     expect(label.style.getPropertyValue("--module-color")).toBe("#4f8cf7");
     expect(alpha.dataset.tooltip).toBe("Alpha · Fluxer");
     expect(root.querySelector<HTMLElement>('[data-key="discord:1"]')!.dataset.tooltip).toBe("Gamma");

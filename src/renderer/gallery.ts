@@ -170,7 +170,7 @@ export function renderGallery(root: HTMLElement): void {
 
   root.replaceChildren(
     el(doc, "h1", undefined, "Multicord components"),
-    section(doc, "Server rail", "Homes and DM bubbles per platform, then one user-ordered list of servers and folders. Each carries its module label.", rail),
+    section(doc, "Server rail", "Homes and DM bubbles per platform, then one user-ordered list of servers and folders. Hover an icon to see which module it comes from.", rail),
     section(doc, "Channel list", "Categories, text channels, threads, forums, voice channels with members, and DMs.", wrap(doc, "ul", "channels", channelList(doc, SAMPLE_CHANNELS, { onSelect: log("select"), onJoinVoice: log("join voice") }))),
     section(
       doc,

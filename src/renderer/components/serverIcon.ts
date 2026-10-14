@@ -1,9 +1,15 @@
 import type { RailEntry, RailModule } from "../../shared/ipc";
 import { countBadge, el, icon, ICONS, initials, setColor } from "./dom";
 
-/** The module a server comes from, as a small coloured label. */
+/**
+ * The module a server comes from, as a small coloured dot with the module's
+ * initial. The shell only shows it while the icon is hovered; the tooltip
+ * spells the module out.
+ */
 export function moduleLabel(doc: Document, module: RailModule): HTMLElement {
-  const label = el(doc, "span", "module-label", module.label);
+  const label = el(doc, "span", "module-label", module.label.charAt(0).toUpperCase());
+  label.dataset.module = module.label;
+  label.setAttribute("aria-hidden", "true");
   setColor(label, "--module-color", module.color);
   return label;
 }

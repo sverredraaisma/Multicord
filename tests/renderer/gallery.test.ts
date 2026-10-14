@@ -19,7 +19,7 @@ describe("component gallery", () => {
       "Voice panel",
       "Sign-in",
     ]);
-    expect([...root.querySelectorAll(".gallery-rail .module-label")].map((l) => l.textContent)).toContain("Web");
+    expect([...root.querySelectorAll(".gallery-rail .module-label")].map((l) => (l as HTMLElement).dataset.module)).toContain("Web");
     expect(root.querySelectorAll(".gallery-rail [data-unit]").length).toBeGreaterThan(0);
     expect(root.querySelector(".messages .content h1")!.textContent).toBe("Release notes");
     expect(root.querySelector(".markdown.jumbo")).not.toBeNull();

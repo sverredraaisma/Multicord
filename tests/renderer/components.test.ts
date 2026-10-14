@@ -43,7 +43,7 @@ describe("server icons", () => {
       mentions: 3,
       module: { label: "Fluxer", color: "#4f8cf7" },
     });
-    expect(icon.querySelector(".module-label")!.textContent).toBe("Fluxer");
+    expect(icon.querySelector(".module-label")!.textContent).toBe("F");
     expect(icon.querySelector(".badge")!.textContent).toBe("3");
     expect(icon.dataset.tooltip).toBe("Alpha · Fluxer");
     expect(serverTooltip({ name: "Solo" })).toBe("Solo");

@@ -158,29 +158,31 @@ html:has(.tooltip-body), .tooltip-body { background: transparent; overflow: hidd
 .rail-folder-open > .rail-folder { background: transparent; }
 .rail-folder-open > .rail-folder:hover { background: color-mix(in srgb, var(--folder-color) 20%, transparent); }
 
-/* Module labels: which platform module a rail entry comes from. */
+/* Module labels: a small dot naming the platform module, shown on hover
+   in the badge's corner (the badge steps aside meanwhile). */
 .module-label {
   --module-color: #80848e;
   position: absolute;
-  top: -5px;
-  left: 50%;
-  max-width: 52px;
-  padding: 0 4px;
-  overflow: hidden;
-  border: 2px solid var(--bg);
-  border-radius: 6px;
+  right: -3px;
+  bottom: -3px;
+  width: 18px;
+  height: 18px;
+  box-sizing: border-box;
+  border: 3px solid var(--bg);
+  border-radius: 50%;
   background: var(--module-color);
   color: #fff;
   font-size: 8px;
   font-weight: 700;
-  line-height: 11px;
-  letter-spacing: 0.02em;
-  text-overflow: ellipsis;
-  text-transform: uppercase;
-  white-space: nowrap;
-  transform: translateX(-50%);
+  line-height: 12px;
+  text-align: center;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.12s, transform 0.12s;
   pointer-events: none;
 }
+.rail-item:hover .module-label { opacity: 1; transform: none; }
+.rail-item:hover .badge:has(~ .module-label) { opacity: 0; }
 .rail-folder-open .rail-item:not(.rail-folder) .module-label { display: none; } /* the folder already says it */
 
 /* Drag-and-drop reordering */
