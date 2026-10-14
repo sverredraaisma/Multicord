@@ -152,3 +152,22 @@ describe("block markdown", () => {
     expect(jumbo("")).toBe(false);
   });
 });
+
+describe("escapeMarkdown", () => {
+  it("makes plain text render literally but keeps URLs as links", async () => {
+    const { escapeMarkdown, parseMarkdown } = await import("../../src/shared/markdown");
+    const text = "*not bold* _x_ ~~y~~ ||z|| `c` <@1> [a](b)\n# no heading\n> no quote\n - no list\nsee https://ex.com/a_b*c#d-e";
+    const escaped = escapeMarkdown(text);
+    expect(escaped).toContain("https://ex.com/a_b*c#d-e");
+    const flat = (nodes: unknown[]): string =>
+      nodes.map((n) => {
+        const node = n as { type: string; text?: string; href?: string; children?: unknown[] };
+        return node.type === "text" ? node.text! : node.type === "link" ? `[link:${node.href}]` : node.children ? flat(node.children) : `[${node.type}]`;
+      }).join("");
+    const rendered = flat(parseMarkdown(escaped) as unknown[]);
+    expect(rendered).toContain("*not bold* _x_ ~~y~~ ||z|| `c` <@1> [a](b)");
+    expect(rendered).toContain("# no heading");
+    expect(rendered).toContain("> no quote");
+    expect(rendered).toContain("[link:https://ex.com/a_b*c#d-e]");
+  });
+});

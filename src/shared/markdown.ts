@@ -33,7 +33,8 @@ const wrap = (type: Wrap) => (m: RegExpExecArray, depth: number): Inline => ({ t
 
 /** Rules in priority order, as in Discord: code and escapes first, emphasis last. */
 const INLINE_RULES: InlineRule[] = [
-  { match: /^\\([^\w\s])/, build: (m) => ({ type: "text", text: m[1]! }) },
+  // Any ASCII punctuation, underscore included, as in Discord.
+  { match: /^\\([^A-Za-z0-9\s])/, build: (m) => ({ type: "text", text: m[1]! }) },
   { match: /^(`+)([\s\S]*?[^`])\1(?!`)/, build: (m) => ({ type: "code", text: m[2]!.trim() || m[2]! }) },
   { match: /^<(a?):(\w{2,32}):(\d{1,20})>/, build: (m) => ({ type: "customEmoji", animated: m[1] === "a", name: m[2]!, id: m[3]! }) },
   { match: /^<(https?:\/\/[^\s>]+)>/, build: (m) => ({ type: "link", href: m[1]!, children: [{ type: "text", text: m[1]! }] }) },
@@ -205,4 +206,24 @@ export function isJumboEmoji(blocks: Block[], isEmojiText: (text: string) => boo
     } else return false;
   }
   return count > 0 && count <= 27;
+}
+
+const LITERAL_URL = /https?:\/\/\S+/g;
+
+/**
+ * Escapes plain text (e.g. from a platform without Discord-style markdown)
+ * so it renders exactly as written: inline markers get a backslash, as do
+ * heading, quote and list markers at line starts. URLs stay untouched, so
+ * they still become links.
+ */
+export function escapeMarkdown(text: string): string {
+  const escapePart = (part: string): string =>
+    part.replace(/[\\`*_~|<[\]]/g, (c) => `\\${c}`).replace(/^(\s*)([#>-])/gm, (_m, space: string, marker: string) => `${space}\\${marker}`);
+  let out = "";
+  let last = 0;
+  for (const match of text.matchAll(LITERAL_URL)) {
+    out += escapePart(text.slice(last, match.index)) + match[0];
+    last = match.index + match[0].length;
+  }
+  return out + escapePart(text.slice(last));
 }
