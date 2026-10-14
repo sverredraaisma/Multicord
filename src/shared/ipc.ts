@@ -13,8 +13,8 @@ export const IPC = {
   pickerChoose: "picker:choose",
 } as const;
 
-/** DOM event the main-world store bridge uses to hand DM data to the preload. */
-export const DM_EVENT = "multicord:dms";
+/** DOM event the main-world store bridge uses to hand store data to the preload. */
+export const BRIDGE_EVENT = "multicord:stores";
 
 export interface DiscordGuild {
   id: string;
@@ -36,6 +36,18 @@ export interface DiscordDm {
   unread: boolean;
   mentions: number;
   lastActivity: number; // epoch ms
+}
+
+/** Guild details from Discord's GuildStore, used to name the guild bar's items. */
+export interface GuildInfo {
+  id: string;
+  name: string;
+  iconUrl?: string;
+}
+
+export interface BridgePayload {
+  dms: DiscordDm[];
+  guilds: GuildInfo[];
 }
 
 export interface DiscordState {
@@ -85,7 +97,7 @@ export interface TooltipRequest {
   y: number;
 }
 
-const MAX_GUILDS = 1000;
+export const MAX_GUILDS = 1000;
 export const MAX_DMS = 200;
 const MAX_TEXT = 200;
 const SNOWFLAKE = /^\d{1,20}$/;
@@ -132,6 +144,26 @@ export function isDiscordDm(value: unknown): value is DiscordDm {
 
 export function isDiscordDmList(value: unknown): value is DiscordDm[] {
   return Array.isArray(value) && value.length <= MAX_DMS && value.every(isDiscordDm);
+}
+
+export function isGuildInfo(value: unknown): value is GuildInfo {
+  return (
+    isRecord(value) &&
+    isSnowflake(value.id) &&
+    typeof value.name === "string" &&
+    value.name.length <= MAX_TEXT &&
+    (value.iconUrl === undefined || isHttpsUrl(value.iconUrl))
+  );
+}
+
+export function isBridgePayload(value: unknown): value is BridgePayload {
+  return (
+    isRecord(value) &&
+    isDiscordDmList(value.dms) &&
+    Array.isArray(value.guilds) &&
+    value.guilds.length <= MAX_GUILDS &&
+    value.guilds.every(isGuildInfo)
+  );
 }
 
 export function isDiscordState(value: unknown): value is DiscordState {

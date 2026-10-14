@@ -122,7 +122,7 @@ describe("DM support", () => {
     `);
     expect(readGuilds(document, new Set(["999"])).map((g) => g.id)).toEqual(["111"]);
     const dm = { id: "999", title: "Ana", unread: true, mentions: 2, lastActivity: 1 };
-    const state = readState(document, [dm]);
+    const state = readState(document, { dms: [dm], guilds: [] });
     expect(state.guilds.map((g) => g.id)).toEqual(["111"]);
     expect(state.dms).toEqual([dm]);
     expect(readState(document)).not.toHaveProperty("dms");
@@ -147,5 +147,40 @@ describe("DM support", () => {
     expect(blob).toHaveBeenCalledOnce();
     expect(navigate(document, window, "dm:77")).toBe("history");
     expect(window.location.pathname).toBe("/channels/@me/77");
+  });
+});
+
+describe("guild names", () => {
+  // Regression: items without an aria-label showed their id instead of a name.
+  it("names unlabelled items from GuildStore data", () => {
+    guildBar(`<div class="listItem_a"><div data-list-item-id="guildsnav___111"></div></div>`);
+    const guilds = readGuilds(
+      document,
+      new Set(),
+      new Map([["111", { id: "111", name: "Gaming Club", iconUrl: "https://cdn/icons/111.png" }]]),
+    );
+    expect(guilds).toEqual([
+      { id: "111", name: "Gaming Club", iconUrl: "https://cdn/icons/111.png", unread: false, mentions: 0 },
+    ]);
+  });
+
+  it("prefers the store name but keeps unread state and the icon from the DOM", () => {
+    guildBar(`<div data-list-item-id="guildsnav___111" aria-label="unread, Old Name"><img src="https://cdn/dom.png"></div>`);
+    const state = readState(document, { dms: [], guilds: [{ id: "111", name: "New Name", iconUrl: "https://cdn/store.png" }] });
+    expect(state.guilds).toEqual([
+      { id: "111", name: "New Name", iconUrl: "https://cdn/dom.png", unread: true, mentions: 0 },
+    ]);
+  });
+
+  it.each([
+    ["a labelled child", `<div data-list-item-id="guildsnav___1"><div aria-label="2 mentions, Child Label"></div></div>`, "Child Label", 2],
+    ["visually hidden text", `<div data-list-item-id="guildsnav___1"><span class="hiddenVisually_x">Hidden Name</span></div>`, "Hidden Name", 0],
+    ["the drag-and-drop wrapper", `<div data-dnd-name="Dnd Name"><div data-list-item-id="guildsnav___1"></div></div>`, "Dnd Name", 0],
+    ["a drag-and-drop child", `<div data-list-item-id="guildsnav___1"><div data-dnd-name="Inner Dnd"></div></div>`, "Inner Dnd", 0],
+    ["the icon alt text", `<div data-list-item-id="guildsnav___1"><img alt="Alt Name" src="data:x"></div>`, "Alt Name", 0],
+    ["nothing at all", `<div data-list-item-id="guildsnav___1" aria-label="  "></div>`, "1", 0],
+  ])("falls back to %s", (_case, html, name, mentions) => {
+    guildBar(html);
+    expect(readGuilds(document)[0]).toMatchObject({ name, mentions });
   });
 });

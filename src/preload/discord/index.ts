@@ -1,4 +1,4 @@
-import { DM_EVENT, IPC, isDiscordDmList, isDiscordTarget, type DiscordDm, type DiscordState } from "../../shared/ipc";
+import { BRIDGE_EVENT, IPC, isBridgePayload, isDiscordTarget, type BridgePayload, type DiscordState } from "../../shared/ipc";
 import { injectStyle, navigate, readState } from "./dom";
 import { discordStoreBridge } from "./storeBridge";
 
@@ -16,7 +16,7 @@ export const BRIDGE_MAX_ATTEMPTS = 120;
 
 /**
  * Wires the Discord view: hides the guild bar, starts the main-world store
- * bridge for DMs, publishes state and accepts navigation.
+ * bridge for DMs and guild names, publishes state and accepts navigation.
  */
 export function startDiscordPreload(
   ipc: PreloadIpc,
@@ -26,11 +26,11 @@ export function startDiscordPreload(
 ): { publish(): void } {
   let last = "";
   let timer: ReturnType<typeof setTimeout> | undefined;
-  let dms: DiscordDm[] | undefined;
+  let bridge: BridgePayload | undefined;
 
   const publish = (): void => {
     timer = undefined;
-    const state: DiscordState = readState(doc, dms);
+    const state: DiscordState = readState(doc, bridge);
     const serialized = JSON.stringify(state);
     if (serialized === last) return;
     last = serialized;
@@ -42,7 +42,7 @@ export function startDiscordPreload(
   };
 
   // The bridge's data is untrusted until validated here and again in main.
-  doc.addEventListener(DM_EVENT, (event) => {
+  doc.addEventListener(BRIDGE_EVENT, (event) => {
     const detail = (event as CustomEvent<unknown>).detail;
     if (typeof detail !== "string") return;
     let parsed: unknown;
@@ -51,11 +51,11 @@ export function startDiscordPreload(
     } catch {
       return;
     }
-    if (!isDiscordDmList(parsed)) return;
-    dms = parsed;
+    if (!isBridgePayload(parsed)) return;
+    bridge = parsed;
     schedule();
   });
-  runInMainWorld?.(discordStoreBridge, [DM_EVENT, BRIDGE_RETRY_MS, BRIDGE_MAX_ATTEMPTS]);
+  runInMainWorld?.(discordStoreBridge, [BRIDGE_EVENT, BRIDGE_RETRY_MS, BRIDGE_MAX_ATTEMPTS]);
 
   const attach = (): void => {
     injectStyle(doc);

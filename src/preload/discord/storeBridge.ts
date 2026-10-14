@@ -10,6 +10,7 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
   const w = window as any;
   const DISCORD_EPOCH = 1420070400000n;
   const MAX_DMS = 200;
+  const MAX_GUILDS = 1000;
   const MAX_TITLE = 200;
   const DEBOUNCE_MS = 250;
   let stores: Record<string, any> | undefined;
@@ -25,7 +26,8 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
     return req;
   };
 
-  const findStores = (names: string[]): Record<string, any> | undefined => {
+  const findStores = (required: string[], optional: string[]): Record<string, any> | undefined => {
+    const names = [...required, ...optional];
     const req = getRequire();
     if (!req?.c) return undefined;
     const found: Record<string, any> = {};
@@ -42,7 +44,7 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
         }
       }
     }
-    return names.every((n) => found[n]) ? found : undefined;
+    return required.every((n) => found[n]) ? found : undefined;
   };
 
   const absolute = (url: unknown): string | undefined => {
@@ -77,7 +79,7 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
     return { title: userName(user), avatarUrl: absolute(user?.getAvatarURL?.(undefined, 64)) };
   };
 
-  const collect = () => {
+  const collectDms = () => {
     const { ChannelStore, ReadStateStore } = stores!;
     const channels: any[] =
       ChannelStore.getSortedPrivateChannels?.() ?? Object.values(ChannelStore.getMutablePrivateChannels?.() ?? {});
@@ -99,10 +101,29 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
       .slice(0, MAX_DMS);
   };
 
+  // Names and icons only; order and unread state still come from the guild bar.
+  const collectGuilds = () => {
+    const { GuildStore } = stores!;
+    if (!GuildStore) return [];
+    try {
+      return Object.values<any>(GuildStore.getGuilds?.() ?? {})
+        .filter((g) => g && typeof g.id === "string" && typeof g.name === "string")
+        .slice(0, MAX_GUILDS)
+        .map((g) => ({
+          id: g.id,
+          name: g.name.slice(0, MAX_TITLE),
+          iconUrl: g.icon ? `https://cdn.discordapp.com/icons/${g.id}/${g.icon}.png?size=96` : undefined,
+        }));
+    } catch {
+      return [];
+    }
+  };
+
   const emit = (): void => {
     timer = undefined;
     try {
-      document.dispatchEvent(new CustomEvent(eventName, { detail: JSON.stringify(collect()) }));
+      const payload = { dms: collectDms(), guilds: collectGuilds() };
+      document.dispatchEvent(new CustomEvent(eventName, { detail: JSON.stringify(payload) }));
     } catch {
       // A store changed shape; the rail keeps its last good state.
     }
@@ -116,7 +137,7 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
   const attach = (): void => {
     attempts++;
     try {
-      stores = findStores(["ChannelStore", "ReadStateStore", "UserStore"]);
+      stores = findStores(["ChannelStore", "ReadStateStore", "UserStore"], ["GuildStore"]);
     } catch {
       stores = undefined;
     }

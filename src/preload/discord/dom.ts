@@ -8,10 +8,11 @@
 import {
   isSnowflake,
   parseTitleBadge,
-  type DiscordDm,
+  type BridgePayload,
   type DiscordGuild,
   type DiscordState,
   type DiscordTarget,
+  type GuildInfo,
 } from "../../shared/ipc";
 
 export const GUILD_ITEM_PREFIX = "guildsnav___";
@@ -62,19 +63,45 @@ function badgeCount(item: Element): number {
   return Number.isNaN(value) ? 0 : value;
 }
 
-/** Reads the hidden guild bar; ids in `exclude` (unread DM blobs) are not guilds. */
-export function readGuilds(doc: Document, exclude: ReadonlySet<string> = new Set()): DiscordGuild[] {
+/** First non-empty accessible label on or inside a guild item. */
+function itemLabel(item: Element): string {
+  const candidates = [
+    item.getAttribute("aria-label"),
+    item.querySelector("[aria-label]")?.getAttribute("aria-label"),
+    item.querySelector('[class*="hiddenVisually"]')?.textContent,
+  ];
+  return candidates.find((c) => c && c.trim() !== "")?.trim() ?? "";
+}
+
+/** Name-only fallbacks: the drag-and-drop name on the wrapper, then the icon's alt text. */
+function itemName(item: Element): string {
+  const dnd = item.closest("[data-dnd-name]") ?? item.querySelector("[data-dnd-name]");
+  const candidates = [dnd?.getAttribute("data-dnd-name"), item.querySelector("img")?.getAttribute("alt")];
+  return candidates.find((c) => c && c.trim() !== "")?.trim() ?? "";
+}
+
+/**
+ * Reads the hidden guild bar for order and unread state. Names and icons come
+ * from GuildStore when the bridge has it, else from the DOM; ids in `exclude`
+ * (unread DM blobs) are not guilds.
+ */
+export function readGuilds(
+  doc: Document,
+  exclude: ReadonlySet<string> = new Set(),
+  info: ReadonlyMap<string, GuildInfo> = new Map(),
+): DiscordGuild[] {
   const guilds = new Map<string, DiscordGuild>();
   for (const item of doc.querySelectorAll(`[data-list-item-id^="${GUILD_ITEM_PREFIX}"]`)) {
     const id = item.getAttribute("data-list-item-id")!.slice(GUILD_ITEM_PREFIX.length);
     if (!isSnowflake(id) || guilds.has(id) || exclude.has(id)) continue;
-    const parsed = parseGuildLabel(item.getAttribute("aria-label") ?? "");
+    const parsed = parseGuildLabel(itemLabel(item));
+    const known = info.get(id);
     const icon = item.querySelector("img")?.getAttribute("src") ?? undefined;
     const mentions = Math.max(parsed.mentions, badgeCount(item));
     guilds.set(id, {
       id,
-      name: parsed.name || id,
-      iconUrl: icon?.startsWith("https://") ? icon : undefined,
+      name: known?.name || parsed.name || itemName(item) || id,
+      iconUrl: icon?.startsWith("https://") ? icon : known?.iconUrl,
       unread: parsed.unread || mentions > 0,
       mentions,
     });
@@ -82,10 +109,11 @@ export function readGuilds(doc: Document, exclude: ReadonlySet<string> = new Set
   return [...guilds.values()];
 }
 
-export function readState(doc: Document, dms?: DiscordDm[]): DiscordState {
-  const exclude = new Set(dms?.map((dm) => dm.id));
-  const state: DiscordState = { guilds: readGuilds(doc, exclude), badge: parseTitleBadge(doc.title) };
-  if (dms) state.dms = dms;
+export function readState(doc: Document, bridge?: BridgePayload): DiscordState {
+  const exclude = new Set(bridge?.dms.map((dm) => dm.id));
+  const info = new Map(bridge?.guilds.map((g) => [g.id, g]));
+  const state: DiscordState = { guilds: readGuilds(doc, exclude, info), badge: parseTitleBadge(doc.title) };
+  if (bridge) state.dms = bridge.dms;
   return state;
 }
 

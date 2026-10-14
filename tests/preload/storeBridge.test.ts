@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discordStoreBridge } from "../../src/preload/discord/storeBridge";
-import { isDiscordDmList } from "../../src/shared/ipc";
+import { isBridgePayload, isDiscordDmList } from "../../src/shared/ipc";
 
 const EVENT = "test:dms";
 const DISCORD_EPOCH = 1420070400000;
@@ -57,9 +57,14 @@ function installWebpack(exportsList: unknown[]) {
   return chunks;
 }
 
-function listen() {
+/** Collects one field of each bridge payload (DMs by default). */
+function listen(field: "dms" | "guilds" = "dms") {
   const received: unknown[] = [];
-  document.addEventListener(EVENT, (e) => received.push(JSON.parse((e as CustomEvent<string>).detail)));
+  document.addEventListener(EVENT, (e) => {
+    const payload = JSON.parse((e as CustomEvent<string>).detail);
+    expect(isBridgePayload(payload)).toBe(true);
+    received.push(payload[field]);
+  });
   return received;
 }
 
@@ -204,5 +209,55 @@ describe("discordStoreBridge", () => {
     const serialized = new Function(`return (${discordStoreBridge.toString()})`)() as typeof discordStoreBridge;
     serialized(EVENT, 1000, 1);
     expect(received).toHaveLength(1);
+  });
+
+  describe("guild names", () => {
+    const guildStore = (guilds: unknown) => store("GuildStore", { getGuilds: () => guilds });
+
+    it("reads names and icons from GuildStore", () => {
+      const stores = discordStores();
+      installWebpack([
+        stores.ChannelStore,
+        stores.ReadStateStore,
+        stores.UserStore,
+        guildStore({
+          "1": { id: "1", name: "Gaming Club", icon: "abc" },
+          "2": { id: "2", name: "No Icon" },
+          "3": { id: "3" }, // nameless: skipped
+          "4": null,
+        }),
+      ]);
+      const received = listen("guilds");
+      discordStoreBridge(EVENT, 1000, 1);
+      expect(received).toEqual([
+        [
+          { id: "1", name: "Gaming Club", iconUrl: "https://cdn.discordapp.com/icons/1/abc.png?size=96" },
+          { id: "2", name: "No Icon" },
+        ],
+      ]);
+    });
+
+    it("still sends DMs when GuildStore is missing or broken", () => {
+      const stores = discordStores();
+      installWebpack([stores.ChannelStore, stores.ReadStateStore, stores.UserStore]);
+      const guilds = listen("guilds");
+      const dms = listen("dms");
+      discordStoreBridge(EVENT, 1000, 1);
+
+      const broken = discordStores();
+      const throwing = store("GuildStore", {
+        getGuilds: () => {
+          throw new Error("changed shape");
+        },
+      });
+      installWebpack([broken.ChannelStore, broken.ReadStateStore, broken.UserStore, throwing]);
+      discordStoreBridge(EVENT, 1000, 1);
+
+      installWebpack([broken.ChannelStore, broken.ReadStateStore, broken.UserStore, store("GuildStore", {})]);
+      discordStoreBridge(EVENT, 1000, 1);
+
+      expect(guilds).toEqual([[], [], []]);
+      expect((dms as unknown[][]).map((d) => d.length)).toEqual([4, 4, 4]);
+    });
   });
 });

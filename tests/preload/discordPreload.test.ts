@@ -9,7 +9,7 @@ import {
   type PreloadIpc,
 } from "../../src/preload/discord/index";
 import { discordStoreBridge } from "../../src/preload/discord/storeBridge";
-import { DM_EVENT, IPC } from "../../src/shared/ipc";
+import { BRIDGE_EVENT, IPC } from "../../src/shared/ipc";
 
 function fakeIpc() {
   const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
@@ -80,29 +80,34 @@ describe("startDiscordPreload", () => {
   });
 });
 
-describe("DM bridge", () => {
+describe("store bridge", () => {
   const dm = { id: "9", title: "Ana", unread: true, mentions: 1, lastActivity: 5 };
-  const fire = (detail: unknown) => document.dispatchEvent(new CustomEvent(DM_EVENT, { detail }));
+  const fire = (detail: unknown) => document.dispatchEvent(new CustomEvent(BRIDGE_EVENT, { detail }));
 
   it("starts the store bridge in the main world", () => {
     const run = vi.fn();
     startDiscordPreload(fakeIpc(), document, window, run);
-    expect(run).toHaveBeenCalledWith(discordStoreBridge, [DM_EVENT, BRIDGE_RETRY_MS, BRIDGE_MAX_ATTEMPTS]);
+    expect(run).toHaveBeenCalledWith(discordStoreBridge, [BRIDGE_EVENT, BRIDGE_RETRY_MS, BRIDGE_MAX_ATTEMPTS]);
   });
 
-  it("publishes validated DMs with the guild state", () => {
+  it("publishes validated DMs and names guilds from the store", () => {
     const ipc = fakeIpc();
     startDiscordPreload(ipc, document, window);
     vi.advanceTimersByTime(PUBLISH_DELAY_MS);
 
     fire({ not: "a string" });
     fire("{broken json");
-    fire(JSON.stringify([{ id: "nope" }]));
+    fire(JSON.stringify({ dms: [{ id: "nope" }], guilds: [] }));
+    fire(JSON.stringify([dm]));
     vi.advanceTimersByTime(PUBLISH_DELAY_MS);
     expect(ipc.send).toHaveBeenCalledTimes(1);
 
-    fire(JSON.stringify([dm]));
+    fire(JSON.stringify({ dms: [dm], guilds: [{ id: "1", name: "Store Name" }] }));
     vi.advanceTimersByTime(PUBLISH_DELAY_MS);
-    expect(ipc.send).toHaveBeenLastCalledWith(IPC.discordState, expect.objectContaining({ dms: [dm] }));
+    expect(ipc.send).toHaveBeenLastCalledWith(IPC.discordState, {
+      guilds: [{ id: "1", name: "Store Name", iconUrl: undefined, unread: false, mentions: 0 }],
+      badge: { unread: false, mentions: 0 },
+      dms: [dm],
+    });
   });
 });

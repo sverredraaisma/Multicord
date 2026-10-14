@@ -4,6 +4,9 @@ import {
   isDiscordDm,
   isDiscordDmList,
   isTooltipRequest,
+  isBridgePayload,
+  isGuildInfo,
+  MAX_GUILDS,
   isDiscordGuild,
   isDiscordState,
   isDiscordTarget,
@@ -130,5 +133,28 @@ describe("DM and tooltip validators", () => {
     expect(isTooltipRequest({ text: "x", y: "1" })).toBe(false);
     expect(isTooltipRequest({ text: 1, y: 1 })).toBe(false);
     expect(isTooltipRequest("x")).toBe(false);
+  });
+});
+
+describe("bridge payload validators", () => {
+  const guild = { id: "1", name: "Gaming Club" };
+
+  it("validates guild info", () => {
+    expect(isGuildInfo(guild)).toBe(true);
+    expect(isGuildInfo({ ...guild, iconUrl: "https://cdn/i.png" })).toBe(true);
+    expect(isGuildInfo({ ...guild, iconUrl: "http://cdn/i.png" })).toBe(false);
+    expect(isGuildInfo({ ...guild, id: "x" })).toBe(false);
+    expect(isGuildInfo({ ...guild, name: 1 })).toBe(false);
+    expect(isGuildInfo({ ...guild, name: "x".repeat(201) })).toBe(false);
+    expect(isGuildInfo(null)).toBe(false);
+  });
+
+  it("validates the whole payload", () => {
+    expect(isBridgePayload({ dms: [], guilds: [guild] })).toBe(true);
+    expect(isBridgePayload({ dms: [], guilds: [{}] })).toBe(false);
+    expect(isBridgePayload({ dms: [], guilds: Array(MAX_GUILDS + 1).fill(guild) })).toBe(false);
+    expect(isBridgePayload({ dms: [], guilds: "x" })).toBe(false);
+    expect(isBridgePayload({ dms: "x", guilds: [] })).toBe(false);
+    expect(isBridgePayload([])).toBe(false);
   });
 });
