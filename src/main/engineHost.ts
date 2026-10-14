@@ -157,6 +157,8 @@ export interface EngineSpec {
   engine: string;
   /** When set, the only hosts the engine may reach. */
   hosts?: readonly string[];
+  /** Keep the engine's web storage on disk (see ModuleManifest.storage); otherwise it lives in memory. */
+  persistent?: boolean;
   home: boolean;
   capabilities: PlatformAdapter["capabilities"];
   /** The module's own view; it gets the engine's display state and sends user actions. */
@@ -182,6 +184,11 @@ interface Running {
 }
 
 const ENGINE_ID = /^[a-z0-9-]{1,32}$/;
+
+/** The session partition an instance's engine runs in. */
+export function engineStoragePartition(instanceId: string, persistent: boolean): string {
+  return persistent ? `persist:engine-${instanceId}` : `engine-${instanceId}`;
+}
 /** Picked-file handles kept per engine; the oldest are forgotten first. */
 export const MAX_FILE_HANDLES = 200;
 const CSP = [
@@ -252,7 +259,8 @@ export class EngineHub {
 
   add(spec: EngineSpec): { adapter: EngineAdapter; engine: WebContentsView; start(): void } {
     if (!ENGINE_ID.test(spec.engine)) throw new Error(`Invalid engine id: ${spec.engine}`);
-    const partition = `engine-${spec.def.id}`; // in memory: the engine keeps nothing on disk
+    // In memory unless the module keeps storage; either way the instance's own.
+    const partition = engineStoragePartition(spec.def.id, spec.persistent === true);
     const ses = session.fromPartition(partition);
     this.lockDown(ses, spec);
     const engine = new WebContentsView({
@@ -272,7 +280,7 @@ export class EngineHub {
     engine.webContents.on("will-navigate", (event) => event.preventDefault());
 
     // The bridge uses a session of its own: the engine session only lets the engine itself open WebSockets.
-    const http = session.fromPartition(`${partition}-http`);
+    const http = session.fromPartition(`engine-${spec.def.id}-http`);
     http.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     // net.fetch follows redirects itself, so every hop is checked here as well.
     const httpPolicy: UrlPolicy = { schemes: ["https:"], hosts: spec.hosts };

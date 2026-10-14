@@ -34,6 +34,12 @@ export interface ModuleManifest {
   engine?: string;
   /** Engines only: when set, the only hosts the engine may reach. */
   hosts?: string[];
+  /**
+   * Engines only: keep the engine's own web storage (IndexedDB) on disk, e.g.
+   * for end-to-end encryption keys. It stays in the instance's own partition
+   * and origin, and is cleared when the instance is removed.
+   */
+  storage?: boolean;
   /** Engines only: whether the module has a home (DM) entry in the rail. */
   home?: boolean;
   /** Engines only: route screen sharing in the module's view through the shell's picker. */

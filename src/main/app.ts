@@ -34,7 +34,7 @@ import type { ActivityUpdate, PlatformAdapter, PlatformNotification } from "../s
 import { ENGINE_SCHEME } from "../shared/engine";
 import { isSettingsAction, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
-import { EngineHub } from "./engineHost";
+import { EngineHub, engineStoragePartition } from "./engineHost";
 import { installHardening } from "./hardening";
 import { computeLayout, splitContent, tooltipBounds } from "./layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
@@ -277,6 +277,7 @@ export async function createShell(
       def,
       engine: manifest.engine!,
       hosts: manifest.hosts,
+      persistent: manifest.storage === true,
       home: manifest.home === true,
       capabilities: manifest.capabilities ?? { directMessages: false, messagePreviews: false, voice: false, screenShare: false },
       view,
@@ -454,6 +455,7 @@ export async function createShell(
     openService: showPlatform,
     clearSession: async (id) => {
       await session.fromPartition(`persist:${id}`).clearStorageData();
+      await session.fromPartition(engineStoragePartition(id, true)).clearStorageData();
       views.get(id)?.webContents.reload();
     },
     forgetSecrets: (id) => credentials.deletePrefix(`${id}:`),

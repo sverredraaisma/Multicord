@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("electron", () => import("../mocks/electron"));
 
 import * as electron from "../mocks/electron";
-import { EngineAdapter, EngineHub, MAX_CRASHES, MAX_FILE_HANDLES, restartDelay, serveEngine, type EngineSpec } from "../../src/main/engineHost";
+import { EngineAdapter, EngineHub, engineStoragePartition, MAX_CRASHES, MAX_FILE_HANDLES, restartDelay, serveEngine, type EngineSpec } from "../../src/main/engineHost";
 import { readRange } from "../../src/main/files";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
 import { NATIVE_IPC } from "../../src/shared/native";
@@ -125,6 +125,11 @@ describe("serveEngine", () => {
 });
 
 describe("EngineHub", () => {
+  it("keeps an engine's storage on disk only when its module asks", () => {
+    expect(setup({ persistent: true }).engine.options.webPreferences).toMatchObject({ partition: "persist:engine-demo" });
+    expect(engineStoragePartition("x", false)).toBe("engine-x");
+  });
+
   it("runs each engine hidden, sandboxed and in its own in-memory session", () => {
     const { hub, engine, start, window, view } = setup();
     expect(engine.options.webPreferences).toMatchObject({

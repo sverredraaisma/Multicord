@@ -729,6 +729,7 @@ describe("settings", () => {
     ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "removeService", id: "el" });
     await flush();
     expect(session.fromPartition("persist:el").clearStorageData).toHaveBeenCalled();
+    expect(session.fromPartition("persist:engine-el").clearStorageData).toHaveBeenCalled();
     expect(JSON.parse(fs.readFileSync(path.join(userData, "credentials.json"), "utf8"))).toEqual({ "fluxer:x:token": "b" });
   });
 
