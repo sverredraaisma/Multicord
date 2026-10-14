@@ -15,6 +15,17 @@ const updater = vi.hoisted(() => ({
   },
 }));
 vi.mock("electron-updater", () => ({ autoUpdater: updater }));
+// Background push to talk must not hook the real keyboard in tests.
+const keyHook = vi.hoisted(() => ({ listeners: new Map<string, (event: { keycode: number }) => void>(), start: () => {}, stop: () => {} }));
+vi.mock("../../src/main/pushToTalk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/main/pushToTalk")>()),
+  loadKeyHook: () => ({
+    on: (event: string, listener: (event: { keycode: number }) => void) => keyHook.listeners.set(event, listener),
+    off: (event: string) => keyHook.listeners.delete(event),
+    start: () => keyHook.start(),
+    stop: () => keyHook.stop(),
+  }),
+}));
 // Rich Presence must not open the real discord-ipc pipes in tests.
 const rpc = vi.hoisted(() => ({
   onActivity: undefined as undefined | ((update: unknown) => void),
@@ -1231,5 +1242,29 @@ describe("Rich Presence", () => {
     await flush();
     expect(warn).toHaveBeenCalledWith("[rich presence] every discord-ipc path is taken; not listening");
     rpc.listening = true;
+  });
+});
+
+describe("push to talk in the background", () => {
+  it("talks in native calls and passes the key to Discord while unfocused", async () => {
+    const { handle, window, discordView } = await shellWith();
+    const fluxerView = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    handle.settingsStore.update({ voice: { pushToTalk: "Backquote", pushToTalkGlobal: true } });
+    expect(handle.settings.state()).not.toHaveProperty("pushToTalkError");
+    window.isFocused.mockReturnValue(false);
+    keyHook.listeners.get("keydown")!({ keycode: 41 });
+    expect(fluxerView.webContents.send).toHaveBeenCalledWith(SETTINGS_IPC.voiceCommand, "talkStart");
+    expect(discordView.webContents.sendInputEvent).toHaveBeenLastCalledWith({ type: "keyDown", keyCode: "`" });
+    window.isFocused.mockReturnValue(true);
+    discordView.webContents.sendInputEvent.mockClear();
+    keyHook.listeners.get("keyup")!({ keycode: 41 });
+    expect(fluxerView.webContents.send).toHaveBeenCalledWith(SETTINGS_IPC.voiceCommand, "talkStop");
+    expect(discordView.webContents.sendInputEvent).not.toHaveBeenCalled(); // focused: Discord hears the key itself
+
+    handle.settingsStore.update({ voice: { pushToTalk: "MediaPlayPause" } });
+    expect(handle.settings.state().pushToTalkError).toBe("This key cannot be watched while Multicord is in the background.");
+    handle.settingsStore.update({ voice: { pushToTalkGlobal: false } });
+    expect(keyHook.listeners.size).toBe(0);
+    app.emit("will-quit");
   });
 });

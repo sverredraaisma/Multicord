@@ -8,7 +8,7 @@ export const SETTINGS_IPC = {
   ready: "settings:ready",
   /** Main -> native views: the voice settings to use for calls. */
   voice: "settings:voice",
-  /** Main -> native views: a voice shortcut was pressed ("toggleMute" or "toggleDeafen"). */
+  /** Main -> native views: a voice shortcut was pressed, or the background push-to-talk key went down or up (VoiceCommand). */
   voiceCommand: "settings:voice-command",
 } as const;
 
@@ -31,8 +31,17 @@ export interface VoiceSettings {
   autoGainControl: boolean;
   /** RNNoise on the microphone in Multicord's own calls, on top of the browser's processing. */
   enhancedNoiseSuppression: boolean;
-  /** While Multicord is in front: hold this key (a KeyboardEvent code) to talk; absent: voice activity. */
+  /** Hold this key (a KeyboardEvent code) to talk; absent: voice activity. */
   pushToTalk?: string;
+  /** The push-to-talk key works while Multicord is in the background too (a keyboard hook). */
+  pushToTalkGlobal: boolean;
+}
+
+/** What main tells native views about voice keys pressed while Multicord may be in the background. */
+export type VoiceCommand = "toggleMute" | "toggleDeafen" | "talkStart" | "talkStop";
+
+export function isVoiceCommand(value: unknown): value is VoiceCommand {
+  return value === "toggleMute" || value === "toggleDeafen" || value === "talkStart" || value === "talkStop";
 }
 
 /** A push-to-talk key, as KeyboardEvent.code names it, e.g. "Backquote" or "F13". */
@@ -108,7 +117,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto", openLinks: false, autoUpdate: true, richPresence: false },
-  voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, enhancedNoiseSuppression: false },
+  voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, enhancedNoiseSuppression: false, pushToTalkGlobal: false },
   // Off by default: global shortcuts take keys away from every other app.
   shortcuts: { toggleMute: null, toggleDeafen: null, showApp: null },
 };
@@ -133,7 +142,7 @@ export interface SettingsPatch {
   general?: Partial<GeneralSettings>;
   shortcuts?: Partial<ShortcutSettings>;
   voice?: Partial<Record<"input" | "output" | "camera", DeviceChoice | null>> &
-    Partial<Pick<VoiceSettings, "echoCancellation" | "noiseSuppression" | "autoGainControl" | "enhancedNoiseSuppression">> & { pushToTalk?: string | null };
+    Partial<Pick<VoiceSettings, "echoCancellation" | "noiseSuppression" | "autoGainControl" | "enhancedNoiseSuppression" | "pushToTalkGlobal">> & { pushToTalk?: string | null };
 }
 
 const MAX_TEXT = 200;
@@ -151,7 +160,7 @@ const GENERAL_CHECKS: { [K in keyof GeneralSettings]: (value: unknown) => value 
   richPresence: (v): v is boolean => typeof v === "boolean",
 };
 const GENERAL_KEYS = Object.keys(GENERAL_CHECKS) as (keyof GeneralSettings)[];
-const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl", "enhancedNoiseSuppression"] as const;
+const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl", "enhancedNoiseSuppression", "pushToTalkGlobal"] as const;
 const DEVICE_KEYS = ["input", "output", "camera"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -284,6 +293,8 @@ export interface SettingsViewState {
   linkSchemes?: string[];
   /** Shortcuts another app already holds, so they could not be set. */
   shortcutErrors?: ShortcutAction[];
+  /** Why the background push-to-talk key is not working, if it is not. */
+  pushToTalkError?: string;
   update?: UpdateStatus;
   /** The last action that could not be done, e.g. turning off the only service. */
   error?: string;

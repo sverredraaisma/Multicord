@@ -110,6 +110,8 @@ describe("settings state", () => {
   it("reports shortcuts another app holds", () => {
     expect(controller({}, { shortcutErrors: () => ["toggleMute"] }).settings.state().shortcutErrors).toEqual(["toggleMute"]);
     expect(controller({}, { shortcutErrors: () => [] }).settings.state()).not.toHaveProperty("shortcutErrors");
+    expect(controller({}, { pushToTalkError: () => "No hook" }).settings.state().pushToTalkError).toBe("No hook");
+    expect(controller({}, { pushToTalkError: () => undefined }).settings.state()).not.toHaveProperty("pushToTalkError");
   });
 
   it("lists the app link schemes the modules open", () => {

@@ -765,6 +765,23 @@ describe("voice shortcuts without a call", () => {
     view.pushToTalk("Backquote", true); // connecting: no token yet
     view.update(login);
     view.voiceCommand("toggleDeafen");
+    view.voiceCommand("talkStart");
     expect(act).not.toHaveBeenCalledWith(expect.objectContaining({ type: "voiceState" }));
+  });
+
+  it("talks on the background key, and keeps talking when the window loses focus", () => {
+    const live = { channelId: "7", channelName: "L", guildName: "", url: "wss://x", token: "t", mute: true, deaf: false, video: false, stream: false };
+    view.update(chat({ voice: live }));
+    view.voiceCommand("talkStart"); // no push-to-talk key: ignored
+    expect(act).not.toHaveBeenCalledWith(expect.objectContaining({ type: "voiceState" }));
+    view.setVoiceSettings({ ...DEFAULT_SETTINGS.voice, pushToTalk: "F13", pushToTalkGlobal: true });
+    view.voiceCommand("talkStart");
+    expect(act).toHaveBeenLastCalledWith({ type: "voiceState", mute: false, deaf: false, video: false, stream: false });
+    view.update(chat({ voice: { ...live, mute: false } }));
+    act.mockClear();
+    view.releaseTalk(); // the hook will see the release
+    expect(act).not.toHaveBeenCalled();
+    view.voiceCommand("talkStop");
+    expect(act).toHaveBeenLastCalledWith({ type: "voiceState", mute: true, deaf: false, video: false, stream: false });
   });
 });

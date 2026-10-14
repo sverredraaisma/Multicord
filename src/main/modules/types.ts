@@ -22,6 +22,8 @@ export interface ModuleManifest {
   preload?: string;
   /** URL schemes the module opens (e.g. "discord"), when the user lets Multicord handle them. */
   protocols?: string[];
+  /** The module's page has its own push to talk: the background push-to-talk key is passed on to it. */
+  forwardPushToTalk?: boolean;
   /** Keys the module's own page uses for mute and deafen, sent to it when the global shortcuts fire. */
   voiceKeys?: Partial<Record<"toggleMute" | "toggleDeafen", PageKeys>>;
   /**

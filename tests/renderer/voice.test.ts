@@ -163,6 +163,7 @@ describe("devices", () => {
       noiseSuppression: true,
       autoGainControl: false,
       enhancedNoiseSuppression: false,
+      pushToTalkGlobal: false,
     });
     await withDevices.sync(session());
     expect(Room.instances[0]!.options).toEqual({

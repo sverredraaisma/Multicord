@@ -118,6 +118,7 @@ describe("messages", () => {
     api.onVoiceCommand(onVoiceCommand);
     listeners.get(SETTINGS_IPC.voiceCommand)!(null, "toggleMute");
     listeners.get(SETTINGS_IPC.voiceCommand)!(null, "explode");
-    expect(onVoiceCommand.mock.calls).toEqual([["toggleMute"]]);
+    listeners.get(SETTINGS_IPC.voiceCommand)!(null, "talkStart");
+    expect(onVoiceCommand.mock.calls).toEqual([["toggleMute"], ["talkStart"]]);
   });
 });

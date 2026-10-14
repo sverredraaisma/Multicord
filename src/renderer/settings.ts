@@ -1,4 +1,5 @@
 import type { SettingsApi } from "../preload/settings";
+import { keyNameForCode } from "../shared/keys";
 import { isAccelerator, ZOOM_LEVELS, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
 import { el, initials, setColor } from "./components/dom";
 import { browserMediaEnv, playTestTone, startMeter, stopStream, type DeviceInfo, type MediaEnv, type Stop } from "./media";
@@ -55,42 +56,9 @@ export function switchRow(doc: Document, label: string, hint: string | undefined
   return { row, input };
 }
 
-const KEY_NAMES: Record<string, string> = {
-  Space: "Space",
-  Tab: "Tab",
-  Backspace: "Backspace",
-  Delete: "Delete",
-  Insert: "Insert",
-  Home: "Home",
-  End: "End",
-  PageUp: "PageUp",
-  PageDown: "PageDown",
-  ArrowUp: "Up",
-  ArrowDown: "Down",
-  ArrowLeft: "Left",
-  ArrowRight: "Right",
-  Minus: "-",
-  Equal: "=",
-  Semicolon: ";",
-  Quote: "'",
-  Comma: ",",
-  Period: ".",
-  Slash: "/",
-  Backslash: "\\",
-  BracketLeft: "[",
-  BracketRight: "]",
-  Backquote: "`",
-};
-
 /** An Electron accelerator for a key press, e.g. "Ctrl+Shift+M"; undefined for a lone modifier. */
 export function acceleratorFromKey(event: { code: string; ctrlKey: boolean; altKey: boolean; shiftKey: boolean; metaKey: boolean }): string | undefined {
-  const key = /^Key[A-Z]$/.test(event.code)
-    ? event.code.slice(3)
-    : /^Digit\d$/.test(event.code)
-      ? event.code.slice(5)
-      : /^F\d{1,2}$/.test(event.code)
-        ? event.code
-        : KEY_NAMES[event.code];
+  const key = keyNameForCode(event.code);
   if (!key) return undefined;
   const parts = [event.ctrlKey && "Ctrl", event.altKey && "Alt", event.shiftKey && "Shift", event.metaKey && "Super"].filter(Boolean) as string[];
   return [...parts, key].join("+");
@@ -238,6 +206,7 @@ export class SettingsPage {
     links: { row: HTMLElement; input: HTMLInputElement; label: HTMLElement };
     autoUpdate: HTMLInputElement;
     richPresence: HTMLInputElement;
+    talkEverywhere: HTMLInputElement;
     keys: Record<ShortcutAction | "pushToTalk", { set(value: string | null, problem?: string): void }>;
     updateStatus: HTMLElement;
     checkUpdates: HTMLButtonElement;
@@ -402,12 +371,22 @@ export class SettingsPage {
       showApp: shortcut("showApp", "Show or hide Multicord"),
       pushToTalk: keyField(
         doc,
-        "Push to talk (while Multicord is in front)",
+        "Push to talk",
         (event) => (["Control", "Alt", "Shift", "Meta"].includes(event.key) ? undefined : event.code),
         (value) => this.update({ voice: { pushToTalk: value } }),
       ),
     };
-    voice.append(keys.pushToTalk.row, el(doc, "p", "hint", "With a push-to-talk key set, hold it to talk in Fluxer calls; Discord keeps its own push-to-talk setting."));
+    const talkEverywhere = switchRow(
+      doc,
+      "Push to talk in the background",
+      "The key also works while Multicord is not in front. This watches the keyboard for that one key; on macOS it needs the Accessibility permission.",
+      (on) => this.update({ voice: { pushToTalkGlobal: on } }),
+    );
+    voice.append(
+      keys.pushToTalk.row,
+      talkEverywhere.row,
+      el(doc, "p", "hint", "With a push-to-talk key set, hold it to talk in Fluxer calls. For Discord, set the same key in Discord's own voice settings; in the background, Multicord passes it on."),
+    );
 
     // General
     const general = sections.get("general")!;
@@ -519,6 +498,7 @@ export class SettingsPage {
       links: { ...links, label: links.row.querySelector<HTMLElement>(".switch-label")! },
       autoUpdate: autoUpdate.input,
       richPresence: richPresence.input,
+      talkEverywhere: talkEverywhere.input,
       keys,
       updateStatus,
       checkUpdates,
@@ -585,7 +565,8 @@ export class SettingsPage {
     for (const action of ["toggleMute", "toggleDeafen", "showApp"] as const) {
       parts.keys[action].set(state.settings.shortcuts[action], taken.has(action) ? "Another app already uses this shortcut." : undefined);
     }
-    parts.keys.pushToTalk.set(voice.pushToTalk ?? null);
+    parts.keys.pushToTalk.set(voice.pushToTalk ?? null, state.pushToTalkError);
+    parts.talkEverywhere.checked = voice.pushToTalkGlobal;
     this.renderUpdate(state.update);
     parts.general.launchAtLogin.disabled = !state.launchAtLoginSupported;
     parts.launchHint.hidden = state.launchAtLoginSupported;

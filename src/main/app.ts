@@ -43,8 +43,10 @@ import { PlatformRegistry } from "./registry";
 import { createDisplayMediaHandler } from "./screenShare";
 import { SettingsController } from "./settingsController";
 import { SettingsStore } from "./settingsStore";
+import { GlobalPushToTalk, loadKeyHook } from "./pushToTalk";
 import { createRichPresence } from "./richPresence";
 import { GlobalShortcuts, inputModifiers } from "./shortcuts";
+import { inputKeyCode } from "../shared/keys";
 import { listProcesses, StreamerWatch } from "./streamer";
 import { Updater } from "./updater";
 import { decideWindowOpen, isPermissionAllowed } from "./sessionPolicy";
@@ -445,6 +447,7 @@ export async function createShell(
       return linkSchemes;
     },
     shortcutErrors: () => shortcutErrors,
+    pushToTalkError: () => pushToTalkError,
     openService: showPlatform,
     clearSession: async (id) => {
       await session.fromPartition(`persist:${id}`).clearStorageData();
@@ -522,12 +525,33 @@ export async function createShell(
   };
   applyRichPresence(general().richPresence);
 
+  // Push to talk in the background: Multicord's own calls talk, and pages with their own push to talk get the key.
+  const talk = (down: boolean): void => {
+    const code = settingsStore.get().voice.pushToTalk;
+    const keyCode = code ? inputKeyCode(code) : undefined;
+    for (const [id, view] of views) {
+      const manifest = manifests.get(id);
+      if (manifest?.usesVoiceSettings) view.webContents.send(SETTINGS_IPC.voiceCommand, down ? "talkStart" : "talkStop");
+      // While focused, the page hears the key itself.
+      if (manifest?.forwardPushToTalk && keyCode && !window.isFocused()) view.webContents.sendInputEvent({ type: down ? "keyDown" : "keyUp", keyCode });
+    }
+  };
+  const pushToTalk = new GlobalPushToTalk(loadKeyHook, talk);
+  let pushToTalkError: string | undefined;
+  const applyPushToTalk = (): void => {
+    const { pushToTalk: code, pushToTalkGlobal } = settingsStore.get().voice;
+    pushToTalkError = pushToTalk.apply(code, pushToTalkGlobal);
+  };
+  applyPushToTalk();
+  app.on("will-quit", () => pushToTalk.stop());
+
   const shortcuts = new GlobalShortcuts(globalShortcut, runShortcut);
   let shortcutErrors = shortcuts.apply(settingsStore.get().shortcuts);
   updater.setAutomatic(general().autoUpdate);
 
   settingsStore.changed.on(({ settings: next, patch }) => {
     if (patch.shortcuts) shortcutErrors = shortcuts.apply(next.shortcuts);
+    if (patch.voice?.pushToTalk !== undefined || patch.voice?.pushToTalkGlobal !== undefined) applyPushToTalk();
     if (patch.general?.autoUpdate !== undefined) updater.setAutomatic(next.general.autoUpdate);
     if (patch.general?.openLinks !== undefined) registerLinks(next.general.openLinks);
     if (patch.general?.richPresence !== undefined) applyRichPresence(next.general.richPresence);

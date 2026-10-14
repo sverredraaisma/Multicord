@@ -1,7 +1,7 @@
 import type { NativeApi } from "../preload/native";
 import type { NativeMessage, NativeViewState } from "../shared/native";
 import { MAX_MESSAGE_LENGTH } from "../shared/native";
-import type { VoiceSettings } from "../shared/settings";
+import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
 import { el } from "./components/dom";
@@ -72,8 +72,12 @@ export class NativeView {
     this.api.act({ type: "voiceState", ...flags });
   }
 
-  /** A global shortcut toggles mute or deafen in the call in progress. */
-  voiceCommand(command: "toggleMute" | "toggleDeafen"): void {
+  /** A global shortcut toggles mute or deafen; the background push-to-talk key talks. */
+  voiceCommand(command: VoiceCommand): void {
+    if (command === "talkStart" || command === "talkStop") {
+      if (this.voiceSettings?.pushToTalk) this.setVoice({ mute: command === "talkStop" });
+      return;
+    }
     const voice = this.liveCall;
     if (!voice) return;
     this.setVoice(command === "toggleMute" ? { mute: !voice.mute } : { deaf: !voice.deaf });
@@ -88,9 +92,9 @@ export class NativeView {
     this.setVoice({ mute: !down });
   }
 
-  /** The window lost focus: a held push-to-talk key's release will not arrive. */
+  /** The window lost focus: a held push-to-talk key's release will not arrive, unless the background hook sees it. */
   releaseTalk(): void {
-    if (this.voiceSettings?.pushToTalk) this.setVoice({ mute: true });
+    if (this.voiceSettings?.pushToTalk && !this.voiceSettings.pushToTalkGlobal) this.setVoice({ mute: true });
   }
 
   update(state: NativeViewState): void {

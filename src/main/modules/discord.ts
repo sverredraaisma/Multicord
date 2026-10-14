@@ -16,6 +16,8 @@ export const discordModule: PlatformModule = {
     fixedUrl: true,
     preload: "preload-discord.js",
     protocols: ["discord"],
+    // Discord's web client has push to talk, but only hears the key while focused.
+    forwardPushToTalk: true,
     // Discord's own default keybinds for mute and deafen.
     voiceKeys: {
       toggleMute: { keyCode: "M", modifiers: ["commandOrControl", "shift"] },

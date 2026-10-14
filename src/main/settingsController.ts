@@ -24,6 +24,8 @@ export interface SettingsDeps {
   linkSchemes?: string[];
   /** Shortcuts another app already holds. */
   shortcutErrors?(): ShortcutAction[];
+  /** Why the background push-to-talk key is not working. */
+  pushToTalkError?(): string | undefined;
   updates?: { status: UpdateStatus; check(): Promise<void>; install(): void };
   /** Shows a running service, e.g. to sign in. */
   openService(id: string): void;
@@ -127,6 +129,8 @@ export class SettingsController {
     if (this.deps.updates) state.update = this.deps.updates.status;
     const shortcutErrors = this.deps.shortcutErrors?.() ?? [];
     if (shortcutErrors.length > 0) state.shortcutErrors = shortcutErrors;
+    const pushToTalkError = this.deps.pushToTalkError?.();
+    if (pushToTalkError) state.pushToTalkError = pushToTalkError;
     if (this.error) state.error = this.error;
     return state;
   }

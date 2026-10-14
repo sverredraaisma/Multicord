@@ -17,7 +17,7 @@ await Promise.all([
     platform: "node",
     format: "cjs",
     // Shipped as a dependency; it loads its own platform-specific parts.
-    external: ["electron", "electron-updater"],
+    external: ["electron", "electron-updater", "uiohook-napi"],
     outdir: "dist",
   }),
   // Sandboxed preloads can only require("electron"), so each is bundled into one file.

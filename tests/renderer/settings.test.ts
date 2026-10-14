@@ -850,6 +850,12 @@ describe("keybinds", () => {
     talkButton.dispatchEvent(key("ShiftLeft", { key: "Shift" }));
     talkButton.dispatchEvent(key("F13"));
     expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { voice: { pushToTalk: "F13" } } });
+    expect(switchFor("Push to talk in the background").checked).toBe(false);
+    change(switchFor("Push to talk in the background"), true);
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { voice: { pushToTalkGlobal: true } } });
+
+    mount(viewState({ pushToTalkError: "Could not watch the keyboard: denied" }));
+    expect(field("Push to talk").querySelector(".key-hint")!.textContent).toBe("Could not watch the keyboard: denied");
   });
 });
 
