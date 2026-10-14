@@ -694,6 +694,9 @@ describe("settings", () => {
     expect(view.webContents.send).toHaveBeenCalledWith(SETTINGS_IPC.state, expect.objectContaining({ version: "0.1.0" }));
 
     const ses = session.fromPartition("multicord-settings");
+    let cancelled: boolean | undefined;
+    ses.beforeRequest!({ url: "https://192.168.1.1/" }, (response) => (cancelled = response.cancel));
+    expect(cancelled).toBe(true);
     const callback = vi.fn();
     (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "media", callback);
     (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "notifications", callback);

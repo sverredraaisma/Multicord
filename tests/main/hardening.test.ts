@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("electron", () => import("../mocks/electron"));
 
 import * as electron from "../mocks/electron";
-import { hardenContents, installHardening, isNavigableUrl } from "../../src/main/hardening";
+import { hardenContents, installHardening, isNavigableUrl, isShellRequestAllowed } from "../../src/main/hardening";
 
 beforeEach(() => electron.resetElectron());
 
@@ -47,5 +47,17 @@ describe("hardening", () => {
     (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "media", callback);
     expect(callback).toHaveBeenCalledWith(false);
     expect((ses.permissionCheckHandler as (...a: unknown[]) => boolean)(null, "notifications")).toBe(false);
+    let cancel: boolean | undefined;
+    ses.beforeRequest!({ url: "https://10.0.0.1/icon.png" }, (response) => (cancel = response.cancel));
+    expect(cancel).toBe(true);
+  });
+
+  it("lets Multicord's own pages load their files and public https images only", () => {
+    for (const url of ["file:///C:/app/dist/rail.js", "data:image/png;base64,AA", "blob:file:///1", "https://cdn.discordapp.com/icons/1/a.png"]) {
+      expect(isShellRequestAllowed(url)).toBe(true);
+    }
+    for (const url of ["http://cdn.example/a.png", "https://localhost/a.png", "https://192.168.0.1/", "ftp://x/", "not a url"]) {
+      expect(isShellRequestAllowed(url)).toBe(false);
+    }
   });
 });

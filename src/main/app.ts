@@ -36,7 +36,7 @@ import { ENGINE_SCHEME } from "../shared/engine";
 import { isSettingsAction, serviceSettings, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import { EngineHub, engineStoragePartition } from "./engineHost";
-import { installHardening } from "./hardening";
+import { filterShellRequests, installHardening } from "./hardening";
 import { computeLayout, splitContent, tooltipBounds } from "./layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
 import type { PlatformModule, ShellServices } from "./modules/types";
@@ -116,6 +116,7 @@ export function configureSession(
  * ("media", for device tests); the Messages page gets none.
  */
 function configurePageSession(ses: Session, allowed: readonly string[]): void {
+  filterShellRequests(ses);
   ses.setPermissionRequestHandler((_wc, permission, callback) => callback(allowed.includes(permission)));
   ses.setPermissionCheckHandler((_wc, permission) => allowed.includes(permission));
 }
