@@ -32,17 +32,24 @@ const PLATFORM_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 /**
  * Validates the user's platforms.json: a list of {id, name, url, iconUrl?, kind?}
  * entries. Each is a web view in its own partition, or with kind "fluxer" a
- * native Fluxer client for a self-hosted instance at url. Invalid entries are
+ * native Fluxer client for a self-hosted instance at url. A built-in platform
+ * is turned off with {"id": "fluxer", "enabled": false}. Invalid entries are
  * skipped and reported rather than failing the whole file.
  */
-export function parsePlatforms(raw: unknown): { platforms: PlatformDef[]; errors: string[] } {
+export function parsePlatforms(raw: unknown): { platforms: PlatformDef[]; disabled: string[]; errors: string[] } {
   const platforms: PlatformDef[] = [];
+  const disabled: string[] = [];
   const errors: string[] = [];
-  if (!Array.isArray(raw)) return { platforms, errors: ["platforms.json must contain an array"] };
+  if (!Array.isArray(raw)) return { platforms, disabled, errors: ["platforms.json must contain an array"] };
 
-  const seen = new Set(BUILT_IN.map((p) => p.id));
+  const builtIn = new Set(BUILT_IN.map((p) => p.id));
+  const seen = new Set(builtIn);
   raw.forEach((entry: unknown, index) => {
     const e = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
+    if (typeof e.id === "string" && builtIn.has(e.id) && e.enabled === false) {
+      disabled.push(e.id);
+      return;
+    }
     const problem =
       typeof e.id !== "string" || !PLATFORM_ID.test(e.id) ? "id must be lowercase letters, digits or dashes"
       : seen.has(e.id) ? `duplicate id "${e.id}"`
@@ -66,7 +73,7 @@ export function parsePlatforms(raw: unknown): { platforms: PlatformDef[]; errors
       iconUrl: e.iconUrl as string | undefined,
     });
   });
-  return { platforms, errors };
+  return { platforms, disabled, errors };
 }
 
 /** Discord and Fluxer come first; user platforms follow. A missing file is not an error. */
@@ -80,5 +87,9 @@ export function loadPlatforms(readText: () => string | undefined): { platforms: 
     return { platforms: [...BUILT_IN], errors: [`platforms.json is not valid JSON: ${(error as Error).message}`] };
   }
   const parsed = parsePlatforms(raw);
-  return { platforms: [...BUILT_IN, ...parsed.platforms], errors: parsed.errors };
+  const platforms = [...BUILT_IN.filter((p) => !parsed.disabled.includes(p.id)), ...parsed.platforms];
+  if (platforms.length === 0) {
+    return { platforms: [...BUILT_IN], errors: [...parsed.errors, "at least one platform must stay enabled"] };
+  }
+  return { platforms, errors: parsed.errors };
 }

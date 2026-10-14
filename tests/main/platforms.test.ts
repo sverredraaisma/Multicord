@@ -43,7 +43,7 @@ describe("parsePlatforms", () => {
   });
 
   it("rejects a non-array file", () => {
-    expect(parsePlatforms({})).toEqual({ platforms: [], errors: ["platforms.json must contain an array"] });
+    expect(parsePlatforms({})).toEqual({ platforms: [], disabled: [], errors: ["platforms.json must contain an array"] });
   });
 });
 
@@ -77,5 +77,24 @@ describe("native platform kinds", () => {
       ["el", "web", "persist:el"],
     ]);
     expect(errors).toEqual(['entry 2: kind must be "web" or "fluxer"', 'entry 3: duplicate id "fluxer"']);
+  });
+});
+
+describe("turning built-in platforms off", () => {
+  it("removes disabled built-ins and keeps the rest", () => {
+    const json = JSON.stringify([{ id: "fluxer", enabled: false }, { id: "el", name: "Element", url: "https://app.element.io" }]);
+    expect(loadPlatforms(() => json).platforms.map((p) => p.id)).toEqual(["discord", "el"]);
+    expect(parsePlatforms([{ id: "discord", enabled: false }]).disabled).toEqual(["discord"]);
+  });
+
+  it("refuses to turn everything off", () => {
+    const json = JSON.stringify([{ id: "fluxer", enabled: false }, { id: "discord", enabled: false }]);
+    const { platforms, errors } = loadPlatforms(() => json);
+    expect(platforms.map((p) => p.id)).toEqual(["discord", "fluxer"]);
+    expect(errors).toEqual(["at least one platform must stay enabled"]);
+  });
+
+  it("treats enabled: true on a built-in id as a duplicate", () => {
+    expect(parsePlatforms([{ id: "fluxer", enabled: true }]).errors).toEqual(['entry 0: duplicate id "fluxer"']);
   });
 });

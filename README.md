@@ -28,7 +28,7 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
   - DM bubbles
   - channel lists, message history, sending messages and marking channels read
 
-  Everything that talks to Fluxer runs in the main process. The session token never reaches a web page and is stored encrypted with `safeStorage`. Multicord identifies itself to Fluxer honestly, as Multicord. Self-hosted instances can be added in `platforms.json` with `"kind": "fluxer"` and the instance URL.
+  Everything that talks to Fluxer runs in the main process. The session token never reaches a web page and is stored encrypted with `safeStorage`. Multicord identifies itself to Fluxer honestly, as Multicord. Self-hosted instances can be added in `platforms.json` with `"kind": "fluxer"` and the instance URL. To remove a built-in platform, add `{ "id": "fluxer", "enabled": false }` (or `"discord"`).
 - **Extra platforms** as web views (shallow tier: one rail icon, unread state from the page title), configured in `platforms.json` in the app's user-data folder (`%APPDATA%\Multicord` on Windows):
 
   ```json
