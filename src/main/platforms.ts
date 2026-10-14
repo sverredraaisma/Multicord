@@ -5,7 +5,8 @@ export interface PlatformDef {
   name: string;
   url: string;
   partition: string;
-  kind: "discord" | "web";
+  /** "fluxer" is the native adapter; its url is the instance origin used for discovery. */
+  kind: "discord" | "web" | "fluxer";
   iconUrl?: string;
 }
 
@@ -17,11 +18,21 @@ export const DISCORD: PlatformDef = {
   kind: "discord",
 };
 
+export const FLUXER: PlatformDef = {
+  id: "fluxer",
+  name: "Fluxer",
+  url: "https://fluxer.app",
+  partition: "persist:fluxer",
+  kind: "fluxer",
+};
+
+const BUILT_IN = [DISCORD, FLUXER];
 const PLATFORM_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
 /**
- * Validates the user's platforms.json: a list of {id, name, url, iconUrl?}
- * entries, each loaded as a web view in its own partition. Invalid entries are
+ * Validates the user's platforms.json: a list of {id, name, url, iconUrl?, kind?}
+ * entries. Each is a web view in its own partition, or with kind "fluxer" a
+ * native Fluxer client for a self-hosted instance at url. Invalid entries are
  * skipped and reported rather than failing the whole file.
  */
 export function parsePlatforms(raw: unknown): { platforms: PlatformDef[]; errors: string[] } {
@@ -29,7 +40,7 @@ export function parsePlatforms(raw: unknown): { platforms: PlatformDef[]; errors
   const errors: string[] = [];
   if (!Array.isArray(raw)) return { platforms, errors: ["platforms.json must contain an array"] };
 
-  const seen = new Set([DISCORD.id]);
+  const seen = new Set(BUILT_IN.map((p) => p.id));
   raw.forEach((entry: unknown, index) => {
     const e = (typeof entry === "object" && entry !== null ? entry : {}) as Record<string, unknown>;
     const problem =
@@ -38,6 +49,7 @@ export function parsePlatforms(raw: unknown): { platforms: PlatformDef[]; errors
       : typeof e.name !== "string" || e.name.trim() === "" ? "name is required"
       : !isHttpsUrl(e.url) ? "url must be an https URL"
       : e.iconUrl !== undefined && !isHttpsUrl(e.iconUrl) ? "iconUrl must be an https URL"
+      : e.kind !== undefined && e.kind !== "web" && e.kind !== "fluxer" ? 'kind must be "web" or "fluxer"'
       : undefined;
     if (problem) {
       errors.push(`entry ${index}: ${problem}`);
@@ -50,23 +62,23 @@ export function parsePlatforms(raw: unknown): { platforms: PlatformDef[]; errors
       name: (e.name as string).trim(),
       url: e.url as string,
       partition: `persist:${id}`,
-      kind: "web",
+      kind: e.kind === "fluxer" ? "fluxer" : "web",
       iconUrl: e.iconUrl as string | undefined,
     });
   });
   return { platforms, errors };
 }
 
-/** Discord is always first; user platforms follow. A missing file is not an error. */
+/** Discord and Fluxer come first; user platforms follow. A missing file is not an error. */
 export function loadPlatforms(readText: () => string | undefined): { platforms: PlatformDef[]; errors: string[] } {
   const text = readText();
-  if (text === undefined) return { platforms: [DISCORD], errors: [] };
+  if (text === undefined) return { platforms: [...BUILT_IN], errors: [] };
   let raw: unknown;
   try {
     raw = JSON.parse(text);
   } catch (error) {
-    return { platforms: [DISCORD], errors: [`platforms.json is not valid JSON: ${(error as Error).message}`] };
+    return { platforms: [...BUILT_IN], errors: [`platforms.json is not valid JSON: ${(error as Error).message}`] };
   }
   const parsed = parsePlatforms(raw);
-  return { platforms: [DISCORD, ...parsed.platforms], errors: parsed.errors };
+  return { platforms: [...BUILT_IN, ...parsed.platforms], errors: parsed.errors };
 }

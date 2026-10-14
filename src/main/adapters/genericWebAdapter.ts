@@ -1,12 +1,12 @@
 import type { RailServer } from "../../shared/adapter";
 import { parseTitleBadge } from "../../shared/ipc";
 import type { PlatformDef } from "../platforms";
-import { WebViewAdapter } from "./webViewAdapter";
+import { BaseAdapter } from "./baseAdapter";
 
 export const APP_KEY = "app";
 
 /** Shallow tier: the whole platform is one rail entry, unread state read from the page title. */
-export class GenericWebAdapter extends WebViewAdapter {
+export class GenericWebAdapter extends BaseAdapter {
   readonly capabilities = { directMessages: false, messagePreviews: false, voice: true, screenShare: false };
 
   constructor(private readonly def: PlatformDef) {

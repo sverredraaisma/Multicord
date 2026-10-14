@@ -1,6 +1,6 @@
 import type { DirectConversation, HomeBadge, RailServer } from "../../shared/adapter";
 import { isSnowflake, type DiscordGuild, type DiscordState, type DiscordTarget, type TitleBadge } from "../../shared/ipc";
-import { WebViewAdapter } from "./webViewAdapter";
+import { BaseAdapter } from "./baseAdapter";
 
 export const FOLDER_PREFIX = "folder:";
 
@@ -8,7 +8,7 @@ export const FOLDER_PREFIX = "folder:";
  * Hidden-engine adapter: Discord's web client does all the work; the preload
  * reports its guild bar and DMs, and we send navigation back.
  */
-export class DiscordAdapter extends WebViewAdapter {
+export class DiscordAdapter extends BaseAdapter {
   readonly capabilities = { directMessages: true, messagePreviews: false, voice: true, screenShare: true };
   private badge: TitleBadge = { unread: false, mentions: 0 };
   private directs: DirectConversation[] | undefined;

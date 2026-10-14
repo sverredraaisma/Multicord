@@ -130,6 +130,11 @@ export const Menu = { buildFromTemplate: (template: unknown[]) => ({ template })
 export const nativeImage = { createFromPath: (path: string) => ({ path }) };
 export const shell = { openExternal: vi.fn(async (_url: string) => {}) };
 export const desktopCapturer = { getSources: vi.fn(async (_options: unknown) => [] as unknown[]) };
+export const safeStorage = {
+  isEncryptionAvailable: vi.fn(() => true),
+  encryptString: (plain: string) => Buffer.from(plain).reverse(),
+  decryptString: (encrypted: Buffer) => Buffer.from(encrypted).reverse().toString(),
+};
 
 class FakeIpcMain extends EventEmitter {}
 export const ipcMain = new FakeIpcMain();

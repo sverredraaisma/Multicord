@@ -8,6 +8,7 @@ vi.mock("electron", () => import("../mocks/electron"));
 import * as electron from "../mocks/electron";
 import { APP_NAME, createShell, startApp } from "../../src/main/app";
 import { IPC } from "../../src/shared/ipc";
+import { NATIVE_IPC } from "../../src/shared/native";
 
 const { BaseWindow, WebContentsView, Tray, app, ipcMain, session, desktopCapturer, shell } = electron;
 
@@ -31,10 +32,15 @@ async function shellWith(platformsJson?: unknown, platform: NodeJS.Platform = "w
 
 beforeEach(() => {
   electron.resetElectron();
+  // The built-in Fluxer platform discovers its instance on start; tests stay offline.
+  vi.stubGlobal("fetch", vi.fn(async () => {
+    throw new Error("offline");
+  }));
   userData = fs.mkdtempSync(path.join(os.tmpdir(), "multicord-test-"));
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   fs.rmSync(userData, { recursive: true, force: true });
 });
 
@@ -43,7 +49,7 @@ describe("createShell", () => {
     const { handle, window, discordView, railView } = await shellWith();
     expect(window.options).toMatchObject({ title: APP_NAME, width: 1280, height: 800 });
     expect(window.maximize).not.toHaveBeenCalled();
-    expect(window.children).toEqual([railView, discordView, handle.tooltipView]);
+    expect(window.children).toEqual([railView, discordView, handle.views.get("fluxer"), handle.tooltipView]);
 
     expect(railView.options.webPreferences).toMatchObject({ contextIsolation: true, sandbox: true, nodeIntegration: false });
     expect(railView.webContents.loadFile).toHaveBeenCalledWith(path.join(DIST, "rail.html"));
@@ -103,7 +109,10 @@ describe("createShell", () => {
 
     ipcMain.emit(IPC.discordState, senderEvent(discordView), state);
     expect(railView.webContents.send).toHaveBeenLastCalledWith(IPC.railState, handle.registry.state());
-    expect(handle.registry.state().entries.map((e) => e.key)).toEqual(["discord:home", "discord:1"]);
+    expect(handle.registry.state().entries.filter((e) => e.platform === "discord").map((e) => e.key)).toEqual([
+      "discord:home",
+      "discord:1",
+    ]);
   });
 
   it("shows mention totals in the title, badge and taskbar", async () => {
@@ -288,6 +297,99 @@ describe("createShell", () => {
     expect(window.children).not.toContain(picker);
     expect(picker.webContents.close).toHaveBeenCalled();
     expect(ipcMain.listenerCount(IPC.pickerChoose)).toBe(0);
+  });
+});
+
+describe("native Fluxer platform", () => {
+  const discovery = {
+    endpoints: { api_public: "https://api.fx", gateway: "wss://gw.fx", media: "https://media.fx" },
+    features: { account_identity: "email" },
+  };
+
+  class StubSocket {
+    static urls: string[] = [];
+    constructor(url: string) {
+      StubSocket.urls.push(url);
+    }
+    send(): void {}
+    close(): void {}
+    addEventListener(): void {}
+  }
+
+  beforeEach(() => {
+    StubSocket.urls = [];
+    vi.stubGlobal("WebSocket", StubSocket);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () => (String(url).endsWith("/.well-known/fluxer") ? discovery : {}) })),
+    );
+  });
+
+  it("runs Fluxer in a sandboxed native view fed by the main process", async () => {
+    const { handle, railView } = await shellWith();
+    const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    expect(view.options.webPreferences).toMatchObject({
+      preload: path.join(DIST, "preload-native.js"),
+      partition: "persist:fluxer",
+      sandbox: true,
+      contextIsolation: true,
+    });
+    expect(view.webContents.loadFile).toHaveBeenCalledWith(path.join(DIST, "native.html"));
+    expect(view.webContents.loadURL).not.toHaveBeenCalled();
+    await flush();
+
+    ipcMain.emit(NATIVE_IPC.action, senderEvent(railView), { type: "ready" });
+    ipcMain.emit(NATIVE_IPC.action, senderEvent(view), { type: "bogus" });
+    expect(view.webContents.send).not.toHaveBeenCalledWith(NATIVE_IPC.state, expect.objectContaining({ screen: "chat" }));
+    view.webContents.send.mockClear();
+    ipcMain.emit(NATIVE_IPC.action, senderEvent(view), { type: "ready" });
+    await flush();
+    expect(view.webContents.send).toHaveBeenCalledWith(NATIVE_IPC.state, expect.objectContaining({ screen: "login", platform: "Fluxer" }));
+  });
+
+  it("logs failed actions instead of crashing", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { handle } = await shellWith();
+    const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    const adapter = handle.adapters.get("fluxer") as unknown as { handleAction: unknown };
+    adapter.handleAction = async () => {
+      throw new Error("boom");
+    };
+    ipcMain.emit(NATIVE_IPC.action, senderEvent(view), { type: "ready" });
+    await flush();
+    expect(warn).toHaveBeenCalledWith("[fluxer] boom");
+  });
+
+  it("opens message links in the browser, never inside the app", async () => {
+    const { handle } = await shellWith();
+    const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    const event = { preventDefault: vi.fn() };
+    view.webContents.emit("will-navigate", event, "https://example.com/page");
+    view.webContents.emit("will-navigate", event, "file:///C:/secrets");
+    expect(event.preventDefault).toHaveBeenCalledTimes(2);
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+    expect(shell.openExternal).toHaveBeenCalledWith("https://example.com/page");
+  });
+
+  it("tells the adapter when its view is in front", async () => {
+    const { handle, railView } = await shellWith();
+    const setVisible = vi.spyOn(handle.adapters.get("fluxer")!, "setVisible");
+    ipcMain.emit(IPC.railOpen, senderEvent(railView), "fluxer:home");
+    await flush();
+    expect(setVisible).toHaveBeenLastCalledWith(true);
+    ipcMain.emit(IPC.railOpen, senderEvent(railView), "discord:home");
+    await flush();
+    expect(setVisible).toHaveBeenLastCalledWith(false);
+  });
+
+  it("resumes a stored session with the default network services", async () => {
+    // Stored as the mocked safeStorage encrypts it (byte-reversed).
+    const encrypted = Buffer.from("flx_saved").reverse().toString("base64");
+    fs.writeFileSync(path.join(userData, "credentials.json"), JSON.stringify({ "fluxer:fluxer.app:token": encrypted }));
+    await createShell({ dist: DIST, userData }, "win32");
+    await flush();
+    await flush();
+    expect(StubSocket.urls).toEqual(["wss://gw.fx/?v=1&encoding=json"]);
   });
 });
 

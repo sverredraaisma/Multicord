@@ -7,6 +7,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  safeStorage,
   session,
   shell,
   Tray,
@@ -23,8 +24,13 @@ import {
   type PickerChoice,
   type PickerRequest,
 } from "../shared/ipc";
+import type { PlatformAdapter } from "../shared/adapter";
+import { isNativeAction, NATIVE_IPC } from "../shared/native";
 import { DiscordAdapter } from "./adapters/discordAdapter";
+import { FluxerAdapter } from "./adapters/fluxerAdapter";
 import { GenericWebAdapter } from "./adapters/genericWebAdapter";
+import { CredentialStore, type SecretBox } from "./credentials";
+import type { GatewaySocket, SocketFactory } from "./fluxer/gateway";
 import { computeLayout, tooltipBounds } from "./layout";
 import { loadPlatforms } from "./platforms";
 import { PlatformRegistry } from "./registry";
@@ -88,13 +94,31 @@ export interface ShellHandle {
   railView: WebContentsView;
   tooltipView: WebContentsView;
   views: Map<string, WebContentsView>;
+  adapters: Map<string, PlatformAdapter>;
   registry: PlatformRegistry;
   show(): void;
   setQuitting(): void;
   layout(): void;
 }
 
-export async function createShell(paths: ShellPaths, platform: NodeJS.Platform = process.platform): Promise<ShellHandle> {
+/** Network and secret-store access for native adapters; replaceable in tests. */
+export interface ShellServices {
+  fetch: typeof fetch;
+  createSocket: SocketFactory;
+  secrets: SecretBox;
+}
+
+const defaultServices = (): ShellServices => ({
+  fetch: globalThis.fetch,
+  createSocket: (url) => new WebSocket(url) as unknown as GatewaySocket,
+  secrets: safeStorage,
+});
+
+export async function createShell(
+  paths: ShellPaths,
+  platform: NodeJS.Platform = process.platform,
+  services: ShellServices = defaultServices(),
+): Promise<ShellHandle> {
   const { platforms, errors } = loadPlatforms(() => readOptional(path.join(paths.userData, "platforms.json")));
   for (const error of errors) console.warn(`[platforms] ${error}`);
 
@@ -118,6 +142,8 @@ export async function createShell(paths: ShellPaths, platform: NodeJS.Platform =
 
   const registry = new PlatformRegistry();
   const views = new Map<string, WebContentsView>();
+  const adapters = new Map<string, PlatformAdapter>();
+  const credentials = new CredentialStore(path.join(paths.userData, "credentials.json"), services.secrets);
   let activePlatform = platforms[0]!.id;
   let quitting = false;
 
@@ -128,13 +154,15 @@ export async function createShell(paths: ShellPaths, platform: NodeJS.Platform =
     for (const [id, view] of views) {
       view.setBounds(content);
       view.setVisible(id === activePlatform);
+      adapters.get(id)?.setVisible?.(id === activePlatform);
     }
   };
 
   for (const def of platforms) {
     const ses = session.fromPartition(def.partition);
     configureSession(ses);
-    const view = secureView(def.kind === "discord" ? path.join(paths.dist, "preload-discord.js") : undefined, def.partition);
+    const preload = { discord: "preload-discord.js", fluxer: "preload-native.js", web: undefined }[def.kind];
+    const view = secureView(preload && path.join(paths.dist, preload), def.partition);
     view.webContents.setWindowOpenHandler(({ url }) => {
       const decision = decideWindowOpen(url, def.url);
       if (decision === "external") void shell.openExternal(url);
@@ -156,13 +184,38 @@ export async function createShell(paths: ShellPaths, platform: NodeJS.Platform =
           platform,
         }),
       );
+      adapters.set(def.id, adapter);
       await registry.add(adapter, def.name);
+      void view.webContents.loadURL(def.url);
+    } else if (def.kind === "fluxer") {
+      const adapter = new FluxerAdapter({
+        def,
+        fetch: services.fetch,
+        createSocket: services.createSocket,
+        secrets: credentials,
+        render: (state) => view.webContents.send(NATIVE_IPC.state, state),
+        platform,
+      });
+      ipcMain.on(NATIVE_IPC.action, (event, action) => {
+        if (event.sender !== view.webContents || !isNativeAction(action)) return;
+        adapter.handleAction(action).catch((error: Error) => console.warn(`[${def.id}] ${error.message}`));
+      });
+      // Our own page: links in messages open in the browser, never in the app.
+      view.webContents.on("will-navigate", (event, url) => {
+        event.preventDefault();
+        if (decideWindowOpen(url, "file:///") === "external") void shell.openExternal(url);
+      });
+      adapters.set(def.id, adapter);
+      await registry.add(adapter, def.name);
+      void view.webContents.loadFile(path.join(paths.dist, "native.html"));
+      void adapter.start();
     } else {
       const adapter = new GenericWebAdapter(def);
       view.webContents.on("page-title-updated", (_event, title) => adapter.updateTitle(title));
+      adapters.set(def.id, adapter);
       await registry.add(adapter, def.name);
+      void view.webContents.loadURL(def.url);
     }
-    void view.webContents.loadURL(def.url);
   }
 
   // Added after the platform views so it draws on top of them.
@@ -244,6 +297,7 @@ export async function createShell(paths: ShellPaths, platform: NodeJS.Platform =
     railView,
     tooltipView,
     views,
+    adapters,
     registry,
     show,
     setQuitting: () => {

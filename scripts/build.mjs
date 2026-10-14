@@ -21,6 +21,7 @@ await Promise.all([
     entryPoints: {
       "preload-discord": "src/entries/preload-discord.ts",
       "preload-shell": "src/entries/preload-shell.ts",
+      "preload-native": "src/entries/preload-native.ts",
     },
     platform: "browser",
     format: "cjs",
@@ -29,7 +30,12 @@ await Promise.all([
   }),
   build({
     ...common,
-    entryPoints: { rail: "src/entries/rail.ts", picker: "src/entries/picker.ts", tooltip: "src/entries/tooltip.ts" },
+    entryPoints: {
+      rail: "src/entries/rail.ts",
+      picker: "src/entries/picker.ts",
+      tooltip: "src/entries/tooltip.ts",
+      native: "src/entries/native.ts",
+    },
     platform: "browser",
     format: "iife",
     outdir: "dist",

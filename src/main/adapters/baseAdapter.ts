@@ -9,9 +9,9 @@ import type {
 } from "../../shared/adapter";
 import { Emitter } from "./emitter";
 
-/** Shared plumbing for adapters whose data comes from a platform's own web client. */
-export abstract class WebViewAdapter implements PlatformAdapter {
-  readonly mode = "webview" as const;
+/** Shared plumbing for adapters: event emitters, account and server bookkeeping. */
+export abstract class BaseAdapter implements PlatformAdapter {
+  readonly mode: PlatformAdapter["mode"] = "webview";
   abstract readonly capabilities: PlatformAdapter["capabilities"];
 
   protected servers: RailServer[] = [];
@@ -25,7 +25,7 @@ export abstract class WebViewAdapter implements PlatformAdapter {
     protected account: AccountRef,
   ) {}
 
-  // The web client inside the view owns login and the connection.
+  // Web-view adapters leave login and the connection to the web client.
   async connect(account: AccountRef): Promise<void> {
     this.account = account;
   }

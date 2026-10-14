@@ -85,6 +85,9 @@ export interface PlatformAdapter {
   // Expands or collapses a group returned by listServers().
   toggleGroup?(key: string): Promise<void>;
 
+  // Whether the platform's view is in front, e.g. to mark the open channel read.
+  setVisible?(visible: boolean): void;
+
   // Shell addition to the draft: the DM home entry (Discord's /channels/@me).
   homeBadge?(): HomeBadge;
   openHome?(): Promise<void>;
