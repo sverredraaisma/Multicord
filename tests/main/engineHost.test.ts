@@ -285,7 +285,7 @@ describe("EngineHub", () => {
     const response = (await ask({ type: "http", request: { url: "https://api.demo.example/ping", method: "GET", headers: { Cookie: "x", Accept: "text/plain" } } })) as { status: number; body: Uint8Array };
     expect(response.status).toBe(200);
     expect(new TextDecoder().decode(response.body)).toBe("pong");
-    expect(ses.fetch).toHaveBeenCalledWith("https://api.demo.example/ping", { method: "GET", headers: { Accept: "text/plain" }, body: undefined, redirect: "follow" });
+    expect(ses.fetch).toHaveBeenCalledWith("https://api.demo.example/ping", { method: "GET", headers: { Accept: "text/plain" }, body: undefined, redirect: "follow", credentials: "omit" });
     await expect(ask({ type: "http", request: { url: "https://other.example/", method: "GET", headers: {} } })).rejects.toThrow("not one of this module's hosts");
 
     // net.fetch follows redirects itself: the bridge session checks every hop.

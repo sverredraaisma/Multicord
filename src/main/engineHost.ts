@@ -400,7 +400,8 @@ export class EngineHub {
       case "secretDelete":
         return spec.secrets.delete(request.key);
       case "http":
-        return performHttp((url, init) => running.http.fetch(url, init), request.request, { schemes: ["https:"], hosts: running.allowed.hosts }, "follow");
+        // Never cookies: the bridge's session is the engine's alone, and it keeps none either way.
+        return performHttp((url, init) => running.http.fetch(url, { ...init, credentials: "omit" }), request.request, { schemes: ["https:"], hosts: running.allowed.hosts }, "follow");
       case "lockHosts": {
         const hosts = narrowHosts(running.allowed.hosts, request.hosts);
         if (!hosts) throw new Error("A host lock can only narrow what the engine may reach");
