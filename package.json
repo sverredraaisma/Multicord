@@ -11,7 +11,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
-    "check": "npm run typecheck && npm run coverage"
+    "check": "npm run typecheck && npm run coverage",
+    "gallery": "npm run build && node scripts/open-gallery.mjs"
   },
   "license": "AGPL-3.0-or-later",
   "devDependencies": {

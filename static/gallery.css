@@ -1,0 +1,23 @@
+/* Layout for the component gallery only; components bring their own styles. */
+html, body.gallery-page { height: auto; overflow: auto; }
+#gallery { max-width: 960px; margin: 0 auto; padding: 24px 16px 64px; }
+#gallery > h1 { margin: 0 0 24px; }
+.gallery-section { margin-bottom: 32px; padding: 16px; border-radius: 8px; background: var(--surface); }
+.gallery-section h2 { margin: 0 0 4px; font-size: 18px; }
+.gallery-description { margin: 0 0 16px; color: var(--muted); }
+.gallery-body { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+.gallery-body > .messages { flex: 1 1 100%; min-width: 0; overflow: visible; }
+.gallery-body > .channels { width: 240px; padding: 8px; border-radius: 8px; background: var(--panel); list-style: none; }
+.gallery-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  width: 72px;
+  padding: 12px 0;
+  border-radius: 8px;
+  background: var(--bg);
+}
+.gallery-body > .voice-panel { width: 240px; border-radius: 8px; }
+.gallery-body > .card { height: auto; padding: 0; }
+.gallery-body > .reply-bar, .gallery-body > .pending-files { margin: 0; }

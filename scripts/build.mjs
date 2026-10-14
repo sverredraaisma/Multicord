@@ -35,6 +35,7 @@ await Promise.all([
       picker: "src/entries/picker.ts",
       tooltip: "src/entries/tooltip.ts",
       native: "src/entries/native.ts",
+      gallery: "src/entries/gallery.ts",
     },
     platform: "browser",
     format: "iife",
