@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#5865f2"/>
+      <stop offset="1" stop-color="#3b2fb0"/>
+    </linearGradient>
+    <linearGradient id="back" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2ee6a8"/>
+      <stop offset="1" stop-color="#0dbd8b"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="url(#bg)"/>
+  <!-- The bubble behind: another service. -->
+  <path d="M430 232h330a110 110 0 0 1 110 110v190a110 110 0 0 1-110 110h-20v92l-112-92H430a110 110 0 0 1-110-110V342a110 110 0 0 1 110-110z" fill="url(#back)"/>
+  <!-- The bubble in front: the one you are in. -->
+  <path d="M264 382h330a110 110 0 0 1 110 110v190a110 110 0 0 1-110 110H434L322 884v-92h-58a110 110 0 0 1-110-110V492a110 110 0 0 1 110-110z" fill="#ffffff"/>
+  <circle cx="314" cy="587" r="42" fill="#5865f2"/>
+  <circle cx="429" cy="587" r="42" fill="#5865f2"/>
+  <circle cx="544" cy="587" r="42" fill="#5865f2"/>
+</svg>

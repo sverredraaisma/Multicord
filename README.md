@@ -13,11 +13,12 @@ npm run coverage   # tests with the 95% coverage gate
 npm run check      # typecheck + coverage; run this before pushing
 npm run gallery    # build and open the component gallery in your browser
 npm run dist       # build installers into release/ (electron-builder)
+npm run icons      # render assets/icon.svg into build/icon.png (installers) and the tray icons
 ```
 
 If `npm start` reports that Electron failed to install, run `node node_modules/electron/install.js`.
 
-**Releases.** `npm run dist` builds an NSIS installer on Windows, a DMG on macOS and an AppImage on Linux; `npx electron-builder --publish always` (with a `GH_TOKEN`) uploads them to the GitHub releases, where installed copies find updates. Installed copies check for updates at start and every six hours, download them in the background and install them on restart (Settings > About also checks on request); runs from source never update themselves. Not yet done: code signing (Windows Azure Trusted Signing or a certificate, macOS notarization; configure `win.signtoolOptions`/`mac.identity` and `notarize` in the `build` section of `package.json`), and a full-size app icon (`static/icon.png` is 32×32; installers want at least 256×256).
+**Releases.** `npm run dist` builds an NSIS installer on Windows, a DMG on macOS and an AppImage on Linux; `npx electron-builder --publish always` (with a `GH_TOKEN`) uploads them to the GitHub releases, where installed copies find updates. Installed copies check for updates at start and every six hours, download them in the background and install them on restart (Settings > About also checks on request); runs from source never update themselves. Not yet done: code signing (Windows Azure Trusted Signing or a certificate, macOS notarization; configure `win.signtoolOptions`/`mac.identity` and `notarize` in the `build` section of `package.json`). The app icon is drawn in `assets/icon.svg` (two chat bubbles: the service in front and another behind) and rendered by `npm run icons`.
 
 ## What v0.1 does
 
