@@ -1,0 +1,115 @@
+// @vitest-environment happy-dom
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  HIDE_GUILD_BAR_CSS,
+  STYLE_ID,
+  injectStyle,
+  navigate,
+  parseGuildLabel,
+  readGuilds,
+  readState,
+  targetPath,
+} from "../../src/preload/discord/dom";
+
+function guildBar(html: string): void {
+  document.body.innerHTML = `<nav class="guilds_abc">${html}</nav>`;
+}
+
+beforeEach(() => {
+  document.head.innerHTML = "";
+  document.body.innerHTML = "";
+  document.title = "";
+});
+
+describe("injectStyle", () => {
+  it("adds the guild bar CSS once", () => {
+    injectStyle(document);
+    injectStyle(document);
+    const styles = document.querySelectorAll(`#${STYLE_ID}`);
+    expect(styles).toHaveLength(1);
+    expect(styles[0]!.textContent).toBe(HIDE_GUILD_BAR_CSS);
+    expect(styles[0]!.parentElement).toBe(document.head);
+  });
+
+  it("falls back to the document element without a head", () => {
+    const doc = document.implementation.createDocument(null, "html", null);
+    injectStyle(doc);
+    expect(doc.documentElement.querySelector("style")).not.toBeNull();
+  });
+});
+
+describe("parseGuildLabel", () => {
+  it.each([
+    ["My Server", { name: "My Server", unread: false, mentions: 0 }],
+    ["unread, My Server", { name: "My Server", unread: true, mentions: 0 }],
+    ["1 mention, My Server", { name: "My Server", unread: true, mentions: 1 }],
+    ["unread, 4 mentions, My Server", { name: "My Server", unread: true, mentions: 4 }],
+    ["", { name: "", unread: false, mentions: 0 }],
+  ])("parses %j", (label, expected) => {
+    expect(parseGuildLabel(label)).toEqual(expected);
+  });
+});
+
+describe("readGuilds", () => {
+  it("reads guild items and skips non-guild and duplicate entries", () => {
+    guildBar(`
+      <div data-list-item-id="guildsnav___home" aria-label="Direct Messages"></div>
+      <div class="listItem_x">
+        <div data-list-item-id="guildsnav___111" aria-label="unread, Alpha">
+          <img src="https://cdn.discordapp.com/icons/111/a.png">
+        </div>
+      </div>
+      <div class="listItem_y">
+        <div data-list-item-id="guildsnav___222" aria-label="Beta"><img src="data:image/png;base64,AA"></div>
+        <div class="numberBadge_z">7</div>
+      </div>
+      <div data-list-item-id="guildsnav___333"></div>
+      <div data-list-item-id="guildsnav___111" aria-label="Alpha again"></div>
+      <div data-list-item-id="guildsnav___create-join-button"></div>
+    `);
+    expect(readGuilds(document)).toEqual([
+      { id: "111", name: "Alpha", iconUrl: "https://cdn.discordapp.com/icons/111/a.png", unread: true, mentions: 0 },
+      { id: "222", name: "Beta", iconUrl: undefined, unread: true, mentions: 7 },
+      { id: "333", name: "333", iconUrl: undefined, unread: false, mentions: 0 },
+    ]);
+  });
+
+  it("ignores badges that are not numbers", () => {
+    guildBar(`<div class="listItem_a"><div data-list-item-id="guildsnav___9" aria-label="G"></div><div class="numberBadge_b">!</div></div>`);
+    expect(readGuilds(document)[0]!.mentions).toBe(0);
+  });
+
+  it("combines guilds with the title badge", () => {
+    guildBar(`<div data-list-item-id="guildsnav___5" aria-label="Five"></div>`);
+    document.title = "(2) Discord";
+    expect(readState(document)).toEqual({
+      guilds: [{ id: "5", name: "Five", iconUrl: undefined, unread: false, mentions: 0 }],
+      badge: { unread: true, mentions: 2 },
+    });
+  });
+});
+
+describe("navigate", () => {
+  it("maps targets to routes", () => {
+    expect(targetPath("home")).toBe("/channels/@me");
+    expect(targetPath("42")).toBe("/channels/42");
+  });
+
+  it("clicks the hidden guild item when present", () => {
+    guildBar(`<div data-list-item-id="guildsnav___42"></div>`);
+    const item = document.querySelector<HTMLElement>('[data-list-item-id="guildsnav___42"]')!;
+    const click = vi.fn();
+    item.addEventListener("click", click);
+    expect(navigate(document, window, "42")).toBe("click");
+    expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("falls back to pushState plus popstate", () => {
+    const popstate = vi.fn();
+    window.addEventListener("popstate", popstate);
+    expect(navigate(document, window, "home")).toBe("history");
+    expect(window.location.pathname).toBe("/channels/@me");
+    expect(popstate).toHaveBeenCalledOnce();
+    window.removeEventListener("popstate", popstate);
+  });
+});
