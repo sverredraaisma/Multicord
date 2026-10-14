@@ -77,6 +77,15 @@ export class BaseWindow extends EventEmitter {
 export class FakeSession {
   setUserAgent = vi.fn();
   clearStorageData = vi.fn(async () => {});
+  protocolHandlers = new Map<string, (request: { url: string }) => unknown>();
+  protocol = { handle: vi.fn((scheme: string, handler: (request: { url: string }) => unknown) => void this.protocolHandlers.set(scheme, handler)) };
+  beforeRequest?: (details: { url: string }, callback: (response: { cancel: boolean }) => void) => void;
+  webRequest = {
+    onBeforeRequest: vi.fn((listener: (details: { url: string }, callback: (response: { cancel: boolean }) => void) => void) => {
+      this.beforeRequest = listener;
+    }),
+  };
+  fetch = vi.fn(async (_url: string, _init?: unknown) => new Response("ok"));
   permissionRequestHandler?: Handler;
   permissionCheckHandler?: Handler;
   displayMediaRequestHandler?: Handler;
@@ -138,7 +147,19 @@ export const safeStorage = {
   decryptString: (encrypted: Buffer) => Buffer.from(encrypted).reverse().toString(),
 };
 
-class FakeIpcMain extends EventEmitter {}
+class FakeIpcMain extends EventEmitter {
+  handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>();
+  handle(channel: string, handler: (event: unknown, ...args: unknown[]) => unknown): void {
+    if (this.handlers.has(channel)) throw new Error(`Attempted to register a second handler for ${channel}`);
+    this.handlers.set(channel, handler);
+  }
+  /** Test helper: what ipcRenderer.invoke would get back. */
+  async invoke(channel: string, event: unknown, ...args: unknown[]): Promise<unknown> {
+    const handler = this.handlers.get(channel);
+    if (!handler) throw new Error(`No handler for ${channel}`);
+    return handler(event, ...args);
+  }
+}
 export const ipcMain = new FakeIpcMain();
 
 class FakeApp extends EventEmitter {
@@ -164,6 +185,7 @@ export function resetElectron(): void {
   Notification.isSupported.mockImplementation(() => true);
   sessions.clear();
   ipcMain.removeAllListeners();
+  ipcMain.handlers.clear();
   app.removeAllListeners();
   app.requestSingleInstanceLock.mockImplementation(() => true);
   vi.clearAllMocks();

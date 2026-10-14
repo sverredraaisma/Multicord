@@ -24,6 +24,7 @@ await Promise.all([
       "preload-native": "src/entries/preload-native.ts",
       "preload-settings": "src/entries/preload-settings.ts",
       "preload-messages": "src/entries/preload-messages.ts",
+      "preload-engine": "src/entries/preload-engine.ts",
     },
     platform: "browser",
     format: "cjs",

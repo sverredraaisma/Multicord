@@ -313,3 +313,26 @@ describe("unified conversations", () => {
     expect(registry.activeKeyValue).toBe("fluxer:dm:9");
   });
 });
+
+describe("account changes", () => {
+  it("re-publishes when an adapter's account changes", async () => {
+    let changed: () => void = () => {};
+    const adapter = {
+      platform: "x",
+      listServers: async () => [],
+      listDirectConversations: async () => [],
+      onServersChanged: () => () => {},
+      onDirectsChanged: () => () => {},
+      onAccountChanged: (cb: () => void) => {
+        changed = cb;
+        return () => {};
+      },
+    } as unknown as PlatformAdapter;
+    const registry = new PlatformRegistry();
+    await registry.add(adapter, "X");
+    const onChange = vi.fn();
+    registry.onChange(onChange);
+    changed();
+    expect(onChange).toHaveBeenCalledOnce();
+  });
+});

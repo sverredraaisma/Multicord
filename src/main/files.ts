@@ -28,6 +28,18 @@ export function contentTypeFor(filename: string): string {
   return CONTENT_TYPES[path.extname(filename).toLowerCase()] ?? "application/octet-stream";
 }
 
+/** Reads bytes [start, end) of a file; a short read at the end of the file returns fewer. */
+export async function readRange(filePath: string, start: number, end: number): Promise<Uint8Array> {
+  const handle = await open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(Math.max(0, end - start));
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
+    return new Uint8Array(buffer.buffer, buffer.byteOffset, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
 /** Opens a local file for upload, reading only the ranges asked for so large files never sit in memory whole. */
 export async function uploadSource(filePath: string): Promise<UploadSource> {
   const { size } = await stat(filePath);

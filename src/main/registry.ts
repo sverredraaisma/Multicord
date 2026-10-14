@@ -91,6 +91,8 @@ export class PlatformRegistry {
     };
     adapter.onServersChanged(applyServers);
     adapter.onDirectsChanged(applyDirects);
+    // Account changes show in the settings page, which follows registry changes.
+    adapter.onAccountChanged?.(() => this.emit());
     registered.directs = await adapter.listDirectConversations();
     applyServers(await adapter.listServers());
   }

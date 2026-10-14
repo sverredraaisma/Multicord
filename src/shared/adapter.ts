@@ -102,5 +102,6 @@ export interface PlatformAdapter {
   // Shell additions for the settings page: who is signed in, and signing out
   // on this device. Without signOut the shell clears the platform's web session.
   accountStatus?(): AccountStatus;
+  onAccountChanged?(cb: (account: AccountStatus) => void): () => void;
   signOut?(): Promise<void>;
 }
