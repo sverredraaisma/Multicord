@@ -17,6 +17,7 @@ import {
   type IpcMainEvent,
   type Session,
 } from "electron";
+import { autoUpdater } from "electron-updater";
 import {
   IPC,
   type MessagesState,
@@ -42,6 +43,7 @@ import { createDisplayMediaHandler } from "./screenShare";
 import { SettingsController } from "./settingsController";
 import { SettingsStore } from "./settingsStore";
 import { listProcesses, StreamerWatch } from "./streamer";
+import { Updater } from "./updater";
 import { decideWindowOpen, isPermissionAllowed } from "./sessionPolicy";
 import { toChromeUserAgent } from "./userAgent";
 import { parseWindowState, serializeWindowState } from "./windowState";
@@ -193,6 +195,7 @@ export async function createShell(
   const front = (): string | undefined => (mode === "platform" ? activePlatform : mode === "messages" ? messagesTarget : undefined);
   let quitting = false;
   registry.setGrouping(general().railGrouping);
+  const updater = new Updater(autoUpdater, app.isPackaged);
   const streamer = new StreamerWatch(() => listProcesses(platform));
   /** Streamer mode: message content stays out of notifications and previews. */
   const streaming = (): boolean => general().streamerMode === "on" || (general().streamerMode === "auto" && streamer.active);
@@ -424,6 +427,17 @@ export async function createShell(
     launchAtLoginSupported: platform !== "linux",
     version: app.getVersion(),
     streaming,
+    updates: {
+      get status() {
+        return updater.status;
+      },
+      check: () => updater.check(),
+      install: () => {
+        // Quitting for the update: the window must really close.
+        quitting = true;
+        updater.install();
+      },
+    },
     get linkSchemes() {
       return linkSchemes;
     },
@@ -471,7 +485,13 @@ export async function createShell(
     return false;
   };
 
+  updater.changed.on(() => {
+    if (mode === "settings") settings.refresh();
+  });
+  updater.setAutomatic(general().autoUpdate);
+
   settingsStore.changed.on(({ settings: next, patch }) => {
+    if (patch.general?.autoUpdate !== undefined) updater.setAutomatic(next.general.autoUpdate);
     if (patch.general?.openLinks !== undefined) registerLinks(next.general.openLinks);
     if (patch.general?.railGrouping !== undefined) registry.setGrouping(next.general.railGrouping);
     if (patch.general?.streamerMode !== undefined) {

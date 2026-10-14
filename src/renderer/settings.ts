@@ -1,5 +1,5 @@
 import type { SettingsApi } from "../preload/settings";
-import { ZOOM_LEVELS, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
+import { ZOOM_LEVELS, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
 import { el, initials, setColor } from "./components/dom";
 import { browserMediaEnv, playTestTone, startMeter, stopStream, type DeviceInfo, type MediaEnv, type Stop } from "./media";
 
@@ -53,6 +53,26 @@ export function switchRow(doc: Document, label: string, hint: string | undefined
   input.addEventListener("change", () => onChange(input.checked));
   row.append(text, input);
   return { row, input };
+}
+
+/** What the About page says about updating. */
+export function updateText(status: UpdateStatus): string {
+  switch (status.state) {
+    case "unavailable":
+      return "Updates are installed with Multicord's installer; this copy runs from source.";
+    case "idle":
+      return "";
+    case "checking":
+      return "Checking for updates…";
+    case "none":
+      return "Multicord is up to date.";
+    case "downloading":
+      return `Downloading version ${status.version}… ${status.percent}%`;
+    case "ready":
+      return `Version ${status.version} is ready. Restart Multicord to use it.`;
+    case "error":
+      return `Could not check for updates: ${status.message}`;
+  }
 }
 
 export function accountText(service: ServiceInfo): string {
@@ -121,6 +141,10 @@ export class SettingsPage {
     streamer: HTMLSelectElement;
     streamingNote: HTMLElement;
     links: { row: HTMLElement; input: HTMLInputElement; label: HTMLElement };
+    autoUpdate: HTMLInputElement;
+    updateStatus: HTMLElement;
+    checkUpdates: HTMLButtonElement;
+    installUpdate: HTMLButtonElement;
     diagnostics: HTMLElement;
     launchHint: HTMLElement;
     secretsNote: HTMLElement;
@@ -302,7 +326,10 @@ export class SettingsPage {
       this.update({ general: { openLinks: on } }),
     );
     links.row.hidden = true;
-    general.append(grouping.row, links.row, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
+    const autoUpdate = switchRow(doc, "Update automatically", "Download new versions in the background and install them when Multicord restarts.", (on) =>
+      this.update({ general: { autoUpdate: on } }),
+    );
+    general.append(grouping.row, links.row, autoUpdate.row, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
     const launchHint = el(doc, "p", "hint", "Starting with your computer is not available on this system.");
     launchHint.hidden = true;
     const secretsNote = el(doc, "p", "notice", "This system has no secure storage for passwords, so you will need to sign in to Fluxer again after each restart.");
@@ -318,8 +345,20 @@ export class SettingsPage {
 
     // About
     const version = el(doc, "p", "version");
+    const updateStatus = el(doc, "p", "update-status");
+    const checkUpdates = el(doc, "button", "secondary", "Check for updates");
+    checkUpdates.type = "button";
+    checkUpdates.addEventListener("click", () => this.api.act({ type: "checkUpdates" }));
+    const installUpdate = el(doc, "button", "primary", "Restart to update");
+    installUpdate.type = "button";
+    installUpdate.hidden = true;
+    installUpdate.addEventListener("click", () => this.api.act({ type: "installUpdate" }));
+    const updateActions = el(doc, "div", "service-actions");
+    updateActions.append(checkUpdates, installUpdate);
     sections.get("about")!.append(
       version,
+      updateStatus,
+      updateActions,
       el(doc, "p", undefined, "One app for Discord, Fluxer and other chat services."),
       el(doc, "p", "hint", "Free software under the GNU Affero General Public License, version 3 or later."),
     );
@@ -343,6 +382,10 @@ export class SettingsPage {
       streamer,
       streamingNote,
       links: { ...links, label: links.row.querySelector<HTMLElement>(".switch-label")! },
+      autoUpdate: autoUpdate.input,
+      updateStatus,
+      checkUpdates,
+      installUpdate,
       diagnostics,
       launchHint,
       secretsNote,
@@ -399,6 +442,8 @@ export class SettingsPage {
     parts.links.row.hidden = schemes.length === 0;
     parts.links.label.textContent = `Open ${schemes.map((scheme) => `${scheme}://`).join(", ")} links in Multicord`;
     parts.links.input.checked = general.openLinks;
+    parts.autoUpdate.checked = general.autoUpdate;
+    this.renderUpdate(state.update);
     parts.general.launchAtLogin.disabled = !state.launchAtLoginSupported;
     parts.launchHint.hidden = state.launchAtLoginSupported;
     parts.secretsNote.hidden = state.secretsPersistent;
@@ -456,6 +501,15 @@ export class SettingsPage {
       return item;
     });
     this.parts.services.replaceChildren(...items);
+  }
+
+  private renderUpdate(update: SettingsViewState["update"]): void {
+    const { updateStatus, checkUpdates, installUpdate } = this.parts;
+    const status = update ?? { state: "unavailable" as const };
+    updateStatus.textContent = updateText(status);
+    checkUpdates.hidden = status.state === "unavailable" || status.state === "ready";
+    checkUpdates.disabled = status.state === "checking" || status.state === "downloading";
+    installUpdate.hidden = status.state !== "ready";
   }
 
   private renderDiagnostics(services: ServiceInfo[]): void {

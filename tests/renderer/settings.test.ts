@@ -368,7 +368,7 @@ describe("banners", () => {
 describe("general and about", () => {
   it("general switches reflect state and send updates", () => {
     const state = viewState();
-    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, streamerMode: "on", openLinks: false };
+    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, streamerMode: "on", openLinks: false, autoUpdate: false };
     mount(state);
     expect(switchFor("tray").checked).toBe(false);
     expect(switchFor("Start with").checked).toBe(true);
@@ -396,6 +396,34 @@ describe("general and about", () => {
     expect(q(".streaming-note").hidden).toBe(true);
     change(streamer, "off");
     expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { streamerMode: "off" } } });
+  });
+
+  it("shows where updating stands, with the buttons that fit", () => {
+    mount(viewState());
+    expect(q(".update-status").textContent).toMatch(/runs from source/);
+    expect(button("Check for updates").hidden).toBe(true);
+    mount(viewState({ update: { state: "none" } }));
+    expect(q(".update-status").textContent).toBe("Multicord is up to date.");
+    button("Check for updates").click();
+    expect(act).toHaveBeenLastCalledWith({ type: "checkUpdates" });
+    mount(viewState({ update: { state: "downloading", version: "0.2.0", percent: 40 } }));
+    expect(q(".update-status").textContent).toBe("Downloading version 0.2.0… 40%");
+    expect(button("Check for updates").disabled).toBe(true);
+    mount(viewState({ update: { state: "ready", version: "0.2.0" } }));
+    expect(button("Check for updates").hidden).toBe(true);
+    button("Restart to update").click();
+    expect(act).toHaveBeenLastCalledWith({ type: "installUpdate" });
+    for (const [status, text] of [
+      [{ state: "idle" }, ""],
+      [{ state: "checking" }, "Checking for updates…"],
+      [{ state: "error", message: "offline" }, "Could not check for updates: offline"],
+    ] as const) {
+      mount(viewState({ update: status }));
+      expect(q(".update-status").textContent).toBe(text);
+    }
+    expect(switchFor("Update automatically").checked).toBe(true);
+    change(switchFor("Update automatically"), false);
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { autoUpdate: false } } });
   });
 
   it("offers app links only when a module opens them", () => {

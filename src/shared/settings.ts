@@ -43,7 +43,19 @@ export interface GeneralSettings {
   streamerMode: "auto" | "on" | "off";
   /** Open app links (e.g. discord://) in Multicord; off by default, as an installed app may want them. */
   openLinks: boolean;
+  /** Check for, download and install updates by itself. */
+  autoUpdate: boolean;
 }
+
+/** Where updating stands; development runs cannot update. */
+export type UpdateStatus =
+  | { state: "unavailable" }
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "none" }
+  | { state: "downloading"; version: string; percent: number }
+  | { state: "ready"; version: string }
+  | { state: "error"; message: string };
 
 /** Zoom steps, as browsers offer them. */
 export const ZOOM_LEVELS = [0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2] as const;
@@ -71,7 +83,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto", openLinks: false },
+  general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto", openLinks: false, autoUpdate: true },
   voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
 };
 
@@ -93,6 +105,7 @@ const GENERAL_CHECKS: { [K in keyof GeneralSettings]: (value: unknown) => value 
   zoom: (v): v is number => (ZOOM_LEVELS as readonly unknown[]).includes(v),
   streamerMode: (v): v is GeneralSettings["streamerMode"] => v === "auto" || v === "on" || v === "off",
   openLinks: (v): v is boolean => typeof v === "boolean",
+  autoUpdate: (v): v is boolean => typeof v === "boolean",
 };
 const GENERAL_KEYS = Object.keys(GENERAL_CHECKS) as (keyof GeneralSettings)[];
 const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl"] as const;
@@ -213,6 +226,7 @@ export interface SettingsViewState {
   streaming?: boolean;
   /** App link schemes the running modules can open, e.g. ["discord"]. */
   linkSchemes?: string[];
+  update?: UpdateStatus;
   /** The last action that could not be done, e.g. turning off the only service. */
   error?: string;
 }
@@ -225,7 +239,9 @@ export type SettingsAction =
   | { type: "renameService"; id: string; name: string }
   | { type: "signOut"; id: string }
   | { type: "openService"; id: string }
-  | { type: "restart" };
+  | { type: "restart" }
+  | { type: "checkUpdates" }
+  | { type: "installUpdate" };
 
 const SERVICE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const isServiceId = (value: unknown): value is string => typeof value === "string" && SERVICE_ID.test(value);
@@ -247,6 +263,8 @@ export function isSettingsAction(value: unknown): value is SettingsAction {
     case "openService":
       return isServiceId(value.id);
     case "restart":
+    case "checkUpdates":
+    case "installUpdate":
       return true;
     default:
       return false;

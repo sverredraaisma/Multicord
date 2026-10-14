@@ -93,6 +93,20 @@ describe("settings state", () => {
     expect(services.find((s) => s.id === "fluxer")).not.toHaveProperty("health");
   });
 
+  it("shows the update status and checks or installs on request", async () => {
+    const updates = { status: { state: "ready", version: "2" } as const, check: vi.fn(async () => {}), install: vi.fn() };
+    const { settings } = controller({}, { updates });
+    expect(settings.state().update).toEqual({ state: "ready", version: "2" });
+    await settings.handle({ type: "checkUpdates" });
+    await settings.handle({ type: "installUpdate" });
+    expect(updates.check).toHaveBeenCalled();
+    expect(updates.install).toHaveBeenCalled();
+    const bare = controller().settings;
+    expect(bare.state()).not.toHaveProperty("update");
+    await bare.handle({ type: "checkUpdates" });
+    await bare.handle({ type: "installUpdate" });
+  });
+
   it("lists the app link schemes the modules open", () => {
     expect(controller({}, { linkSchemes: ["discord"] }).settings.state().linkSchemes).toEqual(["discord"]);
     expect(controller({}, { linkSchemes: [] }).settings.state()).not.toHaveProperty("linkSchemes");

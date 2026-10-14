@@ -4,6 +4,17 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => import("../mocks/electron"));
+const updater = vi.hoisted(() => ({
+  autoDownload: false,
+  autoInstallOnAppQuit: false,
+  checkForUpdates: vi.fn(async () => null),
+  quitAndInstall: vi.fn(),
+  listeners: new Map<string, (...args: unknown[]) => void>(),
+  on(event: string, listener: (...args: unknown[]) => void) {
+    this.listeners.set(event, listener);
+  },
+}));
+vi.mock("electron-updater", () => ({ autoUpdater: updater }));
 // Streamer mode must not run the OS's process list in tests.
 const processList = vi.hoisted(() => ({ names: [] as string[] }));
 vi.mock("../../src/main/streamer", async (importOriginal) => ({
@@ -1097,5 +1108,36 @@ describe("app links", () => {
     } finally {
       process.argv = argv;
     }
+  });
+});
+
+describe("updates", () => {
+  it("checks automatically in packaged builds, follows the setting and restarts into an update", async () => {
+    app.isPackaged = true;
+    try {
+      updater.checkForUpdates.mockClear();
+      const { handle, window } = await shellWith();
+      expect(updater.checkForUpdates).toHaveBeenCalledTimes(1);
+      handle.setSettingsOpen(true);
+      const view = handle.settingsView() as unknown as InstanceType<typeof WebContentsView>;
+      updater.listeners.get("update-downloaded")!({ version: "9.9.9" });
+      expect(view.webContents.send).toHaveBeenLastCalledWith(SETTINGS_IPC.state, expect.objectContaining({ update: { state: "ready", version: "9.9.9" } }));
+      handle.settingsStore.update({ general: { autoUpdate: false } });
+      ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "installUpdate" });
+      await flush();
+      expect(updater.quitAndInstall).toHaveBeenCalled();
+      const event = { preventDefault: vi.fn() };
+      window.emit("close", event);
+      expect(event.preventDefault).not.toHaveBeenCalled(); // quitting into the update
+    } finally {
+      app.isPackaged = false;
+    }
+  });
+
+  it("does not check in development runs", async () => {
+    updater.checkForUpdates.mockClear();
+    const { handle } = await shellWith();
+    expect(updater.checkForUpdates).not.toHaveBeenCalled();
+    expect(handle.settings.state().update).toEqual({ state: "unavailable" });
   });
 });

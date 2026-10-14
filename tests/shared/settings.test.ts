@@ -77,6 +77,8 @@ describe("settings actions", () => {
       { type: "signOut", id: "fluxer" },
       { type: "openService", id: "fluxer" },
       { type: "restart" },
+      { type: "checkUpdates" },
+      { type: "installUpdate" },
     ]) {
       expect(isSettingsAction(action)).toBe(true);
     }
@@ -137,6 +139,7 @@ describe("zoom and other general settings", () => {
     expect(isSettingsPatch({ general: { streamerMode: "loud" } })).toBe(false);
     expect(isSettingsPatch({ general: { openLinks: true } })).toBe(true);
     expect(isSettingsPatch({ general: { openLinks: "yes" } })).toBe(false);
+    expect(isSettingsPatch({ general: { autoUpdate: false } })).toBe(true);
     expect(parseSettings({ general: { streamerMode: "on" } }).general.streamerMode).toBe("on");
   });
 });

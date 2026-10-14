@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { PlatformAdapter } from "../shared/adapter";
-import type { ModuleInfo, ServiceInfo, SettingsAction, SettingsViewState } from "../shared/settings";
+import type { ModuleInfo, ServiceInfo, SettingsAction, SettingsViewState, UpdateStatus } from "../shared/settings";
 import { configurableModules } from "./modules/index";
 import type { PlatformModule } from "./modules/types";
 import { loadPlatforms } from "./platforms";
@@ -22,6 +22,7 @@ export interface SettingsDeps {
   streaming?(): boolean;
   /** App link schemes the running modules can open. */
   linkSchemes?: string[];
+  updates?: { status: UpdateStatus; check(): Promise<void>; install(): void };
   /** Shows a running service, e.g. to sign in. */
   openService(id: string): void;
   /** Clears a service's web session (cookies, storage) and reloads it if running. */
@@ -121,6 +122,7 @@ export class SettingsController {
     };
     if (this.deps.streaming?.()) state.streaming = true;
     if (this.deps.linkSchemes?.length) state.linkSchemes = this.deps.linkSchemes;
+    if (this.deps.updates) state.update = this.deps.updates.status;
     if (this.error) state.error = this.error;
     return state;
   }
@@ -185,6 +187,11 @@ export class SettingsController {
         return;
       case "restart":
         this.deps.restart();
+        return;
+      case "checkUpdates":
+        return this.deps.updates?.check();
+      case "installUpdate":
+        this.deps.updates?.install();
         return;
     }
   }

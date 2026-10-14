@@ -13,7 +13,8 @@ await Promise.all([
     entryPoints: { main: "src/entries/main.ts" },
     platform: "node",
     format: "cjs",
-    external: ["electron"],
+    // Shipped as a dependency; it loads its own platform-specific parts.
+    external: ["electron", "electron-updater"],
     outdir: "dist",
   }),
   // Sandboxed preloads can only require("electron"), so each is bundled into one file.

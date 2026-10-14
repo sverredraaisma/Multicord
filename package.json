@@ -12,7 +12,8 @@
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
     "check": "npm run typecheck && npm run coverage",
-    "gallery": "npm run build && node scripts/open-gallery.mjs"
+    "gallery": "npm run build && node scripts/open-gallery.mjs",
+    "dist": "npm run build && electron-builder"
   },
   "license": "AGPL-3.0-or-later",
   "devDependencies": {
@@ -20,14 +21,65 @@
     "@vitest/coverage-v8": "^5.0.4",
     "altcha-lib": "^2.6.0",
     "electron": "^44.7.2",
+    "electron-builder": "^26.17.0",
+    "emojibase-data": "^17.0.0",
     "esbuild": "^0.28.2",
     "happy-dom": "^21.0.1",
+    "livekit-client": "^2.22.3",
+    "telegram": "^2.26.22",
     "typescript": "^7.0.2",
     "vitest": "^5.0.4"
   },
   "dependencies": {
-    "emojibase-data": "^17.0.0",
-    "livekit-client": "^2.22.3",
-    "telegram": "^2.26.22"
+    "electron-updater": "^6.8.9"
+  },
+  "build": {
+    "appId": "app.multicord.desktop",
+    "productName": "Multicord",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "package.json",
+      "!dist/**/*.map",
+      "!dist/gallery.*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "sverredraaisma",
+        "repo": "Multicord"
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "Multicord-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.social-networking",
+      "hardenedRuntime": true,
+      "extendInfo": {
+        "NSAudioCaptureUsageDescription": "Multicord shares your system audio when you share your screen.",
+        "NSMicrophoneUsageDescription": "Multicord uses your microphone for calls.",
+        "NSCameraUsageDescription": "Multicord uses your camera for video calls."
+      }
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Network;Chat"
+    }
   }
 }
