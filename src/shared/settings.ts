@@ -181,6 +181,8 @@ export interface ServiceInfo {
   builtIn: boolean;
   /** Present for services running now; disabled ones have no account state. */
   account?: AccountStatus;
+  /** Integration checks, for services that report them. */
+  health?: { name: string; ok: boolean; detail?: string }[];
 }
 
 /** A module the user can add services (or extra accounts) from. */

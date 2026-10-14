@@ -7,6 +7,7 @@ export const TABS = [
   { id: "services", title: "Services & accounts" },
   { id: "voice", title: "Voice & video" },
   { id: "general", title: "General" },
+  { id: "diagnostics", title: "Diagnostics" },
   { id: "about", title: "About" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
@@ -119,6 +120,7 @@ export class SettingsPage {
     zoom: HTMLSelectElement;
     streamer: HTMLSelectElement;
     streamingNote: HTMLElement;
+    diagnostics: HTMLElement;
     launchHint: HTMLElement;
     secretsNote: HTMLElement;
     selects: Record<DeviceSlot, HTMLSelectElement>;
@@ -302,6 +304,13 @@ export class SettingsPage {
     secretsNote.hidden = true;
     general.append(launchHint, secretsNote);
 
+    // Diagnostics
+    const diagnostics = el(doc, "div", "diagnostics");
+    sections.get("diagnostics")!.append(
+      el(doc, "p", "section-intro", "How Multicord's hooks into each service are doing. A failed check usually means the service changed its app; it shows what stops working."),
+      diagnostics,
+    );
+
     // About
     const version = el(doc, "p", "version");
     sections.get("about")!.append(
@@ -328,6 +337,7 @@ export class SettingsPage {
       zoom,
       streamer,
       streamingNote,
+      diagnostics,
       launchHint,
       secretsNote,
       selects,
@@ -370,6 +380,7 @@ export class SettingsPage {
     parts.error.hidden = !state.error;
     parts.error.textContent = state.error ?? "";
     this.renderServices(state.services);
+    this.renderDiagnostics(state.services);
     this.renderModules(state.modules);
 
     const { general, voice } = state.settings;
@@ -435,6 +446,31 @@ export class SettingsPage {
       return item;
     });
     this.parts.services.replaceChildren(...items);
+  }
+
+  private renderDiagnostics(services: ServiceInfo[]): void {
+    const doc = this.root.ownerDocument;
+    const checked = services.filter((s) => s.health && s.health.length > 0);
+    if (checked.length === 0) {
+      this.parts.diagnostics.replaceChildren(el(doc, "p", "hint", "No running service reports checks."));
+      return;
+    }
+    this.parts.diagnostics.replaceChildren(
+      ...checked.map((service) => {
+        const block = el(doc, "section", "health");
+        block.dataset.id = service.id;
+        const list = el(doc, "ul", "health-list");
+        for (const check of service.health!) {
+          const item = el(doc, "li", check.ok ? "health-check ok" : "health-check failed");
+          item.append(el(doc, "span", "health-mark", check.ok ? "✓" : "✗"), el(doc, "span", "health-name", check.name));
+          if (!check.ok && check.detail) item.append(el(doc, "small", "hint", `Affects: ${check.detail}`));
+          list.append(item);
+        }
+        const failed = service.health!.filter((c) => !c.ok).length;
+        block.append(el(doc, "h2", undefined, `${service.name}: ${failed === 0 ? "all working" : `${failed} not working`}`), list);
+        return block;
+      }),
+    );
   }
 
   private renameForm(service: ServiceInfo): HTMLElement {

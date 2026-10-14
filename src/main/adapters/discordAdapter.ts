@@ -1,5 +1,5 @@
-import type { DirectConversation, HomeBadge, RailServer } from "../../shared/adapter";
-import { isSnowflake, type DiscordGuild, type DiscordState, type DiscordTarget, type DiscordUser, type TitleBadge } from "../../shared/ipc";
+import type { DirectConversation, HealthCheck, HomeBadge, RailServer } from "../../shared/adapter";
+import { isSnowflake, type DiscordGuild, type DiscordHealth, type DiscordState, type DiscordTarget, type DiscordUser, type TitleBadge } from "../../shared/ipc";
 import type { AccountStatus } from "../../shared/settings";
 import { BaseAdapter } from "../../shared/baseAdapter";
 
@@ -16,6 +16,7 @@ export class DiscordAdapter extends BaseAdapter {
   private user: DiscordUser | null | undefined;
   /** Channels whose call is ringing us; each call is reported once, when it starts. */
   private ringing = new Set<string>();
+  private hooks: DiscordHealth | undefined;
 
   /** `id` tells accounts apart: each Discord account is its own platform instance. */
   constructor(
@@ -27,6 +28,7 @@ export class DiscordAdapter extends BaseAdapter {
 
   update(state: DiscordState): void {
     this.badge = state.badge;
+    if (state.health) this.hooks = state.health;
     if (state.user !== undefined) this.user = state.user;
     if (state.calls) {
       const now = new Set(state.calls.map((c) => c.channelId));
@@ -109,6 +111,27 @@ export class DiscordAdapter extends BaseAdapter {
     const guildMentions = this.servers.reduce((sum, s) => sum + s.mentions, 0);
     const mentions = Math.max(0, this.badge.mentions - guildMentions);
     return { unread: mentions > 0, mentions };
+  }
+
+  /**
+   * The hooks into Discord's page, which a Discord update can break: the
+   * hidden guild bar, and each store the bridge reads.
+   */
+  health(): HealthCheck[] {
+    if (!this.hooks) return [{ name: "Discord's page has loaded", ok: false, detail: "Nothing reported yet; open Discord to load it." }];
+    const stores = this.hooks.stores;
+    const store = (name: string, what: string, detail: string): HealthCheck => ({ name: `${what} (${name})`, ok: stores?.includes(name) === true, detail });
+    return [
+      { name: "Server list (hidden guild bar)", ok: this.hooks.guildBar, detail: "Servers and unread badges in the rail" },
+      { name: "Store bridge", ok: stores !== undefined, detail: "DM bubbles, the Messages list and server names" },
+      store("ChannelStore", "Direct messages", "DM bubbles and the Messages list"),
+      store("ReadStateStore", "Unread state", "Unread and mention counts for DMs"),
+      store("UserStore", "Users", "DM names, avatars and who is signed in"),
+      store("GuildStore", "Server names", "Server names and icons"),
+      store("SortedGuildStore", "Server folders", "Folders in the rail"),
+      store("GuildReadStateStore", "Server unread state", "Badges for servers inside collapsed folders"),
+      store("CallStore", "Calls", "Ringing for incoming calls"),
+    ];
   }
 
   /** Known once the store bridge reports; Discord's own client handles signing in. */

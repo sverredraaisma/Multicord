@@ -20,6 +20,9 @@ import {
 export const GUILD_ITEM_PREFIX = "guildsnav___";
 export const STYLE_ID = "multicord-style";
 
+/** Discord's guild bar, which stays rendered (hidden) as the rail's source. */
+export const GUILD_BAR_SELECTOR = 'nav[class*="guilds_"]';
+
 /** Set on <html> while the view sits beside the unified Messages list. */
 export const COMPACT_CLASS = "multicord-compact";
 
@@ -28,7 +31,7 @@ export const COMPACT_CLASS = "multicord-compact";
  * and user panel) in compact mode, where the Messages list replaces it.
  */
 export const HIDE_GUILD_BAR_CSS = `
-nav[class*="guilds_"] { display: none !important; }
+${GUILD_BAR_SELECTOR} { display: none !important; }
 html.${COMPACT_CLASS} [class^="sidebar_"], html.${COMPACT_CLASS} [class*=" sidebar_"] { display: none !important; }
 `;
 
@@ -263,6 +266,8 @@ export function readState(doc: Document, bridge?: BridgePayload): DiscordState {
   if (bridge) state.dms = bridge.dms;
   if (bridge?.user !== undefined) state.user = bridge.user;
   if (bridge?.calls) state.calls = bridge.calls;
+  state.health = { guildBar: doc.querySelector(GUILD_BAR_SELECTOR) !== null };
+  if (bridge?.stores) state.health.stores = bridge.stores;
   if (folders.length > 0) state.folders = folders;
   return state;
 }

@@ -64,6 +64,27 @@ describe("DiscordAdapter", () => {
     expect(adapter.accountStatus()).toEqual({ state: "signed-out" });
   });
 
+  it("reports which of Discord's hooks work", () => {
+    const adapter = new DiscordAdapter(vi.fn());
+    expect(adapter.health()).toEqual([expect.objectContaining({ ok: false, name: "Discord's page has loaded" })]);
+    const badge = { unread: false, mentions: 0 };
+    adapter.update({ guilds: [], badge, health: { guildBar: true } });
+    const before = adapter.health();
+    expect(before.find((c) => c.name.startsWith("Server list"))!.ok).toBe(true);
+    expect(before.find((c) => c.name === "Store bridge")!.ok).toBe(false);
+    adapter.update({ guilds: [], badge, health: { guildBar: false, stores: ["ChannelStore", "ReadStateStore", "UserStore", "CallStore"] } });
+    const after = adapter.health();
+    expect(after.filter((c) => !c.ok).map((c) => c.name)).toEqual([
+      "Server list (hidden guild bar)",
+      "Server names (GuildStore)",
+      "Server folders (SortedGuildStore)",
+      "Server unread state (GuildReadStateStore)",
+    ]);
+    expect(after.find((c) => c.name === "Calls (CallStore)")).toMatchObject({ ok: true, detail: "Ringing for incoming calls" });
+    adapter.update({ guilds: [], badge }); // no health in this update: keep the last report
+    expect(adapter.health()).toEqual(after);
+  });
+
   it("reports each call once, when it starts ringing", () => {
     const adapter = new DiscordAdapter(vi.fn());
     const calls = vi.fn();

@@ -65,6 +65,12 @@ describe("validators", () => {
     expect(isBridgePayload({ dms: [], guilds: [], calls: Array.from({ length: 21 }, () => ({ channelId: "1", from: "A" })) })).toBe(false);
     expect(isDiscordState({ guilds: [], badge, calls: [{ channelId: "1", from: "Ana" }] })).toBe(true);
     expect(isDiscordState({ guilds: [], badge, calls: [{}] })).toBe(false);
+    expect(isBridgePayload({ dms: [], guilds: [], stores: ["ChannelStore"] })).toBe(true);
+    expect(isBridgePayload({ dms: [], guilds: [], stores: ["<script>"] })).toBe(false);
+    expect(isBridgePayload({ dms: [], guilds: [], stores: "ChannelStore" })).toBe(false);
+    expect(isDiscordState({ guilds: [], badge, health: { guildBar: true, stores: ["UserStore"] } })).toBe(true);
+    expect(isDiscordState({ guilds: [], badge, health: { guildBar: "yes" } })).toBe(false);
+    expect(isDiscordState({ guilds: [], badge, health: null })).toBe(false);
     expect(isDiscordState({ guilds: "nope", badge })).toBe(false);
     expect(isDiscordState({ guilds: [{}], badge })).toBe(false);
     expect(isDiscordState({ guilds: [], badge: {} })).toBe(false);

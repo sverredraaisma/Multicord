@@ -94,6 +94,8 @@ export class SettingsController {
         builtIn,
       };
       if (adapter) service.account = adapter.accountStatus?.() ?? { state: "unknown" };
+      const health = adapter?.health?.();
+      if (health) service.health = health;
       return service;
     });
     const modules: ModuleInfo[] = this.deps.modules

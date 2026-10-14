@@ -42,6 +42,7 @@ describe("startDiscordPreload", () => {
     expect(ipc.send).toHaveBeenCalledWith(IPC.discordState, {
       guilds: [{ id: "1", name: "One", iconUrl: undefined, unread: false, mentions: 0 }],
       badge: { unread: false, mentions: 0 },
+      health: { guildBar: true },
     });
   });
 
@@ -117,6 +118,7 @@ describe("store bridge", () => {
     expect(ipc.send).toHaveBeenLastCalledWith(IPC.discordState, {
       guilds: [{ id: "1", name: "Store Name", iconUrl: undefined, unread: false, mentions: 0 }],
       badge: { unread: false, mentions: 0 },
+      health: { guildBar: true },
       dms: [dm],
     });
   });

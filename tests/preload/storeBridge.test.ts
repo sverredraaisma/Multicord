@@ -58,7 +58,7 @@ function installWebpack(exportsList: unknown[]) {
 }
 
 /** Collects one field of each bridge payload (DMs by default). */
-function listen(field: "dms" | "guilds" | "layout" | "user" | "calls" = "dms") {
+function listen(field: "dms" | "guilds" | "layout" | "user" | "calls" | "stores" = "dms") {
   const received: unknown[] = [];
   document.addEventListener(EVENT, (e) => {
     const payload = JSON.parse((e as CustomEvent<string>).detail);
@@ -158,6 +158,14 @@ describe("discordStoreBridge", () => {
       ],
       [],
     ]);
+  });
+
+  it("names the stores it found, for diagnostics", () => {
+    const stores = discordStores();
+    installWebpack([stores.ChannelStore, stores.ReadStateStore, stores.UserStore]);
+    const received = listen("stores");
+    discordStoreBridge(EVENT, 1000, 3);
+    expect(received).toEqual([["ChannelStore", "ReadStateStore", "UserStore"]]);
   });
 
   it("reports no calls without CallStore or a signed-in user", () => {

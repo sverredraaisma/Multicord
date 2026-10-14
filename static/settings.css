@@ -248,3 +248,12 @@
   .settings-nav h2 { display: none; }
   .settings-main { padding: 20px 16px 60px; }
 }
+
+/* Diagnostics */
+.health { margin-bottom: 20px; }
+.health-list { margin: 0; padding: 0; list-style: none; }
+.health-check { display: grid; grid-template-columns: 20px 1fr; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.health-check .hint { grid-column: 2; }
+.health-mark { font-weight: 700; }
+.health-check.ok .health-mark { color: var(--ok); }
+.health-check.failed .health-mark { color: var(--danger); }

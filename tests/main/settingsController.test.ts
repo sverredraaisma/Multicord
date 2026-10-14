@@ -86,6 +86,13 @@ describe("settings state", () => {
     expect(state).not.toHaveProperty("error");
   });
 
+  it("passes on each service's health checks", () => {
+    const { settings } = controller({ discord: { health: () => [{ name: "Guild bar", ok: false, detail: "Rail" }] }, fluxer: {} });
+    const services = settings.state().services;
+    expect(services.find((s) => s.id === "discord")!.health).toEqual([{ name: "Guild bar", ok: false, detail: "Rail" }]);
+    expect(services.find((s) => s.id === "fluxer")).not.toHaveProperty("health");
+  });
+
   it("says when streamer mode is hiding content", () => {
     expect(controller({}, { streaming: () => true }).settings.state().streaming).toBe(true);
     expect(controller({}, { streaming: () => false }).settings.state()).not.toHaveProperty("streaming");

@@ -105,6 +105,16 @@ export interface BridgePayload {
   layout?: LayoutEntry[];
   user?: DiscordUser | null;
   calls?: DiscordCall[];
+  /** Names of the Discord stores the bridge found, for diagnostics. */
+  stores?: string[];
+}
+
+/** How Discord's hooks are doing, for diagnostics. */
+export interface DiscordHealth {
+  /** The hidden guild bar the rail is read from. */
+  guildBar: boolean;
+  /** Stores the bridge found; absent until it reports. */
+  stores?: string[];
 }
 
 export interface DiscordState {
@@ -117,6 +127,7 @@ export interface DiscordState {
   user?: DiscordUser | null;
   /** Calls ringing the user right now. */
   calls?: DiscordCall[];
+  health?: DiscordHealth;
 }
 
 /** "home", a guild snowflake, "dm:<channel snowflake>" or "folder:<folder id>" (toggles it). */
@@ -313,11 +324,16 @@ export function isDiscordCallList(value: unknown): value is DiscordCall[] | unde
   );
 }
 
+const STORE_NAME = /^[A-Za-z]{1,40}$/;
+const isStoreList = (value: unknown): value is string[] | undefined =>
+  value === undefined || (Array.isArray(value) && value.length <= 20 && value.every((s) => typeof s === "string" && STORE_NAME.test(s)));
+
 export function isBridgePayload(value: unknown): value is BridgePayload {
   return (
     isRecord(value) &&
     isDiscordUser(value.user) &&
     isDiscordCallList(value.calls) &&
+    isStoreList(value.stores) &&
     isDiscordDmList(value.dms) &&
     Array.isArray(value.guilds) &&
     value.guilds.length <= MAX_GUILDS &&
@@ -336,6 +352,7 @@ export function isDiscordState(value: unknown): value is DiscordState {
     isTitleBadge(value.badge) &&
     isDiscordUser(value.user) &&
     isDiscordCallList(value.calls) &&
+    (value.health === undefined || (isRecord(value.health) && typeof value.health.guildBar === "boolean" && isStoreList(value.health.stores))) &&
     (value.dms === undefined || isDiscordDmList(value.dms)) &&
     (value.folders === undefined ||
       (Array.isArray(value.folders) && value.folders.length <= MAX_GUILDS && value.folders.every(isDiscordFolder)))

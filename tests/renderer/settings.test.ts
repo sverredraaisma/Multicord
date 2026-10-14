@@ -445,13 +445,41 @@ describe("tabs", () => {
     const tabButtons = [...root.querySelectorAll<HTMLElement>(".settings-tab")];
     expect(tabButtons.map((b) => b.textContent)).toEqual(TABS.map((t) => t.title));
     const hiddenSections = () => [...root.querySelectorAll<HTMLElement>("section")].map((s) => s.hidden);
-    expect(hiddenSections()).toEqual([false, true, true, true]);
+    expect(hiddenSections()).toEqual([false, true, true, true, true]);
     tabButtons[2]!.click();
     expect(page.activeTab).toBe("general");
-    expect(hiddenSections()).toEqual([true, true, false, true]);
+    expect(hiddenSections()).toEqual([true, true, false, true, true]);
     expect(tabButtons[2]!.getAttribute("aria-current")).toBe("page");
     expect(tabButtons[0]!.hasAttribute("aria-current")).toBe(false);
     expect(tabButtons[2]!.classList.contains("active")).toBe(true);
+  });
+});
+
+describe("diagnostics tab", () => {
+  it("lists each service's checks, with what a failure affects", () => {
+    mount(
+      viewState({
+        services: [
+          service({ id: "discord", name: "Discord", health: [{ name: "Server list", ok: true }, { name: "Calls", ok: false, detail: "Ringing" }, { name: "Folders", ok: false }] }),
+          service({ id: "fluxer", name: "Fluxer", health: [{ name: "Gateway", ok: true }] }),
+          service({ id: "el", name: "Element" }),
+        ],
+      }),
+    );
+    const blocks = [...root.querySelectorAll<HTMLElement>(".health")];
+    expect(blocks.map((b) => b.dataset.id)).toEqual(["discord", "fluxer"]);
+    expect(blocks[0]!.querySelector("h2")!.textContent).toBe("Discord: 2 not working");
+    expect(blocks[1]!.querySelector("h2")!.textContent).toBe("Fluxer: all working");
+    const failed = blocks[0]!.querySelectorAll(".health-check.failed");
+    expect(failed).toHaveLength(2);
+    expect(failed[0]!.textContent).toBe("✗CallsAffects: Ringing");
+    expect(failed[1]!.querySelector(".hint")).toBeNull();
+    expect(blocks[0]!.querySelector(".health-check.ok .health-mark")!.textContent).toBe("✓");
+  });
+
+  it("says when no service reports checks", () => {
+    mount(viewState({ services: [service({ health: [] })] }));
+    expect(q(".diagnostics").textContent).toBe("No running service reports checks.");
   });
 });
 

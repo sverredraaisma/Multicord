@@ -189,7 +189,7 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
   const emit = (): void => {
     timer = undefined;
     try {
-      const payload = { dms: collectDms(), guilds: collectGuilds(), layout: collectLayout(), user: currentUser(), calls: collectCalls() };
+      const payload = { dms: collectDms(), guilds: collectGuilds(), layout: collectLayout(), user: currentUser(), calls: collectCalls(), stores: Object.keys(stores!) };
       document.dispatchEvent(new CustomEvent(eventName, { detail: JSON.stringify(payload) }));
     } catch {
       // A store changed shape; the rail keeps its last good state.

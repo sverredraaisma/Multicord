@@ -113,7 +113,7 @@ Coverage is enforced at **95%** for lines, statements, functions and branches (`
 
 ## Known limitations / next steps
 
-- Guild selectors (`dom.ts`) and store names (`storeBridge.ts`) follow Discord's current client and are not yet checked against it automatically. They need a health-check harness against the live client. Guilds could later move to store reads too.
+- Guild selectors (`dom.ts`) and store names (`storeBridge.ts`) follow Discord's current client. Settings > Diagnostics checks them against the running client (each hook, and what breaks if it fails); an automated check against a logged-in client, and AI-assisted repair proposals as the study suggests, are not built. Guilds could later move to store reads too.
 - Notifications routing, updater/installer, push-to-talk: not started.
 - macOS/Linux screen share audio (CoreAudio tap / venmic) is not wired up.
 - Fluxer (native) does not support:

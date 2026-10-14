@@ -57,6 +57,14 @@ export interface PlatformNotification {
   inView?: boolean;
 }
 
+/** One integration point and whether it works, e.g. "Discord's server list was found". */
+export interface HealthCheck {
+  name: string;
+  ok: boolean;
+  /** What breaks when it fails. */
+  detail?: string;
+}
+
 /** Badge for a platform's "home" (DM) entry in the rail. */
 export interface HomeBadge {
   unread: boolean;
@@ -102,6 +110,8 @@ export interface PlatformAdapter {
   // Shell additions for the settings page: who is signed in, and signing out
   // on this device. Without signOut the shell clears the platform's web session.
   accountStatus?(): AccountStatus;
+  /** Whether the platform's integration points still work, for the diagnostics page. */
+  health?(): HealthCheck[];
   onAccountChanged?(cb: (account: AccountStatus) => void): () => void;
   signOut?(): Promise<void>;
 }

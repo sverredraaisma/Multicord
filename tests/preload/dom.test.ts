@@ -85,6 +85,7 @@ describe("readGuilds", () => {
     expect(readState(document)).toEqual({
       guilds: [{ id: "5", name: "Five", iconUrl: undefined, unread: false, mentions: 0 }],
       badge: { unread: true, mentions: 2 },
+      health: { guildBar: true },
     });
   });
 });
@@ -317,5 +318,14 @@ describe("folders", () => {
       expect(click).toHaveBeenCalledOnce();
       expect(navigate(document, window, "folder:51")).toBe("none");
     });
+  });
+});
+
+describe("health", () => {
+  it("reports whether the guild bar exists and which stores the bridge found", () => {
+    guildBar("");
+    expect(readState(document, { dms: [], guilds: [], stores: ["UserStore"] }).health).toEqual({ guildBar: true, stores: ["UserStore"] });
+    document.body.innerHTML = "";
+    expect(readState(document).health).toEqual({ guildBar: false });
   });
 });
