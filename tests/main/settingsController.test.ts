@@ -76,6 +76,7 @@ describe("settings state", () => {
       ["discord", true],
       ["fluxer", false],
       ["telegram", true],
+      ["matrix-native", false],
       ["matrix", false],
       ["stoat", false],
       ["spacebar", false],

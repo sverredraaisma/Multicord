@@ -706,6 +706,24 @@ describe("emoji and markdown", () => {
     view.update(chat({ channel: null }));
     expect(root.querySelector<HTMLButtonElement>(".emoji-button")!.disabled).toBe(true);
   });
+
+  it("locks the composer with a notice where nothing may be sent", () => {
+    const notice = () => root.querySelector<HTMLElement>(".locked-notice")!;
+    const composer = () => root.querySelector<HTMLTextAreaElement>(".composer")!;
+    view.update(chat());
+    expect(notice().hidden).toBe(true);
+    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, locked: "Encrypted room" } }));
+    expect(notice().hidden).toBe(false);
+    expect(notice().textContent).toBe("Encrypted room");
+    expect(composer().disabled).toBe(true);
+    expect(composer().placeholder).toBe("");
+    expect(root.querySelector<HTMLButtonElement>("button.attach")!.disabled).toBe(true);
+    expect(root.querySelector<HTMLButtonElement>(".emoji-button")!.disabled).toBe(true);
+    view.update(chat());
+    expect(notice().hidden).toBe(true);
+    expect(composer().disabled).toBe(false);
+    expect(composer().placeholder).toBe("Message general");
+  });
 });
 
 describe("prompt steps", () => {

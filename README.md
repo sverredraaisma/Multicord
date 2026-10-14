@@ -67,6 +67,12 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 
   The client runs in its sandboxed engine; the session token is stored encrypted and never reaches a web page. Multicord identifies itself to Fluxer honestly, as Multicord. Self-hosted instances and extra accounts can be added in Settings or in `platforms.json` with `"module": "fluxer"` and the instance URL.
 - **Telegram, native (direct messages):** a built-in Telegram client for one-to-one chats, over MTProto (GramJS) from its engine, which may only reach Telegram's web endpoints (`*.web.telegram.org`). It covers signing in with phone number, code and two-step password; the chat list with unread counts and profile pictures, as DM bubbles and in the unified Messages page with previews; history, sending, replying, and editing and deleting your own messages; and notifications. Messages show as plain text, with a short label for media (photo, video, voice message, sticker, file, location, poll). Groups and channels are not listed yet.
+- **Matrix, native:** a built-in Matrix client for any homeserver; matrix.org is the default, and Element stays available as a web view. It talks to the homeserver's API directly from its engine, with no SDK. You sign in with a password, or with an access token copied from Element where the homeserver has no password sign-in (as on matrix.org). It covers:
+  - direct chats as DM bubbles and in the unified Messages page, with previews, unread counts and profile pictures, plus your other rooms in its sidebar;
+  - history, sending, replying, and editing and deleting your own messages;
+  - notifications for DMs and mentions.
+
+  End-to-end encryption is not supported. Encrypted messages show as such, and in encrypted rooms the composer is locked, so Multicord never sends an unencrypted message into one.
 
   Telegram gives API credentials per app (my.telegram.org, "API development tools"). Builds can include them via the `MULTICORD_TELEGRAM_API_ID` and `MULTICORD_TELEGRAM_API_HASH` environment variables; otherwise Multicord asks for an API ID and hash on first sign-in and stores them encrypted.
 - **Component gallery:** `npm run gallery` opens `dist/gallery.html`, which shows every component with sample data. Use it to check designs without signing in anywhere.

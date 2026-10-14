@@ -233,7 +233,10 @@ export class NativeView {
     composerPicker.hidden = true;
     const composerRow = el(doc, "div", "composer-row");
     composerRow.append(attach, composer, emoji, composerPicker);
-    main.append(header, banner, stage, messages, typing, reply, pending, composerRow, speakers);
+    // Why the composer is off in a conversation that takes no messages from here.
+    const notice = el(doc, "div", "locked-notice");
+    notice.hidden = true;
+    main.append(header, banner, stage, messages, typing, reply, pending, notice, composerRow, speakers);
 
     // One edit box, reused across renders so an edit in progress survives updates.
     const editBox = el(doc, "textarea", "edit-box");
@@ -264,6 +267,7 @@ export class NativeView {
       emoji,
       composer,
       composerPicker,
+      notice,
       editBox,
       voice,
     });
@@ -386,12 +390,16 @@ export class NativeView {
     this.parts.typing!.textContent = typingText(channel?.typing ?? []);
 
     const uploading = channel?.uploading ?? false;
+    const locked = channel?.locked;
+    const notice = this.parts.notice!;
+    notice.textContent = locked ?? "";
+    notice.hidden = !locked;
     const field = composer as HTMLTextAreaElement;
     // Forums take posts through their own form, not the composer.
-    field.disabled = !channel || uploading || Boolean(channel.posts);
-    (attach as HTMLButtonElement).disabled = !channel || uploading;
+    field.disabled = !channel || uploading || Boolean(channel.posts) || Boolean(locked);
+    (attach as HTMLButtonElement).disabled = !channel || uploading || Boolean(locked);
     (this.parts.emoji as HTMLButtonElement).disabled = field.disabled;
-    field.placeholder = channel ? `Message ${channel.name}` : "";
+    field.placeholder = channel && !locked ? `Message ${channel.name}` : "";
     this.parts.pending!.replaceChildren(
       ...pendingFiles(this.doc, channel?.pending ?? [], uploading, (index) => this.api.act({ type: "removeAttachment", index })),
     );

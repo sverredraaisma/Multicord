@@ -99,6 +99,8 @@ export interface NativeChannelView {
   uploading: boolean;
   /** Set for forum channels, which list posts instead of messages. */
   posts?: NativeForumPost[];
+  /** Set when nothing may be sent here, e.g. an encrypted room: why, shown in place of the composer. */
+  locked?: string;
 }
 
 /** One input of a sign-in step. */

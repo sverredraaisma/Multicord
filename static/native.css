@@ -96,6 +96,7 @@
 .conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); }
 .conversation-title { padding: 14px 16px; border-bottom: 1px solid var(--bg); font-weight: 600; }
 .banner { padding: 6px 16px; background: var(--danger); color: #fff; }
+.locked-notice { margin: 0 16px 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); }
 .messages { flex: 1; margin: 0; padding: 16px; overflow-y: auto; list-style: none; }
 .older-row { display: flex; justify-content: center; padding-bottom: 12px; color: var(--muted); }
 .older { padding: 6px 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--text); cursor: pointer; }

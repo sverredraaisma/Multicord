@@ -1,0 +1,262 @@
+import { describe, expect, it } from "vitest";
+import {
+  applyState,
+  cleanName,
+  emptyState,
+  eventId,
+  MAX_BODY,
+  MAX_NAME,
+  MAX_ROOM_ID,
+  parseContent,
+  parseEvent,
+  parseMxc,
+  parsePage,
+  parseSync,
+  roomId,
+  stripReplyFallback,
+  userId,
+} from "../../../src/modules/matrix/events";
+
+const ev = (extra: Record<string, unknown> = {}) => ({
+  event_id: "$e1",
+  sender: "@ana:x.org",
+  origin_server_ts: 1000,
+  type: "m.room.message",
+  content: { msgtype: "m.text", body: "hi" },
+  ...extra,
+});
+const st = (type: string, content: unknown, stateKey = "") => ({ type, state_key: stateKey, content, event_id: "$s", sender: "@ana:x.org", origin_server_ts: 1 });
+
+describe("ids and names", () => {
+  it("accepts only well-formed, bounded ids", () => {
+    expect(roomId("!r:x.org")).toBe("!r:x.org");
+    expect(roomId("!")).toBeUndefined();
+    expect(roomId(`!${"a".repeat(MAX_ROOM_ID)}`)).toBeUndefined();
+    expect(roomId("$r")).toBeUndefined();
+    expect(roomId(5)).toBeUndefined();
+    expect(eventId("$e")).toBe("$e");
+    expect(eventId("!e")).toBeUndefined();
+    expect(userId("@ana:x.org")).toBe("@ana:x.org");
+    expect(userId("@ana")).toBeUndefined();
+    expect(userId(undefined)).toBeUndefined();
+  });
+
+  it("parses mxc URIs and rejects anything else", () => {
+    expect(parseMxc("mxc://x.org/abc_1-2")).toEqual({ server: "x.org", media: "abc_1-2" });
+    expect(parseMxc("mxc://[::1]:8448/abc")).toEqual({ server: "[::1]:8448", media: "abc" });
+    expect(parseMxc("mxc://x.org/../etc")).toBeUndefined();
+    expect(parseMxc("https://x.org/abc")).toBeUndefined();
+    expect(parseMxc(1)).toBeUndefined();
+  });
+
+  it("cleans names of control and direction characters and cuts them", () => {
+    expect(cleanName(" A\u0007na‮ ")).toBe("Ana");
+    expect(cleanName("\u0000 ")).toBeUndefined();
+    expect(cleanName(3)).toBeUndefined();
+    expect(cleanName("x".repeat(500))).toHaveLength(MAX_NAME);
+  });
+});
+
+describe("message content", () => {
+  it("strips reply fallbacks", () => {
+    expect(stripReplyFallback("> <@a:x> hi\n> there\n\nanswer")).toBe("answer");
+    expect(stripReplyFallback("> quote only")).toBe("");
+    expect(stripReplyFallback("> q\nno blank")).toBe("no blank");
+    expect(stripReplyFallback("plain")).toBe("plain");
+  });
+
+  it("labels media and keeps captions", () => {
+    expect(parseContent({ msgtype: "m.image", body: "cat.png" })).toEqual({ msgtype: "m.image", text: "", media: "📷 Image" });
+    expect(parseContent({ msgtype: "m.image", body: "look", filename: "cat.png" })).toEqual({ msgtype: "m.image", text: "look", media: "📷 Image" });
+    expect(parseContent({ msgtype: "m.image", body: "cat.png", filename: "cat.png" })!.text).toBe("");
+    expect(parseContent({ msgtype: "m.video", body: "v" })!.media).toBe("🎥 Video");
+    expect(parseContent({ msgtype: "m.audio", body: "a" })!.media).toBe("🎵 Audio");
+    expect(parseContent({ msgtype: "m.audio", body: "a", "org.matrix.msc3245.voice": {} })!.media).toBe("🎤 Voice message");
+    expect(parseContent({ msgtype: "m.file", body: "report.pdf" })!.media).toBe("📎 report.pdf");
+    expect(parseContent({ msgtype: "m.file", body: "see this", filename: "r.pdf" })).toEqual({ msgtype: "m.file", text: "see this", media: "📎 r.pdf" });
+    expect(parseContent({ msgtype: "m.file", body: "" })!.media).toBe("📎 File");
+    expect(parseContent({ msgtype: "m.location", body: "geo" })).toEqual({ msgtype: "m.location", text: "", media: "📍 Location" });
+    expect(parseContent({ body: "s", url: "mxc://x/y" }, true)).toEqual({ msgtype: "m.sticker", text: "", media: "🙂 Sticker" });
+  });
+
+  it("falls back to the body for text and unknown types, cut to length", () => {
+    expect(parseContent({ msgtype: "m.notice", body: "n" })).toEqual({ msgtype: "m.notice", text: "n" });
+    expect(parseContent({ msgtype: "org.custom", body: "c" })).toEqual({ msgtype: "org.custom", text: "c" });
+    expect(parseContent({ msgtype: "m.text", body: "x".repeat(MAX_BODY + 10) })!.text).toHaveLength(MAX_BODY + 1);
+    expect(parseContent({ msgtype: "x".repeat(100), body: "b" })!.msgtype).toHaveLength(64);
+  });
+
+  it("needs a body, and a msgtype for messages", () => {
+    expect(parseContent({ msgtype: "m.text" })).toBeUndefined();
+    expect(parseContent({ body: "b" })).toBeUndefined();
+    expect(parseContent({}, true)).toBeUndefined();
+  });
+});
+
+describe("timeline events", () => {
+  it("parses messages with their mentions and replies", () => {
+    expect(parseEvent(ev())).toEqual({ kind: "message", id: "$e1", sender: "@ana:x.org", ts: 1000, content: { msgtype: "m.text", text: "hi" }, mentions: undefined });
+    const reply = parseEvent(
+      ev({
+        content: {
+          msgtype: "m.text",
+          body: "> <@bo:x.org> q\n\nanswer",
+          "m.relates_to": { "m.in_reply_to": { event_id: "$q" } },
+          "m.mentions": { user_ids: ["@bo:x.org", "bad", 3] },
+        },
+      }),
+    );
+    expect(reply).toMatchObject({ kind: "message", replyTo: "$q", mentions: ["@bo:x.org"], content: { text: "answer" } });
+    expect(parseEvent(ev({ content: { msgtype: "m.text", body: "> not a reply", "m.mentions": {} } }))).toMatchObject({ content: { text: "> not a reply" }, mentions: [] });
+    expect(parseEvent(ev({ content: { msgtype: "m.text", body: "x", "m.relates_to": { "m.in_reply_to": { event_id: 5 } } } }))!).not.toHaveProperty("replyTo");
+    expect(parseEvent(ev({ type: "m.sticker", content: { body: "s" } }))).toMatchObject({ kind: "message", content: { media: "🙂 Sticker" } });
+  });
+
+  it("parses edits with their new content", () => {
+    const edit = parseEvent(
+      ev({ content: { msgtype: "m.text", body: "* new", "m.new_content": { msgtype: "m.text", body: "new", "m.mentions": { user_ids: ["@me:x.org"] } }, "m.relates_to": { rel_type: "m.replace", event_id: "$orig" } } }),
+    );
+    expect(edit).toMatchObject({ kind: "message", replaces: "$orig", content: { text: "new" }, mentions: ["@me:x.org"] });
+    expect(parseEvent(ev({ content: { body: "* x", "m.relates_to": { rel_type: "m.replace", event_id: "$o" } } }))).toBeUndefined();
+    expect(parseEvent(ev({ content: { body: "* x", "m.new_content": { msgtype: "m.text", body: "x" }, "m.relates_to": { rel_type: "m.replace", event_id: 1 } } }))).toBeUndefined();
+    expect(parseEvent(ev({ content: { body: "* x", "m.new_content": { msgtype: "m.text" }, "m.relates_to": { rel_type: "m.replace", event_id: "$o" } } }))).toBeUndefined();
+  });
+
+  it("parses encrypted events, redactions and redacted events", () => {
+    expect(parseEvent(ev({ type: "m.room.encrypted", content: { ciphertext: "…" } }))).toEqual({ kind: "encrypted", id: "$e1", sender: "@ana:x.org", ts: 1000 });
+    expect(parseEvent(ev({ type: "m.room.redaction", redacts: "$old", content: {} }))).toMatchObject({ kind: "redaction", redacts: "$old" });
+    expect(parseEvent(ev({ type: "m.room.redaction", content: { redacts: "$v11" } }))).toMatchObject({ kind: "redaction", redacts: "$v11" });
+    expect(parseEvent(ev({ type: "m.room.redaction", content: {} }))).toBeUndefined();
+    expect(parseEvent(ev({ unsigned: { redacted_because: {} }, content: {} }))).toMatchObject({ kind: "redacted", id: "$e1" });
+    expect(parseEvent(ev({ content: {} }))).toMatchObject({ kind: "redacted" });
+    expect(parseEvent(ev({ content: "nope" }))).toMatchObject({ kind: "redacted" });
+    expect(parseEvent(ev({ unsigned: "x" }))).toMatchObject({ kind: "message" });
+  });
+
+  it("drops state events, unknown types and malformed events", () => {
+    expect(parseEvent(ev({ state_key: "" }))).toBeUndefined();
+    expect(parseEvent(ev({ type: "m.reaction" }))).toBeUndefined();
+    expect(parseEvent(ev({ event_id: "e1" }))).toBeUndefined();
+    expect(parseEvent(ev({ sender: "ana" }))).toBeUndefined();
+    expect(parseEvent(ev({ origin_server_ts: "1" }))).toBeUndefined();
+    expect(parseEvent(ev({ origin_server_ts: -1 }))).toBeUndefined();
+    expect(parseEvent(ev({ origin_server_ts: Infinity }))).toBeUndefined();
+    expect(parseEvent(null)).toBeUndefined();
+    expect(parseEvent([])).toBeUndefined();
+  });
+});
+
+describe("room state", () => {
+  it("applies names, aliases, avatars and members", () => {
+    const state = emptyState();
+    applyState(state, st("m.room.name", { name: " Lounge " }));
+    applyState(state, st("m.room.canonical_alias", { alias: "#lounge:x.org" }));
+    applyState(state, st("m.room.avatar", { url: "mxc://x.org/av" }));
+    applyState(state, st("m.room.member", { membership: "join", displayname: "Ana", avatar_url: "mxc://x.org/a" }, "@ana:x.org"));
+    applyState(state, st("m.room.member", { displayname: 5, avatar_url: "http://evil" }, "@bo:x.org"));
+    applyState(state, st("m.room.member", { membership: "join" }, "not-a-user"));
+    expect(state).toEqual({
+      name: "Lounge",
+      alias: "#lounge:x.org",
+      avatar: "mxc://x.org/av",
+      members: { "@ana:x.org": { membership: "join", name: "Ana", avatar: "mxc://x.org/a" }, "@bo:x.org": { membership: "leave" } },
+    });
+  });
+
+  it("records cleared values as empty and ignores non-room state keys", () => {
+    const state = emptyState();
+    applyState(state, st("m.room.name", {}));
+    applyState(state, st("m.room.canonical_alias", { alias: 1 }));
+    applyState(state, st("m.room.avatar", { url: "bad" }));
+    applyState(state, st("m.room.name", { name: "Other" }, "x"));
+    applyState(state, st("m.room.canonical_alias", { alias: "#a:x" }, "x"));
+    applyState(state, st("m.room.avatar", { url: "mxc://x/y" }, "x"));
+    applyState(state, st("m.room.topic", { topic: "t" }));
+    applyState(state, { type: "m.room.name", content: { name: "no state key" } });
+    applyState(state, "junk");
+    expect(state).toEqual({ name: "", alias: "", avatar: "", members: {} });
+  });
+
+  it("treats any encryption event as encrypted, even a malformed one", () => {
+    const state = emptyState();
+    applyState(state, st("m.room.encryption", "garbage", "odd"));
+    expect(state.encrypted).toBe(true);
+    const other = emptyState();
+    applyState(other, { type: "m.room.encryption", state_key: "", content: { algorithm: "m.megolm.v1.aes-sha2" } });
+    expect(other.encrypted).toBe(true);
+  });
+});
+
+describe("sync responses", () => {
+  it("parses joined and left rooms, DMs, unread counts and heroes", () => {
+    const sync = parseSync({
+      next_batch: "s2",
+      account_data: { events: [{ type: "other" }, { type: "m.direct", content: { "@bo:x.org": ["!dm:x.org", "bad", 4], "bad": ["!r:x"], "@cy:x.org": ["nope"] } }] },
+      rooms: {
+        join: {
+          "!dm:x.org": {
+            state: { events: [st("m.room.member", { membership: "join", displayname: "Bo" }, "@bo:x.org")] },
+            timeline: { events: [ev(), st("m.room.name", { name: "Chat" }), { junk: true }], limited: true, prev_batch: "p1" },
+            unread_notifications: { notification_count: 3, highlight_count: -1 },
+            summary: { "m.heroes": ["@bo:x.org", "bad"] },
+          },
+          "bad-id": {},
+          "!x:x.org": "not a room",
+          "!plain:x.org": { timeline: { prev_batch: "x".repeat(5000) }, unread_notifications: {}, summary: {} },
+        },
+        leave: { "!gone:x.org": {}, "junk": {} },
+      },
+    });
+    expect(sync.nextBatch).toBe("s2");
+    expect(sync.directs).toEqual({ "@bo:x.org": ["!dm:x.org"] });
+    expect(sync.left).toEqual(["!gone:x.org"]);
+    expect(sync.joined).toHaveLength(2);
+    const [dm, plain] = sync.joined;
+    expect(dm).toMatchObject({
+      roomId: "!dm:x.org",
+      limited: true,
+      prevBatch: "p1",
+      unread: { notifications: 3, highlights: 0 },
+      heroes: ["@bo:x.org"],
+      state: { name: "Chat", members: { "@bo:x.org": { name: "Bo" } } },
+    });
+    expect(dm!.timeline.map((e) => e.id)).toEqual(["$e1"]);
+    expect(plain).toEqual({ roomId: "!plain:x.org", state: { members: {} }, timeline: [], limited: false, unread: { notifications: 0, highlights: 0 } });
+  });
+
+  it("caps unread counts", () => {
+    const sync = parseSync({ next_batch: "s", rooms: { join: { "!a:x": { unread_notifications: { notification_count: 1e12, highlight_count: 1.5 } } } } });
+    expect(sync.joined[0]!.unread).toEqual({ notifications: 1_000_000, highlights: 0 });
+  });
+
+  it("leaves out DMs when account data has none, and handles a bare response", () => {
+    expect(parseSync({ next_batch: "s", account_data: { events: [] }, rooms: { join: [], leave: "x" } })).toEqual({ nextBatch: "s", joined: [], left: [] });
+    expect(parseSync({ next_batch: "s", account_data: { events: [{ type: "m.direct", content: "junk" }] } }).directs).toEqual({});
+  });
+
+  it("rejects responses without a usable next_batch", () => {
+    expect(() => parseSync({})).toThrow("unreadable sync");
+    expect(() => parseSync({ next_batch: "" })).toThrow();
+    expect(() => parseSync({ next_batch: "x".repeat(5000) })).toThrow();
+    expect(() => parseSync([])).toThrow();
+  });
+});
+
+describe("history pages", () => {
+  it("returns events oldest first with their state and the next token", () => {
+    const page = parsePage({
+      chunk: [ev({ event_id: "$new", origin_server_ts: 3 }), st("m.room.member", { membership: "join", displayname: "Cy" }, "@cy:x.org"), ev({ event_id: "$old", origin_server_ts: 1 })],
+      state: [st("m.room.member", { membership: "join", displayname: "Ana" }, "@ana:x.org")],
+      end: "t2",
+    });
+    expect(page.events.map((e) => e.id)).toEqual(["$old", "$new"]);
+    expect(Object.keys(page.state.members)).toEqual(["@ana:x.org", "@cy:x.org"]);
+    expect(page.end).toBe("t2");
+  });
+
+  it("has no token at the start of the room", () => {
+    expect(parsePage({ chunk: [] })).toEqual({ events: [], state: { members: {} } });
+    expect(parsePage({ end: "" }).end).toBeUndefined();
+    expect(() => parsePage("x")).toThrow("unreadable history");
+  });
+});

@@ -6,13 +6,14 @@ import { configurableModules, findModule, MODULES } from "../../src/main/modules
 
 describe("module registry", () => {
   it("ships Discord, Fluxer and generic web modules", () => {
-    expect(MODULES.map((m) => m.manifest.id)).toEqual(["discord", "fluxer", "telegram", "matrix", "stoat", "spacebar", "nerimity", "web"]);
+    expect(MODULES.map((m) => m.manifest.id)).toEqual(["discord", "fluxer", "telegram", "matrix-native", "matrix", "stoat", "spacebar", "nerimity", "web"]);
     expect(findModule("fluxer")!.manifest.label).toBe("Fluxer");
     expect(findModule("irc")).toBeUndefined();
     expect(configurableModules()).toEqual([
       { id: "discord", defaultUrl: "https://discord.com/app", fixedUrl: true },
       { id: "fluxer", defaultUrl: "https://fluxer.app", fixedUrl: undefined },
       { id: "telegram", defaultUrl: "https://telegram.org", fixedUrl: true },
+      { id: "matrix-native", defaultUrl: "https://matrix.org", fixedUrl: undefined },
       { id: "matrix", defaultUrl: "https://app.element.io", fixedUrl: undefined },
       { id: "stoat", defaultUrl: "https://stoat.chat/app", fixedUrl: undefined },
       { id: "spacebar", defaultUrl: "https://app.spacebar.chat", fixedUrl: undefined },
@@ -35,7 +36,7 @@ describe("module boundaries", () => {
   it("keeps the OS secret store and the credential file out of module code", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
-    const dirs = ["src/main/modules", "src/main/adapters", "src/modules/fluxer", "src/engine"];
+    const dirs = ["src/main/modules", "src/main/adapters", "src/modules/fluxer", "src/modules/matrix", "src/engine"];
     for (const dir of dirs) {
       for (const name of fs.readdirSync(dir)) {
         const source = fs.readFileSync(path.join(dir, name), "utf8");
