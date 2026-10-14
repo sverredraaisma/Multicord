@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("electron", () => import("../mocks/electron"));
 
 import * as electron from "../mocks/electron";
-import { EngineAdapter, EngineHub, engineStoragePartition, MAX_CRASHES, MAX_FILE_HANDLES, restartDelay, serveEngine, type EngineSpec } from "../../src/main/engineHost";
+import { EngineAdapter, EngineHub, engineStoragePartition, ATTACH_WINDOW_MS, MAX_CRASHES, MAX_FILE_HANDLES, restartDelay, serveEngine, type EngineSpec } from "../../src/main/engineHost";
 import { readRange } from "../../src/main/files";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
 import { NATIVE_IPC } from "../../src/shared/native";
@@ -302,22 +302,36 @@ describe("EngineHub", () => {
   });
 
   it("lets the engine read only files the user picked for it", async () => {
-    const { ask, window } = setup();
+    const { ask, window, view } = setup();
+    const attach = () => ipcMain.emit(NATIVE_IPC.action, { sender: view.webContents }, { type: "attach" });
     const file = path.join(dist, "cat.png");
     fs.writeFileSync(file, "0123456789");
+    // No dialog unless the user just clicked attach in the module's view, and one per click.
+    await expect(ask({ type: "pickFiles" })).rejects.toThrow("only be picked when the user asks");
+    attach();
     dialog.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] });
     expect(await ask({ type: "pickFiles" })).toEqual([]);
+    await expect(ask({ type: "pickFiles" })).rejects.toThrow("only be picked when the user asks");
+    attach();
     dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [file] });
     const [picked] = (await ask({ type: "pickFiles" })) as { handle: string; name: string; size: number; type: string }[];
     expect(picked).toMatchObject({ name: "cat.png", size: 10, type: "image/png" });
-    expect(dialog.showOpenDialog).toHaveBeenLastCalledWith(window, expect.objectContaining({ properties: ["openFile", "multiSelections"] }));
+    expect(dialog.showOpenDialog).toHaveBeenLastCalledWith(window, expect.objectContaining({ title: "Attach files to Demo", properties: ["openFile", "multiSelections"] }));
     expect(new TextDecoder().decode((await ask({ type: "readFile", handle: picked!.handle, start: 2, end: 5 })) as Uint8Array)).toBe("234");
     expect(new TextDecoder().decode((await ask({ type: "readFile", handle: picked!.handle, start: 8, end: 100 })) as Uint8Array)).toBe("89");
     await expect(ask({ type: "readFile", handle: "made-up", start: 0, end: 1 })).rejects.toThrow("Unknown file");
 
     // Old handles are forgotten once there are too many.
+    attach();
     dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: Array.from({ length: MAX_FILE_HANDLES }, () => file) });
     await ask({ type: "pickFiles" });
+
+    // A click long ago does not count.
+    vi.useFakeTimers();
+    attach();
+    vi.advanceTimersByTime(ATTACH_WINDOW_MS + 1);
+    await expect(ask({ type: "pickFiles" })).rejects.toThrow("only be picked when the user asks");
+    vi.useRealTimers();
     await expect(ask({ type: "readFile", handle: picked!.handle, start: 0, end: 1 })).rejects.toThrow("Unknown file");
   });
 

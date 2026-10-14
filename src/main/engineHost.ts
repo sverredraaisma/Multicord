@@ -179,6 +179,8 @@ interface Running {
   /** Crashes since the engine last ran stably, and when it last became ready. */
   crashes: number;
   readyAt: number;
+  /** When the user last asked to attach files in the module's view; 0 when they have not. */
+  attachAskedAt: number;
   /** The hosts the engine may reach now: the module's, or narrower once the engine locks itself. */
   allowed: { hosts?: readonly string[] };
   /** Messages for the engine, held until it has loaded. */
@@ -194,6 +196,8 @@ export function engineStoragePartition(instanceId: string, persistent: boolean):
 }
 /** Picked-file handles kept per engine; the oldest are forgotten first. */
 export const MAX_FILE_HANDLES = 200;
+/** How long after the user's attach click the engine may open the file dialog. */
+export const ATTACH_WINDOW_MS = 10_000;
 const CSP = [
   "default-src 'none'",
   "script-src 'self' 'wasm-unsafe-eval'",
@@ -256,7 +260,10 @@ export class EngineHub {
     });
     ipcMain.on(NATIVE_IPC.action, (event, action) => {
       const running = this.byView.get(event.sender);
-      if (running && isNativeAction(action)) this.deliver(running, ENGINE_IPC.action, action);
+      if (!running || !isNativeAction(action)) return;
+      // The file dialog opens only for an attach the user just asked for in this view.
+      if (action.type === "attach") running.attachAskedAt = Date.now();
+      this.deliver(running, ENGINE_IPC.action, action);
     });
   }
 
@@ -317,6 +324,7 @@ export class EngineHub {
       crashes: 0,
       readyAt: 0,
       allowed,
+      attachAskedAt: 0,
       queue: [],
     };
     running.adapter = new EngineAdapter(spec.def.id, new URL(spec.def.url).host, spec.capabilities, (command) => this.deliver(running, ENGINE_IPC.command, command), spec.home);
@@ -410,7 +418,10 @@ export class EngineHub {
   }
 
   private async pickFiles(running: Running): Promise<PickedFile[]> {
-    const result = await dialog.showOpenDialog(this.deps.window, { title: "Attach files", properties: ["openFile", "multiSelections"] });
+    // Only right after the user asked, once per ask: an engine cannot pop file dialogs on its own.
+    if (Date.now() - running.attachAskedAt > ATTACH_WINDOW_MS) throw new Error("Files can only be picked when the user asks to attach");
+    running.attachAskedAt = 0;
+    const result = await dialog.showOpenDialog(this.deps.window, { title: `Attach files to ${running.spec.def.name}`, properties: ["openFile", "multiSelections"] });
     if (result.canceled) return [];
     const picked: PickedFile[] = [];
     for (const filePath of result.filePaths) {
