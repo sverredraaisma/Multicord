@@ -177,7 +177,8 @@ export const MAX_ATTACHMENTS = 10;
 
 const text = (value: unknown, min: number, max: number): boolean =>
   typeof value === "string" && value.length >= min && value.length <= max;
-const id = (value: unknown): boolean => typeof value === "string" && /^\d{1,20}$/.test(value);
+/** A snowflake (Fluxer, Telegram) or a ULID (Stoat). */
+const id = (value: unknown): boolean => typeof value === "string" && /^(\d{1,20}|[0-9A-HJKMNP-TV-Z]{26})$/.test(value);
 const promptId = (value: unknown): boolean => typeof value === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(value);
 export const MAX_PROMPT_FIELDS = 8;
 

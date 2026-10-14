@@ -55,7 +55,7 @@ await Promise.all([
   // Module engines: sandboxed pages, served from dist/engines.
   build({
     ...common,
-    entryPoints: { "engines/fluxer": "src/entries/engine-fluxer.ts", "engines/matrix": "src/entries/engine-matrix.ts" },
+    entryPoints: { "engines/fluxer": "src/entries/engine-fluxer.ts", "engines/matrix": "src/entries/engine-matrix.ts", "engines/stoat": "src/entries/engine-stoat.ts" },
     platform: "browser",
     format: "iife",
     outdir: "dist",

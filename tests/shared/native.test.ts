@@ -117,3 +117,15 @@ describe("prompt actions", () => {
     }
   });
 });
+
+describe("Stoat ids in actions", () => {
+  it("accepts ULIDs as well as snowflakes, and nothing looser", () => {
+    const ulid = "01HZ0000000000000000000111";
+    expect(isNativeAction({ type: "select", channelId: ulid })).toBe(true);
+    expect(isNativeAction({ type: "send", content: "x", replyTo: ulid })).toBe(true);
+    expect(isNativeAction({ type: "react", messageId: ulid, emoji: ulid, add: true })).toBe(true);
+    expect(isNativeAction({ type: "select", channelId: ulid.toLowerCase() })).toBe(false);
+    expect(isNativeAction({ type: "select", channelId: `${ulid}0` })).toBe(false);
+    expect(isNativeAction({ type: "select", channelId: "01HZ000000000000000000011I" })).toBe(false);
+  });
+});

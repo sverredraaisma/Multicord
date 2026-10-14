@@ -78,6 +78,7 @@ describe("settings state", () => {
       ["telegram", true],
       ["matrix-native", false],
       ["matrix", false],
+      ["stoat-native", false],
       ["stoat", false],
       ["spacebar", false],
       ["nerimity", false],

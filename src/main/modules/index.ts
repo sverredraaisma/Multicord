@@ -1,6 +1,7 @@
 import { discordModule } from "./discord";
 import { fluxerModule } from "./fluxer";
 import { matrixNativeModule } from "./matrix";
+import { stoatNativeModule } from "./stoat";
 import { telegramModule } from "./telegram";
 import type { ModuleRule } from "../platforms";
 import type { PlatformModule } from "./types";
@@ -17,6 +18,7 @@ export const MODULES: readonly PlatformModule[] = [
   telegramModule,
   matrixNativeModule,
   matrixModule,
+  stoatNativeModule,
   stoatModule,
   spacebarModule,
   nerimityModule,
