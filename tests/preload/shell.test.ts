@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createShellApi } from "../../src/preload/shell";
 import { IPC } from "../../src/shared/ipc";
+import { createNativeApi } from "../../src/preload/native";
 import { createSettingsApi } from "../../src/preload/settings";
 import { SETTINGS_IPC } from "../../src/shared/settings";
 
@@ -71,4 +72,12 @@ describe("settings", () => {
     ]);
   });
 
+  it("hands voice settings to the native view", () => {
+    const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
+    const api = createNativeApi({ send: vi.fn(), on: (c, l) => void listeners.set(c, l) });
+    const onVoice = vi.fn();
+    api.onVoiceSettings(onVoice);
+    listeners.get(SETTINGS_IPC.voice)!(null, { echoCancellation: false });
+    expect(onVoice).toHaveBeenCalledWith({ echoCancellation: false });
+  });
 });

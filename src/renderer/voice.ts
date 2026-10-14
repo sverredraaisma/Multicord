@@ -1,5 +1,20 @@
-import { Room, RoomEvent, Track, type Participant, type RemoteTrack, type LocalTrackPublication } from "livekit-client";
+import { Room, RoomEvent, Track, type LocalTrackPublication, type Participant, type RemoteTrack, type RoomOptions } from "livekit-client";
 import type { NativeVoiceSession } from "../shared/native";
+import { DEFAULT_SETTINGS, type DeviceChoice, type VoiceSettings } from "../shared/settings";
+import type { DeviceInfo } from "./media";
+
+/**
+ * The id of a chosen device in this view. Chromium salts device ids per
+ * site, so the settings page's id may not exist here; the label decides
+ * then. Undefined means the system default.
+ */
+export function resolveDevice(devices: readonly DeviceInfo[], kind: MediaDeviceKind, choice: DeviceChoice | undefined): string | undefined {
+  if (!choice) return undefined;
+  const ofKind = devices.filter((d) => d.kind === kind);
+  return (ofKind.find((d) => d.deviceId === choice.id) ?? ofKind.find((d) => d.label === choice.label))?.deviceId;
+}
+
+const listDevices = async (): Promise<DeviceInfo[]> => (await globalThis.navigator?.mediaDevices?.enumerateDevices?.()) ?? [];
 
 type Flags = Pick<NativeVoiceSession, "mute" | "deaf" | "video" | "stream">;
 
@@ -18,13 +33,59 @@ export class VoiceCall {
   private applied: Flags = { mute: false, deaf: false, video: false, stream: false };
   private queue: Promise<void> = Promise.resolve();
   private leaving = false;
+  private settings: VoiceSettings = DEFAULT_SETTINGS.voice;
 
   constructor(
     private readonly stage: HTMLElement,
     private readonly speakers: HTMLElement,
     private readonly onError: (message: string) => void,
-    private readonly createRoom: () => Room = () => new Room({ adaptiveStream: true, dynacast: true }),
+    private readonly createRoom: (options: RoomOptions) => Room = (options) => new Room(options),
+    private readonly devices: () => Promise<DeviceInfo[]> = listDevices,
   ) {}
+
+  /**
+   * Uses these devices and audio processing from now on. A call in progress
+   * switches devices at once; processing changes apply when the microphone
+   * next starts.
+   */
+  configure(settings: VoiceSettings): Promise<void> {
+    this.queue = this.queue
+      .then(async () => {
+        this.settings = settings;
+        const room = this.room;
+        if (!room) return;
+        const ids = await this.deviceIds();
+        await room.switchActiveDevice("audioinput", ids.input ?? "default");
+        await room.switchActiveDevice("audiooutput", ids.output ?? "default");
+        if (ids.camera) await room.switchActiveDevice("videoinput", ids.camera);
+      })
+      .catch((error: unknown) => this.onError(message(error)));
+    return this.queue;
+  }
+
+  private async deviceIds(): Promise<{ input?: string; output?: string; camera?: string }> {
+    const { input, output, camera } = this.settings;
+    if (!input && !output && !camera) return {};
+    const devices = await this.devices();
+    return {
+      input: resolveDevice(devices, "audioinput", input),
+      output: resolveDevice(devices, "audiooutput", output),
+      camera: resolveDevice(devices, "videoinput", camera),
+    };
+  }
+
+  private async roomOptions(): Promise<RoomOptions> {
+    const ids = await this.deviceIds();
+    const { echoCancellation, noiseSuppression, autoGainControl } = this.settings;
+    const options: RoomOptions = {
+      adaptiveStream: true,
+      dynacast: true,
+      audioCaptureDefaults: { deviceId: ids.input, echoCancellation, noiseSuppression, autoGainControl },
+    };
+    if (ids.output) options.audioOutput = { deviceId: ids.output };
+    if (ids.camera) options.videoCaptureDefaults = { deviceId: ids.camera };
+    return options;
+  }
 
   /** Brings the call in line with the session; null leaves. Resolves once applied. */
   sync(session: NativeVoiceSession | null): Promise<void> {
@@ -45,7 +106,7 @@ export class VoiceCall {
   }
 
   private async join(url: string, token: string, flags: Flags): Promise<void> {
-    const room = this.createRoom();
+    const room = this.createRoom(await this.roomOptions());
     this.room = room;
     this.token = token;
     this.applied = { mute: true, deaf: false, video: false, stream: false };

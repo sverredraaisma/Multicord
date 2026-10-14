@@ -6,6 +6,7 @@ vi.mock("livekit-client", () => import("../mocks/livekit"));
 import { formatSize, formatTime, insertAtCursor, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
 import type { NativeApi } from "../../src/preload/native";
 import type { NativeMessage, NativeViewState } from "../../src/shared/native";
+import { DEFAULT_SETTINGS, type VoiceSettings } from "../../src/shared/settings";
 
 type Chat = Extract<NativeViewState, { screen: "chat" }>;
 
@@ -256,11 +257,15 @@ describe("helpers", () => {
 
   it("wires the view to the bridge and asks for state", () => {
     let push: (state: NativeViewState) => void = () => {};
-    const api: NativeApi = { onState: (cb) => (push = cb), act: vi.fn() };
+    let pushVoice: (settings: VoiceSettings) => void = () => {};
+    const api: NativeApi = { onState: (cb) => (push = cb), act: vi.fn(), onVoiceSettings: (cb) => (pushVoice = cb) };
     startNative(document, api);
     expect(api.act).toHaveBeenCalledWith({ type: "ready" });
     push(login);
     expect(document.querySelector("form.auth")).not.toBeNull();
+    pushVoice({ ...DEFAULT_SETTINGS.voice, noiseSuppression: false }); // before a chat view exists: kept for later
+    push(chat());
+    expect(document.querySelector(".voice-stage")).not.toBeNull();
   });
 });
 

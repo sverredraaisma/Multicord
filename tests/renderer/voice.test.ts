@@ -4,7 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("livekit-client", () => import("../mocks/livekit"));
 
 import { FakeTrack, Room, resetLiveKit } from "../mocks/livekit";
-import { VoiceCall } from "../../src/renderer/voice";
+import { resolveDevice, VoiceCall } from "../../src/renderer/voice";
+import { DEFAULT_SETTINGS } from "../../src/shared/settings";
 import type { NativeVoiceSession } from "../../src/shared/native";
 
 const session = (extra: Partial<NativeVoiceSession> = {}): NativeVoiceSession => ({
@@ -40,7 +41,11 @@ describe("VoiceCall", () => {
     expect(Room.instances).toHaveLength(0);
     await call.sync(session());
     const room = Room.instances[0]!;
-    expect(room.options).toEqual({ adaptiveStream: true, dynacast: true });
+    expect(room.options).toEqual({
+      adaptiveStream: true,
+      dynacast: true,
+      audioCaptureDefaults: { deviceId: undefined, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
     expect(room.connect).toHaveBeenCalledWith("wss://voice.fx", "t1");
     expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenCalledWith(true);
     await call.sync(session()); // nothing changed
@@ -129,5 +134,81 @@ describe("VoiceCall", () => {
 
   it("creates real rooms by default", () => {
     expect(new VoiceCall(stage, speakers, onError)).toBeInstanceOf(VoiceCall);
+  });
+});
+
+describe("devices", () => {
+  const devices = [
+    { deviceId: "mic-a", kind: "audioinput", label: "Headset" },
+    { deviceId: "spk-a", kind: "audiooutput", label: "Headset" },
+    { deviceId: "cam-a", kind: "videoinput", label: "Webcam" },
+  ];
+
+  it("finds a chosen device by id, else by label, else falls back to the default", () => {
+    expect(resolveDevice(devices, "audioinput", undefined)).toBeUndefined();
+    expect(resolveDevice(devices, "audioinput", { id: "mic-a", label: "Renamed" })).toBe("mic-a");
+    expect(resolveDevice(devices, "audiooutput", { id: "salted-elsewhere", label: "Headset" })).toBe("spk-a");
+    expect(resolveDevice(devices, "videoinput", { id: "gone", label: "Gone" })).toBeUndefined();
+  });
+
+  it("joins with the chosen devices and processing", async () => {
+    const withDevices = new VoiceCall(stage, speakers, onError, undefined, async () => devices);
+    await withDevices.configure({
+      input: { id: "x", label: "Headset" },
+      output: { id: "spk-a", label: "Headset" },
+      camera: { id: "cam-a", label: "Webcam" },
+      echoCancellation: false,
+      noiseSuppression: true,
+      autoGainControl: false,
+    });
+    await withDevices.sync(session());
+    expect(Room.instances[0]!.options).toEqual({
+      adaptiveStream: true,
+      dynacast: true,
+      audioCaptureDefaults: { deviceId: "mic-a", echoCancellation: false, noiseSuppression: true, autoGainControl: false },
+      audioOutput: { deviceId: "spk-a" },
+      videoCaptureDefaults: { deviceId: "cam-a" },
+    });
+  });
+
+  it("switches devices during a call and goes back to the defaults", async () => {
+    const withDevices = new VoiceCall(stage, speakers, onError, undefined, async () => devices);
+    await withDevices.sync(session());
+    const room = Room.instances[0]!;
+    await withDevices.configure({ ...DEFAULT_SETTINGS.voice, input: { id: "mic-a", label: "Headset" }, camera: { id: "cam-a", label: "Webcam" } });
+    expect(room.switchActiveDevice.mock.calls).toEqual([
+      ["audioinput", "mic-a"],
+      ["audiooutput", "default"],
+      ["videoinput", "cam-a"],
+    ]);
+    room.switchActiveDevice.mockClear();
+    await withDevices.configure(DEFAULT_SETTINGS.voice);
+    expect(room.switchActiveDevice.mock.calls).toEqual([
+      ["audioinput", "default"],
+      ["audiooutput", "default"],
+    ]);
+  });
+
+  it("reports a device that cannot be switched to", async () => {
+    await call.sync(session());
+    Room.instances[0]!.switchActiveDevice.mockRejectedValueOnce(new Error("NotFoundError"));
+    await call.configure(DEFAULT_SETTINGS.voice);
+    expect(onError).toHaveBeenCalledWith("NotFoundError");
+  });
+
+  it("lists devices through the browser when not given a source", async () => {
+    const enumerateDevices = vi.fn(async () => devices);
+    vi.stubGlobal("navigator", { mediaDevices: { enumerateDevices } });
+    const plain = new VoiceCall(stage, speakers, onError);
+    await plain.configure({ ...DEFAULT_SETTINGS.voice, input: { id: "mic-a", label: "Headset" } });
+    await plain.sync(session());
+    expect(enumerateDevices).toHaveBeenCalled();
+    expect((Room.instances[0]!.options as { audioCaptureDefaults: { deviceId: string } }).audioCaptureDefaults.deviceId).toBe("mic-a");
+    vi.stubGlobal("navigator", {});
+    const none = new VoiceCall(stage, speakers, onError);
+    await none.configure({ ...DEFAULT_SETTINGS.voice, input: { id: "mic-a", label: "Headset" } });
+    await none.sync(session({ token: "t2" }));
+    expect((Room.instances[1]!.options as { audioCaptureDefaults: { deviceId?: string } }).audioCaptureDefaults.deviceId).toBeUndefined();
+    vi.unstubAllGlobals();
   });
 });

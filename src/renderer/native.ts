@@ -1,6 +1,7 @@
 import type { NativeApi } from "../preload/native";
 import type { NativeMessage, NativeViewState } from "../shared/native";
 import { MAX_MESSAGE_LENGTH } from "../shared/native";
+import type { VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
 import { el } from "./components/dom";
@@ -41,11 +42,18 @@ export class NativeView {
   private fullPickerFor: string | undefined;
   private lastState: ChatState | undefined;
   private call: VoiceCall | undefined;
+  private voiceSettings: VoiceSettings | undefined;
 
   constructor(
     private readonly root: HTMLElement,
     private readonly api: Pick<NativeApi, "act">,
   ) {}
+
+  /** Devices and processing for calls, from the app settings. */
+  setVoiceSettings(settings: VoiceSettings): void {
+    this.voiceSettings = settings;
+    void this.call?.configure(settings);
+  }
 
   update(state: NativeViewState): void {
     if (state.screen !== this.screen) this.mount(state);
@@ -132,6 +140,7 @@ export class NativeView {
     const speakers = el(doc, "div", "voice-speakers");
     speakers.hidden = true;
     this.call = new VoiceCall(stage, speakers, (message) => this.api.act({ type: "voiceError", message }));
+    if (this.voiceSettings) void this.call.configure(this.voiceSettings);
     const reply = el(doc, "div", "reply-bar");
     reply.hidden = true;
 
@@ -377,5 +386,6 @@ export class NativeView {
 export function startNative(doc: Document, api: NativeApi): void {
   const view = new NativeView(doc.getElementById("app")!, api);
   api.onState((state) => view.update(state));
+  api.onVoiceSettings((settings) => view.setVoiceSettings(settings));
   api.act({ type: "ready" });
 }

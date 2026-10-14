@@ -32,6 +32,7 @@ export class Room {
     if (Room.failConnect) throw Room.failConnect;
   });
   disconnect = vi.fn(async () => this.emit(RoomEvent.Disconnected));
+  switchActiveDevice = vi.fn(async (_kind: string, _id: string) => true);
   localParticipant = {
     setMicrophoneEnabled: vi.fn(async (_on: boolean) => undefined),
     setCameraEnabled: vi.fn(async (_on: boolean) => undefined),
