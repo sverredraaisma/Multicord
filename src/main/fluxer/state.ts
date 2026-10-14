@@ -1,4 +1,4 @@
-import { Emitter } from "../adapters/emitter";
+import { Emitter } from "../../shared/emitter";
 import {
   ChannelType,
   FORUM_TYPES,

@@ -1,7 +1,7 @@
 import type { RailServer } from "../../shared/adapter";
 import { parseTitleBadge } from "../../shared/ipc";
 import type { PlatformDef } from "../platforms";
-import { BaseAdapter } from "./baseAdapter";
+import { BaseAdapter } from "../../shared/baseAdapter";
 
 export const APP_KEY = "app";
 

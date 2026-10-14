@@ -1,6 +1,6 @@
 import type { DirectConversation, PlatformAdapter, PlatformNotification, RailServer } from "../shared/adapter";
 import { MAX_RAIL_ORDER, type Conversation, type RailEntry, type RailModule, type RailState } from "../shared/ipc";
-import { Emitter } from "./adapters/emitter";
+import { Emitter } from "../shared/emitter";
 
 export const HOME_KEY = "home";
 export const DM_PREFIX = "dm:";

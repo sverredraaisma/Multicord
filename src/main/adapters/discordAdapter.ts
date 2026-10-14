@@ -1,7 +1,7 @@
 import type { DirectConversation, HomeBadge, RailServer } from "../../shared/adapter";
 import { isSnowflake, type DiscordGuild, type DiscordState, type DiscordTarget, type DiscordUser, type TitleBadge } from "../../shared/ipc";
 import type { AccountStatus } from "../../shared/settings";
-import { BaseAdapter } from "./baseAdapter";
+import { BaseAdapter } from "../../shared/baseAdapter";
 
 export const FOLDER_PREFIX = "folder:";
 

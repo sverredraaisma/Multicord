@@ -26,7 +26,7 @@ import {
   type FluxerMessage,
 } from "../fluxer/types";
 import type { PlatformDef } from "../platforms";
-import { BaseAdapter } from "./baseAdapter";
+import { BaseAdapter } from "../../shared/baseAdapter";
 
 export const FOLDER_PREFIX = "folder:";
 const PAGE_SIZE = 50;

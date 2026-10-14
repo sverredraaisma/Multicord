@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { applySettingsPatch, parseSettings, type AppSettings, type SettingsPatch } from "../shared/settings";
-import { Emitter } from "./adapters/emitter";
+import { Emitter } from "../shared/emitter";
 
 /** settings.json: read leniently at start, written on every change. */
 export class SettingsStore {

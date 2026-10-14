@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DiscordAdapter } from "../../src/main/adapters/discordAdapter";
-import { Emitter } from "../../src/main/adapters/emitter";
+import { Emitter } from "../../src/shared/emitter";
 import { APP_KEY, GenericWebAdapter } from "../../src/main/adapters/genericWebAdapter";
 import type { PlatformDef } from "../../src/main/platforms";
 

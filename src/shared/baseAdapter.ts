@@ -6,7 +6,7 @@ import type {
   PlatformId,
   PlatformNotification,
   RailServer,
-} from "../../shared/adapter";
+} from "./adapter";
 import { Emitter } from "./emitter";
 
 /** Shared plumbing for adapters: event emitters, account and server bookkeeping. */
