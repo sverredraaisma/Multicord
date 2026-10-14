@@ -42,7 +42,15 @@ export const FLUXER: PlatformDef = {
   module: "fluxer",
 };
 
-export const BUILT_IN = [DISCORD, FLUXER];
+export const TELEGRAM: PlatformDef = {
+  id: "telegram",
+  name: "Telegram",
+  url: "https://telegram.org",
+  partition: "persist:telegram",
+  module: "telegram",
+};
+
+export const BUILT_IN = [DISCORD, FLUXER, TELEGRAM];
 export const PLATFORM_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const MAX_NAME = 64;
 /** Modules users may instantiate; the shell passes the real list from main/modules. */

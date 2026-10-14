@@ -6,12 +6,13 @@ import { configurableModules, findModule, MODULES } from "../../src/main/modules
 
 describe("module registry", () => {
   it("ships Discord, Fluxer and generic web modules", () => {
-    expect(MODULES.map((m) => m.manifest.id)).toEqual(["discord", "fluxer", "web"]);
+    expect(MODULES.map((m) => m.manifest.id)).toEqual(["discord", "fluxer", "telegram", "web"]);
     expect(findModule("fluxer")!.manifest.label).toBe("Fluxer");
-    expect(findModule("matrix")).toBeUndefined();
+    expect(findModule("irc")).toBeUndefined();
     expect(configurableModules()).toEqual([
       { id: "discord", defaultUrl: "https://discord.com/app", fixedUrl: true },
       { id: "fluxer", defaultUrl: "https://fluxer.app", fixedUrl: undefined },
+      { id: "telegram", defaultUrl: "https://telegram.org", fixedUrl: true },
       { id: "web", defaultUrl: undefined, fixedUrl: undefined },
     ]);
   });

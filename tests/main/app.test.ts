@@ -54,7 +54,7 @@ describe("createShell", () => {
     const { handle, window, discordView, railView } = await shellWith();
     expect(window.options).toMatchObject({ title: APP_NAME, width: 1280, height: 800 });
     expect(window.maximize).not.toHaveBeenCalled();
-    expect(window.children).toEqual([railView, discordView, handle.views.get("fluxer"), handle.tooltipView]);
+    expect(window.children).toEqual([railView, discordView, handle.views.get("fluxer"), handle.views.get("telegram"), handle.tooltipView]);
 
     expect(railView.options.webPreferences).toMatchObject({ contextIsolation: true, sandbox: true, nodeIntegration: false });
     expect(railView.webContents.loadFile).toHaveBeenCalledWith(path.join(DIST, "rail.html"));

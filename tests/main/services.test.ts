@@ -78,9 +78,9 @@ describe("adding services", () => {
 describe("keeping a service on", () => {
   it("knows when nothing would be on", () => {
     expect(keepsOneEnabled([{ id: "discord", enabled: false }], modules)).toBe(true);
-    expect(keepsOneEnabled([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }], modules)).toBe(false);
+    expect(keepsOneEnabled([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", enabled: false }], modules)).toBe(false);
     expect(
-      keepsOneEnabled([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "w", name: "W", module: "discord" }], modules),
+      keepsOneEnabled([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, { id: "w", name: "W", module: "discord" }], modules),
     ).toBe(true);
   });
 });

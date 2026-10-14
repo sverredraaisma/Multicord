@@ -18,7 +18,15 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 
 ## What v0.1 does
 
-- **Platform modules:** every platform is a module in `src/main/modules`, with a manifest (id, label, colour, preload script, and whether users may add instances) and a `load()` hook that wires up its own view. The shell knows platforms only through this interface. The built-in modules are `discord`, `fluxer` and `web`. A new platform is a new module, with no changes to the shell. Modules are compiled in, not loaded from disk, since they run with full main-process rights.
+- **Platform modules:** every platform is a module with a manifest in `src/main/modules` (id, label, colour, which view it uses, whether users may add instances, and for native modules its engine, hosts and capabilities). The shell knows platforms only through this interface; a new platform is a new module, with no changes to the shell. The built-in modules are `discord`, `fluxer`, `telegram` and `web`.
+- **Isolated module engines:** a native module's logic (Fluxer, Telegram) does not run in the main process. It runs in an *engine*: a hidden renderer with Chromium's sandbox, no Node, its own in-memory session, and a page on its own origin (`multicord-engine://<module>`) with a strict CSP. The engine reaches the shell only through a bridge the main process validates and binds to that one engine:
+  - its own secrets (stored encrypted with `safeStorage`, under its instance id; it cannot name another instance's keys),
+  - HTTP through the main process with the engine's own cookie-less session: https only, never local or private addresses, only the module's declared hosts if it declares any, each redirect checked again,
+  - WebSockets only to the same allowed hosts,
+  - files only through handles for what the user picked for it,
+  - display state only to its own view, and that view's actions only back to it.
+
+  A module therefore cannot read another module's tokens, cookies, storage or messages. Code under `src/modules` and `src/engine` may not import Electron, Node or main-process code; a test enforces it. Web-view modules (Discord, generic web apps) run their pages in their own sandboxed, partitioned views, with only narrow preload bridges.
 - **Your own server order:** servers and folders from every platform form one list in the rail. Drag them into any order; the order is saved in `rail-order.json`, and new servers join at the end. Each platform's Home and DM bubbles stay at the top.
 - **Module labels:** hovering a rail icon shows a small dot in its module's colour with the module's initial (D, F, W) in the corner, and the hover name says it too, e.g. "Alpha · Fluxer".
 - **Unified Messages:** the button at the top of the rail lists the direct messages of every service in one list, most recently active first, with the last message where the service provides it (Fluxer and Telegram do, Discord does not) and a search box. Picking one opens it beside the list in its own service; the services hide their own DM sidebars meanwhile. The button shows the unread DM count.
@@ -48,7 +56,10 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 
   Large servers (over 250 members) are subscribed to while open, so they deliver every message.
 
-  Everything that talks to Fluxer runs in the main process. The session token never reaches a web page and is stored encrypted with `safeStorage`. Multicord identifies itself to Fluxer honestly, as Multicord. Self-hosted instances can be added in Settings or in `platforms.json` with `"module": "fluxer"` and the instance URL.
+  The client runs in its sandboxed engine; the session token is stored encrypted and never reaches a web page. Multicord identifies itself to Fluxer honestly, as Multicord. Self-hosted instances and extra accounts can be added in Settings or in `platforms.json` with `"module": "fluxer"` and the instance URL.
+- **Telegram, native (direct messages):** a built-in Telegram client for one-to-one chats, over MTProto (GramJS) from its engine, which may only reach Telegram's web endpoints (`*.web.telegram.org`). It covers signing in with phone number, code and two-step password; the chat list with unread counts and profile pictures, as DM bubbles and in the unified Messages page with previews; history, sending, replying, and editing and deleting your own messages; and notifications. Messages show as plain text, with a short label for media (photo, video, voice message, sticker, file, location, poll). Groups and channels are not listed yet.
+
+  Telegram gives API credentials per app (my.telegram.org, "API development tools"). Builds can include them via the `MULTICORD_TELEGRAM_API_ID` and `MULTICORD_TELEGRAM_API_HASH` environment variables; otherwise Multicord asks for an API ID and hash on first sign-in and stores them encrypted.
 - **Component gallery:** `npm run gallery` opens `dist/gallery.html`, which shows every component with sample data. Use it to check designs without signing in anywhere.
 - **Extra platforms** as web views (shallow tier: one rail icon, unread state from the page title). Settings writes them to `platforms.json` in the app's user-data folder (`%APPDATA%\Multicord` on Windows), which can also be edited by hand:
 
@@ -73,7 +84,6 @@ src/
   shared/adapter.ts      PlatformAdapter contract (from the study)
   shared/ipc.ts          IPC channels + validators for every renderer payload
   main/                  main process: app glue, registry, adapters, policies, credential store
-  main/fluxer/           Fluxer client: discovery, captcha, REST, gateway, state
   preload/discord/       Discord view preload (DOM hooks in dom.ts, store reads in storeBridge.ts)
   preload/shell.ts       contextBridge API for rail and picker
   preload/native.ts      bridge for native chat views (display state in, actions out)
@@ -81,7 +91,14 @@ src/
   shared/settings.ts     app settings, services list and settings actions, with validators
   main/settings*.ts      settings store and the controller behind the settings page
   main/services.ts       edits to platforms.json
-  main/modules/          platform modules (discord, fluxer, web) and their registry
+  main/modules/          platform module manifests (discord, fluxer, telegram, web) and their registry
+  main/engineHost.ts     runs module engines: sandboxed views, the validated bridge, session lockdown
+  main/netPolicy.ts      what engines may contact, and the HTTP bridge
+  shared/engine.ts       the engine protocol and its validators
+  engine/runtime.ts      engine-side helpers: bridged fetch, secrets, files; serving an adapter
+  modules/fluxer/        Fluxer client (engine): discovery, captcha, REST, gateway, state, adapter
+  modules/telegram/      Telegram client (engine): GramJS glue and adapter
+  preload/engine.ts      the engine bridge
   renderer/components/   the component library: server icons, channel lists, messages,
                          markdown, reactions, emoji picker, forums, voice panel, forms
   renderer/              rail, tooltip, screen-share picker, native chat view, settings page, gallery

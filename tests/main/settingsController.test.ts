@@ -68,12 +68,14 @@ describe("settings state", () => {
         account: { state: "signed-in", name: "Ana" },
       },
       expect.objectContaining({ id: "fluxer", account: { state: "unknown" } }),
+      expect.objectContaining({ id: "telegram", label: "Telegram" }),
       expect.objectContaining({ id: "el", enabled: false, builtIn: false, label: "Web" }),
     ]);
-    expect(state.services[2]).not.toHaveProperty("account");
+    expect(state.services[3]).not.toHaveProperty("account");
     expect(state.modules.map((m) => [m.id, m.fixedUrl])).toEqual([
       ["discord", true],
       ["fluxer", false],
+      ["telegram", true],
       ["web", false],
     ]);
     expect(state).toMatchObject({ settings: DEFAULT_SETTINGS, restartNeeded: false, secretsPersistent: true, launchAtLoginSupported: true, version: "1.2.3" });
@@ -111,9 +113,10 @@ describe("settings actions", () => {
     expect(last().restartNeeded).toBe(true);
     expect(last().services.find((s) => s.id === "fluxer")!.enabled).toBe(false);
 
+    await settings.handle({ type: "setEnabled", id: "telegram", enabled: false });
     await settings.handle({ type: "setEnabled", id: "discord", enabled: false });
     expect(last().error).toBe("Keep at least one service turned on.");
-    expect(readPlatforms()).toEqual([{ id: "fluxer", enabled: false }]);
+    expect(readPlatforms()).toEqual([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]);
     await settings.handle({ type: "restart" });
     expect(last()).not.toHaveProperty("error"); // cleared by the next action
   });
@@ -137,13 +140,13 @@ describe("settings actions", () => {
     const { settings, last } = controller();
     await settings.handle({ type: "addService", module: "web", name: "Element" });
     expect(last().error).toBe("Could not add Element: url must be an https URL.");
-    await settings.handle({ type: "addService", module: "matrix", name: "M" });
+    await settings.handle({ type: "addService", module: "irc", name: "M" });
     expect(last().error).toBe("That module cannot be added.");
     expect(fs.existsSync(platformsFile)).toBe(false);
   });
 
   it("will not remove the last service that is on", async () => {
-    fs.writeFileSync(platformsFile, JSON.stringify([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "w", name: "W", module: "discord" }]));
+    fs.writeFileSync(platformsFile, JSON.stringify([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, { id: "w", name: "W", module: "discord" }]));
     const { settings, deps, last } = controller();
     await settings.handle({ type: "removeService", id: "w" });
     expect(last().error).toBe("Keep at least one service turned on.");

@@ -1,5 +1,6 @@
 import { build } from "esbuild";
-import { cpSync, mkdirSync } from "node:fs";
+import { cpSync, mkdirSync, readFileSync } from "node:fs";
+import { telegramBrowser } from "./telegramBrowser.mjs";
 
 const common = { bundle: true, sourcemap: true, target: "chrome140", logLevel: "info" };
 
@@ -40,11 +41,33 @@ await Promise.all([
       native: "src/entries/native.ts",
       gallery: "src/entries/gallery.ts",
       settings: "src/entries/settings.ts",
-      "engines/fluxer": "src/entries/engine-fluxer.ts",
       messages: "src/entries/messages.ts",
     },
     platform: "browser",
     format: "iife",
     outdir: "dist",
+  }),
+  // Module engines: sandboxed pages, served from dist/engines.
+  build({
+    ...common,
+    entryPoints: { "engines/fluxer": "src/entries/engine-fluxer.ts" },
+    platform: "browser",
+    format: "iife",
+    outdir: "dist",
+  }),
+  build({
+    ...common,
+    entryPoints: { "engines/telegram": "src/entries/engine-telegram.ts" },
+    platform: "browser",
+    format: "iife",
+    outdir: "dist",
+    plugins: [telegramBrowser()],
+    inject: ["scripts/telegramGlobals.mjs"],
+    define: {
+      // Telegram issues API credentials per app (my.telegram.org); without them users enter their own.
+      __TELEGRAM_API_ID__: JSON.stringify(process.env.MULTICORD_TELEGRAM_API_ID ?? ""),
+      __TELEGRAM_API_HASH__: JSON.stringify(process.env.MULTICORD_TELEGRAM_API_HASH ?? ""),
+      __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync("package.json", "utf8")).version),
+    },
   }),
 ]);

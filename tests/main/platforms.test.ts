@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DISCORD, FLUXER, loadPlatforms, parsePlatforms, type ModuleRule } from "../../src/main/platforms";
+import { DISCORD, FLUXER, loadPlatforms, parsePlatforms, TELEGRAM, type ModuleRule } from "../../src/main/platforms";
 
 const user = (raw: unknown, modules?: readonly ModuleRule[]) => {
   const { entries, errors } = parsePlatforms(raw, modules);
@@ -52,6 +52,7 @@ describe("parsePlatforms", () => {
     expect(entries.map((e) => [e.def.id, e.enabled, e.builtIn])).toEqual([
       ["discord", true, true],
       ["fluxer", true, true],
+      ["telegram", true, true],
     ]);
     expect(errors).toEqual(["platforms.json must contain an array"]);
   });
@@ -65,8 +66,8 @@ describe("parsePlatforms", () => {
 describe("loadPlatforms", () => {
   it("returns the built-ins when there is no file", () => {
     const { platforms, all, errors } = loadPlatforms(() => undefined);
-    expect(platforms).toEqual([DISCORD, FLUXER]);
-    expect(all.map((p) => p.builtIn)).toEqual([true, true]);
+    expect(platforms).toEqual([DISCORD, FLUXER, TELEGRAM]);
+    expect(all.map((p) => p.builtIn)).toEqual([true, true, true]);
     expect(errors).toEqual([]);
   });
 
@@ -77,13 +78,13 @@ describe("loadPlatforms", () => {
         { id: "off", name: "Off", url: "https://off.example", enabled: false },
       ]),
     );
-    expect(platforms.map((p) => p.id)).toEqual(["discord", "fluxer", "stoat"]);
-    expect(all.map((p) => p.def.id)).toEqual(["discord", "fluxer", "stoat", "off"]);
+    expect(platforms.map((p) => p.id)).toEqual(["discord", "fluxer", "telegram", "stoat"]);
+    expect(all.map((p) => p.def.id)).toEqual(["discord", "fluxer", "telegram", "stoat", "off"]);
   });
 
   it("reports invalid JSON", () => {
     const { platforms, errors } = loadPlatforms(() => "{oops");
-    expect(platforms).toEqual([DISCORD, FLUXER]);
+    expect(platforms).toEqual([DISCORD, FLUXER, TELEGRAM]);
     expect(errors[0]).toMatch(/^platforms.json is not valid JSON/);
   });
 });
@@ -125,6 +126,7 @@ describe("built-in overrides", () => {
   it("turns built-ins off and renames them", () => {
     const json = JSON.stringify([
       { id: "fluxer", enabled: false },
+      { id: "telegram", enabled: false },
       { id: "discord", name: " Personal " },
       { id: "el", name: "Element", url: "https://app.element.io" },
     ]);
@@ -138,9 +140,9 @@ describe("built-in overrides", () => {
   });
 
   it("refuses to turn everything off", () => {
-    const json = JSON.stringify([{ id: "fluxer", enabled: false }, { id: "discord", enabled: false }]);
+    const json = JSON.stringify([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]);
     const { platforms, errors } = loadPlatforms(() => json);
-    expect(platforms.map((p) => p.id)).toEqual(["discord", "fluxer"]);
+    expect(platforms.map((p) => p.id)).toEqual(["discord", "fluxer", "telegram"]);
     expect(errors).toEqual(["at least one platform must stay enabled"]);
   });
 
