@@ -91,6 +91,16 @@ export function promptForm(
   form.dataset.prompt = prompt.id;
   form.append(el(doc, "h1", undefined, prompt.title));
   if (prompt.description) form.append(el(doc, "p", "note prompt-description", prompt.description));
+  // Opens in the browser: the view sends every link outside the app. Modules only get to link to https pages.
+  if (prompt.link && /^https:\/\//i.test(prompt.link.url)) {
+    const link = el(doc, "a", "prompt-link", prompt.link.label);
+    link.href = prompt.link.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    const line = el(doc, "p");
+    line.append(link);
+    form.append(line);
+  }
   const inputs = prompt.fields.map((field) => {
     const input = el(doc, "input");
     input.name = field.name;

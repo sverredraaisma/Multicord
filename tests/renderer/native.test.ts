@@ -771,6 +771,24 @@ describe("prompt steps", () => {
     root.querySelector<HTMLButtonElement>("button.link")!.click();
     expect(api.act).toHaveBeenLastCalledWith({ type: "cancelPrompt", id: "code" });
   });
+
+  it("links to https pages only, opening them outside the app", () => {
+    const view = new NativeView(root, { act: vi.fn() });
+    const linked = (url: string, id: string) => step(id, { prompt: { ...(step(id) as Extract<NativeViewState, { screen: "prompt" }>).prompt, link: { url, label: "Open the page" } } });
+    view.update(linked("https://account.x.org/link", "phone"));
+    const link = root.querySelector<HTMLAnchorElement>("a.prompt-link")!;
+    expect(link.textContent).toBe("Open the page");
+    expect(link.getAttribute("href")).toBe("https://account.x.org/link");
+    expect(link.target).toBe("_blank");
+    expect(link.rel).toBe("noopener noreferrer");
+    view.update(linked("javascript:alert(1)", "code"));
+    expect(root.querySelector("a.prompt-link")).toBeNull();
+    // A link needs no description.
+    const bare = linked("https://account.x.org/link", "device") as Extract<NativeViewState, { screen: "prompt" }>;
+    view.update({ ...bare, prompt: { ...bare.prompt, description: undefined } });
+    expect(root.querySelector(".prompt-description")).toBeNull();
+    expect(root.querySelector("a.prompt-link")).not.toBeNull();
+  });
 });
 
 describe("voice shortcuts without a call", () => {

@@ -124,6 +124,8 @@ export interface NativePrompt {
   submit: string;
   /** A secondary button, e.g. "Use another number". */
   cancel?: string;
+  /** A web page to open in the browser, e.g. where to confirm a sign-in code. Only https links are shown. */
+  link?: { url: string; label: string };
 }
 
 export type NativeViewState =
