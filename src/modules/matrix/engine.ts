@@ -1,4 +1,4 @@
-import { bridgeFetch, bridgeSecrets, engineInfo, serveAdapter } from "../../engine/runtime";
+import { bridgeFetch, bridgeSecrets, engineInfo, lockHosts, serveAdapter } from "../../engine/runtime";
 import type { EngineBridge } from "../../preload/engine";
 import { MatrixAdapter, type MatrixCryptoDeps } from "./adapter";
 import type { MatrixApi } from "./api";
@@ -36,6 +36,7 @@ export async function startMatrixEngine(bridge: EngineBridge, options: MatrixEng
     api,
     oauth: (options.createOAuth ?? createOAuthClient)(fetchFn),
     crypto: options.crypto,
+    lockHosts: (hosts) => lockHosts(bridge, hosts),
   });
   served = serveAdapter(bridge, adapter);
   await adapter.start();

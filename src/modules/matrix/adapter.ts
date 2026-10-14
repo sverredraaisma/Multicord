@@ -76,6 +76,13 @@ export interface MatrixAdapterDeps {
   delay?: (ms: number) => Promise<void>;
   /** Reports background failures (never secrets). */
   log?: (message: string) => void;
+  /** Narrows what the engine may reach to these hosts, once they are known. */
+  lockHosts?(hosts: string[]): Promise<void>;
+}
+
+/** The distinct hosts of these URLs, skipping any that are missing. */
+export function hostsOf(...urls: (string | undefined)[]): string[] {
+  return [...new Set(urls.filter((url): url is string => url !== undefined).map((url) => new URL(url).hostname.toLowerCase()))];
 }
 
 type Step = "connecting" | "oauth" | "device" | "login" | "token" | "retry" | "chat" | "recovery";
@@ -266,8 +273,14 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return new URL(this.deps.def.url).host;
   }
 
+  /** From here on the engine needs only these hosts; a refused lock is logged and changes nothing. */
+  private async lockToHosts(hosts: string[]): Promise<void> {
+    await this.deps.lockHosts?.(hosts).catch((error: unknown) => this.log(`host lock refused: ${friendly(error)}`));
+  }
+
   private async resume(saved: MxSession): Promise<void> {
     this.connecting(`Connecting to ${this.host()}…`);
+    await this.lockToHosts(hostsOf(this.deps.def.url, saved.baseUrl, saved.oauth?.tokenEndpoint, saved.oauth?.revocationEndpoint));
     try {
       await this.deps.api.check(saved);
     } catch (error) {
@@ -291,6 +304,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     }
     // Discovery never throws: without an account server, the other ways remain.
     this.oauthServer = await this.deps.oauth?.discover(this.baseUrl).catch(() => undefined);
+    const server = this.oauthServer;
+    await this.lockToHosts(hostsOf(this.deps.def.url, this.baseUrl, server?.issuer, server?.deviceEndpoint, server?.tokenEndpoint, server?.registrationEndpoint, server?.revocationEndpoint));
     this.step = this.signInSteps()[0]!;
     this.status = undefined;
     this.error = error;

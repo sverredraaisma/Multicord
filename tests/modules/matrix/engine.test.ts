@@ -48,6 +48,8 @@ describe("Matrix engine", () => {
     ]);
     expect(bridge.render).toHaveBeenLastCalledWith(expect.objectContaining({ screen: "prompt", platform: "Matrix", prompt: expect.objectContaining({ id: "login" }) }));
     expect(bridge.emit).toHaveBeenCalledWith({ type: "account", account: { state: "signed-out" } });
+    // Once the homeserver is known, the engine keeps to it.
+    expect(bridge.request).toHaveBeenCalledWith({ type: "lockHosts", hosts: ["x.org"] });
   });
 
   it("resumes a stored session with the given API and reports the account", async () => {
@@ -60,6 +62,7 @@ describe("Matrix engine", () => {
     await startMatrixEngine(bridge, { createApi });
     expect(createApi).toHaveBeenCalledWith(expect.any(Function), { refresh: expect.any(Function) });
     expect(api.check).toHaveBeenCalledWith(expect.objectContaining({ accessToken: "tok" }));
+    expect(bridge.request).toHaveBeenCalledWith({ type: "lockHosts", hosts: ["x.org", "hs.x.org"] });
     expect(bridge.emit).toHaveBeenCalledWith({ type: "account", account: { state: "signed-in", name: "@me:x.org" } });
     expect(bridge.render).toHaveBeenLastCalledWith({ screen: "connecting", platform: "Matrix", status: "Loading your chats…" });
   });
@@ -81,5 +84,23 @@ describe("Matrix engine wiring", () => {
     const session = { baseUrl: "https://hs.x.org", accessToken: "t", userId: "@me:x.org", deviceId: "D", ownDevice: true };
     await options!.refresh!(session);
     expect(refresh).toHaveBeenCalledWith(session);
+  });
+});
+
+describe("Matrix host lock", () => {
+  it("names hosts once, and carries on when the shell refuses a lock", async () => {
+    const { hostsOf } = await import("../../../src/modules/matrix/adapter");
+    expect(hostsOf("https://X.org/a", undefined, "https://x.org/b", "https://account.x.org/token")).toEqual(["x.org", "account.x.org"]);
+    const { bridge } = fakeBridge({ session: SESSION });
+    const original = bridge.request.getMockImplementation()!;
+    bridge.request.mockImplementation(async (request: EngineRequest) => {
+      if (request.type === "lockHosts") throw new Error("A host lock can only narrow what the engine may reach");
+      return original(request);
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const api = { check: vi.fn(async () => {}), sync: vi.fn(() => new Promise(() => {})) } as unknown as MatrixApi;
+    await startMatrixEngine(bridge, { createApi: () => api });
+    expect(api.check).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
