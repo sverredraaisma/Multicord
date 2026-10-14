@@ -193,6 +193,17 @@ describe("services tab", () => {
     expect(button("Open", row("new"))).toBeUndefined();
   });
 
+  it("turns a running service's notifications on and off", () => {
+    const state = viewState({ services: [service(), service({ id: "off", name: "Off", enabled: false, account: undefined })] });
+    state.settings = { ...state.settings, services: { discord: { notifications: false } } };
+    mount(state);
+    const box = q<HTMLInputElement>(".service-notifications input", row());
+    expect(box.checked).toBe(false);
+    change(box, true);
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { discord: { notifications: true } } } });
+    expect(row("off").querySelector(".service-notifications")).toBeNull();
+  });
+
   it("the switch sends setEnabled", () => {
     mount();
     const input = q<HTMLInputElement>('input[aria-label="Discord on"]');

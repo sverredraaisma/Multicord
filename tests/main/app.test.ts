@@ -511,6 +511,16 @@ describe("notifications", () => {
     expect(electron.Notification.instances).toHaveLength(1);
   });
 
+  it("stays quiet for a service whose notifications are off", async () => {
+    const { handle, emit } = await withNotifier();
+    handle.settingsStore.update({ services: { fluxer: { notifications: false } } });
+    emit({});
+    expect(electron.Notification.instances).toHaveLength(0);
+    handle.settingsStore.update({ services: { fluxer: null } });
+    emit({});
+    expect(electron.Notification.instances).toHaveLength(1);
+  });
+
   it("does nothing where notifications are unsupported", async () => {
     const { emit } = await withNotifier();
     electron.Notification.isSupported.mockReturnValue(false);

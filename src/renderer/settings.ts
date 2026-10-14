@@ -1,6 +1,6 @@
 import type { SettingsApi } from "../preload/settings";
 import { keyNameForCode } from "../shared/keys";
-import { isAccelerator, ZOOM_LEVELS, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
+import { isAccelerator, serviceSettings, ZOOM_LEVELS, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
 import { el, initials, setColor } from "./components/dom";
 import { browserMediaEnv, playTestTone, startMeter, stopStream, type DeviceInfo, type MediaEnv, type Stop } from "./media";
 
@@ -615,6 +615,15 @@ export class SettingsPage {
       }
       if (!service.builtIn) {
         actions.append(confirmButton(doc, "Remove", "Click again to remove", () => this.api.act({ type: "removeService", id: service.id })));
+      }
+      if (service.enabled) {
+        const notes = el(doc, "label", "service-notifications");
+        const box = el(doc, "input");
+        box.type = "checkbox";
+        box.checked = serviceSettings(this.state!.settings, service.id).notifications;
+        box.addEventListener("change", () => this.update({ services: { [service.id]: { notifications: box.checked } } }));
+        notes.append(box, " Notifications");
+        actions.append(notes);
       }
       info.append(title, status, actions);
       const { row, input } = switchRow(doc, "On", undefined, (on) => this.api.act({ type: "setEnabled", id: service.id, enabled: on }));

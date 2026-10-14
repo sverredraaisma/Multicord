@@ -262,3 +262,6 @@
 .key-button { min-width: 160px; font-family: ui-monospace, monospace; }
 .key-button.recording { box-shadow: inset 0 0 0 2px var(--accent); }
 .key-hint:empty { display: none; }
+
+/* Per-service notifications */
+.service-notifications { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }

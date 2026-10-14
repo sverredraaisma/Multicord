@@ -32,7 +32,7 @@ import {
 } from "../shared/ipc";
 import type { ActivityUpdate, PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
-import { isSettingsAction, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
+import { isSettingsAction, serviceSettings, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import { EngineHub, engineStoragePartition } from "./engineHost";
 import { installHardening } from "./hardening";
@@ -192,6 +192,8 @@ export async function createShell(
   const credentials = new CredentialStore(path.join(paths.userData, "credentials.json"), services.secrets);
   const settingsStore = new SettingsStore(path.join(paths.userData, "settings.json"));
   const general = () => settingsStore.get().general;
+  /** Notifications from this service: on in general and not turned off for it. */
+  const notificationsOn = (id: string): boolean => general().notifications && serviceSettings(settingsStore.get(), id).notifications;
   let activePlatform = platforms[0]!.id;
   /** What the content area shows: a platform, the settings page, or the Messages list beside a conversation. */
   let mode: "platform" | "settings" | "messages" = "platform";
@@ -299,7 +301,7 @@ export async function createShell(
       continue;
     }
     const ses = session.fromPartition(def.partition);
-    configureSession(ses, () => general().notifications);
+    configureSession(ses, () => notificationsOn(def.id));
     ses.setSpellCheckerEnabled(general().spellcheck);
     platformSessions.push(ses);
     const { preload } = module.manifest;
@@ -666,7 +668,7 @@ export async function createShell(
   // Shown notifications stay referenced so their click handlers survive GC.
   const shownNotifications = new Set<Notification>();
   const notify = (id: string, n: PlatformNotification, urgent = false): void => {
-    if (!general().notifications || !Notification.isSupported()) return;
+    if (!notificationsOn(id) || !Notification.isSupported()) return;
     const name = platforms.find((p) => p.id === id)?.name ?? id;
     // While streaming, a notification may say that something happened, not who said what.
     const shown = streaming() ? { title: urgent ? "Incoming call" : "New message", body: urgent ? `Someone is calling you on ${name}` : `On ${name}` } : { title: n.title, body: n.body };

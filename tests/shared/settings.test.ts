@@ -166,3 +166,32 @@ describe("shortcuts and push to talk", () => {
     expect(applySettingsPatch(withKey, { voice: { pushToTalk: null } }).voice).not.toHaveProperty("pushToTalk");
   });
 });
+
+describe("per-service settings", () => {
+  it("reads, patches and resets a service's notifications", async () => {
+    const { serviceSettings, MAX_SERVICE_SETTINGS } = await import("../../src/shared/settings");
+    expect(DEFAULT_SETTINGS.services).toEqual({});
+    const parsed = parseSettings({ services: { fluxer: { notifications: false }, "Bad Id": { notifications: false }, web: { notifications: "no" }, other: 1 } });
+    expect(parsed.services).toEqual({ fluxer: { notifications: false } });
+    expect(serviceSettings(parsed, "fluxer").notifications).toBe(false);
+    expect(serviceSettings(parsed, "discord").notifications).toBe(true);
+    expect(serviceSettings(parsed, "constructor").notifications).toBe(true);
+    expect(isSettingsPatch({ services: { fluxer: { notifications: true }, web: null } })).toBe(true);
+    for (const bad of [{ services: [] }, { services: { "No!": null } }, { services: { a: { notifications: 1 } } }, { services: { a: { badge: true } } }, { services: { a: 5 } }]) {
+      expect(isSettingsPatch(bad)).toBe(false);
+    }
+    const many = Object.fromEntries(Array.from({ length: MAX_SERVICE_SETTINGS + 1 }, (_, i) => [`s${i}`, null]));
+    expect(isSettingsPatch({ services: many })).toBe(false);
+    const off = applySettingsPatch(DEFAULT_SETTINGS, { services: { fluxer: { notifications: false } } });
+    expect(off.services).toEqual({ fluxer: { notifications: false } });
+    expect(applySettingsPatch(off, { services: { fluxer: null } }).services).toEqual({});
+
+    // Full: existing entries still change, new ones are not added.
+    const full = { ...DEFAULT_SETTINGS, services: Object.fromEntries(Array.from({ length: MAX_SERVICE_SETTINGS }, (_, i) => [`s${i}`, { notifications: true }])) };
+    const next = applySettingsPatch(full, { services: { s0: { notifications: false }, extra: { notifications: false } } });
+    expect(next.services.s0).toEqual({ notifications: false });
+    expect(next.services).not.toHaveProperty("extra");
+    const capped = parseSettings({ services: Object.fromEntries(Array.from({ length: MAX_SERVICE_SETTINGS + 5 }, (_, i) => [`s${i}`, { notifications: false }])) });
+    expect(Object.keys(capped.services)).toHaveLength(MAX_SERVICE_SETTINGS);
+  });
+});

@@ -109,10 +109,27 @@ export interface ShortcutSettings {
 
 export type ShortcutAction = keyof ShortcutSettings;
 
+/** Settings for one service (platform instance), by its id. */
+export interface ServiceSettings {
+  /** Desktop notifications from this service; the general switch still applies. */
+  notifications: boolean;
+}
+
 export interface AppSettings {
   general: GeneralSettings;
   voice: VoiceSettings;
   shortcuts: ShortcutSettings;
+  /** Per-service settings; services without an entry use the defaults. */
+  services: Record<string, ServiceSettings>;
+}
+
+export const DEFAULT_SERVICE_SETTINGS: ServiceSettings = { notifications: true };
+/** Services with settings of their own, at most. */
+export const MAX_SERVICE_SETTINGS = 200;
+
+/** One service's settings, defaults filled in. */
+export function serviceSettings(settings: AppSettings, id: string): ServiceSettings {
+  return { ...DEFAULT_SERVICE_SETTINGS, ...(Object.hasOwn(settings.services, id) ? settings.services[id] : {}) };
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -120,6 +137,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, enhancedNoiseSuppression: false, pushToTalkGlobal: false },
   // Off by default: global shortcuts take keys away from every other app.
   shortcuts: { toggleMute: null, toggleDeafen: null, showApp: null },
+  services: {},
 };
 
 const MODIFIER = "(?:CommandOrControl|CmdOrCtrl|Control|Ctrl|Command|Cmd|Alt|Option|AltGr|Shift|Super|Meta)";
@@ -141,6 +159,8 @@ const SHORTCUT_KEYS: readonly ShortcutAction[] = ["toggleMute", "toggleDeafen", 
 export interface SettingsPatch {
   general?: Partial<GeneralSettings>;
   shortcuts?: Partial<ShortcutSettings>;
+  /** Per service: fields to change, or null to go back to the defaults. */
+  services?: Record<string, Partial<ServiceSettings> | null>;
   voice?: Partial<Record<"input" | "output" | "camera", DeviceChoice | null>> &
     Partial<Pick<VoiceSettings, "echoCancellation" | "noiseSuppression" | "autoGainControl" | "enhancedNoiseSuppression" | "pushToTalkGlobal">> & { pushToTalk?: string | null };
 }
@@ -191,14 +211,27 @@ export function parseSettings(raw: unknown): AppSettings {
   if (isRecord(raw.shortcuts)) {
     for (const key of SHORTCUT_KEYS) if (isAccelerator(raw.shortcuts[key])) settings.shortcuts[key] = raw.shortcuts[key];
   }
+  if (isRecord(raw.services)) {
+    for (const [id, value] of Object.entries(raw.services).slice(0, MAX_SERVICE_SETTINGS)) {
+      if (SERVICE_ID.test(id) && isRecord(value) && typeof value.notifications === "boolean") settings.services[id] = { notifications: value.notifications };
+    }
+  }
   return settings;
 }
 
 /** Only known keys with the right types; anything else rejects the whole patch. */
 export function isSettingsPatch(value: unknown): value is SettingsPatch {
   if (!isRecord(value)) return false;
-  for (const key of Object.keys(value)) if (key !== "general" && key !== "voice" && key !== "shortcuts") return false;
-  const { general, voice, shortcuts } = value;
+  for (const key of Object.keys(value)) if (key !== "general" && key !== "voice" && key !== "shortcuts" && key !== "services") return false;
+  const { general, voice, shortcuts, services } = value;
+  if (services !== undefined) {
+    if (!isRecord(services) || Object.keys(services).length > MAX_SERVICE_SETTINGS) return false;
+    for (const [id, v] of Object.entries(services)) {
+      if (!SERVICE_ID.test(id)) return false;
+      if (v === null) continue;
+      if (!isRecord(v) || !Object.entries(v).every(([key, flag]) => key === "notifications" && typeof flag === "boolean")) return false;
+    }
+  }
   if (shortcuts !== undefined) {
     if (!isRecord(shortcuts)) return false;
     for (const [key, v] of Object.entries(shortcuts)) {
@@ -232,6 +265,10 @@ export function applySettingsPatch(settings: AppSettings, patch: SettingsPatch):
   const next = structuredClone(settings);
   Object.assign(next.general, patch.general);
   Object.assign(next.shortcuts, patch.shortcuts);
+  for (const [id, value] of Object.entries(patch.services ?? {})) {
+    if (value === null) delete next.services[id];
+    else if (Object.keys(next.services).length < MAX_SERVICE_SETTINGS || Object.hasOwn(next.services, id)) next.services[id] = { ...serviceSettings(next, id), ...value };
+  }
   for (const [key, value] of Object.entries(patch.voice ?? {})) {
     if (value === null) delete next.voice[key as (typeof DEVICE_KEYS)[number] | "pushToTalk"];
     else (next.voice as unknown as Record<string, unknown>)[key] = value;
