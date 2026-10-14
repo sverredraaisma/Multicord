@@ -28,6 +28,8 @@ import {
 
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const MAX_CACHED_MESSAGES = 200;
+/** Fluxer, like Discord, shows typing for about 10 seconds per event. */
+export const TYPING_MS = 10_000;
 
 /** Client-side view of one Fluxer session, built from READY and dispatch events. */
 export class FluxerState {
@@ -37,6 +39,8 @@ export class FluxerState {
   readonly readStates = new Map<string, FluxerReadState>();
   readonly users = new Map<string, FluxerUser>();
   readonly messages = new Map<string, FluxerMessage[]>();
+  /** Who is typing where: channel id -> user id -> expiry (epoch ms). */
+  readonly typing = new Map<string, Map<string, number>>();
   /** Notification settings per guild id, or DM_SETTINGS for DMs. */
   readonly notifySettings = new Map<string, FluxerNotifySettings>();
   folders: FluxerFolder[] | undefined;
@@ -48,7 +52,7 @@ export class FluxerState {
   reset(): void {
     this.me = undefined;
     this.folders = undefined;
-    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.notifySettings]) map.clear();
+    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.notifySettings, this.typing]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -122,6 +126,14 @@ export class FluxerState {
         const channelId = isId(d.channel_id) ? d.channel_id : undefined;
         const cached = channelId ? this.messages.get(channelId) : undefined;
         if (cached) this.messages.set(channelId!, cached.filter((m) => !ids.has(m.id)));
+        break;
+      }
+      case "TYPING_START": {
+        if (!isId(d.channel_id) || !isId(d.user_id) || d.user_id === this.me?.id) return;
+        const started = typeof d.timestamp === "number" ? d.timestamp * 1000 : Date.now();
+        const channel = this.typing.get(d.channel_id) ?? new Map<string, number>();
+        channel.set(d.user_id, started + TYPING_MS);
+        this.typing.set(d.channel_id, channel);
         break;
       }
       case "MESSAGE_ACK":
@@ -313,8 +325,16 @@ export class FluxerState {
     if (state) this.readStates.set(state.channelId, state);
   }
 
+  /** Users typing in a channel right now, excluding ourselves. */
+  typingIn(channelId: string, now: number = Date.now()): FluxerUser[] {
+    return [...(this.typing.get(channelId) ?? [])]
+      .filter(([, expires]) => expires > now)
+      .flatMap(([userId]) => this.users.get(userId) ?? []);
+  }
+
   private onMessageCreate(message: FluxerMessage | undefined): void {
     if (!message) return;
+    this.typing.get(message.channelId)?.delete(message.author.id);
     this.addUser(message.author);
     const channel = this.channels.get(message.channelId);
     if (channel) channel.lastMessageId = message.id;

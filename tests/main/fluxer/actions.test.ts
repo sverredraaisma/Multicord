@@ -109,3 +109,32 @@ describe("FluxerRest message actions", () => {
     expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ content: "new" });
   });
 });
+
+describe("typing", () => {
+  it("tracks who is typing until it expires or they send", () => {
+    const { state } = stateWithMessage();
+    state.apply("TYPING_START", { channel_id: "211", user_id: ANA.id, timestamp: 1000 });
+    state.apply("TYPING_START", { channel_id: "211", user_id: ME.id, timestamp: 1000 }); // ourselves
+    state.apply("TYPING_START", { channel_id: "211", user_id: "404", timestamp: 1000 }); // unknown user
+    state.apply("TYPING_START", { channel_id: "x", user_id: ANA.id });
+    expect(state.typingIn("211", 1_005_000).map((u) => u.id)).toEqual([ANA.id]);
+    expect(state.typingIn("211", 1_011_000)).toEqual([]);
+    expect(state.typingIn("999")).toEqual([]);
+
+    state.apply("TYPING_START", { channel_id: "211", user_id: ANA.id });
+    expect(state.typingIn("211").map((u) => u.id)).toEqual([ANA.id]);
+    state.apply("MESSAGE_CREATE", { id: "701", channel_id: "211", author: ANA });
+    expect(state.typingIn("211")).toEqual([]);
+  });
+
+  it("sends the typing call", async () => {
+    const calls: string[] = [];
+    const fetch = vi.fn(async (url: string) => {
+      calls.push(url);
+      return { ok: true, status: 204, json: async () => undefined } as Response;
+    });
+    const client = new FluxerRest("https://api.fx/v1", { fetch: fetch as unknown as typeof globalThis.fetch, sleep: async () => {} });
+    await client.typing("5");
+    expect(calls).toEqual(["https://api.fx/v1/channels/5/typing"]);
+  });
+});

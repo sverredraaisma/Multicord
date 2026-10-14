@@ -55,6 +55,8 @@ export interface NativeChannelView {
   messages: NativeMessage[];
   loading: boolean;
   hasOlder: boolean;
+  /** Names of people typing here right now. */
+  typing: string[];
 }
 
 export type NativeViewState =
@@ -82,6 +84,7 @@ export type NativeAction =
   | { type: "delete"; messageId: string }
   | { type: "react"; messageId: string; emoji: string; add: boolean }
   | { type: "loadOlder" }
+  | { type: "typing" }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -98,6 +101,7 @@ export function isNativeAction(value: unknown): value is NativeAction {
     case "ready":
     case "cancelMfa":
     case "loadOlder":
+    case "typing":
     case "logout":
       return true;
     case "login":

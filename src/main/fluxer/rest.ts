@@ -113,6 +113,10 @@ export class FluxerRest {
     return parseMessage(await this.request("POST", `/channels/${channelId}/messages`, body));
   }
 
+  async typing(channelId: string): Promise<void> {
+    await this.request("POST", `/channels/${channelId}/typing`);
+  }
+
   async editMessage(channelId: string, messageId: string, content: string): Promise<FluxerMessage | undefined> {
     return parseMessage(await this.request("PATCH", `/channels/${channelId}/messages/${messageId}`, { content }));
   }

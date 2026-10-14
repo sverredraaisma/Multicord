@@ -8,6 +8,7 @@ describe("isNativeAction", () => {
       { type: "ready" },
       { type: "cancelMfa" },
       { type: "loadOlder" },
+      { type: "typing" },
       { type: "logout" },
       { type: "login", identity: "a@b.c", password: "pw" },
       { type: "mfa", code: "123456" },

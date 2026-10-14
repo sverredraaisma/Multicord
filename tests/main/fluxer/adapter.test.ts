@@ -701,3 +701,26 @@ describe("FluxerAdapter message actions", () => {
     expect(ctx.chat().error).toBeUndefined();
   });
 });
+
+describe("FluxerAdapter typing", () => {
+  it("sends typing at most every 8 seconds per channel and shows others typing", async () => {
+    const ctx = setup({ token: "flx" });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.handleAction({ type: "typing" }); // no channel yet
+    await ctx.adapter.openServer("100");
+    const typingCalls = () => ctx.calls.filter((c) => c.url.endsWith("/typing"));
+    await ctx.adapter.handleAction({ type: "typing" });
+    await ctx.adapter.handleAction({ type: "typing" });
+    expect(typingCalls()).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(8_000);
+    await ctx.adapter.handleAction({ type: "typing" });
+    expect(typingCalls()).toHaveLength(2);
+
+    ctx.adapter.state.apply("TYPING_START", { channel_id: "113", user_id: "2" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.chat().channel!.typing).toEqual(["Ana"]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ctx.chat().channel!.typing).toEqual([]);
+  });
+});

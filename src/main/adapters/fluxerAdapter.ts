@@ -4,7 +4,7 @@ import { solveAltcha } from "../fluxer/captcha";
 import { discoverInstance, type FluxerInstance } from "../fluxer/discovery";
 import { FluxerGateway, type GatewayStatus, type SocketFactory } from "../fluxer/gateway";
 import { FluxerRest, type LoginResult, type RestOptions } from "../fluxer/rest";
-import { FluxerState } from "../fluxer/state";
+import { FluxerState, TYPING_MS } from "../fluxer/state";
 import {
   ChannelType,
   MessageType,
@@ -24,6 +24,7 @@ const PUBLISH_DELAY_MS = 100;
 const ACK_DELAY_MS = 750;
 const FLUXER_EPOCH = 1420070400000n;
 const LAZY_REQUEST = 14;
+const TYPING_REPEAT_MS = 8_000;
 
 export interface SecretStore {
   load(key: string): string | undefined;
@@ -74,11 +75,18 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly expanded = new Set<string>();
   private readonly ackTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
+  private typingTimer: ReturnType<typeof setTimeout> | undefined;
+  private readonly typingSent = new Map<string, number>();
   private visible = false;
 
   constructor(private readonly deps: FluxerAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
     this.state.changed.on(() => this.schedulePublish());
+    // Typing indicators expire on their own; re-render when they may have.
+    this.state.changed.on(() => {
+      clearTimeout(this.typingTimer);
+      if (this.state.typing.size > 0) this.typingTimer = setTimeout(() => this.render(), TYPING_MS);
+    });
     this.state.incoming.on((message) => {
       if (message.channelId === this.selectedChannelId) this.ackSoon(message.channelId);
       this.notify(message);
@@ -122,6 +130,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.react(action.messageId, action.emoji, action.add);
       case "loadOlder":
         return this.loadOlder();
+      case "typing":
+        return this.sendTyping();
       case "logout":
         return this.logout();
     }
@@ -377,6 +387,14 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
+  /** Tells others we are typing; Fluxer shows it for ~10 s, so once per 8 s is enough. */
+  private async sendTyping(now: number = Date.now()): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.rest || now - (this.typingSent.get(channelId) ?? -Infinity) < TYPING_REPEAT_MS) return;
+    this.typingSent.set(channelId, now);
+    await this.rest.typing(channelId).catch(() => undefined);
+  }
+
   /** Runs a user action, showing a failure in the view's banner. */
   private async attempt(failure: string, action: () => Promise<void>): Promise<void> {
     try {
@@ -582,6 +600,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                 messages: (this.state.messages.get(channel.id) ?? []).map((m) => this.viewMessage(m)),
                 loading: this.loading.has(channel.id),
                 hasOlder: this.hasOlder.get(channel.id) ?? false,
+                typing: this.state.typingIn(channel.id).map((u) => displayName(u)),
               }
             : null,
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),

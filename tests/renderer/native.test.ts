@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { formatTime, NativeView, QUICK_REACTIONS, startNative } from "../../src/renderer/native";
+import { formatTime, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
 import type { NativeApi } from "../../src/preload/native";
 import type { NativeMessage, NativeViewState } from "../../src/shared/native";
 
@@ -36,7 +36,7 @@ function chat(extra: Partial<Chat> = {}): Chat {
       { id: "3", name: "Ana", kind: "dm", iconUrl: "https://media/a.png", unread: false, mentions: 120, active: false },
       { id: "4", name: "Bo", kind: "dm", unread: false, mentions: 0, active: false },
     ],
-    channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: false },
+    channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: false, typing: [] },
     ...extra,
   };
 }
@@ -129,6 +129,7 @@ describe("chat screen", () => {
           name: "general",
           loading: false,
           hasOlder: false,
+          typing: [],
           messages: [
             msg("10", {
               content: "<img src=x onerror=alert(1)>",
@@ -191,14 +192,14 @@ describe("chat screen", () => {
   });
 
   it("offers older history and shows loading states", () => {
-    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: true } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: true, typing: [] } }));
     const older = root.querySelector<HTMLButtonElement>("button.older")!;
     expect(older.textContent).toBe("Load older messages");
     older.click();
     expect(act).toHaveBeenCalledWith({ type: "loadOlder" });
-    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: true, hasOlder: true } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: true, hasOlder: true, typing: [] } }));
     expect(root.querySelector<HTMLButtonElement>("button.older")!.disabled).toBe(true);
-    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: true, hasOlder: false } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: true, hasOlder: false, typing: [] } }));
     expect(root.querySelector(".older-row")!.textContent).toBe("Loading…");
   });
 
@@ -209,7 +210,7 @@ describe("chat screen", () => {
     Object.defineProperty(list, "scrollHeight", { get: () => list.children.length * 500, configurable: true });
     Object.defineProperty(list, "clientHeight", { value: 400, configurable: true });
     const update = (...ids: string[]) =>
-      view.update(chat({ channel: { id: "2", name: "general", messages: ids.map((id) => msg(id)), loading: false, hasOlder: false } }));
+      view.update(chat({ channel: { id: "2", name: "general", messages: ids.map((id) => msg(id)), loading: false, hasOlder: false, typing: [] } }));
 
     // Reading at the top: older messages are prepended, the view stays on the same message.
     list.scrollTop = 0;
@@ -254,7 +255,7 @@ describe("helpers", () => {
 describe("message actions", () => {
   const ownMessage = msg("10", { mine: true, canEdit: true, canDelete: true, source: "raw <@2>", content: "raw @Ana" });
   const withMessages = (...messages: NativeMessage[]) =>
-    chat({ channel: { id: "2", name: "general", messages, loading: false, hasOlder: false } });
+    chat({ channel: { id: "2", name: "general", messages, loading: false, hasOlder: false, typing: [] } });
   const button = (label: string, scope: ParentNode = root) =>
     [...scope.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === label);
 
@@ -381,8 +382,32 @@ describe("message actions", () => {
     view.update(withMessages(ownMessage));
     button("Reply")!.click();
     button("Edit")!.click();
-    view.update(chat({ channel: { id: "3", name: "other", messages: [ownMessage], loading: false, hasOlder: false } }));
+    view.update(chat({ channel: { id: "3", name: "other", messages: [ownMessage], loading: false, hasOlder: false, typing: [] } }));
     expect(root.querySelector<HTMLElement>(".reply-bar")!.hidden).toBe(true);
     expect(root.querySelector(".edit-box")).toBeNull();
+  });
+});
+
+describe("typing", () => {
+  it("phrases who is typing", () => {
+    expect(typingText([])).toBe("");
+    expect(typingText(["Ana"])).toBe("Ana is typing…");
+    expect(typingText(["Ana", "Bo"])).toBe("Ana and Bo are typing…");
+    expect(typingText(["Ana", "Bo", "Cy"])).toBe("Ana, Bo and Cy are typing…");
+    expect(typingText(["a", "b", "c", "d"])).toBe("Several people are typing…");
+  });
+
+  it("shows typing and reports our own typing", () => {
+    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: ["Ana"] } }));
+    expect(root.querySelector(".typing")!.textContent).toBe("Ana is typing…");
+    const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
+    composer.value = "  ";
+    composer.dispatchEvent(new Event("input"));
+    expect(act).not.toHaveBeenCalled();
+    composer.value = "h";
+    composer.dispatchEvent(new Event("input"));
+    expect(act).toHaveBeenCalledWith({ type: "typing" });
+    view.update(chat({ channel: null }));
+    expect(root.querySelector(".typing")!.textContent).toBe("");
   });
 });

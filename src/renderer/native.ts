@@ -32,6 +32,14 @@ function avatar(doc: Document, url: string | undefined, name: string): HTMLEleme
   return el(doc, "span", "avatar initials", initials(name));
 }
 
+/** "Ana is typing…", "Ana and Bo are typing…", or a summary for more people. */
+export function typingText(names: string[]): string {
+  if (names.length === 0) return "";
+  if (names.length === 1) return `${names[0]} is typing…`;
+  if (names.length <= 3) return `${names.slice(0, -1).join(", ")} and ${names.at(-1)} are typing…`;
+  return "Several people are typing…";
+}
+
 export function formatTime(iso: string, locale?: string): string {
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? "" : date.toLocaleString(locale, { dateStyle: "short", timeStyle: "short" });
@@ -203,7 +211,11 @@ export class NativeView {
       composer.value = "";
       this.setReply(undefined);
     });
-    main.append(header, banner, messages, replyBar, composer);
+    composer.addEventListener("input", () => {
+      if (composer.value.trim() !== "") this.api.act({ type: "typing" });
+    });
+    const typing = el(doc, "div", "typing");
+    main.append(header, banner, messages, typing, replyBar, composer);
 
     // One edit box, reused across renders so an edit in progress survives updates.
     const editBox = el(doc, "textarea", "edit-box");
@@ -220,7 +232,7 @@ export class NativeView {
     const layout = el(doc, "div", "chat");
     layout.append(sidebar, main);
     this.root.replaceChildren(layout);
-    Object.assign(this.parts, { title, list, me, header, banner, messages, replyBar, composer, editBox });
+    Object.assign(this.parts, { title, list, me, header, banner, messages, typing, replyBar, composer, editBox });
   }
 
   private setReply(target: { id: string; author: string } | undefined): void {
@@ -382,6 +394,7 @@ export class NativeView {
 
     const channel = state.channel;
     header!.textContent = channel ? channel.name : "Select a conversation";
+    this.parts.typing!.textContent = typingText(channel?.typing ?? []);
     (composer as HTMLTextAreaElement).disabled = !channel;
     (composer as HTMLTextAreaElement).placeholder = channel ? `Message ${channel.name}` : "";
 
