@@ -367,6 +367,15 @@ describe("native Fluxer platform", () => {
     expect(session.fromPartition("persist:fluxer").displayMediaRequestHandler).toBeTypeOf("function");
   });
 
+  it("opens links to the platform's own site from message popups in the browser too", async () => {
+    const { handle } = await shellWith();
+    const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    expect(view.webContents.windowOpenHandler!({ url: "https://fluxer.app/invite/x" })).toEqual({ action: "deny" });
+    expect(shell.openExternal).toHaveBeenCalledWith("https://fluxer.app/invite/x");
+    expect(view.webContents.windowOpenHandler!({ url: "file:///etc/passwd" })).toEqual({ action: "deny" });
+    expect(shell.openExternal).toHaveBeenCalledTimes(1);
+  });
+
   it("opens message links in the browser, never inside the app", async () => {
     const { handle } = await shellWith();
     const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;

@@ -36,10 +36,18 @@ export const fluxerModule: PlatformModule = {
       if (event.sender !== view.webContents || !isNativeAction(action)) return;
       adapter.handleAction(action).catch((error: Error) => console.warn(`[${def.id}] ${error.message}`));
     });
-    // Our own page: links in messages open in the browser, never in the app.
+    // Our own page: links in messages open in the browser, never in the app,
+    // including links to the platform's own site (which the shell would allow).
+    const openOutside = (url: string): void => {
+      if (decideWindowOpen(url, "file:///") === "external") void shell.openExternal(url);
+    };
     view.webContents.on("will-navigate", (event, url) => {
       event.preventDefault();
-      if (decideWindowOpen(url, "file:///") === "external") void shell.openExternal(url);
+      openOutside(url);
+    });
+    view.webContents.setWindowOpenHandler(({ url }) => {
+      openOutside(url);
+      return { action: "deny" };
     });
     enableScreenShare(); // for voice
     return {
