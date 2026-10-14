@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("livekit-client", () => import("../mocks/livekit"));
 
-import { formatSize, formatTime, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
+import { formatSize, formatTime, insertAtCursor, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
 import type { NativeApi } from "../../src/preload/native";
 import type { NativeMessage, NativeViewState } from "../../src/shared/native";
 
@@ -370,7 +370,7 @@ describe("message actions", () => {
     expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "party:55", add: true });
 
     button("React")!.click();
-    const quick = root.querySelectorAll<HTMLButtonElement>(".quick-reactions .reaction");
+    const quick = root.querySelectorAll<HTMLButtonElement>(".quick-reactions .reaction:not(.more)");
     expect([...quick].map((b) => b.textContent)).toEqual(QUICK_REACTIONS);
     quick[0]!.click(); // 👍 is already ours: removes it
     expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "👍", add: false });
@@ -378,7 +378,7 @@ describe("message actions", () => {
     button("React")!.click(); // toggles the palette closed
     expect(root.querySelector(".quick-reactions")).toBeNull();
     button("React")!.click();
-    root.querySelectorAll<HTMLButtonElement>(".quick-reactions .reaction")[5]!.click();
+    root.querySelectorAll<HTMLButtonElement>(".quick-reactions .reaction:not(.more)")[5]!.click();
     expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "🎉", add: true });
   });
 
@@ -597,5 +597,74 @@ describe("voice", () => {
     view.update(chat({ voice: null }));
     expect(panel.hidden).toBe(true);
     view.update(login); // leaving the chat screen ends the call
+  });
+});
+
+describe("emoji and markdown", () => {
+  const withEmoji = (messages: NativeMessage[] = [msg("11")]) =>
+    chat({
+      emojiBase: "https://media.fx/emojis",
+      customEmoji: [{ id: "55", name: "party", animated: false }],
+      channel: { id: "2", name: "general", messages, loading: false, hasOlder: false, typing: [], pending: [], uploading: false },
+    });
+
+  it("inserts picked emoji at the cursor and closes the picker", () => {
+    view.update(withEmoji());
+    const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
+    composer.value = "hi there";
+    composer.selectionStart = composer.selectionEnd = 2;
+    const toggle = root.querySelector<HTMLButtonElement>(".emoji-button")!;
+    toggle.click();
+    const holder = root.querySelector<HTMLElement>(".composer-picker")!;
+    expect(holder.hidden).toBe(false);
+    holder.querySelector<HTMLButtonElement>(".emoji-option.custom")!.click();
+    expect(composer.value).toBe("hi<:party:55> there");
+    expect(holder.hidden).toBe(true);
+    expect(holder.children).toHaveLength(0);
+
+    toggle.click();
+    toggle.click(); // closes again
+    expect(holder.hidden).toBe(true);
+  });
+
+  it("inserts at the end without a selection", () => {
+    const field = document.createElement("textarea");
+    field.value = "abc";
+    Object.defineProperty(field, "selectionStart", { value: null, writable: true });
+    Object.defineProperty(field, "selectionEnd", { value: null, writable: true });
+    insertAtCursor(field, "!");
+    expect(field.value).toBe("abc!");
+  });
+
+  it("reacts with any emoji through the full picker", () => {
+    view.update(withEmoji([msg("11", { reactions: [{ key: "party:55", label: ":party:", count: 1, me: true }] })]));
+    [...root.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "React")!.click();
+    root.querySelector<HTMLButtonElement>(".quick-reactions .more")!.click();
+    const picker = root.querySelector(".message .emoji-picker")!;
+    expect(picker).not.toBeNull();
+    picker.querySelector<HTMLButtonElement>(".emoji-option.custom")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "party:55", add: false });
+    expect(root.querySelector(".message .emoji-picker")).toBeNull();
+
+    [...root.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "React")!.click();
+    root.querySelector<HTMLButtonElement>(".quick-reactions .more")!.click();
+    const search = root.querySelector<HTMLInputElement>(".message .emoji-search")!;
+    search.value = "pizza";
+    search.dispatchEvent(new Event("input"));
+    root.querySelector<HTMLButtonElement>(".message .emoji-grid .emoji-option")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "🍕", add: true });
+  });
+
+  it("renders message markdown with the platform's custom emoji", () => {
+    view.update(withEmoji([msg("11", { content: "**bold** <:party:55> ||spoiler||" })]));
+    const content = root.querySelector(".message .content")!;
+    expect(content.querySelector("strong")!.textContent).toBe("bold");
+    expect(content.querySelector("img.emoji")!.getAttribute("src")).toBe("https://media.fx/emojis/55.webp?size=48");
+    expect(content.querySelector(".spoiler")).not.toBeNull();
+  });
+
+  it("disables the emoji button where the composer is disabled", () => {
+    view.update(chat({ channel: null }));
+    expect(root.querySelector<HTMLButtonElement>(".emoji-button")!.disabled).toBe(true);
   });
 });

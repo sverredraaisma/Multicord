@@ -25,6 +25,12 @@ export interface NativeVoiceMember {
   video: boolean;
 }
 
+export interface NativeCustomEmoji {
+  id: string;
+  name: string;
+  animated: boolean;
+}
+
 /** The user's own voice connection. The LiveKit grant is short-lived and scoped to this call. */
 export interface NativeVoiceSession {
   channelId: string;
@@ -108,6 +114,10 @@ export type NativeViewState =
       sidebar: NativeSidebarItem[];
       channel: NativeChannelView | null;
       voice: NativeVoiceSession | null;
+      /** Base URL for custom emoji images: <base>/<id>.webp (or .gif when animated). */
+      emojiBase?: string;
+      /** The open server's custom emoji, for the picker. */
+      customEmoji?: NativeCustomEmoji[];
       error?: string;
     };
 

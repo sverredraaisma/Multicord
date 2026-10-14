@@ -1046,3 +1046,17 @@ describe("FluxerAdapter voice", () => {
     ]);
   });
 });
+
+describe("FluxerAdapter emoji", () => {
+  it("gives the view the emoji base and the open server's custom emoji", async () => {
+    const ctx = setup({ token: "flx" });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    expect(ctx.chat()).toMatchObject({ emojiBase: "https://media.fx/emojis", customEmoji: [] });
+    ctx.adapter.state.apply("GUILD_EMOJIS_UPDATE", { guild_id: "100", emojis: [{ id: "55", name: "party" }] });
+    await ctx.adapter.openServer("100");
+    expect(ctx.chat().customEmoji).toEqual([{ id: "55", name: "party", animated: false }]);
+    await ctx.adapter.openServer("200");
+    expect(ctx.chat().customEmoji).toEqual([]);
+  });
+});

@@ -105,6 +105,17 @@ export interface FluxerReaction {
 
 export const MessageType = { Default: 0, Reply: 19 } as const;
 
+export interface FluxerGuildEmoji {
+  id: string;
+  name: string;
+  animated: boolean;
+}
+
+export function parseGuildEmoji(value: unknown): FluxerGuildEmoji | undefined {
+  if (!isRecord(value) || !isId(value.id) || typeof value.name !== "string" || value.name === "") return undefined;
+  return { id: value.id, name: value.name, animated: value.animated === true };
+}
+
 export function parseEmoji(value: unknown): FluxerEmoji | undefined {
   if (!isRecord(value) || typeof value.name !== "string" || value.name === "") return undefined;
   return isId(value.id) ? { id: value.id, name: value.name } : { name: value.name };

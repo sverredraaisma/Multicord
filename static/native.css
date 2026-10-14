@@ -301,3 +301,77 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
 .video-tile video { width: 100%; border-radius: 6px; background: #111; }
 .video-tile.local video { transform: scaleX(-1); }
 .video-tile figcaption { position: absolute; bottom: 6px; left: 6px; padding: 2px 6px; border-radius: 4px; background: rgba(0, 0, 0, 0.6); font-size: 12px; }
+
+/* Markdown */
+.markdown { overflow-wrap: anywhere; }
+.markdown .md-p { white-space: pre-wrap; }
+.markdown .md-heading { margin: 8px 0 4px; line-height: 1.25; }
+.markdown h1.md-heading { font-size: 24px; }
+.markdown h2.md-heading { font-size: 20px; }
+.markdown h3.md-heading { font-size: 16px; }
+.markdown .md-subtext { display: block; color: var(--muted); font-size: 12px; }
+.markdown .md-quote { margin: 4px 0; padding-left: 12px; border-left: 4px solid var(--border); }
+.markdown .md-code { padding: 0 4px; border-radius: 4px; background: var(--panel); font-family: ui-monospace, Consolas, monospace; font-size: 0.875em; }
+.markdown .md-codeblock {
+  margin: 6px 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  border: 1px solid var(--bg);
+  border-radius: 4px;
+  background: var(--panel);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 13px;
+  white-space: pre;
+}
+.markdown .md-list { margin: 4px 0; padding-left: 24px; }
+.markdown .md-link { color: #00a8fc; text-decoration: none; }
+.markdown .md-link:hover { text-decoration: underline; }
+.markdown .spoiler { border-radius: 4px; background: #1e1f22; color: transparent; cursor: pointer; }
+.markdown .spoiler * { visibility: hidden; }
+.markdown .spoiler.revealed { background: rgba(255, 255, 255, 0.1); color: inherit; cursor: auto; }
+.markdown .spoiler.revealed * { visibility: visible; }
+.markdown .emoji { font-size: 1.375em; line-height: 1; vertical-align: -0.2em; }
+.markdown img.emoji { width: 1.375em; height: 1.375em; object-fit: contain; }
+.markdown.jumbo .emoji, .markdown.jumbo .md-p { font-size: 48px; }
+.markdown.jumbo img.emoji { width: 48px; height: 48px; }
+
+/* Emoji picker */
+.emoji-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 340px;
+  max-width: 100%;
+  height: 320px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.emoji-search { padding: 6px 8px; border: 0; border-radius: 4px; background: var(--bg); color: var(--text); font: inherit; }
+.emoji-tabs { display: flex; gap: 2px; overflow-x: auto; }
+.emoji-tab { padding: 2px 4px; border: 0; border-radius: 4px; background: none; font-size: 18px; cursor: pointer; opacity: 0.6; }
+.emoji-tab img { width: 20px; height: 20px; }
+.emoji-tab.active, .emoji-tab:hover { background: var(--surface); opacity: 1; }
+.emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; overflow-y: auto; }
+.emoji-option { padding: 4px; border: 0; border-radius: 4px; background: none; font-size: 22px; cursor: pointer; }
+.emoji-option:hover { background: var(--surface); }
+.emoji-option img { width: 28px; height: 28px; object-fit: contain; }
+.emoji-empty { grid-column: 1 / -1; color: var(--muted); text-align: center; }
+.message .emoji-picker { margin-top: 6px; }
+.composer-row { position: relative; }
+.composer-picker { position: absolute; right: 0; bottom: 48px; z-index: 5; }
+.composer-picker[hidden] { display: none; }
+.emoji-button {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: #383a40;
+  font-size: 20px;
+  cursor: pointer;
+}
+.emoji-button:disabled { opacity: 0.5; cursor: default; }
+.reaction.more { color: var(--muted); }

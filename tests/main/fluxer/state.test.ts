@@ -233,3 +233,16 @@ describe("notification settings", () => {
     expect(state.notifySettings.size).toBe(0);
   });
 });
+
+describe("custom emoji", () => {
+  it("tracks each guild's emoji from guild objects and updates", () => {
+    const state = new FluxerState();
+    state.apply("GUILD_CREATE", { id: "100", properties: { name: "A" }, emojis: [{ id: "55", name: "party", animated: true }, { id: "x" }] });
+    expect(state.emojis.get("100")).toEqual([{ id: "55", name: "party", animated: true }]);
+    state.apply("GUILD_EMOJIS_UPDATE", { guild_id: "100", emojis: [{ id: "56", name: "wave" }] });
+    expect(state.emojis.get("100")).toEqual([{ id: "56", name: "wave", animated: false }]);
+    state.apply("GUILD_EMOJIS_UPDATE", { emojis: [] });
+    state.reset();
+    expect(state.emojis.size).toBe(0);
+  });
+});

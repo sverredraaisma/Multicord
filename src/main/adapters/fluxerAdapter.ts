@@ -856,6 +856,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
               }
             : null,
           voice: this.voiceSession(),
+          emojiBase: this.instance ? `${this.instance.media}/emojis` : undefined,
+          customEmoji: guild ? (this.state.emojis.get(guild.id) ?? []) : [],
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };
       }
