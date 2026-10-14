@@ -678,3 +678,50 @@ describe("emoji and markdown", () => {
     expect(root.querySelector<HTMLButtonElement>(".emoji-button")!.disabled).toBe(true);
   });
 });
+
+describe("prompt steps", () => {
+  const step = (id: string, extra: Partial<Extract<NativeViewState, { screen: "prompt" }>> = {}): NativeViewState => ({
+    screen: "prompt",
+    platform: "Telegram",
+    busy: false,
+    prompt: {
+      id,
+      title: id === "phone" ? "Your phone number" : "Enter the code",
+      description: "Telegram sends a code.",
+      fields: id === "phone" ? [{ name: "phone", label: "Phone", type: "tel", autocomplete: "tel", placeholder: "+31…" }] : [{ name: "code", label: "Code", type: "number" }, { name: "password", label: "Password", type: "password" }],
+      submit: "Next",
+      cancel: id === "phone" ? undefined : "Use another number",
+    },
+    ...extra,
+  });
+
+  it("renders each step, keeps typing across updates and sends the answers", () => {
+    const api = { act: vi.fn() };
+    const view = new NativeView(root, api);
+    view.update(step("phone"));
+    const phone = root.querySelector<HTMLInputElement>('input[name="phone"]')!;
+    expect(phone.type).toBe("tel");
+    expect(phone.placeholder).toBe("+31…");
+    expect(root.querySelector(".prompt-description")!.textContent).toBe("Telegram sends a code.");
+    expect(root.querySelector("button.link")).toBeNull();
+    phone.value = " +31 6 1234 ";
+    view.update(step("phone", { busy: true, status: "Sending code…" }));
+    expect(root.querySelector<HTMLInputElement>('input[name="phone"]')).toBe(phone); // same form
+    expect(root.querySelector<HTMLButtonElement>("button.primary")!.disabled).toBe(true);
+    expect(root.querySelector(".status")!.textContent).toBe("Sending code…");
+    view.update(step("phone", { error: "Invalid number" }));
+    expect(root.querySelector(".error")!.textContent).toBe("Invalid number");
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(api.act).toHaveBeenCalledWith({ type: "prompt", id: "phone", values: { phone: "+31 6 1234" } });
+
+    view.update(step("code"));
+    const code = root.querySelector<HTMLInputElement>('input[name="code"]')!;
+    expect(code.inputMode).toBe("numeric");
+    code.value = " 12345 ";
+    root.querySelector<HTMLInputElement>('input[name="password"]')!.value = " secret ";
+    root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(api.act).toHaveBeenLastCalledWith({ type: "prompt", id: "code", values: { code: "12345", password: " secret " } });
+    root.querySelector<HTMLButtonElement>("button.link")!.click();
+    expect(api.act).toHaveBeenLastCalledWith({ type: "cancelPrompt", id: "code" });
+  });
+});

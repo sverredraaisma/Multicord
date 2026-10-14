@@ -1,3 +1,4 @@
+import type { NativePrompt } from "../../shared/native";
 import { el } from "./dom";
 
 export interface LoginForm {
@@ -75,4 +76,48 @@ export function mfaForm(
 /** Sets a form's status or error line. */
 export function setFormMessage(form: HTMLElement, kind: "status" | "error", text: string | undefined): void {
   form.querySelector(`.${kind}`)!.textContent = text ?? "";
+}
+
+/**
+ * A sign-in step defined by the module: its fields, a submit button and
+ * optionally a secondary one. Status and error lines as in the login form.
+ */
+export function promptForm(
+  doc: Document,
+  prompt: NativePrompt,
+  handlers: { onSubmit(values: Record<string, string>): void; onCancel(): void },
+): { form: HTMLFormElement; submit: HTMLButtonElement } {
+  const form = el(doc, "form", "auth");
+  form.dataset.prompt = prompt.id;
+  form.append(el(doc, "h1", undefined, prompt.title));
+  if (prompt.description) form.append(el(doc, "p", "note prompt-description", prompt.description));
+  const inputs = prompt.fields.map((field) => {
+    const input = el(doc, "input");
+    input.name = field.name;
+    input.type = field.type === "number" ? "text" : field.type;
+    if (field.type === "number") input.inputMode = "numeric";
+    input.required = true;
+    if (field.autocomplete) input.autocomplete = field.autocomplete as AutoFill;
+    if (field.placeholder) input.placeholder = field.placeholder;
+    const label = el(doc, "label", undefined, field.label);
+    label.append(input);
+    form.append(label);
+    return input;
+  });
+  const submit = el(doc, "button", "primary", prompt.submit);
+  submit.type = "submit";
+  form.append(submit);
+  if (prompt.cancel) {
+    const cancel = el(doc, "button", "link", prompt.cancel);
+    cancel.type = "button";
+    cancel.addEventListener("click", handlers.onCancel);
+    form.append(cancel);
+  }
+  form.append(el(doc, "p", "status"), el(doc, "p", "error"));
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    handlers.onSubmit(Object.fromEntries(inputs.map((input) => [input.name, input.type === "password" ? input.value : input.value.trim()])));
+  });
+  inputs[0]?.focus();
+  return { form, submit };
 }

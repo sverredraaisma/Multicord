@@ -2,7 +2,7 @@ import type { NativeApi } from "../preload/native";
 import type { NativeMessage, NativeViewState } from "../shared/native";
 import { MAX_MESSAGE_LENGTH } from "../shared/native";
 import type { VoiceSettings } from "../shared/settings";
-import { loginForm, mfaForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
+import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
 import { el } from "./components/dom";
 import { emojiPicker, type CustomEmoji, type PickedEmoji } from "./components/emojiPicker";
@@ -32,6 +32,8 @@ export function insertAtCursor(field: HTMLTextAreaElement, text: string): void {
  */
 export class NativeView {
   private screen: NativeViewState["screen"] | undefined;
+  /** The prompt step on screen; a new step gets a fresh form. */
+  private promptId: string | undefined;
   private parts: Record<string, HTMLElement> = {};
   private login: LoginForm | undefined;
   private channelId: string | undefined;
@@ -56,7 +58,7 @@ export class NativeView {
   }
 
   update(state: NativeViewState): void {
-    if (state.screen !== this.screen) this.mount(state);
+    if (state.screen !== this.screen || (state.screen === "prompt" && state.prompt.id !== this.promptId)) this.mount(state);
     switch (state.screen) {
       case "login":
         setIdentityKind(this.login!, state.identity);
@@ -66,6 +68,11 @@ export class NativeView {
         return;
       case "mfa":
         (this.parts.submit as HTMLButtonElement).disabled = state.busy;
+        setFormMessage(this.parts.form!, "error", state.error);
+        return;
+      case "prompt":
+        (this.parts.submit as HTMLButtonElement).disabled = state.busy;
+        setFormMessage(this.parts.form!, "status", state.status);
         setFormMessage(this.parts.form!, "error", state.error);
         return;
       case "connecting":
@@ -85,6 +92,7 @@ export class NativeView {
     void this.call?.sync(null);
     this.call = undefined;
     this.screen = state.screen;
+    this.promptId = state.screen === "prompt" ? state.prompt.id : undefined;
     this.parts = {};
     this.login = undefined;
     this.channelId = undefined;
@@ -103,6 +111,16 @@ export class NativeView {
         });
         card.append(mfa.form);
         Object.assign(this.parts, mfa);
+        break;
+      }
+      case "prompt": {
+        const { id } = state.prompt;
+        const prompt = promptForm(doc, state.prompt, {
+          onSubmit: (values) => this.api.act({ type: "prompt", id, values }),
+          onCancel: () => this.api.act({ type: "cancelPrompt", id }),
+        });
+        card.append(prompt.form);
+        Object.assign(this.parts, prompt);
         break;
       }
       case "connecting": {

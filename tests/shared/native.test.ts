@@ -97,3 +97,23 @@ describe("voice action validation", () => {
     expect(isNativeAction({ type: "voiceError", message: "" })).toBe(false);
   });
 });
+
+describe("prompt actions", () => {
+  it("accepts answers to a prompt step and rejects malformed ones", () => {
+    expect(isNativeAction({ type: "prompt", id: "phone", values: { phone: "+31 6 1234" } })).toBe(true);
+    expect(isNativeAction({ type: "prompt", id: "api-id", values: {} })).toBe(true);
+    expect(isNativeAction({ type: "cancelPrompt", id: "code" })).toBe(true);
+    for (const bad of [
+      { type: "prompt", id: "Phone", values: {} },
+      { type: "prompt", id: "phone", values: null },
+      { type: "prompt", id: "phone", values: [] },
+      { type: "prompt", id: "phone", values: { "bad name": "x" } },
+      { type: "prompt", id: "phone", values: { phone: 5 } },
+      { type: "prompt", id: "phone", values: { phone: "x".repeat(1025) } },
+      { type: "prompt", id: "phone", values: Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`f${i}`, "x"])) },
+      { type: "cancelPrompt", id: "" },
+    ]) {
+      expect(isNativeAction(bad)).toBe(false);
+    }
+  });
+});

@@ -101,10 +101,34 @@ export interface NativeChannelView {
   posts?: NativeForumPost[];
 }
 
+/** One input of a sign-in step. */
+export interface NativePromptField {
+  name: string;
+  label: string;
+  type: "text" | "tel" | "password" | "number";
+  autocomplete?: string;
+  placeholder?: string;
+}
+
+/**
+ * A step of a sign-in flow the module defines itself, e.g. Telegram's phone
+ * number, code and password steps. A new id starts a fresh form.
+ */
+export interface NativePrompt {
+  id: string;
+  title: string;
+  description?: string;
+  fields: NativePromptField[];
+  submit: string;
+  /** A secondary button, e.g. "Use another number". */
+  cancel?: string;
+}
+
 export type NativeViewState =
   | { screen: "login"; platform: string; identity: "email" | "username"; busy: boolean; status?: string; error?: string }
   /** codes: "totp" accepts authenticator or backup codes; "backup" only backup codes. */
   | { screen: "mfa"; platform: string; codes: "totp" | "backup"; busy: boolean; error?: string }
+  | { screen: "prompt"; platform: string; prompt: NativePrompt; busy: boolean; status?: string; error?: string }
   | { screen: "connecting"; platform: string; status: string }
   | {
       screen: "chat";
@@ -126,6 +150,9 @@ export type NativeAction =
   | { type: "login"; identity: string; password: string }
   | { type: "mfa"; code: string }
   | { type: "cancelMfa" }
+  /** Answers a prompt step; values by field name. */
+  | { type: "prompt"; id: string; values: Record<string, string> }
+  | { type: "cancelPrompt"; id: string }
   | { type: "select"; channelId: string }
   | { type: "send"; content: string; replyTo?: string }
   | { type: "edit"; messageId: string; content: string }
@@ -149,6 +176,14 @@ export const MAX_ATTACHMENTS = 10;
 const text = (value: unknown, min: number, max: number): boolean =>
   typeof value === "string" && value.length >= min && value.length <= max;
 const id = (value: unknown): boolean => typeof value === "string" && /^\d{1,20}$/.test(value);
+const promptId = (value: unknown): boolean => typeof value === "string" && /^[a-z][a-z0-9-]{0,31}$/.test(value);
+export const MAX_PROMPT_FIELDS = 8;
+
+function isPromptValues(value: unknown): value is Record<string, string> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= MAX_PROMPT_FIELDS && entries.every(([name, v]) => /^[A-Za-z][A-Za-z0-9]{0,31}$/.test(name) && text(v, 0, 1024));
+}
 const content = (value: unknown): boolean => text(value, 1, MAX_MESSAGE_LENGTH) && (value as string).trim() !== "";
 
 export function isNativeAction(value: unknown): value is NativeAction {
@@ -167,6 +202,10 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return text(v.identity, 1, 320) && text(v.password, 1, 1024);
     case "mfa":
       return text(v.code, 1, 32);
+    case "prompt":
+      return promptId(v.id) && isPromptValues(v.values);
+    case "cancelPrompt":
+      return promptId(v.id);
     case "select":
       return id(v.channelId);
     case "send":
