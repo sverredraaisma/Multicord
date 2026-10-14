@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
   app,
@@ -248,6 +249,7 @@ export async function createShell(
         getSources: () => desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 320, height: 180 } }),
         pick: (request) => showPicker(window, paths.dist, request),
         platform,
+        osRelease: os.release(),
       }),
     );
 

@@ -10,13 +10,22 @@ export interface ScreenShareDeps<S extends CaptureSource> {
   getSources(): Promise<S[]>;
   pick(request: PickerRequest): Promise<PickerChoice | null>;
   platform: NodeJS.Platform;
+  /** The OS kernel version (os.release()); on macOS it decides whether system audio can be captured. */
+  osRelease?: string;
 }
 
 export type DisplayMediaCallback<S> = (streams: { video?: S; audio?: "loopback" }) => void;
 
-/** Loopback audio works out of the box on Windows only; see the study for macOS and Linux. */
-export function supportsLoopbackAudio(platform: NodeJS.Platform): boolean {
-  return platform === "win32";
+/**
+ * Whether Chromium can capture system audio for a screen share: on Windows,
+ * and on macOS 13 and later (Darwin 22), where Electron uses ScreenCaptureKit
+ * or, from macOS 14.2, Apple's CoreAudio tap; the app declares
+ * NSAudioCaptureUsageDescription for it. Linux needs a PipeWire helper
+ * (venmic) that is not built in.
+ */
+export function supportsLoopbackAudio(platform: NodeJS.Platform, osRelease = ""): boolean {
+  if (platform === "win32") return true;
+  return platform === "darwin" && Number.parseInt(osRelease, 10) >= 22;
 }
 
 /**
@@ -27,7 +36,7 @@ export function createDisplayMediaHandler<S extends CaptureSource>(deps: ScreenS
   return async (_request: unknown, callback: DisplayMediaCallback<S>): Promise<void> => {
     try {
       const sources = await deps.getSources();
-      const audioSupported = supportsLoopbackAudio(deps.platform);
+      const audioSupported = supportsLoopbackAudio(deps.platform, deps.osRelease);
       const choice = await deps.pick({
         sources: sources.map((s) => ({ id: s.id, name: s.name, thumbnail: s.thumbnail.toDataURL() })),
         audioSupported,

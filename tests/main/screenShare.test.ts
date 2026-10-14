@@ -13,10 +13,13 @@ function handler(choice: unknown, platform: NodeJS.Platform = "win32") {
 }
 
 describe("supportsLoopbackAudio", () => {
-  it("is Windows only for now", () => {
+  it("is Windows, and macOS 13 or later", () => {
     expect(supportsLoopbackAudio("win32")).toBe(true);
     expect(supportsLoopbackAudio("darwin")).toBe(false);
-    expect(supportsLoopbackAudio("linux")).toBe(false);
+    expect(supportsLoopbackAudio("darwin", "21.6.0")).toBe(false); // macOS 12
+    expect(supportsLoopbackAudio("darwin", "22.1.0")).toBe(true); // macOS 13
+    expect(supportsLoopbackAudio("darwin", "24.0.0")).toBe(true);
+    expect(supportsLoopbackAudio("linux", "6.8.0")).toBe(false);
   });
 });
 
