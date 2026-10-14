@@ -58,6 +58,13 @@ describe("validators", () => {
     expect(isDiscordState({ guilds: [], badge, user: { name: 5 } })).toBe(false);
     expect(isBridgePayload({ dms: [], guilds: [], user: { name: "x".repeat(201) } })).toBe(false);
     expect(isBridgePayload({ dms: [], guilds: [], user: null })).toBe(true);
+    expect(isBridgePayload({ dms: [], guilds: [], calls: [{ channelId: "1", from: "Ana" }] })).toBe(true);
+    expect(isBridgePayload({ dms: [], guilds: [], calls: [{ channelId: "x", from: "Ana" }] })).toBe(false);
+    expect(isBridgePayload({ dms: [], guilds: [], calls: [{ channelId: "1", from: "x".repeat(201) }] })).toBe(false);
+    expect(isBridgePayload({ dms: [], guilds: [], calls: "no" })).toBe(false);
+    expect(isBridgePayload({ dms: [], guilds: [], calls: Array.from({ length: 21 }, () => ({ channelId: "1", from: "A" })) })).toBe(false);
+    expect(isDiscordState({ guilds: [], badge, calls: [{ channelId: "1", from: "Ana" }] })).toBe(true);
+    expect(isDiscordState({ guilds: [], badge, calls: [{}] })).toBe(false);
     expect(isDiscordState({ guilds: "nope", badge })).toBe(false);
     expect(isDiscordState({ guilds: [{}], badge })).toBe(false);
     expect(isDiscordState({ guilds: [], badge: {} })).toBe(false);

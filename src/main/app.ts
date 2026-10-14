@@ -27,7 +27,7 @@ import {
   type PickerChoice,
   type PickerRequest,
 } from "../shared/ipc";
-import type { PlatformAdapter } from "../shared/adapter";
+import type { PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
 import { isSettingsAction, SETTINGS_IPC, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
@@ -487,25 +487,34 @@ export async function createShell(
   // Native adapters' notifications; Discord's own page shows its notifications itself.
   // Shown notifications stay referenced so their click handlers survive GC.
   const shownNotifications = new Set<Notification>();
+  const notify = (id: string, n: PlatformNotification, urgent = false): void => {
+    if (!general().notifications || !Notification.isSupported()) return;
+    const note = new Notification(urgent ? { title: n.title, body: n.body, urgency: "critical", timeoutType: "never" } : { title: n.title, body: n.body });
+    shownNotifications.add(note);
+    note.on("close", () => shownNotifications.delete(note));
+    note.on("click", () => {
+      shownNotifications.delete(note);
+      show();
+      registry
+        .openNotification(id, n)
+        .then((target) => {
+          if (target) showPlatform(target);
+        })
+        .catch((error: Error) => console.warn(`[${id}] could not open notification: ${error.message}`));
+    });
+    note.show();
+  };
   for (const [id, adapter] of adapters) {
     adapter.onNotification((n) => {
-      if (!general().notifications) return;
       if (n.inView && window.isFocused() && front() === id) return;
-      if (!Notification.isSupported()) return;
-      const note = new Notification({ title: n.title, body: n.body });
-      shownNotifications.add(note);
-      note.on("close", () => shownNotifications.delete(note));
-      note.on("click", () => {
-        shownNotifications.delete(note);
-        show();
-        registry
-          .openNotification(id, n)
-          .then((target) => {
-            if (target) showPlatform(target);
-          })
-          .catch((error: Error) => console.warn(`[${id}] could not open notification: ${error.message}`));
-      });
-      note.show();
+      notify(id, n);
+    });
+    // The platform rings in its own view only while that view is in front; otherwise we ring.
+    adapter.onIncomingCall((call) => {
+      if (window.isFocused() && front() === id) return;
+      window.flashFrame(true);
+      const name = platforms.find((p) => p.id === id)?.name ?? id;
+      notify(id, { title: "Incoming call", body: `${call.from} is calling you on ${name}`, target: call.conversationKey, railKey: `dm:${call.conversationKey}` }, true);
     });
   }
 

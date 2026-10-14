@@ -157,6 +157,25 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
     }
   };
 
+  // Calls ringing us: CallStore lists active calls with the users being rung.
+  const collectCalls = () => {
+    const { CallStore, ChannelStore, UserStore } = stores!;
+    try {
+      const me = UserStore.getCurrentUser?.()?.id;
+      if (!CallStore || typeof me !== "string") return [];
+      const calls: any[] = CallStore.getCalls?.() ?? [];
+      return calls
+        .filter((call) => call && /^\d{1,20}$/.test(String(call.channelId)) && Array.isArray(call.ringing) && call.ringing.includes(me))
+        .slice(0, 20)
+        .map((call) => {
+          const channel = ChannelStore.getChannel?.(call.channelId);
+          return { channelId: String(call.channelId), from: String(channel ? describe(channel).title : "Someone").slice(0, MAX_TITLE) };
+        });
+    } catch {
+      return [];
+    }
+  };
+
   // Who is signed in, for the settings page; null on Discord's login screen.
   const currentUser = () => {
     try {
@@ -170,7 +189,7 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
   const emit = (): void => {
     timer = undefined;
     try {
-      const payload = { dms: collectDms(), guilds: collectGuilds(), layout: collectLayout(), user: currentUser() };
+      const payload = { dms: collectDms(), guilds: collectGuilds(), layout: collectLayout(), user: currentUser(), calls: collectCalls() };
       document.dispatchEvent(new CustomEvent(eventName, { detail: JSON.stringify(payload) }));
     } catch {
       // A store changed shape; the rail keeps its last good state.
@@ -187,7 +206,7 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
     try {
       stores = findStores(
         ["ChannelStore", "ReadStateStore", "UserStore"],
-        ["GuildStore", "GuildReadStateStore", "SortedGuildStore", "ExpandedGuildFolderStore"],
+        ["GuildStore", "GuildReadStateStore", "SortedGuildStore", "ExpandedGuildFolderStore", "CallStore"],
       );
     } catch {
       stores = undefined;

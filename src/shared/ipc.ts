@@ -89,12 +89,22 @@ export interface DiscordUser {
   name: string;
 }
 
+/** A call ringing the user, in a DM or group DM. */
+export interface DiscordCall {
+  channelId: string;
+  /** Who is calling: the DM's title. */
+  from: string;
+}
+
+export const MAX_CALLS = 20;
+
 export interface BridgePayload {
   dms: DiscordDm[];
   guilds: GuildInfo[];
   /** Absent when SortedGuildStore was not found. */
   layout?: LayoutEntry[];
   user?: DiscordUser | null;
+  calls?: DiscordCall[];
 }
 
 export interface DiscordState {
@@ -105,6 +115,8 @@ export interface DiscordState {
   folders?: DiscordFolder[];
   /** Absent until the store bridge reports; null when signed out. */
   user?: DiscordUser | null;
+  /** Calls ringing the user right now. */
+  calls?: DiscordCall[];
 }
 
 /** "home", a guild snowflake, "dm:<channel snowflake>" or "folder:<folder id>" (toggles it). */
@@ -290,10 +302,20 @@ export function isDiscordUser(value: unknown): value is DiscordUser | null | und
   return value === undefined || value === null || (isRecord(value) && typeof value.name === "string" && value.name.length <= MAX_TEXT);
 }
 
+export function isDiscordCallList(value: unknown): value is DiscordCall[] | undefined {
+  return (
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.length <= MAX_CALLS &&
+      value.every((c) => isRecord(c) && isSnowflake(c.channelId) && typeof c.from === "string" && c.from.length <= MAX_TEXT))
+  );
+}
+
 export function isBridgePayload(value: unknown): value is BridgePayload {
   return (
     isRecord(value) &&
     isDiscordUser(value.user) &&
+    isDiscordCallList(value.calls) &&
     isDiscordDmList(value.dms) &&
     Array.isArray(value.guilds) &&
     value.guilds.length <= MAX_GUILDS &&
@@ -311,6 +333,7 @@ export function isDiscordState(value: unknown): value is DiscordState {
     value.guilds.every(isDiscordGuild) &&
     isTitleBadge(value.badge) &&
     isDiscordUser(value.user) &&
+    isDiscordCallList(value.calls) &&
     (value.dms === undefined || isDiscordDmList(value.dms)) &&
     (value.folders === undefined ||
       (Array.isArray(value.folders) && value.folders.length <= MAX_GUILDS && value.folders.every(isDiscordFolder)))

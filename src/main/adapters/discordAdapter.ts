@@ -14,6 +14,8 @@ export class DiscordAdapter extends BaseAdapter {
   private badge: TitleBadge = { unread: false, mentions: 0 };
   private directs: DirectConversation[] | undefined;
   private user: DiscordUser | null | undefined;
+  /** Channels whose call is ringing us; each call is reported once, when it starts. */
+  private ringing = new Set<string>();
 
   /** `id` tells accounts apart: each Discord account is its own platform instance. */
   constructor(
@@ -26,6 +28,13 @@ export class DiscordAdapter extends BaseAdapter {
   update(state: DiscordState): void {
     this.badge = state.badge;
     if (state.user !== undefined) this.user = state.user;
+    if (state.calls) {
+      const now = new Set(state.calls.map((c) => c.channelId));
+      for (const call of state.calls) {
+        if (!this.ringing.has(call.channelId)) this.incomingCalls.emit({ conversationKey: call.channelId, from: call.from, video: false });
+      }
+      this.ringing = now;
+    }
     if (state.dms) {
       this.directs = state.dms.map((dm) => ({
         key: dm.id,

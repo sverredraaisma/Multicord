@@ -125,6 +125,8 @@ describe("DM support", () => {
     expect(readState(document, { dms: [], guilds: [], user: { name: "Ana" } }).user).toEqual({ name: "Ana" });
     expect(readState(document, { dms: [], guilds: [], user: null }).user).toBeNull();
     expect(readState(document, { dms: [], guilds: [] })).not.toHaveProperty("user");
+    expect(readState(document, { dms: [], guilds: [], calls: [{ channelId: "1", from: "Ana" }] }).calls).toEqual([{ channelId: "1", from: "Ana" }]);
+    expect(readState(document, { dms: [], guilds: [] })).not.toHaveProperty("calls");
     const state = readState(document, { dms: [dm], guilds: [] });
     expect(state.guilds.map((g) => g.id)).toEqual(["111"]);
     expect(state.dms).toEqual([dm]);

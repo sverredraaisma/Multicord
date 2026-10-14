@@ -64,6 +64,22 @@ describe("DiscordAdapter", () => {
     expect(adapter.accountStatus()).toEqual({ state: "signed-out" });
   });
 
+  it("reports each call once, when it starts ringing", () => {
+    const adapter = new DiscordAdapter(vi.fn());
+    const calls = vi.fn();
+    adapter.onIncomingCall(calls);
+    const badge = { unread: false, mentions: 0 };
+    const ringing = [{ channelId: "7", from: "Ana" }];
+    adapter.update({ guilds: [], badge, calls: ringing });
+    adapter.update({ guilds: [], badge, calls: ringing }); // still ringing
+    adapter.update({ guilds: [], badge }); // no call data: no change
+    expect(calls).toHaveBeenCalledOnce();
+    expect(calls).toHaveBeenCalledWith({ conversationKey: "7", from: "Ana", video: false });
+    adapter.update({ guilds: [], badge, calls: [] });
+    adapter.update({ guilds: [], badge, calls: ringing }); // rings again
+    expect(calls).toHaveBeenCalledTimes(2);
+  });
+
   it("navigates to home, guilds and DMs through the preload", async () => {
     const navigate = vi.fn();
     const adapter = new DiscordAdapter(navigate);

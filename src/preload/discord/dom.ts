@@ -262,6 +262,7 @@ export function readState(doc: Document, bridge?: BridgePayload): DiscordState {
   const state: DiscordState = { guilds, badge: parseTitleBadge(doc.title) };
   if (bridge) state.dms = bridge.dms;
   if (bridge?.user !== undefined) state.user = bridge.user;
+  if (bridge?.calls) state.calls = bridge.calls;
   if (folders.length > 0) state.folders = folders;
   return state;
 }

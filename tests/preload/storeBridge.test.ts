@@ -58,7 +58,7 @@ function installWebpack(exportsList: unknown[]) {
 }
 
 /** Collects one field of each bridge payload (DMs by default). */
-function listen(field: "dms" | "guilds" | "layout" | "user" = "dms") {
+function listen(field: "dms" | "guilds" | "layout" | "user" | "calls" = "dms") {
   const received: unknown[] = [];
   document.addEventListener(EVENT, (e) => {
     const payload = JSON.parse((e as CustomEvent<string>).detail);
@@ -131,6 +131,41 @@ describe("discordStoreBridge", () => {
     stores.UserStore.change();
     vi.advanceTimersByTime(300);
     expect(received).toEqual([{ name: "Ana" }, null, undefined]);
+  });
+
+  it("reports calls ringing the current user, named after their DM", () => {
+    const stores = discordStores();
+    Object.assign(stores.UserStore, { getCurrentUser: () => ({ id: "me", username: "me" }) });
+    Object.assign(stores.ChannelStore, { getChannel: (id: string) => (id === "100" ? { id: "100", type: 1, recipients: ["u1"] } : undefined) });
+    let calls: unknown[] = [
+      { channelId: "100", ringing: ["me"] },
+      { channelId: "200", ringing: ["someone-else"] },
+      { channelId: "300", ringing: ["me"] }, // channel unknown to the store
+      { channelId: "bad id", ringing: ["me"] },
+      null,
+    ];
+    const CallStore = { getName: () => "CallStore", addChangeListener: () => {}, getCalls: () => calls };
+    installWebpack([stores.ChannelStore, stores.ReadStateStore, stores.UserStore, CallStore]);
+    const received = listen("calls");
+    discordStoreBridge(EVENT, 1000, 3);
+    calls = "not a list" as never;
+    stores.UserStore.change();
+    vi.advanceTimersByTime(300);
+    expect(received).toEqual([
+      [
+        { channelId: "100", from: "Ana" },
+        { channelId: "300", from: "Someone" },
+      ],
+      [],
+    ]);
+  });
+
+  it("reports no calls without CallStore or a signed-in user", () => {
+    const stores = discordStores();
+    installWebpack([stores.ChannelStore, stores.ReadStateStore, stores.UserStore]);
+    const received = listen("calls");
+    discordStoreBridge(EVENT, 1000, 3);
+    expect(received).toEqual([[]]);
   });
 
   it("re-emits, debounced, when a store changes", () => {

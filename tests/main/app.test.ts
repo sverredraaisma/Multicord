@@ -887,3 +887,46 @@ describe("unified Messages", () => {
     expect(electron.Notification.instances).toHaveLength(0);
   });
 });
+
+describe("incoming calls", () => {
+  const ring = (discordView: InstanceType<typeof WebContentsView>, calls: unknown[]) =>
+    ipcMain.emit(IPC.discordState, senderEvent(discordView), { guilds: [], badge: { unread: false, mentions: 0 }, calls });
+
+  it("rings with an urgent notification and a taskbar flash when the platform is not in front", async () => {
+    const { handle, window, discordView } = await shellWith();
+    handle.setMessagesOpen(true);
+    ring(discordView, [{ channelId: "7", from: "Ana" }]);
+    expect(window.flashFrame).toHaveBeenCalledWith(true);
+    const note = electron.Notification.instances[0]!;
+    expect(note.options).toEqual({ title: "Incoming call", body: "Ana is calling you on Discord", urgency: "critical", timeoutType: "never" });
+    note.emit("click");
+    await flush();
+    expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordNavigate, "dm:7");
+    expect(discordView.visible).toBe(true);
+  });
+
+  it("leaves ringing to the platform when its view is in front of a focused window", async () => {
+    const { window, discordView } = await shellWith();
+    window.isFocused.mockReturnValue(true);
+    ring(discordView, [{ channelId: "7", from: "Ana" }]);
+    expect(electron.Notification.instances).toHaveLength(0);
+    expect(window.flashFrame).not.toHaveBeenCalled();
+  });
+
+  it("still flashes when notifications are off", async () => {
+    const { handle, window, discordView } = await shellWith();
+    handle.settingsStore.update({ general: { notifications: false } });
+    handle.setSettingsOpen(true);
+    ring(discordView, [{ channelId: "7", from: "Ana" }]);
+    expect(window.flashFrame).toHaveBeenCalledWith(true);
+    expect(electron.Notification.instances).toHaveLength(0);
+  });
+
+  it("names the platform by its id when it has no definition", async () => {
+    const { handle, window } = await shellWith();
+    const fluxer = handle.adapters.get("fluxer") as unknown as { incomingCalls: { emit(c: unknown): void } };
+    window.isFocused.mockReturnValue(false);
+    fluxer.incomingCalls.emit({ conversationKey: "9", from: "Bo", video: true });
+    expect(electron.Notification.instances.at(-1)!.options).toMatchObject({ body: "Bo is calling you on Fluxer" });
+  });
+});
