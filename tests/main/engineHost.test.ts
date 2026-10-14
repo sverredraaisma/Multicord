@@ -126,15 +126,17 @@ describe("serveEngine", () => {
 
 describe("EngineHub", () => {
   it("keeps an engine's storage on disk only when its module asks", () => {
-    expect(setup({ persistent: true }).engine.options.webPreferences).toMatchObject({ partition: "persist:engine-demo" });
-    expect(engineStoragePartition("x", false)).toBe("engine-x");
+    expect(setup({ persistent: true }).engine.options.webPreferences).toMatchObject({ partition: "persist:engine_demo" });
+    expect(engineStoragePartition("x", false)).toBe("engine_x");
+    // A service named "Engine Matrix" (id engine-matrix) has persist:engine-matrix: never an engine's.
+    expect(engineStoragePartition("matrix", true)).not.toBe("persist:engine-matrix");
   });
 
   it("runs each engine hidden, sandboxed and in its own in-memory session", () => {
     const { hub, engine, start, window, view } = setup();
     expect(engine.options.webPreferences).toMatchObject({
       preload: path.join(dist, "preload-engine.js"),
-      partition: "engine-demo",
+      partition: "engine_demo",
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
@@ -155,7 +157,7 @@ describe("EngineHub", () => {
 
   it("denies the engine every permission and serves its page", async () => {
     setup();
-    const ses = session.fromPartition("engine-demo");
+    const ses = session.fromPartition("engine_demo");
     const callback = vi.fn();
     (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "media", callback);
     expect(callback).toHaveBeenCalledWith(false);
@@ -167,7 +169,7 @@ describe("EngineHub", () => {
 
   it("lets engines open only WebSockets to allowed public hosts", () => {
     setup({ hosts: ["*.demo.example"] });
-    const filter = session.fromPartition("engine-demo").beforeRequest!;
+    const filter = session.fromPartition("engine_demo").beforeRequest!;
     const decide = (url: string) => {
       let cancel: boolean | undefined;
       filter({ url }, (response) => (cancel = response.cancel));
@@ -184,8 +186,8 @@ describe("EngineHub", () => {
 
   it("lets an engine lock itself to fewer hosts, for HTTP and WebSockets, but never widen", async () => {
     const { ask } = setup();
-    const http = session.fromPartition("engine-demo-http");
-    const sockets = session.fromPartition("engine-demo").beforeRequest!;
+    const http = session.fromPartition("engine_http_demo");
+    const sockets = session.fromPartition("engine_demo").beforeRequest!;
     const cancelled = (filter: typeof sockets, url: string) => {
       let cancel: boolean | undefined;
       filter({ url }, (response) => (cancel = response.cancel));
@@ -258,7 +260,7 @@ describe("EngineHub", () => {
 
   it("makes HTTP requests with the engine session, within its hosts", async () => {
     const { ask } = setup({ hosts: ["api.demo.example"] });
-    const ses = session.fromPartition("engine-demo-http");
+    const ses = session.fromPartition("engine_http_demo");
     ses.fetch.mockResolvedValueOnce(new Response("pong", { status: 200, headers: { "x-a": "1" } }));
     const response = (await ask({ type: "http", request: { url: "https://api.demo.example/ping", method: "GET", headers: { Cookie: "x", Accept: "text/plain" } } })) as { status: number; body: Uint8Array };
     expect(response.status).toBe(200);

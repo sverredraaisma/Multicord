@@ -189,7 +189,8 @@ const ENGINE_ID = /^[a-z0-9-]{1,32}$/;
 
 /** The session partition an instance's engine runs in. */
 export function engineStoragePartition(instanceId: string, persistent: boolean): string {
-  return persistent ? `persist:engine-${instanceId}` : `engine-${instanceId}`;
+  // "_" cannot occur in service ids, so these never meet a service's own persist:<id> or another engine's.
+  return persistent ? `persist:engine_${instanceId}` : `engine_${instanceId}`;
 }
 /** Picked-file handles kept per engine; the oldest are forgotten first. */
 export const MAX_FILE_HANDLES = 200;
@@ -283,7 +284,7 @@ export class EngineHub {
     engine.webContents.on("will-navigate", (event) => event.preventDefault());
 
     // The bridge uses a session of its own: the engine session only lets the engine itself open WebSockets.
-    const http = session.fromPartition(`engine-${spec.def.id}-http`);
+    const http = session.fromPartition(`engine_http_${spec.def.id}`);
     http.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     // net.fetch follows redirects itself, so every hop is checked here as well.
     const httpPolicy: UrlPolicy = {

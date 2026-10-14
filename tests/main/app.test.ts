@@ -383,7 +383,7 @@ describe("createShell", () => {
 
 describe("native Fluxer platform", () => {
   const engineOf = (id: string) =>
-    WebContentsView.instances.find((v) => v.options.webPreferences.partition === `engine-${id}`)!;
+    WebContentsView.instances.find((v) => v.options.webPreferences.partition === `engine_${id}`)!;
 
   it("runs Fluxer's logic in a sandboxed engine and renders it in a native view", async () => {
     const { handle, railView } = await shellWith();
@@ -749,7 +749,7 @@ describe("settings", () => {
     ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "removeService", id: "el" });
     await flush();
     expect(session.fromPartition("persist:el").clearStorageData).toHaveBeenCalled();
-    expect(session.fromPartition("persist:engine-el").clearStorageData).toHaveBeenCalled();
+    expect(session.fromPartition("persist:engine_el").clearStorageData).toHaveBeenCalled();
     expect(JSON.parse(fs.readFileSync(path.join(userData, "credentials.json"), "utf8"))).toEqual({ "fluxer:x:token": "b" });
   });
 
