@@ -1,0 +1,250 @@
+/* Settings page. Builds on shell.css tokens. */
+:root {
+  --panel: #2b2d31;
+  --surface: #313338;
+  --border: #3f4147;
+  --accent: #5865f2;
+  --danger: #f23f43;
+  --ok: #23a55a;
+}
+
+.settings-body, #settings { height: 100%; }
+/* Components set display; hidden must still win. */
+.settings [hidden] { display: none !important; }
+
+.settings {
+  display: flex;
+  height: 100%;
+  background: var(--surface);
+}
+
+/* Section list */
+.settings-nav {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 2px;
+  width: 220px;
+  padding: 40px 8px 16px 20px;
+  overflow-y: auto;
+  background: var(--panel);
+}
+.settings-nav h2 {
+  margin: 0 0 6px 10px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.settings-tab {
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 15px;
+  text-align: left;
+  cursor: pointer;
+}
+.settings-tab:hover { background: var(--surface); color: var(--text); }
+.settings-tab.active { background: #404249; color: #fff; }
+
+/* Content */
+.settings-main {
+  flex: 1;
+  min-width: 0;
+  padding: 40px 40px 80px;
+  overflow-y: auto;
+}
+.settings-section { max-width: 720px; }
+.settings-section h1 { margin: 0 0 8px; font-size: 20px; }
+.settings-section h2 {
+  margin: 28px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+.section-intro { margin: 0 0 20px; color: var(--muted); }
+.hint { display: block; margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.notice {
+  margin: 16px 0 0;
+  padding: 10px 12px;
+  border-left: 4px solid #f0b232;
+  border-radius: 4px;
+  background: color-mix(in srgb, #f0b232 12%, transparent);
+}
+
+.restart-banner, .settings-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 720px;
+  margin-bottom: 20px;
+  padding: 10px 12px;
+  border-radius: 6px;
+}
+.restart-banner { background: color-mix(in srgb, var(--accent) 25%, var(--panel)); }
+.settings-error { background: color-mix(in srgb, var(--danger) 25%, var(--panel)); }
+
+/* Buttons and form controls */
+.primary, .secondary, .danger {
+  padding: 6px 14px;
+  border: 0;
+  border-radius: 4px;
+  color: #fff;
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.primary { background: var(--accent); }
+.primary:hover { background: #4752c4; }
+.secondary { background: #4e5058; }
+.secondary:hover { background: #6d6f78; }
+.danger { background: transparent; color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); }
+.danger:hover, .danger.confirming { background: var(--danger); color: #fff; }
+
+.settings select, .settings input:not([type="checkbox"]) {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+
+.field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.field-label { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; }
+.field-control { display: flex; gap: 8px; }
+.field-control select { flex: 1; }
+
+/* Switches */
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+}
+.switch-label { font-size: 15px; }
+.switch {
+  flex: none;
+  width: 40px;
+  height: 24px;
+  margin: 0;
+  border-radius: 12px;
+  background: #80848e;
+  appearance: none;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.switch::before {
+  display: block;
+  width: 18px;
+  height: 18px;
+  margin: 3px;
+  border-radius: 50%;
+  background: #fff;
+  content: "";
+  transition: transform 0.15s;
+}
+.switch:checked { background: var(--ok); }
+.switch:checked::before { transform: translateX(16px); }
+.switch:disabled { opacity: 0.4; cursor: not-allowed; }
+.switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Services */
+.service-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.service {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: 8px;
+  background: var(--panel);
+}
+.service.off .service-icon, .service.off .service-info { opacity: 0.55; }
+.service-icon {
+  --module-color: #80848e;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: var(--module-color);
+  color: #fff;
+  font-weight: 700;
+}
+.service-info { flex: 1; min-width: 0; }
+.service-title { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.service-name { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.module-tag {
+  --module-color: #80848e;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--module-color) 30%, transparent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 18px;
+  text-transform: uppercase;
+}
+.service-status { margin-top: 2px; color: var(--muted); font-size: 13px; }
+.service-status[data-state="signed-in"] { color: var(--ok); }
+.service-status[data-state="signed-out"] { color: #f0b232; }
+.service-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.service-actions button { padding: 4px 12px; font-size: 13px; }
+.service-switch { padding: 0; border: 0; }
+.service-switch .switch-text { display: none; }
+.rename { display: flex; flex-wrap: wrap; gap: 8px; }
+.rename input { width: 220px; }
+
+.add-service {
+  margin-top: 28px;
+  padding: 16px;
+  border-radius: 8px;
+  background: var(--panel);
+}
+.add-service h2 { margin-top: 0; }
+
+/* Voice and video */
+.meter {
+  --level: 0;
+  height: 8px;
+  margin: -6px 0 16px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--bg);
+}
+.meter-fill {
+  width: 100%;
+  height: 100%;
+  background: var(--ok);
+  transform: scaleX(var(--level));
+  transform-origin: left;
+  transition: transform 0.05s linear;
+}
+.camera-preview {
+  display: block;
+  width: min(360px, 100%);
+  margin: -4px 0 16px;
+  border-radius: 8px;
+  background: #000;
+  transform: scaleX(-1); /* a mirror, as people expect of their own camera */
+}
+
+.version { font-size: 16px; font-weight: 600; }
+
+@media (max-width: 640px) {
+  .settings { flex-direction: column; }
+  .settings-nav { flex-direction: row; flex-wrap: wrap; width: auto; padding: 12px; }
+  .settings-nav h2 { display: none; }
+  .settings-main { padding: 20px 16px 60px; }
+}

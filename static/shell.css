@@ -18,12 +18,30 @@ html, body {
   font: 14px/1.4 system-ui, sans-serif;
 }
 
+.rail-body {
+  display: flex;
+  flex-direction: column;
+}
+
+#rail-footer {
+  display: flex;
+  flex: none;
+  justify-content: center;
+  padding: 8px 0 12px;
+  border-top: 1px solid #2b2d31;
+}
+
+.rail-settings svg { width: 24px; height: 24px; fill: #23a55a; transition: fill 0.15s; }
+.rail-settings:hover svg, .rail-settings.active svg { fill: #fff; }
+.rail-settings:hover, .rail-settings.active { background: #23a55a; }
+
 #rail {
   display: flex;
+  flex: 1;
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  height: 100%;
+  min-height: 0;
   padding: 12px 0;
   overflow-y: auto;
   scrollbar-width: none;

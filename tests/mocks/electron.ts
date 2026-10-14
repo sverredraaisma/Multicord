@@ -10,6 +10,7 @@ export class FakeWebContents extends EventEmitter {
   loadURL = vi.fn(async (_url: string) => {});
   loadFile = vi.fn(async (_file: string) => {});
   close = vi.fn();
+  reload = vi.fn();
   windowOpenHandler?: (details: { url: string }) => { action: string };
 
   setWindowOpenHandler(handler: (details: { url: string }) => { action: string }): void {
@@ -75,6 +76,7 @@ export class BaseWindow extends EventEmitter {
 
 export class FakeSession {
   setUserAgent = vi.fn();
+  clearStorageData = vi.fn(async () => {});
   permissionRequestHandler?: Handler;
   permissionCheckHandler?: Handler;
   displayMediaRequestHandler?: Handler;
@@ -146,6 +148,11 @@ class FakeApp extends EventEmitter {
   setBadgeCount = vi.fn();
   getPath = vi.fn((_name: string) => os.tmpdir());
   whenReady = vi.fn(() => Promise.resolve());
+  getVersion = vi.fn(() => "0.1.0");
+  relaunch = vi.fn();
+  setLoginItemSettings = vi.fn();
+  getAppPath = vi.fn(() => "/app");
+  isPackaged = false;
 }
 export const app = new FakeApp();
 

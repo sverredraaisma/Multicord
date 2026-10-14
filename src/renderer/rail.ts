@@ -132,10 +132,27 @@ export function attachTooltips(root: HTMLElement, tooltip: ShellApi["tooltip"]):
   root.addEventListener("dragstart", hide);
 }
 
+/** The settings gear: opens the settings page, or goes back when it is open. */
+export function attachSettingsButton(button: HTMLElement, api: Pick<ShellApi, "settings">): (open: boolean) => void {
+  let open = false;
+  button.addEventListener("click", () => api.settings(!open));
+  return (next) => {
+    open = next;
+    button.classList.toggle("active", open);
+    button.setAttribute("aria-pressed", String(open));
+  };
+}
+
 export function startRail(doc: Document, api: ShellApi): void {
   const root = doc.getElementById("rail")!;
+  const footer = doc.getElementById("rail-footer")!;
+  const setSettingsOpen = attachSettingsButton(doc.getElementById("settings-button")!, api);
   attachTooltips(root, (request) => api.tooltip(request));
+  attachTooltips(footer, (request) => api.tooltip(request));
   attachReordering(root, (keys) => api.reorder(keys));
-  api.onRail((state) => renderRail(root, state, (key) => api.open(key)));
+  api.onRail((state) => {
+    renderRail(root, { ...state, activeKey: state.settingsOpen ? null : state.activeKey }, (key) => api.open(key));
+    setSettingsOpen(state.settingsOpen === true);
+  });
   api.ready();
 }

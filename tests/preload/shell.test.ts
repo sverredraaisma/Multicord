@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createShellApi } from "../../src/preload/shell";
 import { IPC } from "../../src/shared/ipc";
+import { createSettingsApi } from "../../src/preload/settings";
+import { SETTINGS_IPC } from "../../src/shared/settings";
 
 describe("createShellApi", () => {
   it("relays rail and picker traffic over IPC", () => {
@@ -44,4 +46,29 @@ describe("reorder", () => {
     createShellApi(ipc).reorder(["a:1", "b:2"]);
     expect(ipc.send).toHaveBeenCalledWith(IPC.railReorder, ["a:1", "b:2"]);
   });
+});
+
+describe("settings", () => {
+  it("opens and closes the settings page", () => {
+    const ipc = { send: vi.fn(), on: vi.fn() };
+    createShellApi(ipc).settings(true);
+    expect(ipc.send).toHaveBeenCalledWith(IPC.railSettings, true);
+  });
+
+  it("relays the settings page's state and actions", () => {
+    const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
+    const ipc = { send: vi.fn(), on: (c: string, l: (e: unknown, p: unknown) => void) => listeners.set(c, l) };
+    const api = createSettingsApi(ipc);
+    const onState = vi.fn();
+    api.onState(onState);
+    listeners.get(SETTINGS_IPC.state)!(null, { version: "1" });
+    expect(onState).toHaveBeenCalledWith({ version: "1" });
+    api.act({ type: "restart" });
+    api.ready();
+    expect(ipc.send.mock.calls).toEqual([
+      [SETTINGS_IPC.action, { type: "restart" }],
+      [SETTINGS_IPC.ready, null],
+    ]);
+  });
+
 });

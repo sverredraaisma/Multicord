@@ -9,6 +9,7 @@ import * as electron from "../mocks/electron";
 import { APP_NAME, createShell, startApp } from "../../src/main/app";
 import { IPC } from "../../src/shared/ipc";
 import { NATIVE_IPC } from "../../src/shared/native";
+import { SETTINGS_IPC } from "../../src/shared/settings";
 import { GenericWebAdapter } from "../../src/main/adapters/genericWebAdapter";
 import type { PlatformModule } from "../../src/main/modules/types";
 
@@ -110,7 +111,7 @@ describe("createShell", () => {
     expect(handle.registry.state().entries.filter((e) => e.kind === "server")).toHaveLength(0);
 
     ipcMain.emit(IPC.discordState, senderEvent(discordView), state);
-    expect(railView.webContents.send).toHaveBeenLastCalledWith(IPC.railState, handle.registry.state());
+    expect(railView.webContents.send).toHaveBeenLastCalledWith(IPC.railState, { ...handle.registry.state(), settingsOpen: false });
     expect(handle.registry.state().entries.filter((e) => e.platform === "discord").map((e) => e.key)).toEqual([
       "discord:home",
       "discord:1",
@@ -559,5 +560,206 @@ describe("startApp", () => {
     const event = { preventDefault: vi.fn() };
     window.emit("close", event);
     expect(event.preventDefault).not.toHaveBeenCalled();
+  });
+});
+
+describe("settings", () => {
+  async function opened() {
+    const ctx = await shellWith();
+    ipcMain.emit(IPC.railSettings, senderEvent(ctx.railView), true);
+    const view = ctx.handle.settingsView() as unknown as InstanceType<typeof WebContentsView>;
+    return { ...ctx, view };
+  }
+
+  it("opens the settings page from the rail gear, above the platforms and below the tooltip", async () => {
+    const { handle, window, discordView, railView } = await shellWith();
+    expect(handle.settingsView()).toBeUndefined();
+    ipcMain.emit(IPC.railSettings, senderEvent(discordView), true); // only the rail may
+    ipcMain.emit(IPC.railSettings, senderEvent(railView), "yes");
+    expect(handle.settingsView()).toBeUndefined();
+
+    ipcMain.emit(IPC.railSettings, senderEvent(railView), true);
+    const view = handle.settingsView() as unknown as InstanceType<typeof WebContentsView>;
+    expect(view.options.webPreferences).toMatchObject({
+      preload: path.join(DIST, "preload-settings.js"),
+      partition: "multicord-settings",
+      sandbox: true,
+      contextIsolation: true,
+    });
+    expect(view.webContents.loadFile).toHaveBeenCalledWith(path.join(DIST, "settings.html"));
+    expect(window.children.at(-2)).toBe(view);
+    expect(window.children.at(-1)).toBe(handle.tooltipView);
+    expect(view.visible).toBe(true);
+    expect(view.bounds).toEqual({ x: 72, y: 0, width: 928, height: 700 });
+    expect(discordView.visible).toBe(false);
+    expect(railView.webContents.send).toHaveBeenLastCalledWith(IPC.railState, expect.objectContaining({ settingsOpen: true }));
+    expect(view.webContents.send).toHaveBeenCalledWith(SETTINGS_IPC.state, expect.objectContaining({ version: "0.1.0" }));
+
+    const ses = session.fromPartition("multicord-settings");
+    const callback = vi.fn();
+    (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "media", callback);
+    (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "notifications", callback);
+    expect(callback.mock.calls).toEqual([[true], [false]]);
+    expect((ses.permissionCheckHandler as (...a: unknown[]) => boolean)(null, "media")).toBe(true);
+    const navigation = { preventDefault: vi.fn() };
+    view.webContents.emit("will-navigate", navigation);
+    expect(navigation.preventDefault).toHaveBeenCalled();
+    expect(view.webContents.windowOpenHandler!({ url: "https://x.example" })).toEqual({ action: "deny" });
+
+    ipcMain.emit(IPC.railSettings, senderEvent(railView), false);
+    expect(view.visible).toBe(false);
+    expect(discordView.visible).toBe(true);
+    ipcMain.emit(IPC.railSettings, senderEvent(railView), true);
+    expect(handle.settingsView()).toBe(view); // created once
+  });
+
+  it("leaves settings when a server is opened", async () => {
+    const { view, discordView, railView } = await opened();
+    ipcMain.emit(IPC.discordState, senderEvent(discordView), { guilds: [{ id: "1", name: "One", unread: false, mentions: 0 }], badge: { unread: false, mentions: 0 } });
+    ipcMain.emit(IPC.railOpen, senderEvent(railView), "discord:1");
+    await flush();
+    expect(view.visible).toBe(false);
+    expect(discordView.visible).toBe(true);
+  });
+
+  it("answers the page's requests and actions from the page only", async () => {
+    const { handle, view, railView } = await opened();
+    view.webContents.send.mockClear();
+    ipcMain.emit(SETTINGS_IPC.ready, senderEvent(railView));
+    expect(view.webContents.send).not.toHaveBeenCalled();
+    ipcMain.emit(SETTINGS_IPC.ready, senderEvent(view));
+    expect(view.webContents.send).toHaveBeenCalledWith(SETTINGS_IPC.state, expect.objectContaining({ restartNeeded: false }));
+
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(railView), { type: "setEnabled", id: "fluxer", enabled: false });
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "explode" });
+    await flush();
+    expect(fs.existsSync(path.join(userData, "platforms.json"))).toBe(false);
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "setEnabled", id: "fluxer", enabled: false });
+    await flush();
+    expect(JSON.parse(fs.readFileSync(path.join(userData, "platforms.json"), "utf8"))).toEqual([{ id: "fluxer", enabled: false }]);
+    expect(view.webContents.send).toHaveBeenLastCalledWith(SETTINGS_IPC.state, expect.objectContaining({ restartNeeded: true }));
+    expect(handle.settings).toBeDefined();
+  });
+
+  it("ignores page messages before the page exists", async () => {
+    const { railView } = await shellWith();
+    ipcMain.emit(SETTINGS_IPC.ready, senderEvent(railView));
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(railView), { type: "restart" });
+    expect(app.relaunch).not.toHaveBeenCalled();
+  });
+
+  it("opens a service from the settings page", async () => {
+    const { view, discordView } = await opened();
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "openService", id: "fluxer" });
+    await flush();
+    expect(view.visible).toBe(false);
+    expect(discordView.visible).toBe(false);
+    expect((electron.WebContentsView.instances.find((v) => v.options.webPreferences.partition === "persist:fluxer")!).visible).toBe(true);
+  });
+
+  it("signs web sessions out by clearing them and reloading", async () => {
+    const { view, discordView } = await opened();
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "signOut", id: "discord" });
+    await flush();
+    expect(session.fromPartition("persist:discord").clearStorageData).toHaveBeenCalled();
+    expect(discordView.webContents.reload).toHaveBeenCalled();
+  });
+
+  it("forgets a removed service's data", async () => {
+    fs.writeFileSync(path.join(userData, "platforms.json"), JSON.stringify([{ id: "el", name: "Element", url: "https://app.element.io" }]));
+    fs.writeFileSync(path.join(userData, "credentials.json"), JSON.stringify({ "el:x:token": "a", "fluxer:x:token": "b" }));
+    const { view } = await opened();
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "removeService", id: "el" });
+    await flush();
+    expect(session.fromPartition("persist:el").clearStorageData).toHaveBeenCalled();
+    expect(JSON.parse(fs.readFileSync(path.join(userData, "credentials.json"), "utf8"))).toEqual({ "fluxer:x:token": "b" });
+  });
+
+  it("restarts on request", async () => {
+    const { handle, view, window } = await opened();
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "restart" });
+    await flush();
+    expect(app.relaunch).toHaveBeenCalled();
+    expect(app.quit).toHaveBeenCalled();
+    const event = { preventDefault: vi.fn() };
+    window.emit("close", event); // quitting: the window really closes
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(handle).toBeDefined();
+  });
+
+  it("quits on close when not kept in the tray", async () => {
+    const { handle, window } = await shellWith();
+    handle.settingsStore.update({ general: { closeToTray: false } });
+    const event = { preventDefault: vi.fn() };
+    window.emit("close", event);
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(window.hide).not.toHaveBeenCalled();
+  });
+
+  it("registers launch at login, with the app path when unpackaged", async () => {
+    const { handle } = await shellWith();
+    handle.settingsStore.update({ general: { notifications: true } });
+    expect(app.setLoginItemSettings).not.toHaveBeenCalled();
+    handle.settingsStore.update({ general: { launchAtLogin: true } });
+    expect(app.setLoginItemSettings).toHaveBeenLastCalledWith({ openAtLogin: true, args: ["/app"] });
+    app.isPackaged = true;
+    handle.settingsStore.update({ general: { launchAtLogin: false } });
+    expect(app.setLoginItemSettings).toHaveBeenLastCalledWith({ openAtLogin: false });
+    app.isPackaged = false;
+  });
+
+  it("does not offer launch at login on Linux", async () => {
+    const { handle } = await shellWith(undefined, "linux");
+    handle.settingsStore.update({ general: { launchAtLogin: true } });
+    expect(app.setLoginItemSettings).not.toHaveBeenCalled();
+    expect(handle.settings.state().launchAtLoginSupported).toBe(false);
+  });
+
+  it("turns notifications off for platform pages and native notifications", async () => {
+    const { handle } = await shellWith();
+    const ses = session.fromPartition("persist:discord");
+    const check = ses.permissionCheckHandler as (...a: unknown[]) => boolean;
+    expect(check(null, "notifications")).toBe(true);
+    handle.settingsStore.update({ general: { notifications: false } });
+    expect(check(null, "notifications")).toBe(false);
+    expect(check(null, "media")).toBe(true);
+    const callback = vi.fn();
+    (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "notifications", callback);
+    expect(callback).toHaveBeenCalledWith(false);
+
+    const fluxer = handle.adapters.get("fluxer") as unknown as { notifications: { emit(n: unknown): void } };
+    fluxer.notifications.emit({ title: "Ana", body: "hi", target: "900" });
+    expect(electron.Notification.instances).toHaveLength(0);
+  });
+
+  it("sends voice settings to modules that run calls", async () => {
+    const { handle, discordView } = await shellWith();
+    const fluxerView = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    fluxerView.webContents.emit("did-finish-load");
+    expect(fluxerView.webContents.send).toHaveBeenCalledWith(SETTINGS_IPC.voice, handle.settingsStore.get().voice);
+    fluxerView.webContents.send.mockClear();
+    handle.settingsStore.update({ general: { closeToTray: true } });
+    expect(fluxerView.webContents.send).not.toHaveBeenCalledWith(SETTINGS_IPC.voice, expect.anything());
+    handle.settingsStore.update({ voice: { noiseSuppression: false } });
+    expect(fluxerView.webContents.send).toHaveBeenCalledWith(SETTINGS_IPC.voice, expect.objectContaining({ noiseSuppression: false }));
+    expect(discordView.webContents.send).not.toHaveBeenCalledWith(SETTINGS_IPC.voice, expect.anything());
+  });
+
+  it("keeps an open settings page current as accounts change", async () => {
+    const { view, discordView } = await opened();
+    view.webContents.send.mockClear();
+    ipcMain.emit(IPC.discordState, senderEvent(discordView), { guilds: [], badge: { unread: false, mentions: 0 }, user: { name: "Ana" } });
+    expect(view.webContents.send).toHaveBeenCalledWith(
+      SETTINGS_IPC.state,
+      expect.objectContaining({ services: expect.arrayContaining([expect.objectContaining({ id: "discord", account: { state: "signed-in", name: "Ana" } })]) }),
+    );
+  });
+
+  it("opens settings from the tray", async () => {
+    const { handle, window } = await shellWith();
+    const tray = Tray.instances[0]!;
+    tray.menu!.template.find((item) => item.label === "Settings")!.click!();
+    expect(window.show).toHaveBeenCalled();
+    expect((handle.settingsView() as unknown as InstanceType<typeof WebContentsView>).visible).toBe(true);
   });
 });

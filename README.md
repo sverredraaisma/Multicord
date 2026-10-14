@@ -20,7 +20,13 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 
 - **Platform modules:** every platform is a module in `src/main/modules`, with a manifest (id, label, colour, preload script, and whether users may add instances) and a `load()` hook that wires up its own view. The shell knows platforms only through this interface. The built-in modules are `discord`, `fluxer` and `web`. A new platform is a new module, with no changes to the shell. Modules are compiled in, not loaded from disk, since they run with full main-process rights.
 - **Your own server order:** servers and folders from every platform form one list in the rail. Drag them into any order; the order is saved in `rail-order.json`, and new servers join at the end. Each platform's Home and DM bubbles stay at the top.
-- **Module labels:** every rail icon carries a small label in its module's colour (Discord, Fluxer, Web), and the hover name says it too, e.g. "Alpha · Fluxer".
+- **Module labels:** hovering a rail icon shows a small dot in its module's colour with the module's initial (D, F, W) in the corner, and the hover name says it too, e.g. "Alpha · Fluxer".
+- **Settings** (the gear at the bottom of the rail, or the tray menu):
+  - **Services and accounts:** turn services on and off, rename them, add web apps, self-hosted Fluxer instances and extra Discord or Fluxer accounts (each account is its own service, with its own session), remove added ones (which also deletes their saved sign-in), and see who is signed in. Sign out of each service from here too. Service changes are written to `platforms.json` and apply after a restart, which the page offers.
+  - **Voice and video:** microphone, speakers and camera, with a level meter, a test sound and a camera preview, plus echo cancellation, noise suppression and automatic gain control. These apply to Fluxer calls; Discord and web apps keep their own voice settings.
+  - **General:** keep running in the tray, start with your computer (Windows and macOS), and desktop notifications.
+
+  Settings are stored in `settings.json` in the user-data folder.
 - **Markdown and emoji:** messages render Discord-flavoured Markdown (headings, emphasis, spoilers, code, quotes, lists, links) and custom emoji. `:shortcodes:` become emoji, and emoji-only messages show large. An emoji picker with search, groups and the server's custom emoji sits in the composer and on reactions.
 - One `BaseWindow` with a shell rail view and one `WebContentsView` per platform, each in its own `persist:<id>` partition, with `contextIsolation` and `sandbox` on.
 - **Discord, hidden engine:** loads discord.com, hides its guild bar with CSS and reads the hidden guild items to build our rail, keeping their order and unread state. Server names and icons come from Discord's `GuildStore` through the store bridge, with DOM fallbacks. Navigation clicks the hidden items so Discord's own router handles it, with `pushState` + `popstate` as a fallback. It never calls `loadURL()`.
@@ -41,13 +47,19 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 
   Large servers (over 250 members) are subscribed to while open, so they deliver every message.
 
-  Everything that talks to Fluxer runs in the main process. The session token never reaches a web page and is stored encrypted with `safeStorage`. Multicord identifies itself to Fluxer honestly, as Multicord. Self-hosted instances can be added in `platforms.json` with `"module": "fluxer"` and the instance URL. To remove a built-in platform, add `{ "id": "fluxer", "enabled": false }` (or `"discord"`).
+  Everything that talks to Fluxer runs in the main process. The session token never reaches a web page and is stored encrypted with `safeStorage`. Multicord identifies itself to Fluxer honestly, as Multicord. Self-hosted instances can be added in Settings or in `platforms.json` with `"module": "fluxer"` and the instance URL.
 - **Component gallery:** `npm run gallery` opens `dist/gallery.html`, which shows every component with sample data. Use it to check designs without signing in anywhere.
-- **Extra platforms** as web views (shallow tier: one rail icon, unread state from the page title), configured in `platforms.json` in the app's user-data folder (`%APPDATA%\Multicord` on Windows):
+- **Extra platforms** as web views (shallow tier: one rail icon, unread state from the page title). Settings writes them to `platforms.json` in the app's user-data folder (`%APPDATA%\Multicord` on Windows), which can also be edited by hand:
 
   ```json
-  [{ "id": "element", "name": "Element", "url": "https://app.element.io" }]
+  [
+    { "id": "element", "name": "Element", "url": "https://app.element.io" },
+    { "id": "work", "name": "Work", "module": "discord" },
+    { "id": "fluxer", "enabled": false }
+  ]
   ```
+
+  An entry with a built-in id (`discord`, `fluxer`) only renames it or turns it off. Any entry can have `"enabled": false`.
 
 - Tray with minimize-to-tray, single instance, saved window state, and mention counts in the title, badge and taskbar flash.
 - Screen share through our own picker, with loopback system audio on Windows.
@@ -64,10 +76,14 @@ src/
   preload/discord/       Discord view preload (DOM hooks in dom.ts, store reads in storeBridge.ts)
   preload/shell.ts       contextBridge API for rail and picker
   preload/native.ts      bridge for native chat views (display state in, actions out)
+  preload/settings.ts    bridge for the settings page
+  shared/settings.ts     app settings, services list and settings actions, with validators
+  main/settings*.ts      settings store and the controller behind the settings page
+  main/services.ts       edits to platforms.json
   main/modules/          platform modules (discord, fluxer, web) and their registry
   renderer/components/   the component library: server icons, channel lists, messages,
                          markdown, reactions, emoji picker, forums, voice panel, forms
-  renderer/              rail, tooltip, screen-share picker, native chat view, gallery
+  renderer/              rail, tooltip, screen-share picker, native chat view, settings page, gallery
   entries/               bundle entry points (thin; excluded from coverage)
 tests/                   Vitest; tests/mocks/electron.ts fakes the Electron API
 ```
@@ -87,7 +103,6 @@ Coverage is enforced at **95%** for lines, statements, functions and branches (`
   - **Calls in DMs:** voice works in server voice channels only.
   - **Archived threads:** only open threads and forum posts are listed.
   - **Instances without presigned uploads:** attachments need the presigned upload flow, which fluxer.app supports.
-  - **A full emoji picker:** reactions offer six quick emoji, plus toggling existing reactions.
 - Fluxer's docs don't state a policy on third-party clients. The client is built to Fluxer's documented API and stays well under its rate limits. Requests are spaced out because a global rate-limit hit revokes a user's session.
 
 ## License

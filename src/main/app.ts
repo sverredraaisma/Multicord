@@ -26,6 +26,7 @@ import {
   type PickerRequest,
 } from "../shared/ipc";
 import type { PlatformAdapter } from "../shared/adapter";
+import { isSettingsAction, SETTINGS_IPC, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import type { GatewaySocket } from "./fluxer/gateway";
 import { computeLayout, tooltipBounds } from "./layout";
@@ -34,11 +35,15 @@ import type { PlatformModule, ShellServices } from "./modules/types";
 import { loadPlatforms } from "./platforms";
 import { PlatformRegistry } from "./registry";
 import { createDisplayMediaHandler } from "./screenShare";
+import { SettingsController } from "./settingsController";
+import { SettingsStore } from "./settingsStore";
 import { decideWindowOpen, isPermissionAllowed } from "./sessionPolicy";
 import { toChromeUserAgent } from "./userAgent";
 import { parseWindowState, serializeWindowState } from "./windowState";
 
 export const APP_NAME = "Multicord";
+/** In memory only: the settings page keeps nothing. */
+const SETTINGS_PARTITION = "multicord-settings";
 
 export interface ShellPaths {
   /** Directory holding the built JS, HTML and icon. */
@@ -69,10 +74,19 @@ function secureView(preload?: string, partition?: string): WebContentsView {
   });
 }
 
-export function configureSession(ses: Session): void {
+/** Platform sessions; notifications follow the user's setting at the time they are asked for. */
+export function configureSession(ses: Session, notificationsAllowed: () => boolean = () => true): void {
+  const allowed = (permission: string): boolean =>
+    isPermissionAllowed(permission) && (permission !== "notifications" || notificationsAllowed());
   ses.setUserAgent(toChromeUserAgent(ses.getUserAgent(), APP_NAME));
-  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(isPermissionAllowed(permission)));
-  ses.setPermissionCheckHandler((_wc, permission) => isPermissionAllowed(permission));
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(allowed(permission)));
+  ses.setPermissionCheckHandler((_wc, permission) => allowed(permission));
+}
+
+/** The settings page's own session: it may use the microphone and camera for device tests, nothing else. */
+function configureSettingsSession(ses: Session): void {
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(permission === "media"));
+  ses.setPermissionCheckHandler((_wc, permission) => permission === "media");
 }
 
 /** Shows our screen share picker as an overlay and resolves with the user's choice. */
@@ -103,6 +117,11 @@ export interface ShellHandle {
   views: Map<string, WebContentsView>;
   adapters: Map<string, PlatformAdapter>;
   registry: PlatformRegistry;
+  settings: SettingsController;
+  settingsStore: SettingsStore;
+  /** Created when the settings page is first opened. */
+  settingsView(): WebContentsView | undefined;
+  setSettingsOpen(open: boolean): void;
   show(): void;
   setQuitting(): void;
   layout(): void;
@@ -152,7 +171,11 @@ export async function createShell(
   const views = new Map<string, WebContentsView>();
   const adapters = new Map<string, PlatformAdapter>();
   const credentials = new CredentialStore(path.join(paths.userData, "credentials.json"), services.secrets);
+  const settingsStore = new SettingsStore(path.join(paths.userData, "settings.json"));
+  const general = () => settingsStore.get().general;
   let activePlatform = platforms[0]!.id;
+  let settingsOpen = false;
+  let settingsView: WebContentsView | undefined;
   let quitting = false;
 
   const layout = (): void => {
@@ -160,10 +183,13 @@ export async function createShell(
     const { rail, content } = computeLayout(width, height);
     railView.setBounds(rail);
     for (const [id, view] of views) {
+      const shown = !settingsOpen && id === activePlatform;
       view.setBounds(content);
-      view.setVisible(id === activePlatform);
-      adapters.get(id)?.setVisible?.(id === activePlatform);
+      view.setVisible(shown);
+      adapters.get(id)?.setVisible?.(shown);
     }
+    settingsView?.setBounds(content);
+    settingsView?.setVisible(settingsOpen);
   };
 
   /** Screen share goes through our picker, as the web clients have none of their own here. */
@@ -183,7 +209,7 @@ export async function createShell(
       continue;
     }
     const ses = session.fromPartition(def.partition);
-    configureSession(ses);
+    configureSession(ses, () => general().notifications);
     const { preload } = module.manifest;
     const view = secureView(preload && path.join(paths.dist, preload), def.partition);
     view.webContents.setWindowOpenHandler(({ url }) => {
@@ -207,6 +233,13 @@ export async function createShell(
     });
     adapters.set(def.id, adapter);
     await registry.add(adapter, def.name, { label: module.manifest.label, color: module.manifest.color });
+    if (module.manifest.usesVoiceSettings) {
+      const sendVoice = (): void => view.webContents.send(SETTINGS_IPC.voice, settingsStore.get().voice);
+      view.webContents.on("did-finish-load", sendVoice);
+      settingsStore.changed.on(({ patch }) => {
+        if (patch.voice) sendVoice();
+      });
+    }
     start();
   }
 
@@ -230,7 +263,7 @@ export async function createShell(
 
   let lastMentions = 0;
   const publish = (): void => {
-    railView.webContents.send(IPC.railState, registry.state());
+    railView.webContents.send(IPC.railState, { ...registry.state(), settingsOpen });
     const { mentions } = registry.totals();
     window.setTitle(mentions > 0 ? `(${mentions}) ${APP_NAME}` : APP_NAME);
     app.setBadgeCount(mentions);
@@ -238,6 +271,81 @@ export async function createShell(
     lastMentions = mentions;
   };
   registry.onChange(publish);
+
+  const show = (): void => {
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  };
+
+  /** Shows a platform's view in front, leaving the settings page. */
+  const showPlatform = (id: string): void => {
+    activePlatform = id;
+    settingsOpen = false;
+    layout();
+    publish();
+  };
+
+  const settings = new SettingsController({
+    platformsFile: path.join(paths.userData, "platforms.json"),
+    modules,
+    store: settingsStore,
+    adapters,
+    secretsPersistent: () => credentials.persistent,
+    launchAtLoginSupported: platform !== "linux",
+    version: app.getVersion(),
+    openService: showPlatform,
+    clearSession: async (id) => {
+      await session.fromPartition(`persist:${id}`).clearStorageData();
+      views.get(id)?.webContents.reload();
+    },
+    forgetSecrets: (id) => credentials.deletePrefix(`${id}:`),
+    restart: () => {
+      quitting = true;
+      app.relaunch();
+      app.quit();
+    },
+    publish: (state: SettingsViewState) => settingsView?.webContents.send(SETTINGS_IPC.state, state),
+  });
+
+  settingsStore.changed.on(({ settings: next, patch }) => {
+    if (patch.general?.launchAtLogin === undefined || platform === "linux") return;
+    // Unpackaged (development) runs need the app path, or Electron starts without the app.
+    app.setLoginItemSettings({ openAtLogin: next.general.launchAtLogin, ...(app.isPackaged ? {} : { args: [app.getAppPath()] }) });
+  });
+  // Account states change as platforms connect; keep an open settings page current.
+  registry.onChange(() => {
+    if (settingsOpen) settings.refresh();
+  });
+
+  const setSettingsOpen = (open: boolean): void => {
+    if (open && !settingsView) {
+      configureSettingsSession(session.fromPartition(SETTINGS_PARTITION));
+      settingsView = secureView(path.join(paths.dist, "preload-settings.js"), SETTINGS_PARTITION);
+      settingsView.webContents.on("will-navigate", (event) => event.preventDefault());
+      settingsView.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+      // Above the platform views, below the tooltip overlay.
+      window.contentView.removeChildView(tooltipView);
+      window.contentView.addChildView(settingsView);
+      window.contentView.addChildView(tooltipView);
+      void settingsView.webContents.loadFile(path.join(paths.dist, "settings.html"));
+    }
+    settingsOpen = open;
+    layout();
+    publish();
+    if (open) settings.refresh(true);
+  };
+
+  ipcMain.on(IPC.railSettings, (event, open) => {
+    if (event.sender === railView.webContents && typeof open === "boolean") setSettingsOpen(open);
+  });
+  ipcMain.on(SETTINGS_IPC.ready, (event) => {
+    if (settingsView && event.sender === settingsView.webContents) settings.refresh(true);
+  });
+  ipcMain.on(SETTINGS_IPC.action, (event, action) => {
+    if (!settingsView || event.sender !== settingsView.webContents || !isSettingsAction(action)) return;
+    void settings.handle(action);
+  });
 
   ipcMain.on(IPC.railReorder, (event, keys) => {
     if (event.sender !== railView.webContents || !isRailOrder(keys)) return;
@@ -252,10 +360,7 @@ export async function createShell(
     if (event.sender !== railView.webContents || !isRailKey(key)) return;
     try {
       const target = await registry.open(key);
-      if (target) {
-        activePlatform = target;
-        layout();
-      }
+      if (target) showPlatform(target);
     } catch (error) {
       console.warn(`[rail] could not open ${key}: ${(error as Error).message}`);
     }
@@ -265,23 +370,18 @@ export async function createShell(
   window.on("close", (event) => {
     fs.mkdirSync(paths.userData, { recursive: true });
     fs.writeFileSync(stateFile, serializeWindowState(window.getNormalBounds(), window.isMaximized()));
-    if (quitting) return;
+    if (quitting || !general().closeToTray) return;
     event.preventDefault();
     window.hide();
   });
-
-  const show = (): void => {
-    if (window.isMinimized()) window.restore();
-    window.show();
-    window.focus();
-  };
 
   // Native adapters' notifications; Discord's own page shows its notifications itself.
   // Shown notifications stay referenced so their click handlers survive GC.
   const shownNotifications = new Set<Notification>();
   for (const [id, adapter] of adapters) {
     adapter.onNotification((n) => {
-      if (n.inView && window.isFocused() && activePlatform === id) return;
+      if (!general().notifications) return;
+      if (n.inView && window.isFocused() && activePlatform === id && !settingsOpen) return;
       if (!Notification.isSupported()) return;
       const note = new Notification({ title: n.title, body: n.body });
       shownNotifications.add(note);
@@ -292,9 +392,7 @@ export async function createShell(
         registry
           .openNotification(id, n)
           .then((target) => {
-            if (!target) return;
-            activePlatform = target;
-            layout();
+            if (target) showPlatform(target);
           })
           .catch((error: Error) => console.warn(`[${id}] could not open notification: ${error.message}`));
       });
@@ -307,6 +405,13 @@ export async function createShell(
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: `Show ${APP_NAME}`, click: show },
+      {
+        label: "Settings",
+        click: () => {
+          show();
+          setSettingsOpen(true);
+        },
+      },
       { type: "separator" },
       { label: "Quit", click: () => app.quit() },
     ]),
@@ -323,6 +428,10 @@ export async function createShell(
     views,
     adapters,
     registry,
+    settings,
+    settingsStore,
+    settingsView: () => settingsView,
+    setSettingsOpen,
     show,
     setQuitting: () => {
       quitting = true;

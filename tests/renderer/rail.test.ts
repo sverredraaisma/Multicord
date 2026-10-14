@@ -14,7 +14,7 @@ const state: RailState = {
 };
 
 beforeEach(() => {
-  document.body.innerHTML = `<nav id="rail"></nav>`;
+  document.body.innerHTML = `<nav id="rail"></nav><footer id="rail-footer"><button id="settings-button" data-tooltip="Settings" class="rail-item"></button></footer>`;
 });
 
 describe("initials", () => {
@@ -76,6 +76,26 @@ describe("startRail", () => {
     expect(api.open).toHaveBeenCalledWith("discord:home");
     home.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
     expect(api.tooltip).toHaveBeenCalledWith({ text: "Discord direct messages", y: expect.any(Number) });
+  });
+
+  it("opens and closes settings from the gear and clears the active server meanwhile", () => {
+    let push: (s: RailState) => void = () => {};
+    const api = { onRail: (cb: (s: RailState) => void) => (push = cb), open: vi.fn(), ready: vi.fn(), tooltip: vi.fn(), settings: vi.fn() } as unknown as ShellApi;
+    startRail(document, api);
+    const gear = document.getElementById("settings-button")!;
+    gear.click();
+    expect(api.settings).toHaveBeenLastCalledWith(true);
+    push({ ...state, activeKey: "discord:home", settingsOpen: true });
+    expect(gear.classList.contains("active")).toBe(true);
+    expect(gear.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector("#rail .active")).toBeNull();
+    gear.click();
+    expect(api.settings).toHaveBeenLastCalledWith(false);
+    push({ ...state, activeKey: "discord:home" });
+    expect(gear.classList.contains("active")).toBe(false);
+    expect(document.querySelector("#rail .active")).not.toBeNull();
+    gear.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(api.tooltip).toHaveBeenCalledWith({ text: "Settings", y: expect.any(Number) });
   });
 });
 

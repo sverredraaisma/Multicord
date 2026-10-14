@@ -9,6 +9,8 @@ export interface ShellApi {
   tooltip(request: TooltipRequest | null): void;
   /** Saves a new order of top-level servers and groups. */
   reorder(keys: string[]): void;
+  /** Opens or closes the settings page. */
+  settings(open: boolean): void;
   onTooltip(cb: (text: string) => void): void;
   onPickerRequest(cb: (request: PickerRequest) => void): void;
   choose(choice: PickerChoice | null): void;
@@ -21,6 +23,7 @@ export function createShellApi(ipc: PreloadIpc): ShellApi {
     ready: () => ipc.send(IPC.railReady, null),
     tooltip: (request) => ipc.send(IPC.railTooltip, request),
     reorder: (keys) => ipc.send(IPC.railReorder, keys),
+    settings: (open) => ipc.send(IPC.railSettings, open),
     onTooltip: (cb) => ipc.on(IPC.tooltipShow, (_event, text) => cb(String(text))),
     onPickerRequest: (cb) => ipc.on(IPC.pickerSources, (_event, request) => cb(request as PickerRequest)),
     choose: (choice) => ipc.send(IPC.pickerChoose, choice),
