@@ -14,6 +14,8 @@ export class FakeWebContents extends EventEmitter {
   sendInputEvent = vi.fn();
   setZoomFactor = vi.fn();
   windowOpenHandler?: (details: { url: string }) => { action: string };
+  /** The view's session, from its partition (the default session without one). */
+  session!: FakeSession;
 
   setWindowOpenHandler(handler: (details: { url: string }) => { action: string }): void {
     this.windowOpenHandler = handler;
@@ -27,6 +29,8 @@ export class WebContentsView {
   visible = true;
 
   constructor(readonly options: { webPreferences: Record<string, unknown> }) {
+    const partition = options.webPreferences?.partition;
+    this.webContents.session = typeof partition === "string" ? session.fromPartition(partition) : session.defaultSession;
     WebContentsView.instances.push(this);
   }
 

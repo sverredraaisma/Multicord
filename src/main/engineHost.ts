@@ -294,6 +294,18 @@ export class EngineHub {
       },
     };
     http.webRequest.onBeforeRequest((details, callback) => callback({ cancel: checkUrl(details.url, httpPolicy) !== undefined }));
+    // The module's view shows what the engine renders (images, a call's server): it may reach no more than the engine.
+    const viewPolicy: UrlPolicy = {
+      schemes: ["https:", "wss:"],
+      get hosts() {
+        return allowed.hosts;
+      },
+    };
+    spec.view.webContents.session.webRequest.onBeforeRequest((details, callback) => {
+      const { protocol } = new URL(details.url);
+      const local = protocol === "file:" || protocol === "data:" || protocol === "blob:" || protocol === "devtools:";
+      callback({ cancel: !local && checkUrl(details.url, viewPolicy) !== undefined });
+    });
     const running: Running = {
       spec,
       adapter: undefined!,

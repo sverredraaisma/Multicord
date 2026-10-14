@@ -184,6 +184,26 @@ describe("EngineHub", () => {
     expect(decide("file:///C:/Users/me/credentials.json")).toBe(true);
   });
 
+  it("keeps the module's view within the engine's reach", async () => {
+    const { ask, view } = setup();
+    const filter = (view.webContents.session as unknown as { beforeRequest: (d: { url: string }, cb: (r: { cancel: boolean }) => void) => void }).beforeRequest;
+    const cancelled = (url: string) => {
+      let cancel: boolean | undefined;
+      filter({ url }, (response) => (cancel = response.cancel));
+      return cancel;
+    };
+    expect(cancelled("file:///C:/app/dist/native.js")).toBe(false);
+    expect(cancelled("data:image/png;base64,AA")).toBe(false);
+    expect(cancelled("blob:file:///1")).toBe(false);
+    expect(cancelled("https://cdn.anywhere.example/a.png")).toBe(false);
+    expect(cancelled("https://192.168.1.1/admin")).toBe(true);
+    expect(cancelled("http://cdn.anywhere.example/a.png")).toBe(true);
+    await ask({ type: "lockHosts", hosts: ["*.demo.example"] });
+    expect(cancelled("https://cdn.demo.example/a.png")).toBe(false);
+    expect(cancelled("wss://voice.demo.example/")).toBe(false);
+    expect(cancelled("https://evil.example/?leak=1")).toBe(true);
+  });
+
   it("lets an engine lock itself to fewer hosts, for HTTP and WebSockets, but never widen", async () => {
     const { ask } = setup();
     const http = session.fromPartition("engine_http_demo");
