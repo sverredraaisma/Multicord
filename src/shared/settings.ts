@@ -34,6 +34,31 @@ export interface GeneralSettings {
   closeToTray: boolean;
   launchAtLogin: boolean;
   notifications: boolean;
+  spellcheck: boolean;
+  /** Servers of all services in one order ("mixed"), or grouped per service. */
+  railGrouping: "mixed" | "platform";
+  /** Zoom of the content area, one of ZOOM_LEVELS. */
+  zoom: number;
+}
+
+/** Zoom steps, as browsers offer them. */
+export const ZOOM_LEVELS = [0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2] as const;
+
+/** The next zoom step up (+1) or down (-1) from the current one. */
+/**
+ * The zoom shortcut a key press means: Ctrl/Cmd with +/= zooms in, with -
+ * zooms out, with 0 resets (returned as 0).
+ */
+export function zoomShortcut(input: { type: string; control: boolean; meta: boolean; key: string }): 1 | -1 | 0 | undefined {
+  if (input.type !== "keyDown" || !(input.control || input.meta)) return undefined;
+  if (input.key === "=" || input.key === "+") return 1;
+  if (input.key === "-" || input.key === "_") return -1;
+  return input.key === "0" ? 0 : undefined;
+}
+
+export function stepZoom(zoom: number, direction: 1 | -1): number {
+  if (direction === 1) return ZOOM_LEVELS.find((level) => level > zoom) ?? ZOOM_LEVELS.at(-1)!;
+  return [...ZOOM_LEVELS].reverse().find((level) => level < zoom) ?? ZOOM_LEVELS[0];
 }
 
 export interface AppSettings {
@@ -42,7 +67,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  general: { closeToTray: true, launchAtLogin: false, notifications: true },
+  general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1 },
   voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
 };
 
@@ -54,7 +79,16 @@ export interface SettingsPatch {
 }
 
 const MAX_TEXT = 200;
-const GENERAL_KEYS = ["closeToTray", "launchAtLogin", "notifications"] as const;
+/** Each general setting with the check its values must pass. */
+const GENERAL_CHECKS: { [K in keyof GeneralSettings]: (value: unknown) => value is GeneralSettings[K] } = {
+  closeToTray: (v): v is boolean => typeof v === "boolean",
+  launchAtLogin: (v): v is boolean => typeof v === "boolean",
+  notifications: (v): v is boolean => typeof v === "boolean",
+  spellcheck: (v): v is boolean => typeof v === "boolean",
+  railGrouping: (v): v is GeneralSettings["railGrouping"] => v === "mixed" || v === "platform",
+  zoom: (v): v is number => (ZOOM_LEVELS as readonly unknown[]).includes(v),
+};
+const GENERAL_KEYS = Object.keys(GENERAL_CHECKS) as (keyof GeneralSettings)[];
 const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl"] as const;
 const DEVICE_KEYS = ["input", "output", "camera"] as const;
 
@@ -73,7 +107,10 @@ export function parseSettings(raw: unknown): AppSettings {
   const settings = structuredClone(DEFAULT_SETTINGS);
   if (!isRecord(raw)) return settings;
   if (isRecord(raw.general)) {
-    for (const key of GENERAL_KEYS) if (typeof raw.general[key] === "boolean") settings.general[key] = raw.general[key];
+    for (const key of GENERAL_KEYS) {
+      const value = raw.general[key];
+      if (GENERAL_CHECKS[key](value)) (settings.general as unknown as Record<string, unknown>)[key] = value;
+    }
   }
   if (isRecord(raw.voice)) {
     for (const key of VOICE_FLAGS) if (typeof raw.voice[key] === "boolean") settings.voice[key] = raw.voice[key];
@@ -90,7 +127,7 @@ export function isSettingsPatch(value: unknown): value is SettingsPatch {
   if (general !== undefined) {
     if (!isRecord(general)) return false;
     for (const [key, v] of Object.entries(general)) {
-      if (!(GENERAL_KEYS as readonly string[]).includes(key) || typeof v !== "boolean") return false;
+      if (!(GENERAL_KEYS as readonly string[]).includes(key) || !GENERAL_CHECKS[key as keyof GeneralSettings](v)) return false;
     }
   }
   if (voice !== undefined) {

@@ -399,3 +399,19 @@ describe("modules and ordering", () => {
     expect(api.reorder).toHaveBeenCalledWith(["discord:1", "fluxer:5", "discord:folder:7"]);
   });
 });
+
+describe("grouped rail", () => {
+  it("separates each platform's run of servers when grouped", () => {
+    const root = document.getElementById("rail")!;
+    const entries = [
+      { key: "a:1", platform: "a", kind: "server", name: "One", unread: false, mentions: 0 },
+      { key: "a:2", platform: "a", kind: "server", name: "Two", unread: false, mentions: 0 },
+      { key: "b:3", platform: "b", kind: "server", name: "Three", unread: false, mentions: 0 },
+    ] as RailState["entries"];
+    renderRail(root, { activeKey: null, entries }, vi.fn());
+    expect(root.querySelectorAll(".rail-separator")).toHaveLength(0);
+    renderRail(root, { activeKey: null, entries, grouped: true }, vi.fn());
+    const items = [...root.children].map((c) => (c.tagName === "HR" ? "|" : (c as HTMLElement).dataset.key));
+    expect(items).toEqual(["a:1", "a:2", "|", "b:3"]);
+  });
+});

@@ -77,6 +77,8 @@ export class PlatformRegistry {
   private activeKey: string | null = null;
   /** The user's order of top-level servers and groups, across platforms. */
   private order: string[] = [];
+  /** Servers of all platforms in one order, or grouped per platform (each group in the user's order). */
+  private grouping: "mixed" | "platform" = "mixed";
 
   async add(adapter: PlatformAdapter, name: string, module?: RailModule): Promise<void> {
     const registered: Registered = { adapter, name, module, servers: [], directs: [] };
@@ -99,6 +101,12 @@ export class PlatformRegistry {
 
   onChange(cb: (state: RailState) => void): () => void {
     return this.changed.on(cb);
+  }
+
+  setGrouping(grouping: "mixed" | "platform"): void {
+    if (grouping === this.grouping) return;
+    this.grouping = grouping;
+    this.emit();
   }
 
   getOrder(): string[] {
@@ -159,10 +167,11 @@ export class PlatformRegistry {
     }
     const rank = new Map(this.order.map((key, index) => [key, index]));
     const position = (unit: RailEntry[], natural: number) => rank.get(unit[0]!.key) ?? this.order.length + natural;
-    const ranked = units.map((unit, natural) => ({ unit, at: position(unit, natural) }));
-    ranked.sort((a, b) => a.at - b.at);
+    const platformRank = new Map([...this.platforms.keys()].map((id, index) => [id, index]));
+    const ranked = units.map((unit, natural) => ({ unit, at: position(unit, natural), platform: platformRank.get(unit[0]!.platform)! }));
+    ranked.sort((a, b) => (this.grouping === "platform" ? a.platform - b.platform : 0) || a.at - b.at);
     for (const { unit } of ranked) entries.push(...unit);
-    return { entries, activeKey: this.activeKey };
+    return this.grouping === "platform" ? { entries, activeKey: this.activeKey, grouped: true } : { entries, activeKey: this.activeKey };
   }
 
   /** Every platform's direct conversations in one list, most recently active first. */

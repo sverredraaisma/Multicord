@@ -930,3 +930,47 @@ describe("incoming calls", () => {
     expect(electron.Notification.instances.at(-1)!.options).toMatchObject({ body: "Bo is calling you on Fluxer" });
   });
 });
+
+describe("zoom, spell check and grouping", () => {
+  it("applies the settings to every content view and session, and follows changes", async () => {
+    fs.writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ general: { zoom: 1.25, spellcheck: false, railGrouping: "platform" } }));
+    const { handle, discordView, railView } = await shellWith();
+    expect(discordView.webContents.setZoomFactor).toHaveBeenCalledWith(1.25);
+    expect(railView.webContents.setZoomFactor).not.toHaveBeenCalled(); // the rail keeps its size
+    expect(session.fromPartition("persist:discord").setSpellCheckerEnabled).toHaveBeenCalledWith(false);
+    expect(handle.registry.state().grouped).toBe(true);
+
+    handle.setSettingsOpen(true);
+    const settingsView = handle.settingsView() as unknown as InstanceType<typeof WebContentsView>;
+    expect(settingsView.webContents.setZoomFactor).toHaveBeenCalledWith(1.25);
+
+    handle.settingsStore.update({ general: { zoom: 1.5, spellcheck: true, railGrouping: "mixed" } });
+    expect(discordView.webContents.setZoomFactor).toHaveBeenLastCalledWith(1.5);
+    expect(settingsView.webContents.setZoomFactor).toHaveBeenLastCalledWith(1.5);
+    expect(session.fromPartition("persist:fluxer").setSpellCheckerEnabled).toHaveBeenLastCalledWith(true);
+    expect(handle.registry.state()).not.toHaveProperty("grouped");
+
+    discordView.webContents.setZoomFactor.mockClear();
+    discordView.webContents.emit("did-finish-load");
+    expect(discordView.webContents.setZoomFactor).toHaveBeenCalledWith(1.5);
+  });
+
+  it("zooms with Ctrl and +, - or 0 in any content view", async () => {
+    const { handle, discordView } = await shellWith();
+    const press = (key: string, control = true) => {
+      const event = { preventDefault: vi.fn() };
+      discordView.webContents.emit("before-input-event", event, { type: "keyDown", control, meta: false, key });
+      return event.preventDefault;
+    };
+    expect(press("=")).toHaveBeenCalled();
+    expect(handle.settingsStore.get().general.zoom).toBe(1.1);
+    press("-");
+    press("-");
+    expect(handle.settingsStore.get().general.zoom).toBe(0.9);
+    press("0");
+    expect(handle.settingsStore.get().general.zoom).toBe(1);
+    expect(press("a")).not.toHaveBeenCalled();
+    expect(press("=", false)).not.toHaveBeenCalled();
+    expect(discordView.webContents.setZoomFactor).toHaveBeenLastCalledWith(1);
+  });
+});

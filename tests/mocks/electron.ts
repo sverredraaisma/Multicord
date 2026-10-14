@@ -11,6 +11,7 @@ export class FakeWebContents extends EventEmitter {
   loadFile = vi.fn(async (_file: string) => {});
   close = vi.fn();
   reload = vi.fn();
+  setZoomFactor = vi.fn();
   windowOpenHandler?: (details: { url: string }) => { action: string };
 
   setWindowOpenHandler(handler: (details: { url: string }) => { action: string }): void {
@@ -77,6 +78,7 @@ export class BaseWindow extends EventEmitter {
 export class FakeSession {
   setUserAgent = vi.fn();
   clearStorageData = vi.fn(async () => {});
+  setSpellCheckerEnabled = vi.fn();
   protocolHandlers = new Map<string, (request: { url: string }) => unknown>();
   protocol = { handle: vi.fn((scheme: string, handler: (request: { url: string }) => unknown) => void this.protocolHandlers.set(scheme, handler)) };
   beforeRequest?: (details: { url: string }, callback: (response: { cancel: boolean }) => void) => void;

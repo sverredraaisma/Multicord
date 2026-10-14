@@ -100,3 +100,38 @@ describe("settings actions", () => {
     expect(isServiceId("a-1")).toBe(true);
   });
 });
+
+describe("zoom and other general settings", () => {
+  it("steps through the zoom levels and stops at the ends", async () => {
+    const { stepZoom, ZOOM_LEVELS } = await import("../../src/shared/settings");
+    expect(stepZoom(1, 1)).toBe(1.1);
+    expect(stepZoom(1, -1)).toBe(0.9);
+    expect(stepZoom(2, 1)).toBe(2);
+    expect(stepZoom(0.67, -1)).toBe(0.67);
+    expect(stepZoom(1.05, 1)).toBe(1.1); // between steps: the next one in that direction
+    expect(stepZoom(1.05, -1)).toBe(1);
+    expect(ZOOM_LEVELS).toContain(1);
+  });
+
+  it("reads zoom shortcuts", async () => {
+    const { zoomShortcut } = await import("../../src/shared/settings");
+    const key = (k: string, extra: Partial<{ type: string; control: boolean; meta: boolean }> = {}) => zoomShortcut({ type: "keyDown", control: true, meta: false, key: k, ...extra });
+    expect(key("=")).toBe(1);
+    expect(key("+")).toBe(1);
+    expect(key("-")).toBe(-1);
+    expect(key("_")).toBe(-1);
+    expect(key("0")).toBe(0);
+    expect(key("a")).toBeUndefined();
+    expect(key("=", { control: false })).toBeUndefined();
+    expect(key("=", { control: false, meta: true })).toBe(1);
+    expect(key("=", { type: "keyUp" })).toBeUndefined();
+  });
+
+  it("validates grouping, zoom and spell check values", () => {
+    expect(parseSettings({ general: { railGrouping: "platform", zoom: 1.5, spellcheck: false } }).general).toMatchObject({ railGrouping: "platform", zoom: 1.5, spellcheck: false });
+    expect(parseSettings({ general: { railGrouping: "chaos", zoom: 1.3 } }).general).toMatchObject({ railGrouping: "mixed", zoom: 1 });
+    expect(isSettingsPatch({ general: { zoom: 2, railGrouping: "mixed", spellcheck: true } })).toBe(true);
+    expect(isSettingsPatch({ general: { zoom: 3 } })).toBe(false);
+    expect(isSettingsPatch({ general: { railGrouping: true } })).toBe(false);
+  });
+});

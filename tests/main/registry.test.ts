@@ -336,3 +336,29 @@ describe("account changes", () => {
     expect(onChange).toHaveBeenCalledOnce();
   });
 });
+
+describe("grouping servers per platform", () => {
+  it("keeps the user's order within each platform, platforms in registration order", async () => {
+    const make = (platform: string, keys: string[]) =>
+      ({
+        platform,
+        listServers: async () => keys.map((key) => ({ key, account: { platform, instance: "x", accountId: "a" }, name: key, unread: false, mentions: 0 })),
+        listDirectConversations: async () => [],
+        onServersChanged: () => () => {},
+        onDirectsChanged: () => () => {},
+      }) as unknown as PlatformAdapter;
+    const registry = new PlatformRegistry();
+    await registry.add(make("a", ["1", "2"]), "A");
+    await registry.add(make("b", ["3"]), "B");
+    registry.setOrder(["b:3", "a:2", "a:1"]);
+    expect(registry.state().entries.map((e) => e.key)).toEqual(["b:3", "a:2", "a:1"]);
+    expect(registry.state()).not.toHaveProperty("grouped");
+    const onChange = vi.fn();
+    registry.onChange(onChange);
+    registry.setGrouping("platform");
+    registry.setGrouping("platform"); // no change, no event
+    expect(onChange).toHaveBeenCalledOnce();
+    expect(registry.state().entries.map((e) => e.key)).toEqual(["a:2", "a:1", "b:3"]);
+    expect(registry.state().grouped).toBe(true);
+  });
+});

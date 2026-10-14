@@ -9,11 +9,14 @@ const isPersonal = (entry: RailEntry): boolean => entry.kind === "home" || entry
 
 /**
  * Separators split each platform's home and DM bubbles, and those from the
- * servers. Servers themselves are one list in the user's order, whatever
- * their platform; their module labels tell them apart.
+ * servers. Servers are one list in the user's order, whatever their
+ * platform (their module labels tell them apart), or, when grouped, one
+ * run per platform with a separator between runs.
  */
-function needsSeparator(previous: RailEntry | undefined, entry: RailEntry): boolean {
-  if (!previous || !isPersonal(previous)) return false;
+function needsSeparator(previous: RailEntry | undefined, entry: RailEntry, grouped: boolean): boolean {
+  if (!previous) return false;
+  // Grouped per platform: a separator where the next platform's servers start.
+  if (!isPersonal(previous)) return grouped && previous.platform !== entry.platform;
   return !isPersonal(entry) || previous.platform !== entry.platform;
 }
 
@@ -34,7 +37,7 @@ export function renderRail(root: HTMLElement, state: RailState, onOpen: (key: st
       continue;
     }
     openGroup = undefined;
-    if (needsSeparator(previous, entry)) children.push(el(doc, "hr", "rail-separator"));
+    if (needsSeparator(previous, entry, state.grouped === true)) children.push(el(doc, "hr", "rail-separator"));
     previous = entry;
     let unit: HTMLElement = element;
     if (entry.kind === "group" && entry.expanded) {

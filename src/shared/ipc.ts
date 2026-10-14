@@ -148,6 +148,8 @@ export interface RailModule {
 export interface RailState {
   entries: RailEntry[];
   activeKey: string | null;
+  /** Servers are grouped per platform rather than in one mixed order. */
+  grouped?: boolean;
   /** The settings page is showing instead of a platform. */
   settingsOpen?: boolean;
   /** The unified Messages page is showing. */

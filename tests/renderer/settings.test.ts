@@ -368,7 +368,7 @@ describe("banners", () => {
 describe("general and about", () => {
   it("general switches reflect state and send updates", () => {
     const state = viewState();
-    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false };
+    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25 };
     mount(state);
     expect(switchFor("tray").checked).toBe(false);
     expect(switchFor("Start with").checked).toBe(true);
@@ -378,6 +378,19 @@ describe("general and about", () => {
     expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { launchAtLogin: false } } });
     change(switchFor("Desktop notif"), true);
     expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { notifications: true } } });
+    expect(switchFor("Spell check").checked).toBe(false);
+    change(switchFor("Spell check"), true);
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { spellcheck: true } } });
+    expect(switchFor("Group servers").checked).toBe(true);
+    change(switchFor("Group servers"), false);
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { railGrouping: "mixed" } } });
+    change(switchFor("Group servers"), true);
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { railGrouping: "platform" } } });
+    const zoom = q<HTMLSelectElement>("select[aria-label=Zoom]");
+    expect(zoom.value).toBe("1.25");
+    expect([...zoom.options].map((o) => o.textContent)).toContain("100%");
+    change(zoom, "1.5");
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { zoom: 1.5 } } });
   });
 
   it("disables launch at login with a hint when unsupported", () => {

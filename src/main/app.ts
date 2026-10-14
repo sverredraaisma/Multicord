@@ -29,7 +29,7 @@ import {
 } from "../shared/ipc";
 import type { PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
-import { isSettingsAction, SETTINGS_IPC, type SettingsViewState } from "../shared/settings";
+import { isSettingsAction, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import { EngineHub } from "./engineHost";
 import { installHardening } from "./hardening";
@@ -189,6 +189,23 @@ export async function createShell(
   let messagesTarget: string | undefined;
   const front = (): string | undefined => (mode === "platform" ? activePlatform : mode === "messages" ? messagesTarget : undefined);
   let quitting = false;
+  registry.setGrouping(general().railGrouping);
+
+  /** Platform views and our own pages share the zoom setting and its keyboard shortcuts. */
+  const contentViews = new Set<WebContentsView>();
+  const platformSessions: Session[] = [];
+  const prepareContentView = (view: WebContentsView): void => {
+    contentViews.add(view);
+    const applyZoom = (): void => view.webContents.setZoomFactor(general().zoom);
+    applyZoom();
+    view.webContents.on("did-finish-load", applyZoom);
+    view.webContents.on("before-input-event", (event, input) => {
+      const step = zoomShortcut(input);
+      if (step === undefined) return;
+      event.preventDefault();
+      settingsStore.update({ general: { zoom: step === 0 ? 1 : stepZoom(general().zoom, step) } });
+    });
+  };
 
   const layout = (): void => {
     const { width, height } = window.getContentBounds();
@@ -262,8 +279,11 @@ export async function createShell(
     }
     const ses = session.fromPartition(def.partition);
     configureSession(ses, () => general().notifications);
+    ses.setSpellCheckerEnabled(general().spellcheck);
+    platformSessions.push(ses);
     const { preload } = module.manifest;
     const view = secureView(preload && path.join(paths.dist, preload), def.partition);
+    prepareContentView(view);
     view.webContents.setWindowOpenHandler(({ url }) => {
       const decision = decideWindowOpen(url, def.url);
       if (decision === "external") void shell.openExternal(url);
@@ -379,6 +399,7 @@ export async function createShell(
     window.contentView.addChildView(view);
     window.contentView.addChildView(tooltipView);
     void view.webContents.loadFile(path.join(paths.dist, page));
+    prepareContentView(view);
     return view;
   };
 
@@ -405,6 +426,9 @@ export async function createShell(
   });
 
   settingsStore.changed.on(({ settings: next, patch }) => {
+    if (patch.general?.railGrouping !== undefined) registry.setGrouping(next.general.railGrouping);
+    if (patch.general?.zoom !== undefined) for (const view of contentViews) view.webContents.setZoomFactor(next.general.zoom);
+    if (patch.general?.spellcheck !== undefined) for (const ses of platformSessions) ses.setSpellCheckerEnabled(next.general.spellcheck);
     if (patch.general?.launchAtLogin === undefined || platform === "linux") return;
     // Unpackaged (development) runs need the app path, or Electron starts without the app.
     app.setLoginItemSettings({ openAtLogin: next.general.launchAtLogin, ...(app.isPackaged ? {} : { args: [app.getAppPath()] }) });

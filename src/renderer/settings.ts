@@ -1,5 +1,5 @@
 import type { SettingsApi } from "../preload/settings";
-import type { AccountStatus, DeviceChoice, ModuleInfo, ServiceInfo, SettingsPatch, SettingsViewState, VoiceSettings } from "../shared/settings";
+import { ZOOM_LEVELS, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
 import { el, initials, setColor } from "./components/dom";
 import { browserMediaEnv, playTestTone, startMeter, stopStream, type DeviceInfo, type MediaEnv, type Stop } from "./media";
 
@@ -114,7 +114,9 @@ export class SettingsPage {
     addName: HTMLInputElement;
     addUrl: HTMLInputElement;
     addUrlRow: HTMLElement;
-    general: Record<"closeToTray" | "launchAtLogin" | "notifications", HTMLInputElement>;
+    general: Record<"closeToTray" | "launchAtLogin" | "notifications" | "spellcheck", HTMLInputElement>;
+    grouped: HTMLInputElement;
+    zoom: HTMLSelectElement;
     launchHint: HTMLElement;
     secretsNote: HTMLElement;
     selects: Record<DeviceSlot, HTMLSelectElement>;
@@ -256,11 +258,26 @@ export class SettingsPage {
       ["closeToTray", "Keep running in the tray", "Closing the window hides Multicord instead of quitting, so notifications keep coming."],
       ["launchAtLogin", "Start with your computer", undefined],
       ["notifications", "Desktop notifications", "Show notifications for new messages and mentions."],
+      ["spellcheck", "Spell check", "Underline misspelled words while you type."],
     ] as const) {
       const { row, input } = switchRow(doc, label, hint, (on) => this.update({ general: { [key]: on } }));
       generalInputs[key] = input;
       general.append(row);
     }
+    const grouping = switchRow(doc, "Group servers by service", "Off: servers of all services in one list, in your own order.", (on) =>
+      this.update({ general: { railGrouping: on ? "platform" : "mixed" } }),
+    );
+    const zoom = el(doc, "select");
+    zoom.setAttribute("aria-label", "Zoom");
+    for (const level of ZOOM_LEVELS) {
+      const option = el(doc, "option", undefined, `${Math.round(level * 100)}%`);
+      option.value = String(level);
+      zoom.append(option);
+    }
+    zoom.addEventListener("change", () => this.update({ general: { zoom: Number(zoom.value) } }));
+    const zoomRow = el(doc, "div", "field");
+    zoomRow.append(el(doc, "span", "field-label", "Zoom"), zoom, el(doc, "small", "hint", "Also Ctrl and + or −, and Ctrl and 0 to reset."));
+    general.append(grouping.row, el(doc, "h2", undefined, "Appearance"), zoomRow);
     const launchHint = el(doc, "p", "hint", "Starting with your computer is not available on this system.");
     launchHint.hidden = true;
     const secretsNote = el(doc, "p", "notice", "This system has no secure storage for passwords, so you will need to sign in to Fluxer again after each restart.");
@@ -289,6 +306,8 @@ export class SettingsPage {
       addUrl,
       addUrlRow,
       general: generalInputs,
+      grouped: grouping.input,
+      zoom,
       launchHint,
       secretsNote,
       selects,
@@ -334,7 +353,9 @@ export class SettingsPage {
     this.renderModules(state.modules);
 
     const { general, voice } = state.settings;
-    for (const key of ["closeToTray", "launchAtLogin", "notifications"] as const) parts.general[key].checked = general[key];
+    for (const key of ["closeToTray", "launchAtLogin", "notifications", "spellcheck"] as const) parts.general[key].checked = general[key];
+    parts.grouped.checked = general.railGrouping === "platform";
+    parts.zoom.value = String(general.zoom);
     parts.general.launchAtLogin.disabled = !state.launchAtLoginSupported;
     parts.launchHint.hidden = state.launchAtLoginSupported;
     parts.secretsNote.hidden = state.secretsPersistent;
