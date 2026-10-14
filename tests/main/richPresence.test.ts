@@ -290,3 +290,43 @@ describe("frames and activities", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("Rich Presence limits", () => {
+  it("forgets the least recently used apps", async () => {
+    const { LOOKUP_CACHE } = await import("../../src/main/richPresence");
+    const fetchJson = vi.fn(async () => ({ name: "Game" }));
+    const apps = discordAppLookup(fetchJson);
+    await apps.name("1");
+    for (let i = 2; i <= LOOKUP_CACHE; i++) await apps.name(String(i));
+    await apps.name("1"); // used again: stays
+    await apps.name("overflow");
+    expect(fetchJson).toHaveBeenCalledTimes(LOOKUP_CACHE + 1);
+    await apps.name("1");
+    expect(fetchJson).toHaveBeenCalledTimes(LOOKUP_CACHE + 1);
+    await apps.name("2"); // the oldest was dropped
+    expect(fetchJson).toHaveBeenCalledTimes(LOOKUP_CACHE + 2);
+  });
+
+  it("lets an app change its activity only so often", async () => {
+    const { ACTIVITY_LIMIT } = await import("../../src/main/richPresence");
+    const { server, updates, paths } = serve();
+    await server.start();
+    const app = await client(paths[0]!);
+    app.send(0, { v: 1, client_id: "42" });
+    await app.next();
+    for (let i = 0; i < ACTIVITY_LIMIT; i++) {
+      app.send(1, { cmd: "SET_ACTIVITY", args: { activity: { details: `n${i}` } }, nonce: `a${i}` });
+      expect((await app.next()).payload.evt).toBeNull();
+    }
+    app.send(1, { cmd: "SET_ACTIVITY", args: { activity: { details: "spam" } }, nonce: "late" });
+    expect((await app.next()).payload).toEqual({ cmd: "SET_ACTIVITY", evt: "ERROR", data: { code: 1000, message: "Rate limited: try again shortly" }, nonce: "late" });
+    expect(updates).toHaveLength(ACTIVITY_LIMIT);
+    // Once the window has passed, updates go through again.
+    const later = Date.now() + 21_000;
+    const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+    app.send(1, { cmd: "SET_ACTIVITY", args: { activity: { details: "later" } }, nonce: "ok" });
+    expect((await app.next()).payload.evt).toBeNull();
+    clock.mockRestore();
+    app.socket.destroy();
+  });
+});

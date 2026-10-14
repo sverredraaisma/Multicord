@@ -14,6 +14,9 @@ const OP = { handshake: 0, frame: 1, close: 2, ping: 3, pong: 4 } as const;
 /** Larger frames are not from a Rich Presence client; the connection is dropped. */
 export const MAX_FRAME = 64 * 1024;
 export const MAX_CLIENTS = 16;
+/** Activity updates one app may send per window, as Discord's own client allows. */
+export const ACTIVITY_LIMIT = 5;
+export const ACTIVITY_WINDOW_MS = 20_000;
 const SNOWFLAKE = /^\d{1,20}$/;
 
 /** What Discord's READY says about the session; apps only check that it arrives. */
@@ -109,39 +112,41 @@ export interface AppLookup {
   assets(applicationId: string): Promise<Record<string, string>>;
 }
 
+/** Apps whose name and images are remembered; the least recently used are forgotten first. */
+export const LOOKUP_CACHE = 64;
+
+/** Remembers up to `limit` lookups, dropping the least recently used. */
+function cached<T>(limit: number, load: (id: string) => Promise<T>): (id: string) => Promise<T> {
+  const entries = new Map<string, Promise<T>>();
+  return (id) => {
+    let entry = entries.get(id);
+    if (entry) entries.delete(id);
+    else entry = load(id);
+    entries.set(id, entry);
+    if (entries.size > limit) entries.delete(entries.keys().next().value!);
+    return entry;
+  };
+}
+
 export function discordAppLookup(fetchJson: (url: string) => Promise<unknown>): AppLookup {
-  const names = new Map<string, Promise<string | undefined>>();
-  const assets = new Map<string, Promise<Record<string, string>>>();
   const base = "https://discord.com/api/v9/oauth2/applications";
   return {
-    name(id) {
-      if (!names.has(id)) {
-        names.set(
-          id,
-          fetchJson(`${base}/${id}/rpc`).then(
-            (app) => text((app as { name?: unknown } | undefined)?.name, 128),
-            () => undefined,
-          ),
-        );
-      }
-      return names.get(id)!;
-    },
-    assets(id) {
-      if (!assets.has(id)) {
-        assets.set(
-          id,
-          fetchJson(`${base}/${id}/assets`).then(
-            (list) => {
-              const byName: Record<string, string> = {};
-              if (Array.isArray(list)) for (const a of list) if (typeof a?.name === "string" && SNOWFLAKE.test(a?.id)) byName[a.name] = a.id;
-              return byName;
-            },
-            () => ({}),
-          ),
-        );
-      }
-      return assets.get(id)!;
-    },
+    name: cached(LOOKUP_CACHE, (id) =>
+      fetchJson(`${base}/${id}/rpc`).then(
+        (app) => text((app as { name?: unknown } | undefined)?.name, 128),
+        () => undefined,
+      ),
+    ),
+    assets: cached(LOOKUP_CACHE, (id) =>
+      fetchJson(`${base}/${id}/assets`).then(
+        (list) => {
+          const byName: Record<string, string> = {};
+          if (Array.isArray(list)) for (const a of list) if (typeof a?.name === "string" && SNOWFLAKE.test(a?.id)) byName[a.name] = a.id;
+          return byName;
+        },
+        () => ({}),
+      ),
+    ),
   };
 }
 
@@ -230,6 +235,7 @@ export class RichPresenceServer {
     let pid: number | undefined;
     let shown = false;
     let pending = Promise.resolve();
+    const recent: number[] = [];
     const send = (op: number, payload: unknown): void => void socket.write(encodeFrame(op, payload));
     const clear = (): void => {
       if (shown) this.deps.onActivity({ source: id, pid, activity: null });
@@ -247,6 +253,14 @@ export class RichPresenceServer {
       }
       if (op !== OP.frame || !clientId || typeof payload?.cmd !== "string") throw new Error("Unexpected frame");
       const nonce = typeof payload.nonce === "string" ? payload.nonce.slice(0, 64) : null;
+      if (payload.cmd === "SET_ACTIVITY") {
+        const now = Date.now();
+        while (recent.length > 0 && now - recent[0]! >= ACTIVITY_WINDOW_MS) recent.shift();
+        if (recent.length >= ACTIVITY_LIMIT) {
+          return send(OP.frame, { cmd: "SET_ACTIVITY", evt: "ERROR", data: { code: 1000, message: "Rate limited: try again shortly" }, nonce });
+        }
+        recent.push(now);
+      }
       if (payload.cmd !== "SET_ACTIVITY") {
         // Subscriptions and the rest need the real client; say so politely.
         return send(OP.frame, { cmd: payload.cmd.slice(0, 64), evt: "ERROR", data: { code: 1000, message: "Not supported" }, nonce });
