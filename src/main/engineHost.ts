@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { dialog, ipcMain, session, WebContentsView, type BaseWindow, type Session, type WebContents } from "electron";
-import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../shared/adapter";
+import type { DirectConversation, HealthCheck, HomeBadge, PlatformAdapter, RailServer } from "../shared/adapter";
 import { BaseAdapter } from "../shared/baseAdapter";
 import { Emitter } from "../shared/emitter";
 import {
@@ -34,6 +34,7 @@ export class EngineAdapter extends BaseAdapter implements PlatformAdapter {
   private status: AccountStatus = { state: "unknown" };
   private badge: HomeBadge = { unread: false, mentions: 0 };
   private directs: DirectConversation[] = [];
+  private engine: EngineHealth = { state: "starting", responsive: true, restarts: 0 };
   private readonly accountChanged = new Emitter<AccountStatus>();
   readonly openHome?: () => Promise<void>;
 
@@ -68,6 +69,23 @@ export class EngineAdapter extends BaseAdapter implements PlatformAdapter {
         // The rail reads the home badge when servers change.
         return this.serversChanged.emit(this.servers);
     }
+  }
+
+  /** The host's view of the engine process, for Settings > Diagnostics. */
+  setEngineHealth(health: EngineHealth): void {
+    this.engine = health;
+  }
+
+  health(): HealthCheck[] {
+    const { state, responsive, restarts, lastExit } = this.engine;
+    const exits = restarts > 0 ? ` It has restarted ${restarts} time${restarts === 1 ? "" : "s"}${lastExit ? ` (last: ${lastExit})` : ""}.` : "";
+    const running: HealthCheck = { name: "Engine running", ok: state === "running" };
+    if (state === "stopped") running.detail = `Stopped after crashing repeatedly; restart Multicord to try again. Nothing from this service arrives.${exits}`;
+    else if (state === "starting") running.detail = `Starting; messages and notifications arrive once it runs.${exits}`;
+    else if (exits) running.detail = exits.trim();
+    if (state !== "running") return [running];
+    const busy = { name: "Engine responsive", ok: false, detail: "The engine is busy; messages and notifications are delayed." };
+    return [running, responsive ? { name: busy.name, ok: true } : busy];
   }
 
   private toRail(server: EngineServer): RailServer {
@@ -114,6 +132,24 @@ export class EngineAdapter extends BaseAdapter implements PlatformAdapter {
   }
 }
 
+/** How an engine process is doing. */
+export interface EngineHealth {
+  state: "starting" | "running" | "stopped";
+  responsive: boolean;
+  restarts: number;
+  /** Why the engine last stopped, as Electron reported it. */
+  lastExit?: string;
+}
+
+/** Crashes in a row before an engine is left stopped. */
+export const MAX_CRASHES = 5;
+/** An engine that ran this long before crashing starts a fresh count. */
+const STABLE_MS = 60_000;
+/** Restart delay after the nth crash in a row: 2 s, doubling, at most 30 s. */
+export function restartDelay(crashes: number): number {
+  return Math.min(2000 * 2 ** (crashes - 1), 30_000);
+}
+
 /** What the host needs to run one module instance in an engine. */
 export interface EngineSpec {
   def: PlatformDef;
@@ -137,6 +173,10 @@ interface Running {
   /** Files the user picked for this engine, by handle. */
   files: Map<string, { path: string; size: number }>;
   ready: boolean;
+  health: EngineHealth;
+  /** Crashes since the engine last ran stably, and when it last became ready. */
+  crashes: number;
+  readyAt: number;
   /** Messages for the engine, held until it has loaded. */
   queue: { channel: string; payload: unknown }[];
 }
@@ -237,16 +277,41 @@ export class EngineHub {
     // net.fetch follows redirects itself, so every hop is checked here as well.
     const httpPolicy: UrlPolicy = { schemes: ["https:"], hosts: spec.hosts };
     http.webRequest.onBeforeRequest((details, callback) => callback({ cancel: checkUrl(details.url, httpPolicy) !== undefined }));
-    const running: Running = { spec, adapter: undefined!, engine, http, files: new Map(), ready: false, queue: [] };
+    const running: Running = {
+      spec,
+      adapter: undefined!,
+      engine,
+      http,
+      files: new Map(),
+      ready: false,
+      health: { state: "starting", responsive: true, restarts: 0 },
+      crashes: 0,
+      readyAt: 0,
+      queue: [],
+    };
     running.adapter = new EngineAdapter(spec.def.id, new URL(spec.def.url).host, spec.capabilities, (command) => this.deliver(running, ENGINE_IPC.command, command), spec.home);
     this.byEngine.set(engine.webContents, running);
     this.byView.set(spec.view.webContents, running);
 
+    const report = (change: Partial<EngineHealth>): void => {
+      running.health = { ...running.health, ...change };
+      running.adapter.setEngineHealth(running.health);
+    };
     engine.webContents.on("did-start-loading", () => (running.ready = false));
+    engine.webContents.on("unresponsive", () => report({ responsive: false }));
+    engine.webContents.on("responsive", () => report({ responsive: true }));
+    // A crashing engine restarts with growing delays, and is left stopped if it keeps crashing.
     engine.webContents.on("render-process-gone", (_event, details) => {
-      console.warn(`[engine ${spec.def.id}] stopped (${details.reason}); restarting`);
       running.ready = false;
-      setTimeout(() => void engine.webContents.reload(), 2000);
+      running.crashes = Date.now() - running.readyAt >= STABLE_MS && running.health.state === "running" ? 1 : running.crashes + 1;
+      if (running.crashes > MAX_CRASHES) {
+        console.warn(`[engine ${spec.def.id}] stopped (${details.reason}); crashed ${MAX_CRASHES} times in a row, not restarting`);
+        report({ state: "stopped", responsive: true, lastExit: details.reason });
+        return;
+      }
+      console.warn(`[engine ${spec.def.id}] stopped (${details.reason}); restarting`);
+      report({ state: "starting", responsive: true, restarts: running.health.restarts + 1, lastExit: details.reason });
+      setTimeout(() => void engine.webContents.reload(), restartDelay(running.crashes));
     });
     const start = (): void => void engine.webContents.loadURL(`${ENGINE_SCHEME}://${spec.engine}/engine.html`);
     return { adapter: running.adapter, engine, start };
@@ -278,6 +343,9 @@ export class EngineHub {
       case "info": {
         // The engine asks first thing once loaded: from now on it can receive.
         running.ready = true;
+        running.readyAt = Date.now();
+        running.health = { ...running.health, state: "running", responsive: true };
+        running.adapter.setEngineHealth(running.health);
         for (const { channel, payload } of running.queue.splice(0)) running.engine.webContents.send(channel, payload);
         const info: EngineInfo = { id: spec.def.id, name: spec.def.name, url: spec.def.url, os: this.deps.os };
         return info;

@@ -30,6 +30,8 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
   - display state only to its own view, and that view's actions only back to it.
 
   A module therefore cannot read another module's tokens, cookies, storage or messages. Code under `src/modules` and `src/engine` may not import Electron, Node or main-process code; a test enforces it. Web-view modules (Discord, generic web apps) run their pages in their own sandboxed, partitioned views, with only narrow preload bridges.
+
+  A crashed engine restarts after 2 seconds, then with doubling delays up to 30 seconds. After five crashes in a row it stays stopped. Settings > Diagnostics shows whether each engine is running and responsive, and how often it has restarted.
 - **Your own server order:** servers and folders from every platform form one list in the rail. Drag them into any order; the order is saved in `rail-order.json`, and new servers join at the end. Each platform's Home and DM bubbles stay at the top.
 - **Module labels:** hovering a rail icon shows a small dot in its module's colour with the module's initial (D, F, W) in the corner, and the hover name says it too, e.g. "Alpha · Fluxer".
 - **Unified Messages:** the button at the top of the rail lists the direct messages of every service in one list, most recently active first, with the last message where the service provides it (Fluxer and Telegram do, Discord does not) and a search box. Picking one opens it beside the list in its own service; the services hide their own DM sidebars meanwhile. The button shows the unread DM count.

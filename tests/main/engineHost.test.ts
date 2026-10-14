@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("electron", () => import("../mocks/electron"));
 
 import * as electron from "../mocks/electron";
-import { EngineAdapter, EngineHub, MAX_FILE_HANDLES, serveEngine, type EngineSpec } from "../../src/main/engineHost";
+import { EngineAdapter, EngineHub, MAX_CRASHES, MAX_FILE_HANDLES, restartDelay, serveEngine, type EngineSpec } from "../../src/main/engineHost";
 import { readRange } from "../../src/main/files";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
 import { NATIVE_IPC } from "../../src/shared/native";
@@ -292,5 +292,73 @@ describe("readRange", () => {
     expect(new TextDecoder().decode(await readRange(file, 1, 3))).toBe("bc");
     expect(new TextDecoder().decode(await readRange(file, 4, 10))).toBe("ef");
     expect((await readRange(file, 3, 3)).byteLength).toBe(0);
+  });
+});
+
+describe("engine health", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("reports the engine starting, running, busy and restarting", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { adapter, engine, ask } = setup();
+    expect(adapter.health()).toEqual([{ name: "Engine running", ok: false, detail: "Starting; messages and notifications arrive once it runs." }]);
+    await ask({ type: "info" });
+    expect(adapter.health()).toEqual([
+      { name: "Engine running", ok: true },
+      { name: "Engine responsive", ok: true },
+    ]);
+    engine.webContents.emit("unresponsive");
+    expect(adapter.health()[1]).toEqual({ name: "Engine responsive", ok: false, detail: "The engine is busy; messages and notifications are delayed." });
+    engine.webContents.emit("responsive");
+    expect(adapter.health()[1]!.ok).toBe(true);
+
+    engine.webContents.emit("render-process-gone", {}, { reason: "oom" });
+    expect(adapter.health()[0]!.detail).toBe("Starting; messages and notifications arrive once it runs. It has restarted 1 time (last: oom).");
+    vi.advanceTimersByTime(2000);
+    await ask({ type: "info" });
+    expect(adapter.health()[0]).toEqual({ name: "Engine running", ok: true, detail: "It has restarted 1 time (last: oom)." });
+  });
+
+  it("backs off between crashes and gives up on an engine that keeps crashing", async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { adapter, engine, ask } = setup();
+    expect([1, 2, 3, 4, 5, 6].map(restartDelay)).toEqual([2000, 4000, 8000, 16000, 30000, 30000]);
+    for (let crash = 1; crash <= MAX_CRASHES; crash++) {
+      engine.webContents.reload.mockClear();
+      engine.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+      vi.advanceTimersByTime(restartDelay(crash) - 1);
+      expect(engine.webContents.reload).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(engine.webContents.reload).toHaveBeenCalled();
+      await ask({ type: "info" }); // comes back, but crashes again soon
+    }
+    engine.webContents.reload.mockClear();
+    engine.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+    vi.advanceTimersByTime(60_000);
+    expect(engine.webContents.reload).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenLastCalledWith(`[engine demo] stopped (crashed); crashed ${MAX_CRASHES} times in a row, not restarting`);
+    expect(adapter.health()).toEqual([
+      {
+        name: "Engine running",
+        ok: false,
+        detail: "Stopped after crashing repeatedly; restart Multicord to try again. Nothing from this service arrives. It has restarted 5 times (last: crashed).",
+      },
+    ]);
+  });
+
+  it("starts a fresh count after the engine ran for a while", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { engine, ask } = setup();
+    for (let crash = 1; crash <= MAX_CRASHES + 2; crash++) {
+      await ask({ type: "info" });
+      vi.advanceTimersByTime(60_000);
+      engine.webContents.reload.mockClear();
+      engine.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+      vi.advanceTimersByTime(2000);
+      expect(engine.webContents.reload).toHaveBeenCalled();
+    }
   });
 });
