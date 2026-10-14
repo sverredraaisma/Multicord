@@ -22,6 +22,15 @@ export interface NativeAttachment {
   image: boolean;
 }
 
+export interface NativeReaction {
+  /** Unicode emoji or name:id; passed back in react actions. */
+  key: string;
+  label: string;
+  imageUrl?: string;
+  count: number;
+  me: boolean;
+}
+
 export interface NativeMessage {
   id: string;
   author: string;
@@ -30,6 +39,13 @@ export interface NativeMessage {
   timestamp: string;
   edited: boolean;
   mine: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  /** Raw text for editing (mentions unresolved); set when canEdit. */
+  source?: string;
+  /** Reply preview; null when the original message was deleted. */
+  reply?: { author: string; content: string } | null;
+  reactions: NativeReaction[];
   attachments: NativeAttachment[];
 }
 
@@ -61,7 +77,10 @@ export type NativeAction =
   | { type: "mfa"; code: string }
   | { type: "cancelMfa" }
   | { type: "select"; channelId: string }
-  | { type: "send"; content: string }
+  | { type: "send"; content: string; replyTo?: string }
+  | { type: "edit"; messageId: string; content: string }
+  | { type: "delete"; messageId: string }
+  | { type: "react"; messageId: string; emoji: string; add: boolean }
   | { type: "loadOlder" }
   | { type: "logout" };
 
@@ -69,6 +88,8 @@ export const MAX_MESSAGE_LENGTH = 4000;
 
 const text = (value: unknown, min: number, max: number): boolean =>
   typeof value === "string" && value.length >= min && value.length <= max;
+const id = (value: unknown): boolean => typeof value === "string" && /^\d{1,20}$/.test(value);
+const content = (value: unknown): boolean => text(value, 1, MAX_MESSAGE_LENGTH) && (value as string).trim() !== "";
 
 export function isNativeAction(value: unknown): value is NativeAction {
   if (typeof value !== "object" || value === null) return false;
@@ -84,9 +105,15 @@ export function isNativeAction(value: unknown): value is NativeAction {
     case "mfa":
       return text(v.code, 1, 32);
     case "select":
-      return typeof v.channelId === "string" && /^\d{1,20}$/.test(v.channelId);
+      return id(v.channelId);
     case "send":
-      return text(v.content, 1, MAX_MESSAGE_LENGTH) && (v.content as string).trim() !== "";
+      return content(v.content) && (v.replyTo === undefined || id(v.replyTo));
+    case "edit":
+      return id(v.messageId) && content(v.content);
+    case "delete":
+      return id(v.messageId);
+    case "react":
+      return id(v.messageId) && text(v.emoji, 1, 64) && typeof v.add === "boolean";
     default:
       return false;
   }

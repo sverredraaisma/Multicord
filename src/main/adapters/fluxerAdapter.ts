@@ -5,7 +5,16 @@ import { discoverInstance, type FluxerInstance } from "../fluxer/discovery";
 import { FluxerGateway, type GatewayStatus, type SocketFactory } from "../fluxer/gateway";
 import { FluxerRest, type LoginResult, type RestOptions } from "../fluxer/rest";
 import { FluxerState } from "../fluxer/state";
-import { ChannelType, TEXT_CHANNEL_TYPES, displayName, type FluxerChannel, type FluxerMessage } from "../fluxer/types";
+import {
+  ChannelType,
+  MessageType,
+  TEXT_CHANNEL_TYPES,
+  displayName,
+  emojiKey,
+  type FluxerChannel,
+  type FluxerEmoji,
+  type FluxerMessage,
+} from "../fluxer/types";
 import type { PlatformDef } from "../platforms";
 import { BaseAdapter } from "./baseAdapter";
 
@@ -104,7 +113,13 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       case "select":
         return this.selectChannel(action.channelId);
       case "send":
-        return this.send(action.content);
+        return this.send(action.content, action.replyTo);
+      case "edit":
+        return this.edit(action.messageId, action.content);
+      case "delete":
+        return this.remove(action.messageId);
+      case "react":
+        return this.react(action.messageId, action.emoji, action.add);
       case "loadOlder":
         return this.loadOlder();
       case "logout":
@@ -322,15 +337,52 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     if (channelId && oldest && this.hasOlder.get(channelId)) await this.fetchHistory(channelId, oldest.id);
   }
 
-  private async send(content: string): Promise<void> {
+  private async send(content: string, replyTo?: string): Promise<void> {
     const channelId = this.selectedChannelId;
     if (!channelId || !this.rest) return;
     const nonce = String(Date.now()) + String(Math.floor(Math.random() * 1e6));
-    try {
-      const sent = await this.rest.sendMessage(channelId, content, nonce);
+    await this.attempt("Message not sent", async () => {
+      const sent = await this.rest!.sendMessage(channelId, content, nonce, replyTo);
       if (sent) this.state.addHistory(channelId, [sent], false);
+    });
+  }
+
+  private async edit(messageId: string, content: string): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.rest) return;
+    await this.attempt("Message not edited", async () => {
+      const edited = await this.rest!.editMessage(channelId, messageId, content);
+      if (edited && this.state.replaceMessage(edited)) this.state.changed.emit();
+    });
+  }
+
+  private async remove(messageId: string): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.rest) return;
+    await this.attempt("Message not deleted", async () => {
+      await this.rest!.deleteMessage(channelId, messageId);
+      this.state.removeMessage(channelId, messageId);
+    });
+  }
+
+  /** Our own reactions are applied once the server accepts them (it does not echo them in guilds). */
+  private async react(messageId: string, key: string, add: boolean): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.rest) return;
+    const custom = /^(.+):(\d{1,20})$/.exec(key);
+    const emoji: FluxerEmoji = custom ? { name: custom[1]!, id: custom[2]! } : { name: key };
+    await this.attempt("Reaction failed", async () => {
+      await this.rest!.react(channelId, messageId, key, add);
+      this.state.applyReaction(channelId, messageId, emoji, true, add);
+    });
+  }
+
+  /** Runs a user action, showing a failure in the view's banner. */
+  private async attempt(failure: string, action: () => Promise<void>): Promise<void> {
+    try {
+      await action();
     } catch (error) {
-      this.error = `Message not sent: ${messageOf(error)}`;
+      this.error = `${failure}: ${messageOf(error)}`;
       this.render();
     }
   }
@@ -455,6 +507,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private viewMessage(message: FluxerMessage): NativeMessage {
+    const mine = message.author.id === this.state.me?.id;
+    const editable = message.type === undefined || message.type === MessageType.Default || message.type === MessageType.Reply;
+    const reply = message.replyTo;
     return {
       id: message.id,
       author: displayName(this.state.users.get(message.author.id) ?? message.author),
@@ -462,7 +517,21 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       content: this.renderContent(message.content),
       timestamp: message.timestamp,
       edited: message.edited,
-      mine: message.author.id === this.state.me?.id,
+      mine,
+      canEdit: mine && editable,
+      source: mine && editable ? message.content : undefined,
+      canDelete: mine,
+      reply:
+        reply === undefined
+          ? undefined
+          : reply && { author: displayName(this.state.users.get(reply.author.id) ?? reply.author), content: this.renderContent(reply.content) },
+      reactions: (message.reactions ?? []).map((r) => ({
+        key: emojiKey(r.emoji),
+        label: r.emoji.id ? `:${r.emoji.name}:` : r.emoji.name,
+        imageUrl: r.emoji.id && this.instance ? `${this.instance.media}/emojis/${r.emoji.id}.webp?size=32` : undefined,
+        count: r.count,
+        me: r.me,
+      })),
       attachments: message.attachments.map((a) => ({
         name: a.filename,
         url: a.url,

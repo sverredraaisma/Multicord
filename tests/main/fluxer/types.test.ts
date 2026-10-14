@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   compareIds,
   displayName,
+  emojiKey,
+  parseEmoji,
   isId,
   parseChannel,
   parseFolders,
@@ -103,6 +105,9 @@ describe("Fluxer parsers", () => {
         { id: "7", filename: "a.png", contentType: "image/png", url: "https://p" },
         { id: "8", filename: "b.txt", contentType: undefined, url: "https://b" },
       ],
+      type: undefined,
+      replyTo: undefined,
+      reactions: [],
     });
     expect(parseMessage({ id: "1", channel_id: "2", author: user })).toMatchObject({ content: "", timestamp: "", edited: false });
     expect(parseMessage({ id: "1", channel_id: "2", author: {} })).toBeUndefined();
@@ -142,5 +147,42 @@ describe("Fluxer parsers", () => {
     ]);
     expect(parseFolders({})).toBeUndefined();
     expect(parseFolders(null)).toBeUndefined();
+  });
+});
+
+describe("replies and reactions", () => {
+  const author = { id: "2", username: "ana" };
+
+  it("parses reply previews, keeping deleted originals apart from non-replies", () => {
+    expect(parseMessage({ id: "1", channel_id: "2", author, type: 19, referenced_message: { id: "9", author, content: "orig" } })).toMatchObject({
+      type: 19,
+      replyTo: { id: "9", author: { id: "2" }, content: "orig" },
+    });
+    expect(parseMessage({ id: "1", channel_id: "2", author, referenced_message: { id: "9", author } })!.replyTo).toMatchObject({ content: "" });
+    expect(parseMessage({ id: "1", channel_id: "2", author, referenced_message: null })!.replyTo).toBeNull();
+    expect(parseMessage({ id: "1", channel_id: "2", author, referenced_message: { id: "9" } })!.replyTo).toBeNull();
+    expect(parseMessage({ id: "1", channel_id: "2", author })!.replyTo).toBeUndefined();
+  });
+
+  it("parses reactions with unicode and custom emoji", () => {
+    const parsed = parseMessage({
+      id: "1",
+      channel_id: "2",
+      author,
+      reactions: [
+        { emoji: { name: "👍" }, count: 3, me: true },
+        { emoji: { id: "55", name: "party", animated: true }, count: 1 },
+        { emoji: { name: "" }, count: 1 },
+        { emoji: { name: "x" }, count: 0 },
+        "junk",
+      ],
+    });
+    expect(parsed!.reactions).toEqual([
+      { emoji: { name: "👍" }, count: 3, me: true },
+      { emoji: { id: "55", name: "party" }, count: 1, me: false },
+    ]);
+    expect(emojiKey({ name: "👍" })).toBe("👍");
+    expect(emojiKey({ id: "55", name: "party" })).toBe("party:55");
+    expect(parseEmoji(null)).toBeUndefined();
   });
 });

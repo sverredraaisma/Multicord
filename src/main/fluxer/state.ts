@@ -5,7 +5,9 @@ import {
   compareIds,
   isId,
   isRecord,
+  emojiKey,
   parseChannel,
+  parseEmoji,
   parseFolders,
   parseGuild,
   parseGuildSettings,
@@ -13,6 +15,7 @@ import {
   parseReadState,
   parseUser,
   type FluxerChannel,
+  type FluxerEmoji,
   DM_SETTINGS,
   NotifyLevel,
   type FluxerFolder,
@@ -95,9 +98,22 @@ export class FluxerState {
         break;
       case "MESSAGE_UPDATE": {
         const message = parseMessage(data);
-        const cached = message && this.messages.get(message.channelId);
-        const index = cached?.findIndex((m) => m.id === message!.id) ?? -1;
-        if (cached && index >= 0) cached[index] = message!;
+        if (message) this.replaceMessage(message);
+        break;
+      }
+      case "MESSAGE_REACTION_ADD":
+      case "MESSAGE_REACTION_REMOVE": {
+        const emoji = parseEmoji(d.emoji);
+        if (!emoji || !isId(d.channel_id) || !isId(d.message_id) || !isId(d.user_id)) return;
+        this.applyReaction(d.channel_id, d.message_id, emoji, d.user_id === this.me?.id, event === "MESSAGE_REACTION_ADD");
+        break;
+      }
+      case "MESSAGE_REACTION_REMOVE_ALL":
+      case "MESSAGE_REACTION_REMOVE_EMOJI": {
+        const message = this.findMessage(d.channel_id, d.message_id);
+        if (!message) return;
+        const emoji = event === "MESSAGE_REACTION_REMOVE_EMOJI" ? parseEmoji(d.emoji) : undefined;
+        message.reactions = emoji ? (message.reactions ?? []).filter((r) => emojiKey(r.emoji) !== emojiKey(emoji)) : [];
         break;
       }
       case "MESSAGE_DELETE":
@@ -124,6 +140,54 @@ export class FluxerState {
         return; // Unhandled events do not change what we show.
     }
     this.changed.emit();
+  }
+
+  /** Swaps in an edited message where it is cached; returns whether it was. */
+  replaceMessage(message: FluxerMessage): boolean {
+    const cached = this.messages.get(message.channelId);
+    const index = cached?.findIndex((m) => m.id === message.id) ?? -1;
+    if (index < 0) return false;
+    cached![index] = message;
+    return true;
+  }
+
+  removeMessage(channelId: string, messageId: string): void {
+    const cached = this.messages.get(channelId);
+    if (cached) this.messages.set(channelId, cached.filter((m) => m.id !== messageId));
+    this.changed.emit();
+  }
+
+  /**
+   * Adds or removes one reaction. Our own reactions are idempotent: Fluxer
+   * does not echo them to the acting session in guilds but may in DMs, and we
+   * apply them locally once the request succeeds.
+   */
+  applyReaction(channelId: string, messageId: string, emoji: FluxerEmoji, mine: boolean, add: boolean): void {
+    const message = this.findMessage(channelId, messageId);
+    if (!message) return;
+    const reactions = (message.reactions ??= []);
+    const key = emojiKey(emoji);
+    const index = reactions.findIndex((r) => emojiKey(r.emoji) === key);
+    const reaction = reactions[index];
+    if (add) {
+      if (mine && reaction?.me) return;
+      if (reaction) {
+        reaction.count++;
+        reaction.me ||= mine;
+      } else {
+        reactions.push({ emoji, count: 1, me: mine });
+      }
+    } else {
+      if (!reaction || (mine && !reaction.me)) return;
+      reaction.count--;
+      if (mine) reaction.me = false;
+      if (reaction.count <= 0) reactions.splice(index, 1);
+    }
+    this.changed.emit();
+  }
+
+  private findMessage(channelId: unknown, messageId: unknown): FluxerMessage | undefined {
+    return isId(channelId) && isId(messageId) ? this.messages.get(channelId)?.find((m) => m.id === messageId) : undefined;
   }
 
   /** Records a local read (we acked it); the server confirms with MESSAGE_ACK. */

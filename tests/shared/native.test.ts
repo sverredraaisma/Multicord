@@ -53,3 +53,20 @@ describe("createNativeApi", () => {
     expect(ipc.send).toHaveBeenCalledWith(NATIVE_IPC.action, { type: "logout" });
   });
 });
+
+describe("message action validation", () => {
+  it("validates replies, edits, deletes and reactions", () => {
+    expect(isNativeAction({ type: "send", content: "hi", replyTo: "5" })).toBe(true);
+    expect(isNativeAction({ type: "send", content: "hi", replyTo: "x" })).toBe(false);
+    expect(isNativeAction({ type: "edit", messageId: "5", content: "new" })).toBe(true);
+    expect(isNativeAction({ type: "edit", messageId: "5", content: " " })).toBe(false);
+    expect(isNativeAction({ type: "edit", messageId: "x", content: "new" })).toBe(false);
+    expect(isNativeAction({ type: "delete", messageId: "5" })).toBe(true);
+    expect(isNativeAction({ type: "delete" })).toBe(false);
+    expect(isNativeAction({ type: "react", messageId: "5", emoji: "👍", add: true })).toBe(true);
+    expect(isNativeAction({ type: "react", messageId: "5", emoji: "party:55", add: false })).toBe(true);
+    expect(isNativeAction({ type: "react", messageId: "5", emoji: "", add: true })).toBe(false);
+    expect(isNativeAction({ type: "react", messageId: "5", emoji: "x".repeat(65), add: true })).toBe(false);
+    expect(isNativeAction({ type: "react", messageId: "5", emoji: "👍" })).toBe(false);
+  });
+});

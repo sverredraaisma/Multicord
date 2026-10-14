@@ -61,6 +61,40 @@ export interface FluxerMessage {
   mentionIds: string[];
   mentionEveryone: boolean;
   attachments: FluxerAttachment[];
+  /** 0 DEFAULT, 19 REPLY; only these can be edited. */
+  type?: number;
+  /** The message this one replies to; null when it no longer exists. */
+  replyTo?: FluxerReplyPreview | null;
+  reactions?: FluxerReaction[];
+}
+
+export interface FluxerReplyPreview {
+  id: string;
+  author: FluxerUser;
+  content: string;
+}
+
+export interface FluxerEmoji {
+  id?: string; // custom emoji only
+  name: string;
+}
+
+export interface FluxerReaction {
+  emoji: FluxerEmoji;
+  count: number;
+  me: boolean;
+}
+
+export const MessageType = { Default: 0, Reply: 19 } as const;
+
+export function parseEmoji(value: unknown): FluxerEmoji | undefined {
+  if (!isRecord(value) || typeof value.name !== "string" || value.name === "") return undefined;
+  return isId(value.id) ? { id: value.id, name: value.name } : { name: value.name };
+}
+
+/** The path form of an emoji: the Unicode character, or name:id for custom emoji. */
+export function emojiKey(emoji: FluxerEmoji): string {
+  return emoji.id ? `${emoji.name}:${emoji.id}` : emoji.name;
 }
 
 export interface FluxerReadState {
@@ -143,7 +177,23 @@ export function parseMessage(value: unknown): FluxerMessage | undefined {
         ? [{ id: a.id, filename: a.filename, contentType: str(a.content_type), url: str(a.proxy_url) ?? str(a.url) }]
         : [],
     ),
+    type: typeof value.type === "number" ? value.type : undefined,
+    replyTo: parseReplyTo(value),
+    reactions: list(value.reactions).flatMap((r) => {
+      const emoji = isRecord(r) ? parseEmoji(r.emoji) : undefined;
+      const count = isRecord(r) && typeof r.count === "number" && r.count > 0 ? r.count : 0;
+      return emoji && count ? [{ emoji, count, me: (r as Record<string, unknown>).me === true }] : [];
+    }),
   };
+}
+
+/** referenced_message: absent for non-replies, null when the original is gone (per the docs). */
+function parseReplyTo(value: Record<string, unknown>): FluxerReplyPreview | null | undefined {
+  if (!("referenced_message" in value)) return undefined;
+  const ref = value.referenced_message;
+  const author = isRecord(ref) ? parseUser(ref.author) : undefined;
+  if (!isRecord(ref) || !isId(ref.id) || !author) return null;
+  return { id: ref.id, author, content: typeof ref.content === "string" ? ref.content : "" };
 }
 
 export function parseReadState(value: unknown): FluxerReadState | undefined {

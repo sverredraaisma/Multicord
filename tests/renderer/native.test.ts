@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { formatTime, NativeView, startNative } from "../../src/renderer/native";
+import { formatTime, NativeView, QUICK_REACTIONS, startNative } from "../../src/renderer/native";
 import type { NativeApi } from "../../src/preload/native";
 import type { NativeMessage, NativeViewState } from "../../src/shared/native";
 
@@ -9,7 +9,19 @@ type Chat = Extract<NativeViewState, { screen: "chat" }>;
 const login: NativeViewState = { screen: "login", platform: "Fluxer", identity: "email", busy: false };
 
 function msg(id: string, extra: Partial<NativeMessage> = {}): NativeMessage {
-  return { id, author: "Ana", content: `text ${id}`, timestamp: "2026-10-14T12:00:00Z", edited: false, mine: false, attachments: [], ...extra };
+  return {
+    id,
+    author: "Ana",
+    content: `text ${id}`,
+    timestamp: "2026-10-14T12:00:00Z",
+    edited: false,
+    mine: false,
+    canEdit: false,
+    canDelete: false,
+    reactions: [],
+    attachments: [],
+    ...extra,
+  };
 }
 
 function chat(extra: Partial<Chat> = {}): Chat {
@@ -236,5 +248,141 @@ describe("helpers", () => {
     expect(api.act).toHaveBeenCalledWith({ type: "ready" });
     push(login);
     expect(document.querySelector("form.auth")).not.toBeNull();
+  });
+});
+
+describe("message actions", () => {
+  const ownMessage = msg("10", { mine: true, canEdit: true, canDelete: true, source: "raw <@2>", content: "raw @Ana" });
+  const withMessages = (...messages: NativeMessage[]) =>
+    chat({ channel: { id: "2", name: "general", messages, loading: false, hasOlder: false } });
+  const button = (label: string, scope: ParentNode = root) =>
+    [...scope.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === label);
+
+  it("offers edit and delete only where allowed", () => {
+    view.update(withMessages(ownMessage, msg("11")));
+    const [own, other] = root.querySelectorAll(".message");
+    expect([...own!.querySelectorAll(".message-actions button")].map((b) => b.textContent)).toEqual(["Reply", "React", "Edit", "Delete"]);
+    expect([...other!.querySelectorAll(".message-actions button")].map((b) => b.textContent)).toEqual(["Reply", "React"]);
+  });
+
+  it("replies through a bar above the composer", () => {
+    view.update(withMessages(msg("11")));
+    button("Reply")!.click();
+    const bar = root.querySelector<HTMLElement>(".reply-bar")!;
+    expect(bar.hidden).toBe(false);
+    expect(bar.textContent).toContain("Replying to Ana");
+
+    const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
+    composer.value = "sure";
+    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(act).toHaveBeenLastCalledWith({ type: "send", content: "sure", replyTo: "11" });
+    expect(bar.hidden).toBe(true);
+
+    button("Reply")!.click();
+    bar.querySelector<HTMLButtonElement>("button")!.click();
+    expect(bar.hidden).toBe(true);
+    button("Reply")!.click();
+    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(bar.hidden).toBe(true);
+    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" })); // nothing to cancel
+  });
+
+  it("edits in place from the raw source, surviving updates", () => {
+    view.update(withMessages(ownMessage));
+    button("Edit")!.click();
+    let box = root.querySelector<HTMLTextAreaElement>(".edit-box")!;
+    expect(box.value).toBe("raw <@2>");
+    expect(root.querySelector(".message .content")).toBeNull();
+
+    box.value = "changed";
+    view.update(withMessages(ownMessage));
+    box = root.querySelector<HTMLTextAreaElement>(".edit-box")!;
+    expect(box.value).toBe("changed");
+
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true }));
+    expect(act).not.toHaveBeenCalled();
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(act).toHaveBeenCalledWith({ type: "edit", messageId: "10", content: "changed" });
+    expect(root.querySelector(".edit-box")).toBeNull();
+  });
+
+  it("cancels edits with Escape and ignores empty edits", () => {
+    view.update(withMessages(ownMessage, msg("12", { mine: true, canEdit: true, canDelete: true, content: "plain" })));
+    button("Edit")!.click();
+    root.querySelector<HTMLTextAreaElement>(".edit-box")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(root.querySelector(".edit-box")).toBeNull();
+
+    const second = root.querySelectorAll(".message")[1]!;
+    button("Edit", second)!.click();
+    const box = root.querySelector<HTMLTextAreaElement>(".edit-box")!;
+    expect(box.value).toBe("plain"); // no source: falls back to the content
+    box.value = "  ";
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  it("deletes after confirmation", () => {
+    view.update(withMessages(ownMessage));
+    const confirm = vi.fn(() => false);
+    Object.defineProperty(window, "confirm", { value: confirm, configurable: true, writable: true });
+    button("Delete")!.click();
+    expect(act).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    button("Delete")!.click();
+    expect(act).toHaveBeenCalledWith({ type: "delete", messageId: "10" });
+    delete (window as { confirm?: unknown }).confirm;
+    act.mockClear();
+    button("Delete")!.click(); // no confirm dialog available: proceeds
+    expect(act).toHaveBeenCalledOnce();
+  });
+
+  it("toggles reactions and offers quick reactions", () => {
+    view.update(
+      withMessages(
+        msg("11", {
+          reactions: [
+            { key: "👍", label: "👍", count: 2, me: true },
+            { key: "party:55", label: ":party:", imageUrl: "https://media/e/55.webp", count: 1, me: false },
+          ],
+        }),
+      ),
+    );
+    const reactions = root.querySelectorAll<HTMLButtonElement>(".reactions .reaction");
+    expect(reactions[0]!.classList.contains("me")).toBe(true);
+    expect(reactions[0]!.textContent).toBe("👍2");
+    expect(reactions[1]!.querySelector("img")!.getAttribute("src")).toBe("https://media/e/55.webp");
+    reactions[0]!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "👍", add: false });
+    reactions[1]!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "party:55", add: true });
+
+    button("React")!.click();
+    const quick = root.querySelectorAll<HTMLButtonElement>(".quick-reactions .reaction");
+    expect([...quick].map((b) => b.textContent)).toEqual(QUICK_REACTIONS);
+    quick[0]!.click(); // 👍 is already ours: removes it
+    expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "👍", add: false });
+    button("React")!.click();
+    button("React")!.click(); // toggles the palette closed
+    expect(root.querySelector(".quick-reactions")).toBeNull();
+    button("React")!.click();
+    root.querySelectorAll<HTMLButtonElement>(".quick-reactions .reaction")[5]!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "🎉", add: true });
+  });
+
+  it("shows reply previews and deleted originals", () => {
+    view.update(withMessages(msg("11", { reply: { author: "Bo", content: "earlier" } }), msg("12", { reply: null })));
+    const quotes = root.querySelectorAll(".reply");
+    expect(quotes[0]!.textContent).toBe("↪ Bo: earlier");
+    expect(quotes[1]!.textContent).toBe("↪ Original message was deleted");
+    expect(quotes[1]!.classList.contains("missing")).toBe(true);
+  });
+
+  it("drops a pending reply or edit when the channel changes", () => {
+    view.update(withMessages(ownMessage));
+    button("Reply")!.click();
+    button("Edit")!.click();
+    view.update(chat({ channel: { id: "3", name: "other", messages: [ownMessage], loading: false, hasOlder: false } }));
+    expect(root.querySelector<HTMLElement>(".reply-bar")!.hidden).toBe(true);
+    expect(root.querySelector(".edit-box")).toBeNull();
   });
 });

@@ -107,8 +107,24 @@ export class FluxerRest {
     return (Array.isArray(data) ? data : []).flatMap((m) => parseMessage(m) ?? []).reverse();
   }
 
-  async sendMessage(channelId: string, content: string, nonce: string): Promise<FluxerMessage | undefined> {
-    return parseMessage(await this.request("POST", `/channels/${channelId}/messages`, { content, nonce }));
+  async sendMessage(channelId: string, content: string, nonce: string, replyTo?: string): Promise<FluxerMessage | undefined> {
+    const body: Record<string, unknown> = { content, nonce };
+    if (replyTo) body.message_reference = { message_id: replyTo };
+    return parseMessage(await this.request("POST", `/channels/${channelId}/messages`, body));
+  }
+
+  async editMessage(channelId: string, messageId: string, content: string): Promise<FluxerMessage | undefined> {
+    return parseMessage(await this.request("PATCH", `/channels/${channelId}/messages/${messageId}`, { content }));
+  }
+
+  async deleteMessage(channelId: string, messageId: string): Promise<void> {
+    await this.request("DELETE", `/channels/${channelId}/messages/${messageId}`);
+  }
+
+  /** emoji is the Unicode character or name:id; it is URI-encoded into the path. */
+  async react(channelId: string, messageId: string, emoji: string, add: boolean): Promise<void> {
+    const path = `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`;
+    await this.request(add ? "PUT" : "DELETE", path);
   }
 
   async ack(channelId: string, messageId: string): Promise<void> {

@@ -476,6 +476,11 @@ describe("FluxerAdapter chat", () => {
       timestamp: "2026-10-14T12:00:00Z",
       edited: true,
       mine: false,
+      canEdit: false,
+      canDelete: false,
+      source: undefined,
+      reply: undefined,
+      reactions: [],
       attachments: [
         { name: "cat.png", url: "https://media.fx/a/cat.png", image: true },
         { name: "notes.txt", url: "https://media.fx/a/notes.txt", image: false },
@@ -584,5 +589,115 @@ describe("FluxerAdapter guild subscriptions", () => {
     ctx.sockets[1]!.receive({ op: 0, s: 2, t: "RESUMED", d: {} });
     // Nothing is sent before the session is ready again; RESUMED renews the subscription.
     expect(lazy().map((p) => Object.keys((p.d as { subscriptions: object }).subscriptions))).toEqual([["200"]]);
+  });
+});
+
+describe("FluxerAdapter message actions", () => {
+  async function inChannel(routes: Handler[] = []) {
+    const ctx = setup({
+      token: "flx",
+      routes: [
+        ...routes,
+        (url, init) =>
+          url.includes("/channels/113/messages?")
+            ? {
+                status: 200,
+                // Newest first, as the API returns them.
+                body: [
+                  message("462", "113", { author: ME, type: 7, referenced_message: null }),
+                  message("461", "113", {
+                    type: 19,
+                    referenced_message: { id: "460", author: ME, content: "orig <@2>" },
+                    reactions: [
+                      { emoji: { name: "👍" }, count: 2, me: true },
+                      { emoji: { id: "55", name: "party" }, count: 1 },
+                    ],
+                  }),
+                  message("460", "113", { author: ME, content: "mine <@2>", type: 0 }),
+                ],
+              }
+            : init.method === "PATCH"
+              ? { status: 200, body: message("460", "113", { author: ME, content: "edited", edited_timestamp: "t" }) }
+              : undefined,
+      ],
+    });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openServer("100");
+    const messages = () => ctx.chat().channel!.messages;
+    return { ...ctx, messages };
+  }
+
+  it("exposes edit rights, raw source, reply previews and reactions to the view", async () => {
+    const { messages } = await inChannel();
+    const [own, reply, system] = messages();
+    expect(own).toMatchObject({ canEdit: true, canDelete: true, source: "mine <@2>", content: "mine @Ana" });
+    expect(reply).toMatchObject({
+      canEdit: false,
+      canDelete: false,
+      source: undefined,
+      reply: { author: "me", content: "orig @Ana" },
+      reactions: [
+        { key: "👍", label: "👍", imageUrl: undefined, count: 2, me: true },
+        { key: "party:55", label: ":party:", imageUrl: "https://media.fx/emojis/55.webp?size=32", count: 1, me: false },
+      ],
+    });
+    expect(system).toMatchObject({ canEdit: false, canDelete: true, reply: null });
+  });
+
+  it("sends replies, edits and deletes", async () => {
+    const { adapter, calls, messages } = await inChannel();
+    await adapter.handleAction({ type: "send", content: "re", replyTo: "461" });
+    const sent = calls.find((c) => c.init.method === "POST" && c.url.endsWith("/channels/113/messages"))!;
+    expect(JSON.parse(String(sent.init.body)).message_reference).toEqual({ message_id: "461" });
+
+    await adapter.handleAction({ type: "edit", messageId: "460", content: "edited" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(messages()[0]).toMatchObject({ content: "edited", edited: true });
+
+    await adapter.handleAction({ type: "delete", messageId: "460" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(messages().map((m) => m.id)).not.toContain("460");
+    expect(calls.some((c) => c.init.method === "DELETE" && c.url.endsWith("/channels/113/messages/460"))).toBe(true);
+  });
+
+  it("applies our own reactions once the server accepts them", async () => {
+    const { adapter, messages, calls } = await inChannel();
+    await adapter.handleAction({ type: "react", messageId: "461", emoji: "party:55", add: true });
+    await adapter.handleAction({ type: "react", messageId: "461", emoji: "👍", add: false });
+    await adapter.handleAction({ type: "react", messageId: "460", emoji: "🎉", add: true });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(messages()[1]!.reactions).toEqual([
+      expect.objectContaining({ key: "👍", count: 1, me: false }),
+      expect.objectContaining({ key: "party:55", count: 2, me: true }),
+    ]);
+    expect(messages()[0]!.reactions).toEqual([expect.objectContaining({ key: "🎉", count: 1, me: true })]);
+    expect(calls.filter((c) => c.url.includes("/reactions/")).map((c) => c.init.method)).toEqual(["PUT", "DELETE", "PUT"]);
+  });
+
+  it("reports failed actions in the banner", async () => {
+    const forbidden = { status: 403, body: { code: "MISSING_PERMISSIONS", message: "Missing permissions" } };
+    const { adapter, chat } = await inChannel([(url, init) => (init.method === "PUT" || init.method === "DELETE" ? forbidden : undefined)]);
+    await adapter.handleAction({ type: "react", messageId: "461", emoji: "🎉", add: true });
+    expect(chat().error).toBe("Reaction failed: Missing permissions");
+    await adapter.handleAction({ type: "delete", messageId: "460" });
+    expect(chat().error).toBe("Message not deleted: Missing permissions");
+  });
+
+  it("ignores edits that return nothing usable and actions without a channel", async () => {
+    const ctx = setup({ token: "flx", routes: [(_url, init) => (init.method === "PATCH" ? { status: 200, body: {} } : undefined)] });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    for (const action of [
+      { type: "edit", messageId: "1", content: "x" },
+      { type: "delete", messageId: "1" },
+      { type: "react", messageId: "1", emoji: "👍", add: true },
+    ] as const) {
+      await ctx.adapter.handleAction(action);
+    }
+    expect(ctx.calls.some((c) => c.url.includes("/messages/1"))).toBe(false);
+    await ctx.adapter.openServer("100");
+    await ctx.adapter.handleAction({ type: "edit", messageId: "450", content: "x" });
+    expect(ctx.chat().error).toBeUndefined();
   });
 });

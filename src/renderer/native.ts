@@ -4,6 +4,9 @@ import { MAX_MESSAGE_LENGTH } from "../shared/native";
 import { initials } from "./rail";
 
 type ChatState = Extract<NativeViewState, { screen: "chat" }>;
+
+/** Reactions offered on a message without opening a full emoji picker. */
+export const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 type LoginState = Extract<NativeViewState, { screen: "login" }>;
 type MfaState = Extract<NativeViewState, { screen: "mfa" }>;
 
@@ -44,6 +47,10 @@ export class NativeView {
   private parts: Record<string, HTMLElement> = {};
   private channelId: string | undefined;
   private firstMessageId: string | undefined;
+  private replyTo: { id: string; author: string } | undefined;
+  private editingId: string | undefined;
+  private pickerFor: string | undefined;
+  private lastState: ChatState | undefined;
 
   constructor(
     private readonly root: HTMLElement,
@@ -181,23 +188,60 @@ export class NativeView {
     const header = el(doc, "header", "conversation-title");
     const banner = el(doc, "div", "banner");
     const messages = el(doc, "ol", "messages");
+    const replyBar = el(doc, "div", "reply-bar");
+    replyBar.hidden = true;
     const composer = el(doc, "textarea", "composer");
     composer.maxLength = MAX_MESSAGE_LENGTH;
     composer.rows = 1;
     composer.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && this.replyTo) return this.setReply(undefined);
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
       const content = composer.value;
       if (content.trim() === "") return;
-      this.api.act({ type: "send", content });
+      this.api.act(this.replyTo ? { type: "send", content, replyTo: this.replyTo.id } : { type: "send", content });
       composer.value = "";
+      this.setReply(undefined);
     });
-    main.append(header, banner, messages, composer);
+    main.append(header, banner, messages, replyBar, composer);
+
+    // One edit box, reused across renders so an edit in progress survives updates.
+    const editBox = el(doc, "textarea", "edit-box");
+    editBox.maxLength = MAX_MESSAGE_LENGTH;
+    editBox.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") return this.setEditing(undefined);
+      if (event.key !== "Enter" || event.shiftKey) return;
+      event.preventDefault();
+      const content = editBox.value;
+      if (this.editingId && content.trim() !== "") this.api.act({ type: "edit", messageId: this.editingId, content });
+      this.setEditing(undefined);
+    });
 
     const layout = el(doc, "div", "chat");
     layout.append(sidebar, main);
     this.root.replaceChildren(layout);
-    Object.assign(this.parts, { title, list, me, header, banner, messages, composer });
+    Object.assign(this.parts, { title, list, me, header, banner, messages, replyBar, composer, editBox });
+  }
+
+  private setReply(target: { id: string; author: string } | undefined): void {
+    this.replyTo = target;
+    const bar = this.parts.replyBar!;
+    bar.hidden = !target;
+    if (!target) return bar.replaceChildren();
+    const cancel = el(this.doc, "button", "link", "Cancel");
+    cancel.addEventListener("click", () => this.setReply(undefined));
+    bar.replaceChildren(el(this.doc, "span", undefined, `Replying to ${target.author}`), cancel);
+    this.parts.composer!.focus();
+  }
+
+  private setEditing(messageId: string | undefined, source = ""): void {
+    this.editingId = messageId;
+    (this.parts.editBox as HTMLTextAreaElement).value = source;
+    this.rerender();
+  }
+
+  private rerender(): void {
+    if (this.lastState) this.updateChat(this.lastState);
   }
 
   private sidebarItem(item: NativeSidebarItem): HTMLElement {
@@ -224,8 +268,21 @@ export class NativeView {
     const meta = el(doc, "div", "meta");
     meta.append(el(doc, "strong", "author", message.author), el(doc, "time", undefined, formatTime(message.timestamp)));
     if (message.edited) meta.append(el(doc, "span", "edited", "(edited)"));
+    if (message.reply !== undefined) {
+      body.append(
+        message.reply
+          ? el(doc, "div", "reply", `↪ ${message.reply.author}: ${message.reply.content}`)
+          : el(doc, "div", "reply missing", "↪ Original message was deleted"),
+      );
+    }
     body.append(meta);
-    if (message.content) body.append(el(doc, "p", "content", message.content));
+    if (message.id === this.editingId) {
+      const editBox = this.parts.editBox as HTMLTextAreaElement;
+      body.append(editBox, el(doc, "p", "edit-hint", "Enter to save, Escape to cancel"));
+      queueMicrotask(() => editBox.focus());
+    } else if (message.content) {
+      body.append(el(doc, "p", "content", message.content));
+    }
     for (const attachment of message.attachments) {
       if (attachment.image && attachment.url) {
         const img = el(doc, "img", "attachment-image");
@@ -242,12 +299,81 @@ export class NativeView {
         body.append(el(doc, "span", "attachment expired", `${attachment.name} (link expired)`));
       }
     }
-    li.append(avatar(doc, message.avatarUrl, message.author), body);
+    if (message.reactions.length > 0 || this.pickerFor === message.id) body.append(this.reactionRow(message));
+    li.append(avatar(doc, message.avatarUrl, message.author), body, this.messageActions(message));
     return li;
   }
 
+  private reactionRow(message: NativeMessage): HTMLElement {
+    const doc = this.doc;
+    const row = el(doc, "div", "reactions");
+    for (const reaction of message.reactions) {
+      const button = el(doc, "button", "reaction");
+      button.classList.toggle("me", reaction.me);
+      button.title = reaction.label;
+      if (reaction.imageUrl) {
+        const img = el(doc, "img");
+        img.src = reaction.imageUrl;
+        img.alt = reaction.label;
+        button.append(img);
+      } else {
+        button.append(el(doc, "span", undefined, reaction.label));
+      }
+      button.append(el(doc, "span", "count", String(reaction.count)));
+      button.addEventListener("click", () =>
+        this.api.act({ type: "react", messageId: message.id, emoji: reaction.key, add: !reaction.me }),
+      );
+      row.append(button);
+    }
+    if (this.pickerFor === message.id) {
+      const palette = el(doc, "span", "quick-reactions");
+      for (const emoji of QUICK_REACTIONS) {
+        const own = message.reactions.find((r) => r.key === emoji)?.me ?? false;
+        const button = el(doc, "button", "reaction", emoji);
+        button.addEventListener("click", () => {
+          this.pickerFor = undefined;
+          this.api.act({ type: "react", messageId: message.id, emoji, add: !own });
+        });
+        palette.append(button);
+      }
+      row.append(palette);
+    }
+    return row;
+  }
+
+  private messageActions(message: NativeMessage): HTMLElement {
+    const doc = this.doc;
+    const bar = el(doc, "div", "message-actions");
+    const action = (label: string, run: () => void) => {
+      const button = el(doc, "button", undefined, label);
+      button.addEventListener("click", run);
+      bar.append(button);
+    };
+    action("Reply", () => this.setReply({ id: message.id, author: message.author }));
+    action("React", () => {
+      this.pickerFor = this.pickerFor === message.id ? undefined : message.id;
+      this.rerender();
+    });
+    if (message.canEdit) action("Edit", () => this.setEditing(message.id, message.source ?? message.content));
+    if (message.canDelete) {
+      action("Delete", () => {
+        const win = this.doc.defaultView;
+        if (!win?.confirm || win.confirm("Delete this message?")) this.api.act({ type: "delete", messageId: message.id });
+      });
+    }
+    return bar;
+  }
+
   private updateChat(state: ChatState): void {
+    this.lastState = state;
     const { title, list, me, header, banner, messages, composer } = this.parts as Record<string, HTMLElement>;
+    if (state.channel?.id !== this.channelId) {
+      // A reply or edit belongs to the channel it started in.
+      this.replyTo = undefined;
+      this.parts.replyBar!.hidden = true;
+      this.editingId = undefined;
+      this.pickerFor = undefined;
+    }
     title!.textContent = state.title;
     me!.textContent = state.me;
     banner!.textContent = state.error ?? "";
