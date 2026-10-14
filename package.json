@@ -13,7 +13,7 @@
     "coverage": "vitest run --coverage",
     "check": "npm run typecheck && npm run coverage"
   },
-  "license": "AGPL-3.0-only",
+  "license": "AGPL-3.0-or-later",
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.4",
