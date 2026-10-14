@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { FluxerRest } from "../../../src/main/fluxer/rest";
-import { FluxerState } from "../../../src/main/fluxer/state";
+import { FluxerRest } from "../../../src/modules/fluxer/rest";
+import { FluxerState } from "../../../src/modules/fluxer/state";
 import { ANA, ME, readyPayload } from "./fixtures";
 
 function stateWithMessage() {

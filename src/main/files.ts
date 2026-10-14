@@ -1,6 +1,5 @@
 import { open, stat } from "node:fs/promises";
 import path from "node:path";
-import type { UploadSource } from "./fluxer/rest";
 
 const CONTENT_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -38,25 +37,4 @@ export async function readRange(filePath: string, start: number, end: number): P
   } finally {
     await handle.close();
   }
-}
-
-/** Opens a local file for upload, reading only the ranges asked for so large files never sit in memory whole. */
-export async function uploadSource(filePath: string): Promise<UploadSource> {
-  const { size } = await stat(filePath);
-  const filename = path.basename(filePath);
-  return {
-    filename,
-    size,
-    contentType: contentTypeFor(filename),
-    read: async (start, end) => {
-      const handle = await open(filePath, "r");
-      try {
-        const buffer = Buffer.alloc(Math.max(0, end - start));
-        const { bytesRead } = await handle.read(buffer, 0, buffer.length, start);
-        return buffer.subarray(0, bytesRead);
-      } finally {
-        await handle.close();
-      }
-    },
-  };
 }

@@ -132,7 +132,8 @@ interface Running {
   spec: EngineSpec;
   adapter: EngineAdapter;
   engine: WebContentsView;
-  session: Session;
+  /** The HTTP bridge's own in-memory session: no cookies shared with anything else. */
+  http: Session;
   /** Files the user picked for this engine, by handle. */
   files: Map<string, { path: string; size: number }>;
   ready: boolean;
@@ -230,7 +231,13 @@ export class EngineHub {
     engine.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     engine.webContents.on("will-navigate", (event) => event.preventDefault());
 
-    const running: Running = { spec, adapter: undefined!, engine, session: ses, files: new Map(), ready: false, queue: [] };
+    // The bridge uses a session of its own: the engine session only lets the engine itself open WebSockets.
+    const http = session.fromPartition(`${partition}-http`);
+    http.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+    // net.fetch follows redirects itself, so every hop is checked here as well.
+    const httpPolicy: UrlPolicy = { schemes: ["https:"], hosts: spec.hosts };
+    http.webRequest.onBeforeRequest((details, callback) => callback({ cancel: checkUrl(details.url, httpPolicy) !== undefined }));
+    const running: Running = { spec, adapter: undefined!, engine, http, files: new Map(), ready: false, queue: [] };
     running.adapter = new EngineAdapter(spec.def.id, new URL(spec.def.url).host, spec.capabilities, (command) => this.deliver(running, ENGINE_IPC.command, command), spec.home);
     this.byEngine.set(engine.webContents, running);
     this.byView.set(spec.view.webContents, running);
@@ -282,7 +289,7 @@ export class EngineHub {
       case "secretDelete":
         return spec.secrets.delete(request.key);
       case "http":
-        return performHttp((url, init) => running.session.fetch(url, init), request.request, { schemes: ["https:"], hosts: spec.hosts });
+        return performHttp((url, init) => running.http.fetch(url, init), request.request, { schemes: ["https:"], hosts: spec.hosts }, "follow");
       case "pickFiles":
         return this.pickFiles(running);
       case "readFile": {

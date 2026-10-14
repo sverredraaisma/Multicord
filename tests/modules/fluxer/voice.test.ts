@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { liveKitUrl } from "../../../src/main/adapters/fluxerAdapter";
-import { FluxerState } from "../../../src/main/fluxer/state";
-import { parseVoiceState } from "../../../src/main/fluxer/types";
+import { liveKitUrl } from "../../../src/modules/fluxer/adapter";
+import { FluxerState } from "../../../src/modules/fluxer/state";
+import { parseVoiceState } from "../../../src/modules/fluxer/types";
 import { ANA, readyPayload } from "./fixtures";
 
 describe("voice state", () => {

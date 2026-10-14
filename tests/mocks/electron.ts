@@ -139,6 +139,7 @@ export class Tray extends EventEmitter {
 
 export const Menu = { buildFromTemplate: (template: unknown[]) => ({ template }) };
 export const nativeImage = { createFromPath: (path: string) => ({ path }) };
+export const protocol = { registerSchemesAsPrivileged: vi.fn() };
 export const shell = { openExternal: vi.fn(async (_url: string) => {}) };
 export const desktopCapturer = { getSources: vi.fn(async (_options: unknown) => [] as unknown[]) };
 export const safeStorage = {

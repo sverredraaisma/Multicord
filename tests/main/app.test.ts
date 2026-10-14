@@ -9,9 +9,11 @@ import * as electron from "../mocks/electron";
 import { APP_NAME, createShell, startApp } from "../../src/main/app";
 import { IPC } from "../../src/shared/ipc";
 import { NATIVE_IPC } from "../../src/shared/native";
+import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
 import { SETTINGS_IPC } from "../../src/shared/settings";
 import { GenericWebAdapter } from "../../src/main/adapters/genericWebAdapter";
 import type { PlatformModule } from "../../src/main/modules/types";
+import { MODULES } from "../../src/main/modules/index";
 
 const { BaseWindow, WebContentsView, Tray, app, ipcMain, session, desktopCapturer, shell } = electron;
 
@@ -309,31 +311,10 @@ describe("createShell", () => {
 });
 
 describe("native Fluxer platform", () => {
-  const discovery = {
-    endpoints: { api_public: "https://api.fx", gateway: "wss://gw.fx", media: "https://media.fx" },
-    features: { account_identity: "email" },
-  };
+  const engineOf = (id: string) =>
+    WebContentsView.instances.find((v) => v.options.webPreferences.partition === `engine-${id}`)!;
 
-  class StubSocket {
-    static urls: string[] = [];
-    constructor(url: string) {
-      StubSocket.urls.push(url);
-    }
-    send(): void {}
-    close(): void {}
-    addEventListener(): void {}
-  }
-
-  beforeEach(() => {
-    StubSocket.urls = [];
-    vi.stubGlobal("WebSocket", StubSocket);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (url: string) => ({ ok: true, status: 200, json: async () => (String(url).endsWith("/.well-known/fluxer") ? discovery : {}) })),
-    );
-  });
-
-  it("runs Fluxer in a sandboxed native view fed by the main process", async () => {
+  it("runs Fluxer's logic in a sandboxed engine and renders it in a native view", async () => {
     const { handle, railView } = await shellWith();
     const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
     expect(view.options.webPreferences).toMatchObject({
@@ -344,28 +325,41 @@ describe("native Fluxer platform", () => {
     });
     expect(view.webContents.loadFile).toHaveBeenCalledWith(path.join(DIST, "native.html"));
     expect(view.webContents.loadURL).not.toHaveBeenCalled();
-    await flush();
 
+    const engine = engineOf("fluxer");
+    expect(engine.options.webPreferences).toMatchObject({ preload: path.join(DIST, "preload-engine.js"), sandbox: true, nodeIntegration: false });
+    expect(engine.webContents.loadURL).toHaveBeenCalledWith(`${ENGINE_SCHEME}://fluxer/engine.html`);
+    expect(BaseWindow.instances[0]!.children).not.toContain(engine);
+
+    // The view's actions reach the engine once it is up; its display state reaches the view.
     ipcMain.emit(NATIVE_IPC.action, senderEvent(railView), { type: "ready" });
-    ipcMain.emit(NATIVE_IPC.action, senderEvent(view), { type: "bogus" });
-    expect(view.webContents.send).not.toHaveBeenCalledWith(NATIVE_IPC.state, expect.objectContaining({ screen: "chat" }));
-    view.webContents.send.mockClear();
     ipcMain.emit(NATIVE_IPC.action, senderEvent(view), { type: "ready" });
-    await flush();
-    expect(view.webContents.send).toHaveBeenCalledWith(NATIVE_IPC.state, expect.objectContaining({ screen: "login", platform: "Fluxer" }));
+    expect(await ipcMain.invoke(ENGINE_IPC.invoke, senderEvent(engine), { type: "info" })).toEqual({
+      id: "fluxer",
+      name: "Fluxer",
+      url: "https://fluxer.app",
+      os: "win32",
+    });
+    expect(engine.webContents.send).toHaveBeenCalledWith(ENGINE_IPC.action, { type: "ready" });
+    // Only the view's action came through, not the rail's; held commands (e.g. visibility) follow.
+    expect(engine.webContents.send.mock.calls.filter(([channel]) => channel === ENGINE_IPC.action)).toHaveLength(1);
+    expect(engine.webContents.send).toHaveBeenCalledWith(ENGINE_IPC.command, { type: "visible", visible: false });
+    ipcMain.emit(ENGINE_IPC.render, senderEvent(engine), { screen: "login", platform: "Fluxer" });
+    expect(view.webContents.send).toHaveBeenCalledWith(NATIVE_IPC.state, { screen: "login", platform: "Fluxer" });
   });
 
-  it("logs failed actions instead of crashing", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const { handle } = await shellWith();
-    const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
-    const adapter = handle.adapters.get("fluxer") as unknown as { handleAction: unknown };
-    adapter.handleAction = async () => {
-      throw new Error("boom");
-    };
-    ipcMain.emit(NATIVE_IPC.action, senderEvent(view), { type: "ready" });
-    await flush();
-    expect(warn).toHaveBeenCalledWith("[fluxer] boom");
+  it("gives the engine only its own instance's secrets", async () => {
+    // Stored as the mocked safeStorage encrypts it (byte-reversed).
+    const encrypt = (text: string) => Buffer.from(text).reverse().toString("base64");
+    fs.writeFileSync(
+      path.join(userData, "credentials.json"),
+      JSON.stringify({ "fluxer:fluxer.app:token": encrypt("flx_saved"), "discord:token": encrypt("other") }),
+    );
+    await shellWith();
+    const ask = (key: string) => ipcMain.invoke(ENGINE_IPC.invoke, senderEvent(engineOf("fluxer")), { type: "secretLoad", key });
+    expect(await ask("fluxer.app:token")).toBe("flx_saved");
+    expect(await ask("token")).toBeUndefined();
+    expect(await ask("../discord:token")).toBeUndefined();
   });
 
   it("gives Fluxer voice the same screen share picker", async () => {
@@ -393,7 +387,7 @@ describe("native Fluxer platform", () => {
     expect(shell.openExternal).toHaveBeenCalledWith("https://example.com/page");
   });
 
-  it("tells the adapter when its view is in front", async () => {
+  it("tells the engine when its view is in front", async () => {
     const { handle, railView } = await shellWith();
     const setVisible = vi.spyOn(handle.adapters.get("fluxer")!, "setVisible");
     ipcMain.emit(IPC.railOpen, senderEvent(railView), "fluxer:home");
@@ -404,26 +398,13 @@ describe("native Fluxer platform", () => {
     expect(setVisible).toHaveBeenLastCalledWith(false);
   });
 
-  it("picks files through the OS dialog for the native client", async () => {
-    const { handle, window } = await shellWith();
-    const files = (handle.adapters.get("fluxer") as unknown as { deps: { files: { pick(): Promise<string[]>; open(p: string): Promise<unknown> } } }).deps.files;
-    expect(await files.pick()).toEqual([]);
-    electron.dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ["C:/a.txt"] });
-    expect(await files.pick()).toEqual(["C:/a.txt"]);
-    expect(electron.dialog.showOpenDialog).toHaveBeenCalledWith(window, { title: "Attach files", properties: ["openFile", "multiSelections"] });
-    const file = path.join(userData, "note.txt");
-    fs.writeFileSync(file, "hi");
-    expect(await files.open(file)).toMatchObject({ filename: "note.txt", size: 2, contentType: "text/plain" });
-  });
-
-  it("resumes a stored session with the default network services", async () => {
-    // Stored as the mocked safeStorage encrypts it (byte-reversed).
-    const encrypted = Buffer.from("flx_saved").reverse().toString("base64");
-    fs.writeFileSync(path.join(userData, "credentials.json"), JSON.stringify({ "fluxer:fluxer.app:token": encrypted }));
-    await createShell({ dist: DIST, userData }, "win32");
-    await flush();
-    await flush();
-    expect(StubSocket.urls).toEqual(["wss://gw.fx/?v=1&encoding=json"]);
+  it("starts an engine module without capabilities as one that supports nothing", async () => {
+    const bare: PlatformModule = { manifest: { id: "bare", name: "Bare", label: "Bare", color: "#000000", configurable: true, engine: "bare", defaultUrl: "https://bare.example" } };
+    fs.writeFileSync(path.join(userData, "platforms.json"), JSON.stringify([{ id: "fluxer", enabled: false }, { id: "b", name: "B", module: "bare" }]));
+    const handle = await createShell({ dist: DIST, userData }, "win32", undefined, [...MODULES, bare]);
+    expect(handle.adapters.get("b")!.capabilities).toEqual({ directMessages: false, messagePreviews: false, voice: false, screenShare: false });
+    expect(handle.adapters.get("b")!.openHome).toBeUndefined();
+    expect(session.fromPartition("persist:b").displayMediaRequestHandler).toBeUndefined();
   });
 });
 
@@ -553,6 +534,9 @@ describe("startApp", () => {
     app.emit("second-instance"); // no listeners yet; must not throw
     startApp(DIST);
     expect(app.setName).toHaveBeenCalledWith(APP_NAME);
+    expect(electron.protocol.registerSchemesAsPrivileged).toHaveBeenCalledWith([
+      { scheme: ENGINE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
+    ]);
 
     app.emit("activate"); // before ready: nothing to show
     await flush();

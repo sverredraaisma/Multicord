@@ -11,7 +11,7 @@ import {
   parseMessage,
   parseReadState,
   parseUser,
-} from "../../../src/main/fluxer/types";
+} from "../../../src/modules/fluxer/types";
 
 const user = { id: "1", username: "ana", global_name: "Ana", avatar: "abc" };
 

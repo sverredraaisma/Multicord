@@ -40,6 +40,7 @@ await Promise.all([
       native: "src/entries/native.ts",
       gallery: "src/entries/gallery.ts",
       settings: "src/entries/settings.ts",
+      "engines/fluxer": "src/entries/engine-fluxer.ts",
       messages: "src/entries/messages.ts",
     },
     platform: "browser",

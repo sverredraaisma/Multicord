@@ -233,13 +233,25 @@ describe("EngineHub", () => {
 
   it("makes HTTP requests with the engine session, within its hosts", async () => {
     const { ask } = setup({ hosts: ["api.demo.example"] });
-    const ses = session.fromPartition("engine-demo");
+    const ses = session.fromPartition("engine-demo-http");
     ses.fetch.mockResolvedValueOnce(new Response("pong", { status: 200, headers: { "x-a": "1" } }));
     const response = (await ask({ type: "http", request: { url: "https://api.demo.example/ping", method: "GET", headers: { Cookie: "x", Accept: "text/plain" } } })) as { status: number; body: Uint8Array };
     expect(response.status).toBe(200);
     expect(new TextDecoder().decode(response.body)).toBe("pong");
-    expect(ses.fetch).toHaveBeenCalledWith("https://api.demo.example/ping", { method: "GET", headers: { Accept: "text/plain" }, body: undefined, redirect: "manual" });
+    expect(ses.fetch).toHaveBeenCalledWith("https://api.demo.example/ping", { method: "GET", headers: { Accept: "text/plain" }, body: undefined, redirect: "follow" });
     await expect(ask({ type: "http", request: { url: "https://other.example/", method: "GET", headers: {} } })).rejects.toThrow("not one of this module's hosts");
+
+    // net.fetch follows redirects itself: the bridge session checks every hop.
+    const filter = ses.beforeRequest!;
+    const cancelled = (url: string) => {
+      let cancel: boolean | undefined;
+      filter({ url }, (response) => (cancel = response.cancel));
+      return cancel;
+    };
+    expect(cancelled("https://api.demo.example/next")).toBe(false);
+    expect(cancelled("https://elsewhere.example/")).toBe(true);
+    expect(cancelled("https://192.168.1.1/")).toBe(true);
+    expect(cancelled("http://api.demo.example/")).toBe(true);
   });
 
   it("lets the engine read only files the user picked for it", async () => {

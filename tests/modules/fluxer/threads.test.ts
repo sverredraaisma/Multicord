@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { FluxerRest } from "../../../src/main/fluxer/rest";
-import { FluxerState } from "../../../src/main/fluxer/state";
-import { parseChannel } from "../../../src/main/fluxer/types";
+import { FluxerRest } from "../../../src/modules/fluxer/rest";
+import { FluxerState } from "../../../src/modules/fluxer/state";
+import { parseChannel } from "../../../src/modules/fluxer/types";
 import { readyPayload } from "./fixtures";
 
 /** READY with a forum (120) holding two posts, a thread under #general and an archived thread. */

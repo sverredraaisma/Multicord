@@ -30,12 +30,26 @@ describe("module boundaries", () => {
   it("keeps the OS secret store and the credential file out of module code", async () => {
     const fs = await import("node:fs");
     const path = await import("node:path");
-    const dirs = ["src/main/modules", "src/main/adapters", "src/main/fluxer"];
+    const dirs = ["src/main/modules", "src/main/adapters", "src/modules/fluxer", "src/engine"];
     for (const dir of dirs) {
       for (const name of fs.readdirSync(dir)) {
         const source = fs.readFileSync(path.join(dir, name), "utf8");
         expect(source, `${dir}/${name}`).not.toMatch(/safeStorage|credentials\.json|new CredentialStore/);
         expect(source, `${dir}/${name}`).not.toMatch(/import \{[^}]*\bCredentialStore\b[^}]*\} from/);
+      }
+    }
+  });
+
+  it("keeps engine code free of Electron, Node and main-process imports", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const walk = (dir: string): string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(dir, e.name)) : [path.join(dir, e.name)]));
+    for (const file of [...walk("src/modules"), ...walk("src/engine")]) {
+      const source = fs.readFileSync(file, "utf8");
+      const imports = [...source.matchAll(/^import[^"]*"([^"]+)"/gm)].map((m) => m[1]!);
+      for (const from of imports) {
+        expect(from, file).not.toMatch(/^(electron|node:|fs$|path$|child_process$)|\/main\//);
       }
     }
   });

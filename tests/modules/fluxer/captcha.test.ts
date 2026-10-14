@@ -1,7 +1,7 @@
 import { createChallenge, verifySolution } from "altcha-lib";
 import { deriveKey } from "altcha-lib/algorithms/pbkdf2";
 import { describe, expect, it } from "vitest";
-import { captchaToken, isAltchaChallenge, solveAltcha, type AltchaChallenge } from "../../../src/main/fluxer/captcha";
+import { captchaToken, isAltchaChallenge, solveAltcha, type AltchaChallenge } from "../../../src/modules/fluxer/captcha";
 
 const SECRET = "test-secret";
 

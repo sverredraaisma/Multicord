@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FluxerAdapter, type FluxerAdapterDeps } from "../../../src/main/adapters/fluxerAdapter";
-import type { GatewaySocket } from "../../../src/main/fluxer/gateway";
+import { FluxerAdapter, type FluxerAdapterDeps } from "../../../src/modules/fluxer/adapter";
+import type { GatewaySocket } from "../../../src/modules/fluxer/gateway";
 import { FLUXER, type PlatformDef } from "../../../src/main/platforms";
 import type { NativeViewState } from "../../../src/shared/native";
-import { parseMessage } from "../../../src/main/fluxer/types";
+import { parseMessage } from "../../../src/modules/fluxer/types";
 import { ANA, ME, readyPayload } from "./fixtures";
 
 const DISCOVERY = {
@@ -64,9 +64,9 @@ function setup(options: { token?: string; routes?: Handler[]; files?: FluxerAdap
       return socket;
     },
     secrets: {
-      load: (k) => secrets.get(k),
-      save: (k, v) => void secrets.set(k, v),
-      delete: (k) => void secrets.delete(k),
+      load: async (k) => secrets.get(k),
+      save: async (k, v) => void secrets.set(k, v),
+      delete: async (k) => void secrets.delete(k),
     },
     render: (state) => renders.push(state),
     rest: { sleep: async () => {}, solveCaptcha: async () => ({ counter: 1, derivedKey: "00", time: 1 }) },
@@ -741,11 +741,10 @@ describe("FluxerAdapter attachments", () => {
   const source = (name: string) => ({ filename: name, size: 2, contentType: "text/plain", read: async () => new Uint8Array([104, 105]) });
 
   async function withFiles(picked: string[][], routes: Handler[] = [], discovery?: unknown) {
-    const pick = vi.fn(async () => picked.shift() ?? []);
-    const open = vi.fn(async (p: string) => source(p));
+    const pick = vi.fn(async () => (picked.shift() ?? []).map(source));
     const ctx = setup({
       token: "flx",
-      files: { pick, open },
+      files: { pick },
       routes: [
         ...(discovery ? [(url: string) => (url.endsWith("/.well-known/fluxer") ? { status: 200, body: discovery } : undefined)] : []),
         ...routes,
@@ -760,7 +759,7 @@ describe("FluxerAdapter attachments", () => {
     await ctx.adapter.start();
     await ctx.goOnline();
     await ctx.adapter.openServer("100");
-    return { ...ctx, pick, open };
+    return { ...ctx, pick };
   }
 
   it("queues picked files, removes them on request and uploads them with the message", async () => {
@@ -1068,8 +1067,8 @@ describe("accounts", () => {
     expect(signedOut.adapter.accountStatus()).toEqual({ state: "signed-out" });
 
     const { adapter, goOnline, calls } = setup({ token: "flx_saved" });
-    expect(adapter.accountStatus()).toEqual({ state: "signed-in" }); // a saved token, before connecting
     await adapter.start();
+    expect(adapter.accountStatus()).toEqual({ state: "signed-in" }); // a saved token, before READY
     await goOnline();
     expect(adapter.accountStatus()).toEqual({ state: "signed-in", name: "me" });
     await adapter.signOut();

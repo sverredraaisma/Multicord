@@ -1,3 +1,4 @@
+import type { FileSource } from "../../engine/runtime";
 import { captchaToken, isAltchaChallenge, solveAltcha, type AltchaChallenge } from "./captcha";
 import { isRecord, parseChannel, parseMessage, parseUser, type FluxerChannel, type FluxerMessage, type FluxerUser } from "./types";
 
@@ -14,13 +15,8 @@ export class FluxerApiError extends Error {
 }
 
 /** A file to attach: its size must be exact, as Fluxer checks it. */
-export interface UploadSource {
-  filename: string;
-  size: number;
-  contentType: string;
-  /** Reads bytes [start, end) of the file. */
-  read(start: number, end: number): Promise<Uint8Array>;
-}
+/** A file to upload; see FileSource. */
+export type UploadSource = FileSource;
 
 /** What a sent message claims for each uploaded file. */
 export interface UploadedAttachment {
@@ -46,7 +42,7 @@ export interface RestOptions {
 const MAX_RETRIES = 2;
 const MAX_CAPTCHA_ATTEMPTS = 2;
 
-/** Throttled REST client for one instance; the token stays in the main process. */
+/** Throttled REST client for one instance; the token never leaves the engine. */
 export class FluxerRest {
   token: string | undefined;
   private queue: Promise<unknown> = Promise.resolve();

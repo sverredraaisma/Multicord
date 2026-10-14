@@ -1,7 +1,6 @@
 import type { BaseWindow, Session, WebContentsView } from "electron";
 import type { PlatformAdapter } from "../../shared/adapter";
 import type { SecretBox, SecretStore } from "../credentials";
-import type { SocketFactory } from "../fluxer/gateway";
 import type { PlatformDef } from "../platforms";
 
 /** Describes a platform module; the rail shows `label` in `color` next to its servers. */
@@ -20,16 +19,24 @@ export interface ModuleManifest {
   usesVoiceSettings?: boolean;
   /** Preload script for the module's view, relative to the build directory. */
   preload?: string;
+  /**
+   * Native modules: the engine bundle (dist/engines/<engine>.js) that runs
+   * the module's logic in a sandboxed engine, and the view it renders in.
+   * Such modules have no main-process code at all.
+   */
+  engine?: string;
+  /** Engines only: when set, the only hosts the engine may reach. */
+  hosts?: string[];
+  /** Engines only: whether the module has a home (DM) entry in the rail. */
+  home?: boolean;
+  /** Engines only: route screen sharing in the module's view through the shell's picker. */
+  screenShare?: boolean;
+  /** Engines only: what the module supports. */
+  capabilities?: PlatformAdapter["capabilities"];
 }
 
-/** Network access for modules; replaceable in tests. */
-export interface ModuleServices {
-  fetch: typeof fetch;
-  createSocket: SocketFactory;
-}
-
-/** What the shell itself uses: module services plus the OS secret store, which modules never get. */
-export interface ShellServices extends ModuleServices {
+/** What the shell itself uses; modules never get the OS secret store. */
+export interface ShellServices {
   secrets: SecretBox;
 }
 
@@ -44,7 +51,6 @@ export interface ModuleHost {
   /** Directory holding the built pages and scripts. */
   dist: string;
   platform: NodeJS.Platform;
-  services: ModuleServices;
   /** This instance's own secrets only. */
   secrets: SecretStore;
   /** Routes getDisplayMedia in this view through the shell's screen picker. */
@@ -63,5 +69,6 @@ export interface LoadedPlatform {
  */
 export interface PlatformModule {
   manifest: ModuleManifest;
-  load(host: ModuleHost): LoadedPlatform;
+  /** Web-view modules wire their view here; engine modules (manifest.engine) have no main-process code. */
+  load?(host: ModuleHost): LoadedPlatform;
 }

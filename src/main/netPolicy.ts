@@ -96,14 +96,18 @@ const FORBIDDEN_REQUEST_HEADERS = new Set([
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 export const MAX_REDIRECTS = 5;
 
-export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string | Uint8Array<ArrayBuffer>; redirect: "manual" }) => Promise<Response>;
+export type FetchLike = (url: string, init: { method: string; headers: Record<string, string>; body?: string | Uint8Array<ArrayBuffer>; redirect: "manual" | "follow" }) => Promise<Response>;
 
 /**
- * Performs an engine's HTTP request with the engine's own session. Every
- * URL, including each redirect, is checked against the policy, and
- * responses are capped in size. Cookies never pass in either direction.
+ * Performs an engine's HTTP request. Every URL, including each redirect, is
+ * checked against the policy, and responses are capped in size. Cookies
+ * never pass in either direction.
+ *
+ * With redirect "follow" the fetch implementation follows redirects itself
+ * (Electron's net.fetch cancels manual ones); the caller must then police
+ * each hop at the network layer, and the final URL is checked again here.
  */
-export async function performHttp(fetchImpl: FetchLike, request: HttpRequest, policy: UrlPolicy): Promise<HttpResponse> {
+export async function performHttp(fetchImpl: FetchLike, request: HttpRequest, policy: UrlPolicy, redirect: "manual" | "follow" = "manual"): Promise<HttpResponse> {
   const headers: Record<string, string> = {};
   for (const [name, value] of Object.entries(request.headers)) {
     const lower = name.toLowerCase();
@@ -116,7 +120,9 @@ export async function performHttp(fetchImpl: FetchLike, request: HttpRequest, po
   for (let hop = 0; ; hop++) {
     const problem = checkUrl(url, policy);
     if (problem) throw new Error(`Request blocked: ${problem}`);
-    const response = await fetchImpl(url, { method, headers, body, redirect: "manual" });
+    const response = await fetchImpl(url, { method, headers, body, redirect });
+    const finalProblem = response.url ? checkUrl(response.url, policy) : undefined;
+    if (finalProblem) throw new Error(`Request blocked: ${finalProblem}`);
     const location = response.headers.get("location");
     if (REDIRECTS.has(response.status) && location) {
       if (hop >= MAX_REDIRECTS) throw new Error("Too many redirects");

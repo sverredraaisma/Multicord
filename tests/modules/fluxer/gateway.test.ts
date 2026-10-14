@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FluxerGateway, type GatewaySocket } from "../../../src/main/fluxer/gateway";
+import { FluxerGateway, type GatewaySocket } from "../../../src/modules/fluxer/gateway";
 
 class FakeSocket implements GatewaySocket {
   sent: { op: number; d: unknown }[] = [];

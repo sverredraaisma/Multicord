@@ -48,7 +48,7 @@ export class FluxerGateway {
     private readonly token: string,
     private readonly createSocket: SocketFactory,
     private readonly handlers: GatewayHandlers,
-    private readonly platform: string = process.platform,
+    private readonly platform: string = "unknown",
   ) {}
 
   connect(): void {

@@ -1,13 +1,11 @@
-import path from "node:path";
-import { dialog, ipcMain, shell } from "electron";
-import { isNativeAction, NATIVE_IPC } from "../../shared/native";
-import { FluxerAdapter } from "../adapters/fluxerAdapter";
-import { uploadSource } from "../files";
 import { FLUXER } from "../platforms";
-import { decideWindowOpen } from "../sessionPolicy";
 import type { PlatformModule } from "./types";
 
-/** Native Fluxer client: the main process talks to Fluxer; Multicord's own view renders it. */
+/**
+ * Native Fluxer client. Its logic (login, gateway, REST, state) runs in the
+ * sandboxed "fluxer" engine and renders in Multicord's own chat view; the
+ * main process runs none of its code.
+ */
 export const fluxerModule: PlatformModule = {
   manifest: {
     id: "fluxer",
@@ -18,47 +16,9 @@ export const fluxerModule: PlatformModule = {
     defaultUrl: FLUXER.url,
     usesVoiceSettings: true,
     preload: "preload-native.js",
-  },
-  load({ def, view, window, dist, platform, services, secrets, enableScreenShare }) {
-    const adapter = new FluxerAdapter({
-      def,
-      fetch: services.fetch,
-      createSocket: services.createSocket,
-      secrets,
-      render: (state) => view.webContents.send(NATIVE_IPC.state, state),
-      platform,
-      files: {
-        pick: async () => {
-          const result = await dialog.showOpenDialog(window, { title: "Attach files", properties: ["openFile", "multiSelections"] });
-          return result.canceled ? [] : result.filePaths;
-        },
-        open: uploadSource,
-      },
-    });
-    ipcMain.on(NATIVE_IPC.action, (event, action) => {
-      if (event.sender !== view.webContents || !isNativeAction(action)) return;
-      adapter.handleAction(action).catch((error: Error) => console.warn(`[${def.id}] ${error.message}`));
-    });
-    // Our own page: links in messages open in the browser, never in the app,
-    // including links to the platform's own site (which the shell would allow).
-    const openOutside = (url: string): void => {
-      if (decideWindowOpen(url, "file:///") === "external") void shell.openExternal(url);
-    };
-    view.webContents.on("will-navigate", (event, url) => {
-      event.preventDefault();
-      openOutside(url);
-    });
-    view.webContents.setWindowOpenHandler(({ url }) => {
-      openOutside(url);
-      return { action: "deny" };
-    });
-    enableScreenShare(); // for voice
-    return {
-      adapter,
-      start: () => {
-        void view.webContents.loadFile(path.join(dist, "native.html"));
-        void adapter.start();
-      },
-    };
+    engine: "fluxer",
+    home: true,
+    screenShare: true,
+    capabilities: { directMessages: true, messagePreviews: true, voice: true, screenShare: true },
   },
 };

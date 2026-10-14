@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { discoverInstance } from "../../../src/main/fluxer/discovery";
-import { FluxerApiError, FluxerRest } from "../../../src/main/fluxer/rest";
+import { discoverInstance } from "../../../src/modules/fluxer/discovery";
+import { FluxerApiError, FluxerRest } from "../../../src/modules/fluxer/rest";
 
 type Reply = { status: number; body?: unknown };
 

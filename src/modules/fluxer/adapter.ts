@@ -8,11 +8,12 @@ import {
   type NativeVoiceSession,
 } from "../../shared/native";
 import type { AccountStatus } from "../../shared/settings";
-import { solveAltcha } from "../fluxer/captcha";
-import { discoverInstance, type FluxerInstance } from "../fluxer/discovery";
-import { FluxerGateway, type GatewayStatus, type SocketFactory } from "../fluxer/gateway";
-import { FluxerRest, type LoginResult, type RestOptions, type UploadSource } from "../fluxer/rest";
-import { FluxerState, TYPING_MS } from "../fluxer/state";
+import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
+import { solveAltcha } from "./captcha";
+import { discoverInstance, type FluxerInstance } from "./discovery";
+import { FluxerGateway, type GatewayStatus, type SocketFactory } from "./gateway";
+import { FluxerRest, type LoginResult, type RestOptions } from "./rest";
+import { FluxerState, TYPING_MS } from "./state";
 import {
   ChannelType,
   FORUM_TYPES,
@@ -24,8 +25,7 @@ import {
   type FluxerChannel,
   type FluxerEmoji,
   type FluxerMessage,
-} from "../fluxer/types";
-import type { PlatformDef } from "../platforms";
+} from "./types";
 import { BaseAdapter } from "../../shared/baseAdapter";
 
 export const FOLDER_PREFIX = "folder:";
@@ -55,19 +55,26 @@ interface VoiceConnection {
   stream: boolean;
 }
 
-import type { SecretStore } from "../credentials";
+/** Which instance this is: the engine's own info. */
+export interface FluxerInstanceDef {
+  id: string;
+  name: string;
+  /** The instance origin, e.g. https://fluxer.app. */
+  url: string;
+}
 
 export interface FluxerAdapterDeps {
-  def: PlatformDef;
+  def: FluxerInstanceDef;
   fetch: typeof fetch;
   createSocket: SocketFactory;
-  secrets: SecretStore;
+  /** This instance's own secrets. */
+  secrets: AsyncSecretStore;
   /** Sends display state to the native view. */
   render(state: NativeViewState): void;
   rest?: Partial<RestOptions>;
   platform?: string;
-  /** Lets the user pick files; the view never touches the file system itself. */
-  files?: { pick(): Promise<string[]>; open(path: string): Promise<UploadSource> };
+  /** Lets the user pick files; the engine reads only what was picked. */
+  files?: { pick(): Promise<FileSource[]> };
 }
 
 type Selection = { kind: "home" } | { kind: "guild"; guildId: string };
@@ -76,8 +83,8 @@ const timestampOf = (id: string | undefined): number => (id ? Number((BigInt(id)
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
- * Native Fluxer adapter: talks to the Fluxer API from the main process and
- * renders in Multicord's own chat view. Login (with Fluxer's proof-of-work
+ * Native Fluxer adapter: talks to the Fluxer API from its sandboxed engine
+ * and renders in Multicord's own chat view. Login (with Fluxer's proof-of-work
  * captcha and TOTP), the gateway session and the token all stay here.
  */
 export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
@@ -105,7 +112,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
   private typingTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly typingSent = new Map<string, number>();
-  private readonly pending = new Map<string, UploadSource[]>();
+  private readonly pending = new Map<string, FileSource[]>();
+  /** Whether a session token is stored, so the account shows as signed in before it connects. */
+  private hasToken = false;
   private readonly uploading = new Set<string>();
   private voice: VoiceConnection | undefined;
   private voiceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -133,7 +142,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   /** Discovers the instance and resumes a saved session, else shows the login screen. */
   async start(): Promise<void> {
     if (!(await this.ensureInstance())) return this.render();
-    const token = this.deps.secrets.load(this.secretKey);
+    const token = await this.deps.secrets.load(this.secretKey);
+    this.hasToken = token !== undefined;
     if (token) this.openSession(token);
     else this.render();
   }
@@ -186,7 +196,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   accountStatus(): AccountStatus {
-    const signedIn = this.screen === "connecting" || this.screen === "chat" || this.deps.secrets.load(this.secretKey) !== undefined;
+    const signedIn = this.screen === "connecting" || this.screen === "chat" || this.hasToken;
     if (!signedIn) return { state: "signed-out" };
     return this.state.me ? { state: "signed-in", name: displayName(this.state.me) } : { state: "signed-in" };
   }
@@ -306,7 +316,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private onLoginResult(result: LoginResult): void {
     if ("token" in result) {
       this.mfaTicket = undefined;
-      this.deps.secrets.save(this.secretKey, result.token);
+      this.hasToken = true;
+      void this.deps.secrets.save(this.secretKey, result.token);
       this.openSession(result.token);
       return;
     }
@@ -368,7 +379,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     this.gateway?.disconnect();
     this.gateway = undefined;
     if (this.rest) this.rest.token = undefined;
-    this.deps.secrets.delete(this.secretKey);
+    this.hasToken = false;
+    void this.deps.secrets.delete(this.secretKey);
     this.state.reset();
     this.selection = { kind: "home" };
     this.selectedChannelId = undefined;
@@ -559,14 +571,14 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     const channelId = this.selectedChannelId;
     if (!channelId || !this.deps.files) return;
     await this.attempt("Could not attach", async () => {
-      const paths = await this.deps.files!.pick();
+      const picked = await this.deps.files!.pick();
       const list = this.pending.get(channelId) ?? [];
-      for (const path of paths) {
+      for (const file of picked) {
         if (list.length >= MAX_ATTACHMENTS) {
           this.error = `At most ${MAX_ATTACHMENTS} files per message.`;
           break;
         }
-        list.push(await this.deps.files!.open(path));
+        list.push(file);
       }
       this.pending.set(channelId, list);
       this.render();

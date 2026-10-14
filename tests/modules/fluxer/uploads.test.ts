@@ -2,8 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { contentTypeFor, uploadSource } from "../../../src/main/files";
-import { FluxerRest, type UploadSource } from "../../../src/main/fluxer/rest";
+import { contentTypeFor } from "../../../src/main/files";
+import { FluxerRest, type UploadSource } from "../../../src/modules/fluxer/rest";
 
 describe("upload sources", () => {
   it("guesses content types from the extension", () => {
@@ -11,21 +11,6 @@ describe("upload sources", () => {
     expect(contentTypeFor("notes.txt")).toBe("text/plain");
     expect(contentTypeFor("archive.tar.xz")).toBe("application/octet-stream");
     expect(contentTypeFor("README")).toBe("application/octet-stream");
-  });
-
-  it("reads exact byte ranges from disk", async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "multicord-upload-"));
-    const file = path.join(dir, "data.bin");
-    fs.writeFileSync(file, Buffer.from("0123456789"));
-    try {
-      const source = await uploadSource(file);
-      expect(source).toMatchObject({ filename: "data.bin", size: 10, contentType: "application/octet-stream" });
-      expect(Buffer.from(await source.read(2, 5)).toString()).toBe("234");
-      expect(Buffer.from(await source.read(8, 20)).toString()).toBe("89");
-      expect((await source.read(5, 5)).length).toBe(0);
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
   });
 });
 

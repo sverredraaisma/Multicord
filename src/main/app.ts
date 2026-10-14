@@ -8,6 +8,7 @@ import {
   Menu,
   nativeImage,
   Notification,
+  protocol,
   safeStorage,
   session,
   shell,
@@ -27,13 +28,14 @@ import {
   type PickerRequest,
 } from "../shared/ipc";
 import type { PlatformAdapter } from "../shared/adapter";
+import { ENGINE_SCHEME } from "../shared/engine";
 import { isSettingsAction, SETTINGS_IPC, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
-import type { GatewaySocket } from "./fluxer/gateway";
+import { EngineHub } from "./engineHost";
 import { computeLayout, splitContent, tooltipBounds } from "./layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
 import type { PlatformModule, ShellServices } from "./modules/types";
-import { loadPlatforms } from "./platforms";
+import { loadPlatforms, type PlatformDef } from "./platforms";
 import { PlatformRegistry } from "./registry";
 import { createDisplayMediaHandler } from "./screenShare";
 import { SettingsController } from "./settingsController";
@@ -135,11 +137,7 @@ export interface ShellHandle {
   layout(): void;
 }
 
-const defaultServices = (): ShellServices => ({
-  fetch: globalThis.fetch,
-  createSocket: (url) => new WebSocket(url) as unknown as GatewaySocket,
-  secrets: safeStorage,
-});
+const defaultServices = (): ShellServices => ({ secrets: safeStorage });
 
 export async function createShell(
   paths: ShellPaths,
@@ -220,6 +218,41 @@ export async function createShell(
       }),
     );
 
+  let engines: EngineHub | undefined;
+  /** A native module: its logic runs in a sandboxed engine and renders in our chat view. */
+  const startEngineModule = (manifest: PlatformModule["manifest"], def: PlatformDef, view: WebContentsView, ses: Session) => {
+    engines ??= new EngineHub({ dist: paths.dist, os: platform, window });
+    // Our own page: links open in the browser, never in the app, including links to the platform's own site.
+    const openOutside = (url: string): void => {
+      if (decideWindowOpen(url, "file:///") === "external") void shell.openExternal(url);
+    };
+    view.webContents.on("will-navigate", (event, url) => {
+      event.preventDefault();
+      openOutside(url);
+    });
+    view.webContents.setWindowOpenHandler(({ url }) => {
+      openOutside(url);
+      return { action: "deny" };
+    });
+    if (manifest.screenShare) handleScreenShare(ses);
+    const engine = engines.add({
+      def,
+      engine: manifest.engine!,
+      hosts: manifest.hosts,
+      home: manifest.home === true,
+      capabilities: manifest.capabilities ?? { directMessages: false, messagePreviews: false, voice: false, screenShare: false },
+      view,
+      secrets: credentials.scope(def.id),
+    });
+    return {
+      adapter: engine.adapter,
+      start: () => {
+        void view.webContents.loadFile(path.join(paths.dist, "native.html"));
+        engine.start();
+      },
+    };
+  };
+
   for (const def of platforms) {
     const module = findModule(def.module, modules);
     if (!module) {
@@ -240,17 +273,18 @@ export async function createShell(
     // A reloaded page starts out full width; tell it whether it sits beside the Messages list.
     view.webContents.on("did-finish-load", () => view.webContents.send(IPC.viewCompact, mode === "messages"));
 
-    const { adapter, start } = module.load({
-      def,
-      view,
-      session: ses,
-      window,
-      dist: paths.dist,
-      platform,
-      services: { fetch: services.fetch, createSocket: services.createSocket },
-      secrets: credentials.scope(def.id),
-      enableScreenShare: () => handleScreenShare(ses),
-    });
+    const { adapter, start } = module.load
+      ? module.load({
+          def,
+          view,
+          session: ses,
+          window,
+          dist: paths.dist,
+          platform,
+          secrets: credentials.scope(def.id),
+          enableScreenShare: () => handleScreenShare(ses),
+        })
+      : startEngineModule(module.manifest, def, view, ses);
     adapters.set(def.id, adapter);
     await registry.add(adapter, def.name, { label: module.manifest.label, color: module.manifest.color });
     if (module.manifest.usesVoiceSettings) {
@@ -523,6 +557,8 @@ export function startApp(dist: string): void {
     return;
   }
   app.setName(APP_NAME);
+  // Engine pages get a standard, secure origin of their own; this must happen before the app is ready.
+  protocol.registerSchemesAsPrivileged([{ scheme: ENGINE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 
   let handle: ShellHandle | undefined;
   app.on("second-instance", () => handle?.show());

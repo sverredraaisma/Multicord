@@ -165,4 +165,12 @@ describe("performHttp", () => {
     const fake = { status: 200, headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(MAX_HTTP_BODY + 1) } as unknown as Response;
     await expect(performHttp(fetchOf(fake), req(), policy)).rejects.toThrow("Response too large");
   });
+
+  it("checks the final URL when the fetch followed redirects itself", async () => {
+    const landed = new Response("x");
+    Object.defineProperty(landed, "url", { value: "https://127.0.0.1/admin" });
+    const fetchImpl = vi.fn(async () => landed);
+    await expect(performHttp(fetchImpl, { url: "https://api.example.com/", method: "GET", headers: {} }, { schemes: ["https:"] }, "follow")).rejects.toThrow("Request blocked");
+    expect(fetchImpl).toHaveBeenCalledWith("https://api.example.com/", expect.objectContaining({ redirect: "follow" }));
+  });
 });
