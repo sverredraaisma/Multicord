@@ -30,7 +30,7 @@ import {
   type PickerChoice,
   type PickerRequest,
 } from "../shared/ipc";
-import type { PlatformAdapter, PlatformNotification } from "../shared/adapter";
+import type { ActivityUpdate, PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
 import { isSettingsAction, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
@@ -46,6 +46,7 @@ import { SettingsController } from "./settingsController";
 import { SettingsStore } from "./settingsStore";
 import { GlobalPushToTalk, loadKeyHook } from "./pushToTalk";
 import { createRichPresence } from "./richPresence";
+import { createGameDetector, DETECTED_SOURCE } from "./gameDetection";
 import { GlobalShortcuts, inputModifiers } from "./shortcuts";
 import { inputKeyCode } from "../shared/keys";
 import { listProcesses, StreamerWatch } from "./streamer";
@@ -515,12 +516,23 @@ export async function createShell(
       view.webContents.sendInputEvent({ type: "keyUp", keyCode: keys.keyCode, modifiers });
     }
   };
-  // Rich Presence: local apps' activities go to every module that can show them.
-  const richPresence = createRichPresence(platform, (update) => {
+  // Rich Presence: local apps' and detected games' activities go to every module that can show them.
+  const rpcApps = new Map<string, string>();
+  const showActivity = (update: ActivityUpdate): void => {
+    if (update.source !== DETECTED_SOURCE) {
+      if (update.activity) rpcApps.set(update.source, update.activity.application_id);
+      else rpcApps.delete(update.source);
+    }
     for (const adapter of adapters.values()) adapter.setActivity?.(update);
-  });
+  };
+  const richPresence = createRichPresence(platform, showActivity);
+  const games = createGameDetector(platform, () => listProcesses(platform), showActivity, (id) => [...rpcApps.values()].includes(id));
   const applyRichPresence = (on: boolean): void => {
-    if (!on) return richPresence.stop();
+    if (!on) {
+      games.stop();
+      return richPresence.stop();
+    }
+    games.start();
     void richPresence.start().then((listening) => {
       if (!listening) console.warn("[rich presence] every discord-ipc path is taken; not listening");
     });

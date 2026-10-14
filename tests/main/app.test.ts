@@ -26,6 +26,23 @@ vi.mock("../../src/main/pushToTalk", async (importOriginal) => ({
     stop: () => keyHook.stop(),
   }),
 }));
+// Game detection must not download Discord's list or scan processes in tests.
+const detector = vi.hoisted(() => ({
+  covered: undefined as undefined | ((id: string) => boolean),
+  onActivity: undefined as undefined | ((update: unknown) => void),
+  start: undefined as unknown as ReturnType<typeof import("vitest").vi.fn>,
+  stop: undefined as unknown as ReturnType<typeof import("vitest").vi.fn>,
+}));
+vi.mock("../../src/main/gameDetection", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/main/gameDetection")>()),
+  createGameDetector: (_platform: string, _list: unknown, onActivity: (update: unknown) => void, covered: (id: string) => boolean) => {
+    detector.onActivity = onActivity;
+    detector.covered = covered;
+    detector.start = vi.fn();
+    detector.stop = vi.fn();
+    return { start: detector.start, stop: detector.stop };
+  },
+}));
 // Rich Presence must not open the real discord-ipc pipes in tests.
 const rpc = vi.hoisted(() => ({
   onActivity: undefined as undefined | ((update: unknown) => void),
@@ -1227,11 +1244,22 @@ describe("Rich Presence", () => {
     expect(rpc.start).not.toHaveBeenCalled();
     handle.settingsStore.update({ general: { richPresence: true } });
     expect(rpc.start).toHaveBeenCalled();
+    expect(detector.start).toHaveBeenCalled();
     const update = { source: "rpc-1", activity: null };
     rpc.onActivity!(update);
     expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordActivity, update);
+
+    // A game an app already reports is not detected twice; detected games don't count as apps.
+    rpc.onActivity!({ source: "rpc-2", activity: { application_id: "42", type: 0, flags: 0 } });
+    expect(detector.covered!("42")).toBe(true);
+    detector.onActivity!({ source: "rpc-0", activity: { application_id: "7", type: 0, flags: 0 } });
+    expect(detector.covered!("7")).toBe(false);
+    rpc.onActivity!({ source: "rpc-2", activity: null });
+    expect(detector.covered!("42")).toBe(false);
+
     handle.settingsStore.update({ general: { richPresence: false } });
     expect(rpc.stop).toHaveBeenCalled();
+    expect(detector.stop).toHaveBeenCalled();
   });
 
   it("warns when every discord-ipc path is taken", async () => {
