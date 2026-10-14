@@ -9,6 +9,8 @@ cpSync("static", "dist", { recursive: true });
 // RNNoise's AudioWorklet script, loaded by native views for enhanced noise suppression.
 mkdirSync("dist/audio", { recursive: true });
 cpSync("node_modules/@sapphi-red/web-noise-suppressor/dist/rnnoise/workletProcessor.js", "dist/audio/rnnoise-worklet.js");
+// LiveKit's end-to-end encryption worker, for encrypted Matrix calls; a file of our own, so native.html's CSP needs no blob: workers.
+cpSync("node_modules/livekit-client/dist/livekit-client.e2ee.worker.js", "dist/livekit-e2ee-worker.js");
 
 await Promise.all([
   build({

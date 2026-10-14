@@ -38,6 +38,18 @@ export class FakeTrack {
   }
 }
 
+/** Records the keys set, as LiveKit's E2EE manager would receive them. */
+export class BaseKeyProvider {
+  readonly set: { key: CryptoKey; participant?: string; index?: number }[] = [];
+  constructor(readonly options?: unknown) {}
+  protected onSetEncryptionKey(key: CryptoKey, participant?: string, index?: number): void {
+    this.set.push({ key, participant, index });
+  }
+}
+
+export const e2ee = { supported: true };
+export const isE2EESupported = (): boolean => e2ee.supported;
+
 export class Room {
   static instances: Room[] = [];
   static failConnect: Error | undefined;
@@ -45,6 +57,7 @@ export class Room {
   connect = vi.fn(async (_url: string, _token: string) => {
     if (Room.failConnect) throw Room.failConnect;
   });
+  setE2EEEnabled = vi.fn(async (_on: boolean) => {});
   disconnect = vi.fn(async () => this.emit(RoomEvent.Disconnected));
   switchActiveDevice = vi.fn(async (_kind: string, _id: string) => true);
   mic: FakeMicTrack | undefined;
@@ -75,4 +88,5 @@ export function resetLiveKit(): void {
   Room.instances = [];
   Room.failConnect = undefined;
   FakeMicTrack.failProcessor = undefined;
+  e2ee.supported = true;
 }

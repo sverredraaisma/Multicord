@@ -50,6 +50,8 @@ export class NativeView {
     private readonly root: HTMLElement,
     private readonly api: Pick<NativeApi, "act">,
     private readonly denoiser?: ConstructorParameters<typeof VoiceCall>[5],
+    /** Starts LiveKit's end-to-end encryption worker, for encrypted calls. */
+    private readonly e2eeWorker?: ConstructorParameters<typeof VoiceCall>[6],
   ) {}
 
   /** Devices and processing for calls, from the app settings. */
@@ -197,7 +199,7 @@ export class NativeView {
     stage.hidden = true;
     const speakers = el(doc, "div", "voice-speakers");
     speakers.hidden = true;
-    this.call = new VoiceCall(stage, speakers, (message) => this.api.act({ type: "voiceError", message }), undefined, undefined, this.denoiser);
+    this.call = new VoiceCall(stage, speakers, (message) => this.api.act({ type: "voiceError", message }), undefined, undefined, this.denoiser, this.e2eeWorker);
     if (this.voiceSettings) void this.call.configure(this.voiceSettings);
     const reply = el(doc, "div", "reply-bar");
     reply.hidden = true;
@@ -449,8 +451,13 @@ export class NativeView {
   }
 }
 
-export function startNative(doc: Document, api: NativeApi, denoiser?: ConstructorParameters<typeof VoiceCall>[5]): void {
-  const view = new NativeView(doc.getElementById("app")!, api, denoiser);
+export function startNative(
+  doc: Document,
+  api: NativeApi,
+  denoiser?: ConstructorParameters<typeof VoiceCall>[5],
+  e2eeWorker?: ConstructorParameters<typeof VoiceCall>[6],
+): void {
+  const view = new NativeView(doc.getElementById("app")!, api, denoiser, e2eeWorker);
   api.onState((state) => view.update(state));
   api.onVoiceSettings((settings) => view.setVoiceSettings(settings));
   // Beside the unified Messages list, the conversation list here would repeat it.

@@ -43,6 +43,22 @@ export interface NativeVoiceSession {
   deaf: boolean;
   video: boolean;
   stream: boolean;
+  /**
+   * Set when the call's media is end-to-end encrypted (Matrix calls in
+   * encrypted rooms): the view connects only with LiveKit's encryption on,
+   * using these keys, and never unencrypted.
+   */
+  e2ee?: { keys: NativeMediaKey[] };
+}
+
+/** A participant's media key for an end-to-end encrypted call. */
+export interface NativeMediaKey {
+  /** The participant's LiveKit identity; the user's own identity for the key their media is encrypted with. */
+  participant: string;
+  /** The key's index (0–255): the latest set for a participant is the one in use. */
+  index: number;
+  /** The key's bytes, base64. */
+  key: string;
 }
 
 export interface NativeAttachment {

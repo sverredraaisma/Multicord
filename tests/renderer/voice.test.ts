@@ -3,8 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("livekit-client", () => import("../mocks/livekit"));
 
-import { FakeMicTrack, FakeTrack, Room, resetLiveKit } from "../mocks/livekit";
-import { resolveDevice, VoiceCall } from "../../src/renderer/voice";
+import { BaseKeyProvider, e2ee, FakeMicTrack, FakeTrack, Room, resetLiveKit } from "../mocks/livekit";
+import { E2EE_UNAVAILABLE, resolveDevice, VoiceCall } from "../../src/renderer/voice";
 import { DEFAULT_SETTINGS } from "../../src/shared/settings";
 import type { NativeVoiceSession } from "../../src/shared/native";
 
@@ -254,5 +254,81 @@ describe("enhanced noise suppression", () => {
     await call.sync(session({ mute: true }));
     await call.configure(on);
     expect(Room.instances[0]!.mic).toBeUndefined();
+  });
+});
+
+describe("end-to-end encrypted calls", () => {
+  const KEY = btoa("a".repeat(16));
+  const KEY2 = btoa("b".repeat(16));
+  const own = { participant: "@me:x.org:D", index: 0, key: KEY };
+  const bo = { participant: "@bo:x.org:BD", index: 0, key: KEY2 };
+  type Worker = { terminate: ReturnType<typeof vi.fn> };
+  let workers: Worker[];
+  const encrypted = (extra: Partial<NativeVoiceSession> = {}) => session({ e2ee: { keys: [own] }, ...extra });
+  const providerOf = (room: Room) => (room.options as { e2ee: { keyProvider: BaseKeyProvider; worker: Worker } }).e2ee;
+
+  beforeEach(() => {
+    workers = [];
+    call = new VoiceCall(stage, speakers, onError, undefined, undefined, undefined, () => {
+      const worker = { terminate: vi.fn() };
+      workers.push(worker);
+      return worker as unknown as globalThis.Worker;
+    });
+  });
+
+  it("connects with LiveKit's encryption on, its own worker and the keys", async () => {
+    await call.sync(encrypted());
+    const room = Room.instances[0]!;
+    const { keyProvider, worker } = providerOf(room);
+    expect(worker).toBe(workers[0]);
+    expect(keyProvider.options).toEqual({ ratchetWindowSize: 10, keyringSize: 256 });
+    expect(room.setE2EEEnabled).toHaveBeenCalledWith(true);
+    expect(room.setE2EEEnabled.mock.invocationCallOrder[0]).toBeLessThan(room.connect.mock.invocationCallOrder[0]!);
+    expect(keyProvider.set).toEqual([{ key: expect.anything(), participant: "@me:x.org:D", index: 0 }]);
+    // HKDF material, as Element Call's key provider makes.
+    expect((keyProvider.set[0]!.key as CryptoKey).algorithm.name).toBe("HKDF");
+
+    // New keys are set once each; ones already set are skipped.
+    await call.sync(encrypted({ e2ee: { keys: [own, bo] } }));
+    await call.sync(encrypted({ e2ee: { keys: [own, bo, { ...own, index: 1 }] } }));
+    expect(keyProvider.set.map((k) => [k.participant, k.index])).toEqual([
+      ["@me:x.org:D", 0],
+      ["@bo:x.org:BD", 0],
+      ["@me:x.org:D", 1],
+    ]);
+    expect(Room.instances).toHaveLength(1);
+
+    await call.sync(null);
+    expect(workers[0]!.terminate).toHaveBeenCalled();
+  });
+
+  it("never connects an encrypted call without encryption", async () => {
+    resetLiveKit();
+    e2ee.supported = false;
+    await call.sync(encrypted());
+    expect(Room.instances).toHaveLength(0);
+    expect(onError).toHaveBeenCalledWith(E2EE_UNAVAILABLE);
+
+    const noWorker = new VoiceCall(stage, speakers, onError);
+    e2ee.supported = true;
+    await noWorker.sync(encrypted());
+    expect(Room.instances).toHaveLength(0);
+    expect(onError).toHaveBeenCalledTimes(2);
+  });
+
+  it("joins again when a call turns encrypted, or no longer is", async () => {
+    await call.sync(session());
+    await call.sync(encrypted());
+    expect(Room.instances).toHaveLength(2);
+    expect(Room.instances[0]!.disconnect).toHaveBeenCalled();
+    expect(providerOf(Room.instances[1]!)).toBeDefined();
+    await call.sync(session());
+    expect(Room.instances).toHaveLength(3);
+    expect(workers[0]!.terminate).toHaveBeenCalled();
+    expect((Room.instances[2]!.options as { e2ee?: unknown }).e2ee).toBeUndefined();
+  });
+
+  it("checks for LiveKit's support by default", () => {
+    expect(new VoiceCall(stage, speakers, onError, undefined, undefined, undefined, () => ({}) as globalThis.Worker)).toBeInstanceOf(VoiceCall);
   });
 });

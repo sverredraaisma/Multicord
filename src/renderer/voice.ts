@@ -1,4 +1,6 @@
 import {
+  BaseKeyProvider,
+  isE2EESupported,
   Room,
   RoomEvent,
   Track,
@@ -9,7 +11,7 @@ import {
   type RoomOptions,
   type TrackProcessor,
 } from "livekit-client";
-import type { NativeVoiceSession } from "../shared/native";
+import type { NativeMediaKey, NativeVoiceSession } from "../shared/native";
 import { DEFAULT_SETTINGS, type DeviceChoice, type VoiceSettings } from "../shared/settings";
 import type { DeviceInfo } from "./media";
 
@@ -37,6 +39,32 @@ type Flags = Pick<NativeVoiceSession, "mute" | "deaf" | "video" | "stream">;
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+export const E2EE_UNAVAILABLE = "This call is end-to-end encrypted, and encrypted calls cannot run here, so Multicord does not join it.";
+
+/**
+ * LiveKit's key provider for per-participant media keys, as Element Call
+ * keeps them: each key is HKDF material, and the newest one set for a
+ * participant is the one in use. Fed from the view state; each key once.
+ */
+export class MediaKeyProvider extends BaseKeyProvider {
+  private readonly applied = new Set<string>();
+
+  constructor() {
+    super({ ratchetWindowSize: 10, keyringSize: 256 });
+  }
+
+  async setKeys(keys: readonly NativeMediaKey[]): Promise<void> {
+    for (const { participant, index, key } of keys) {
+      const id = `${participant}|${index}|${key}`;
+      if (this.applied.has(id)) continue;
+      this.applied.add(id);
+      const bytes = Uint8Array.from(atob(key), (c) => c.charCodeAt(0));
+      const material = await crypto.subtle.importKey("raw", bytes, "HKDF", false, ["deriveBits", "deriveKey"]);
+      this.onSetEncryptionKey(material, participant, index);
+    }
+  }
+}
+
 /**
  * One LiveKit call for a native voice session. The main process hands over a
  * short-lived, call-scoped grant (url + token); this connects with it,
@@ -51,6 +79,9 @@ export class VoiceCall {
   private queue: Promise<void> = Promise.resolve();
   private leaving = false;
   private settings: VoiceSettings = DEFAULT_SETTINGS.voice;
+  /** Set while in an end-to-end encrypted call. */
+  private keyProvider: MediaKeyProvider | undefined;
+  private worker: Worker | undefined;
 
   constructor(
     private readonly stage: HTMLElement,
@@ -60,6 +91,9 @@ export class VoiceCall {
     private readonly devices: () => Promise<DeviceInfo[]> = listDevices,
     /** Makes the enhanced noise suppression processor; absent where it cannot run. */
     private readonly denoiser?: () => TrackProcessor<Track.Kind.Audio, AudioProcessorOptions>,
+    /** Starts LiveKit's end-to-end encryption worker; without it encrypted calls are refused. */
+    private readonly e2eeWorker?: () => Worker,
+    private readonly e2eeSupported: () => boolean = isE2EESupported,
   ) {}
 
   /**
@@ -118,17 +152,32 @@ export class VoiceCall {
       await this.leave();
       return;
     }
-    if (session.token !== this.token) {
+    if (session.token !== this.token || Boolean(session.e2ee) !== Boolean(this.keyProvider)) {
       await this.leave();
+      // An encrypted call is joined encrypted or not at all.
+      if (session.e2ee && (!this.e2eeWorker || !this.e2eeSupported())) throw new Error(E2EE_UNAVAILABLE);
       await this.join(session.url, session.token, session);
+    } else if (session.e2ee) {
+      await this.keyProvider!.setKeys(session.e2ee.keys);
     }
     await this.setFlags(session);
   }
 
-  private async join(url: string, token: string, flags: Flags): Promise<void> {
-    const room = this.createRoom(await this.roomOptions());
+  private async join(url: string, token: string, session: NativeVoiceSession): Promise<void> {
+    const options = await this.roomOptions();
+    if (session.e2ee) {
+      this.keyProvider = new MediaKeyProvider();
+      // A worker of its own per room, as Element Call does.
+      this.worker = this.e2eeWorker!();
+      options.e2ee = { keyProvider: this.keyProvider, worker: this.worker };
+    }
+    const room = this.createRoom(options);
     this.room = room;
     this.token = token;
+    if (session.e2ee) {
+      await room.setE2EEEnabled(true);
+      await this.keyProvider!.setKeys(session.e2ee.keys);
+    }
     this.applied = { mute: true, deaf: false, video: false, stream: false };
     room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, _publication: unknown, participant: Participant) =>
       this.show(track, participant.name || participant.identity, false),
@@ -144,7 +193,7 @@ export class VoiceCall {
       if (!this.leaving && this.room === room) this.onError("Disconnected from voice");
     });
     await room.connect(url, token);
-    await this.setFlags({ ...flags, video: false, stream: false });
+    await this.setFlags({ mute: session.mute, deaf: session.deaf, video: false, stream: false });
   }
 
   private async setFlags(flags: Flags): Promise<void> {
@@ -158,7 +207,7 @@ export class VoiceCall {
     if (flags.stream !== this.applied.stream) await room.localParticipant.setScreenShareEnabled(flags.stream, { audio: SHARED_AUDIO });
     // Deafened: keep receiving, but play nothing.
     for (const audio of this.speakers.querySelectorAll("audio")) audio.muted = flags.deaf;
-    this.applied = { ...flags };
+    this.applied = { mute: flags.mute, deaf: flags.deaf, video: flags.video, stream: flags.stream };
   }
 
   /**
@@ -203,14 +252,18 @@ export class VoiceCall {
 
   private async leave(): Promise<void> {
     const room = this.room;
+    const worker = this.worker;
     this.room = undefined;
     this.token = undefined;
+    this.keyProvider = undefined;
+    this.worker = undefined;
     if (room) {
       this.leaving = true;
       try {
         await room.disconnect();
       } finally {
         this.leaving = false;
+        worker?.terminate();
       }
     }
     this.stage.replaceChildren();
