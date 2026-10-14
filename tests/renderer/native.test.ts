@@ -258,7 +258,8 @@ describe("helpers", () => {
   it("wires the view to the bridge and asks for state", () => {
     let push: (state: NativeViewState) => void = () => {};
     let pushVoice: (settings: VoiceSettings) => void = () => {};
-    const api: NativeApi = { onState: (cb) => (push = cb), act: vi.fn(), onVoiceSettings: (cb) => (pushVoice = cb) };
+    let pushCompact: (compact: boolean) => void = () => {};
+    const api: NativeApi = { onState: (cb) => (push = cb), act: vi.fn(), onVoiceSettings: (cb) => (pushVoice = cb), onCompact: (cb) => (pushCompact = cb) };
     startNative(document, api);
     expect(api.act).toHaveBeenCalledWith({ type: "ready" });
     push(login);
@@ -266,6 +267,10 @@ describe("helpers", () => {
     pushVoice({ ...DEFAULT_SETTINGS.voice, noiseSuppression: false }); // before a chat view exists: kept for later
     push(chat());
     expect(document.querySelector(".voice-stage")).not.toBeNull();
+    pushCompact(true);
+    expect(document.body.classList.contains("compact")).toBe(true);
+    pushCompact(false);
+    expect(document.body.classList.contains("compact")).toBe(false);
   });
 });
 

@@ -1,6 +1,6 @@
 import type { RailEntry, RailState } from "../shared/ipc";
 import type { ShellApi } from "../preload/shell";
-import { el, setColor } from "./components/dom";
+import { countBadge, el, setColor } from "./components/dom";
 import { serverIcon } from "./components/serverIcon";
 
 export { initials } from "./components/dom";
@@ -132,10 +132,10 @@ export function attachTooltips(root: HTMLElement, tooltip: ShellApi["tooltip"]):
   root.addEventListener("dragstart", hide);
 }
 
-/** The settings gear: opens the settings page, or goes back when it is open. */
-export function attachSettingsButton(button: HTMLElement, api: Pick<ShellApi, "settings">): (open: boolean) => void {
+/** A rail button for a shell page (settings, Messages): opens it, or goes back when it is open. */
+export function attachPageButton(button: HTMLElement, toggle: (open: boolean) => void): (open: boolean) => void {
   let open = false;
-  button.addEventListener("click", () => api.settings(!open));
+  button.addEventListener("click", () => toggle(!open));
   return (next) => {
     open = next;
     button.classList.toggle("active", open);
@@ -143,16 +143,30 @@ export function attachSettingsButton(button: HTMLElement, api: Pick<ShellApi, "s
   };
 }
 
+/** Shows the unread state of every direct message on the Messages button. */
+export function setMessagesBadge(button: HTMLElement, badge: RailState["messagesBadge"]): void {
+  const doc = button.ownerDocument;
+  button.querySelector(".badge")?.remove();
+  button.classList.toggle("unread", badge?.unread === true);
+  const count = countBadge(doc, badge?.mentions ?? 0);
+  if (count) button.append(count);
+}
+
 export function startRail(doc: Document, api: ShellApi): void {
   const root = doc.getElementById("rail")!;
-  const footer = doc.getElementById("rail-footer")!;
-  const setSettingsOpen = attachSettingsButton(doc.getElementById("settings-button")!, api);
-  attachTooltips(root, (request) => api.tooltip(request));
-  attachTooltips(footer, (request) => api.tooltip(request));
+  const messagesButton = doc.getElementById("messages-button")!;
+  const setSettingsOpen = attachPageButton(doc.getElementById("settings-button")!, (open) => api.settings(open));
+  const setMessagesOpen = attachPageButton(messagesButton, (open) => api.messages(open));
+  for (const area of [root, doc.getElementById("rail-header")!, doc.getElementById("rail-footer")!]) {
+    attachTooltips(area, (request) => api.tooltip(request));
+  }
   attachReordering(root, (keys) => api.reorder(keys));
   api.onRail((state) => {
-    renderRail(root, { ...state, activeKey: state.settingsOpen ? null : state.activeKey }, (key) => api.open(key));
+    const pageOpen = state.settingsOpen === true || state.messagesOpen === true;
+    renderRail(root, { ...state, activeKey: pageOpen ? null : state.activeKey }, (key) => api.open(key));
     setSettingsOpen(state.settingsOpen === true);
+    setMessagesOpen(state.messagesOpen === true);
+    setMessagesBadge(messagesButton, state.messagesBadge);
   });
   api.ready();
 }

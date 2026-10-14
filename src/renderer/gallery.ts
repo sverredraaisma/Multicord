@@ -1,10 +1,11 @@
 // A living style guide: every renderer component with sample data, for
 // checking designs without signing in anywhere. Open dist/gallery.html
 // (npm run gallery). Handlers only log, so everything is safe to click.
-import type { RailState } from "../shared/ipc";
+import type { Conversation, RailState } from "../shared/ipc";
 import type { NativeMessage, NativeSidebarItem } from "../shared/native";
 import { loginForm, mfaForm, setIdentityKind } from "./components/auth";
 import { channelList } from "./components/channels";
+import { conversationItem } from "./components/conversations";
 import { el } from "./components/dom";
 import { emojiPicker } from "./components/emojiPicker";
 import { typingText } from "./components/format";
@@ -50,6 +51,17 @@ export const SAMPLE_RAIL: RailState = {
     { key: "element:app", platform: "element", kind: "server", name: "Element", iconUrl: placeholderImage("#0dbd8b", "E"), unread: false, mentions: 12, module: WEB },
   ],
 };
+
+const HOUR = 60 * 60 * 1000;
+/** Fixed "now" for the samples, so their times read the same on every run. */
+export const SAMPLE_NOW = Date.parse("2026-10-14T15:00:00");
+
+export const SAMPLE_CONVERSATIONS: Conversation[] = [
+  { key: "telegram:dm:7", platform: "telegram", title: "Mila", avatarUrl: placeholderImage("#2aabee", "M"), preview: "See you at eight!", lastActivity: SAMPLE_NOW - HOUR / 4, unread: true, mentions: 2, module: { label: "Telegram", color: "#2aabee" } },
+  { key: "discord:dm:1", platform: "discord", title: "Ana", avatarUrl: placeholderImage("#e67e22", "A"), lastActivity: SAMPLE_NOW - 3 * HOUR, unread: true, mentions: 0, module: DISCORD },
+  { key: "fluxer:dm:3", platform: "fluxer", title: "Bo", preview: "Pushed the fix, can you review?", lastActivity: SAMPLE_NOW - 30 * HOUR, unread: false, mentions: 0, module: FLUXER },
+  { key: "discord:dm:4", platform: "discord", title: "Weekend plans", lastActivity: SAMPLE_NOW - 40 * 24 * HOUR, unread: false, mentions: 0, module: DISCORD },
+];
 
 export const SAMPLE_CHANNELS: NativeSidebarItem[] = [
   { id: "1", name: "announcements", kind: "text", unread: false, mentions: 0, active: false },
@@ -171,6 +183,12 @@ export function renderGallery(root: HTMLElement): void {
   root.replaceChildren(
     el(doc, "h1", undefined, "Multicord components"),
     section(doc, "Server rail", "Homes and DM bubbles per platform, then one user-ordered list of servers and folders. Hover an icon to see which module it comes from.", rail),
+    section(
+      doc,
+      "Direct messages",
+      "The unified Messages list: every platform's DMs, most recent first, with previews where the platform gives them.",
+      wrap(doc, "ul", "conversation-list", SAMPLE_CONVERSATIONS.map((c, i) => conversationItem(doc, c, { active: i === 1, now: SAMPLE_NOW, onOpen: log("open conversation") }))),
+    ),
     section(doc, "Channel list", "Categories, text channels, threads, forums, voice channels with members, and DMs.", wrap(doc, "ul", "channels", channelList(doc, SAMPLE_CHANNELS, { onSelect: log("select"), onJoinVoice: log("join voice") }))),
     section(
       doc,

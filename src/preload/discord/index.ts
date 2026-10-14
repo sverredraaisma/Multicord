@@ -1,5 +1,5 @@
 import { BRIDGE_EVENT, IPC, isBridgePayload, isDiscordTarget, type BridgePayload, type DiscordState } from "../../shared/ipc";
-import { injectStyle, navigate, readState } from "./dom";
+import { COMPACT_CLASS, injectStyle, navigate, readState } from "./dom";
 import { discordStoreBridge } from "./storeBridge";
 
 export interface PreloadIpc {
@@ -75,6 +75,8 @@ export function startDiscordPreload(
   ipc.on(IPC.discordNavigate, (_event, target) => {
     if (isDiscordTarget(target)) navigate(doc, win, target);
   });
+  // Beside the unified Messages list, Discord's own DM sidebar would repeat it.
+  ipc.on(IPC.viewCompact, (_event, compact) => doc.documentElement.classList.toggle(COMPACT_CLASS, compact === true));
 
   return { publish };
 }

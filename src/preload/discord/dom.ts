@@ -20,8 +20,16 @@ import {
 export const GUILD_ITEM_PREFIX = "guildsnav___";
 export const STYLE_ID = "multicord-style";
 
+/** Set on <html> while the view sits beside the unified Messages list. */
+export const COMPACT_CLASS = "multicord-compact";
+
+/**
+ * Hides the guild bar always, and Discord's sidebar (DM list, channel list
+ * and user panel) in compact mode, where the Messages list replaces it.
+ */
 export const HIDE_GUILD_BAR_CSS = `
 nav[class*="guilds_"] { display: none !important; }
+html.${COMPACT_CLASS} [class^="sidebar_"], html.${COMPACT_CLASS} [class*=" sidebar_"] { display: none !important; }
 `;
 
 const MENTION_PREFIX = /^\s*(\d+)\s+mentions?,\s*/i;

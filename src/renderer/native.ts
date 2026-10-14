@@ -387,5 +387,7 @@ export function startNative(doc: Document, api: NativeApi): void {
   const view = new NativeView(doc.getElementById("app")!, api);
   api.onState((state) => view.update(state));
   api.onVoiceSettings((settings) => view.setVoiceSettings(settings));
+  // Beside the unified Messages list, the conversation list here would repeat it.
+  api.onCompact((compact) => doc.body.classList.toggle("compact", compact));
   api.act({ type: "ready" });
 }

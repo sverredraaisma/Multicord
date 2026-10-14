@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { STYLE_ID } from "../../src/preload/discord/dom";
+import { COMPACT_CLASS, STYLE_ID } from "../../src/preload/discord/dom";
 import {
   BRIDGE_MAX_ATTEMPTS,
   BRIDGE_RETRY_MS,
@@ -77,6 +77,16 @@ describe("startDiscordPreload", () => {
     expect(click).not.toHaveBeenCalled();
     ipc.emit(IPC.discordNavigate, "1");
     expect(click).toHaveBeenCalledOnce();
+  });
+
+  it("hides Discord's own sidebar beside the Messages list", () => {
+    const ipc = fakeIpc();
+    startDiscordPreload(ipc, document, window);
+    ipc.emit(IPC.viewCompact, true);
+    expect(document.documentElement.classList.contains(COMPACT_CLASS)).toBe(true);
+    expect(document.getElementById(STYLE_ID)!.textContent).toContain(`html.${COMPACT_CLASS} [class^="sidebar_"]`);
+    ipc.emit(IPC.viewCompact, false);
+    expect(document.documentElement.classList.contains(COMPACT_CLASS)).toBe(false);
   });
 });
 

@@ -11,6 +11,8 @@ export interface ShellApi {
   reorder(keys: string[]): void;
   /** Opens or closes the settings page. */
   settings(open: boolean): void;
+  /** Opens or closes the unified Messages page. */
+  messages(open: boolean): void;
   onTooltip(cb: (text: string) => void): void;
   onPickerRequest(cb: (request: PickerRequest) => void): void;
   choose(choice: PickerChoice | null): void;
@@ -24,6 +26,7 @@ export function createShellApi(ipc: PreloadIpc): ShellApi {
     tooltip: (request) => ipc.send(IPC.railTooltip, request),
     reorder: (keys) => ipc.send(IPC.railReorder, keys),
     settings: (open) => ipc.send(IPC.railSettings, open),
+    messages: (open) => ipc.send(IPC.railMessages, open),
     onTooltip: (cb) => ipc.on(IPC.tooltipShow, (_event, text) => cb(String(text))),
     onPickerRequest: (cb) => ipc.on(IPC.pickerSources, (_event, request) => cb(request as PickerRequest)),
     choose: (choice) => ipc.send(IPC.pickerChoose, choice),

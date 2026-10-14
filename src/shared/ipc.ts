@@ -11,6 +11,14 @@ export const IPC = {
   railReorder: "shell:reorder",
   /** Rail -> main: open or close the settings page. */
   railSettings: "shell:settings",
+  /** Rail -> main: open or close the unified Messages page. */
+  railMessages: "shell:messages",
+  /** Main -> platform views: hide the platform's own sidebar beside the Messages list. */
+  viewCompact: "view:compact",
+  messagesState: "messages:state",
+  /** Messages page -> main: open a conversation by its rail key. */
+  messagesOpen: "messages:open",
+  messagesReady: "messages:ready",
   tooltipShow: "tooltip:show",
   pickerSources: "picker:sources",
   pickerChoose: "picker:choose",
@@ -130,6 +138,31 @@ export interface RailState {
   activeKey: string | null;
   /** The settings page is showing instead of a platform. */
   settingsOpen?: boolean;
+  /** The unified Messages page is showing. */
+  messagesOpen?: boolean;
+  /** Unread direct messages across every platform. */
+  messagesBadge?: { unread: boolean; mentions: number };
+}
+
+/** A direct conversation in the unified Messages list. */
+export interface Conversation {
+  /** Rail key, e.g. "discord:dm:123"; opening it routes to the platform. */
+  key: string;
+  platform: string;
+  title: string;
+  avatarUrl?: string;
+  /** Last message text, where the platform provides it. */
+  preview?: string;
+  /** Epoch ms of the last message. */
+  lastActivity: number;
+  unread: boolean;
+  mentions: number;
+  module?: RailModule;
+}
+
+export interface MessagesState {
+  conversations: Conversation[];
+  activeKey: string | null;
 }
 
 export interface PickerSource {

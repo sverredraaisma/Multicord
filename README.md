@@ -21,6 +21,7 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 - **Platform modules:** every platform is a module in `src/main/modules`, with a manifest (id, label, colour, preload script, and whether users may add instances) and a `load()` hook that wires up its own view. The shell knows platforms only through this interface. The built-in modules are `discord`, `fluxer` and `web`. A new platform is a new module, with no changes to the shell. Modules are compiled in, not loaded from disk, since they run with full main-process rights.
 - **Your own server order:** servers and folders from every platform form one list in the rail. Drag them into any order; the order is saved in `rail-order.json`, and new servers join at the end. Each platform's Home and DM bubbles stay at the top.
 - **Module labels:** hovering a rail icon shows a small dot in its module's colour with the module's initial (D, F, W) in the corner, and the hover name says it too, e.g. "Alpha · Fluxer".
+- **Unified Messages:** the button at the top of the rail lists the direct messages of every service in one list, most recently active first, with the last message where the service provides it (Fluxer and Telegram do, Discord does not) and a search box. Picking one opens it beside the list in its own service; the services hide their own DM sidebars meanwhile. The button shows the unread DM count.
 - **Settings** (the gear at the bottom of the rail, or the tray menu):
   - **Services and accounts:** turn services on and off, rename them, add web apps, self-hosted Fluxer instances and extra Discord or Fluxer accounts (each account is its own service, with its own session), remove added ones (which also deletes their saved sign-in), and see who is signed in. Sign out of each service from here too. Service changes are written to `platforms.json` and apply after a restart, which the page offers.
   - **Voice and video:** microphone, speakers and camera, with a level meter, a test sound and a camera preview, plus echo cancellation, noise suppression and automatic gain control. These apply to Fluxer calls; Discord and web apps keep their own voice settings.
@@ -95,7 +96,7 @@ Coverage is enforced at **95%** for lines, statements, functions and branches (`
 ## Known limitations / next steps
 
 - Guild selectors (`dom.ts`) and store names (`storeBridge.ts`) follow Discord's current client and are not yet checked against it automatically. They need a health-check harness against the live client. Guilds could later move to store reads too.
-- Unified Messages tab (level 3), incoming-call detection, notifications routing, updater/installer, push-to-talk: not started.
+- Incoming-call detection, notifications routing, updater/installer, push-to-talk: not started.
 - macOS/Linux screen share audio (CoreAudio tap / venmic) is not wired up.
 - Fluxer (native) does not support:
   - **Security keys (WebAuthn):** they are bound to Fluxer's own web origin, and Multicord won't impersonate it. Accounts protected only by a security key can sign in with a backup code.

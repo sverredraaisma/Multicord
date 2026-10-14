@@ -1,11 +1,14 @@
 import type { DirectConversation, PlatformAdapter, PlatformNotification, RailServer } from "../shared/adapter";
-import { MAX_RAIL_ORDER, type RailEntry, type RailModule, type RailState } from "../shared/ipc";
+import { MAX_RAIL_ORDER, type Conversation, type RailEntry, type RailModule, type RailState } from "../shared/ipc";
 import { Emitter } from "./adapters/emitter";
 
 export const HOME_KEY = "home";
 export const DM_PREFIX = "dm:";
 /** Unread DMs shown as rail bubbles; mentions beyond this fold into the home badge. */
 export const MAX_DM_BUBBLES = 10;
+/** Conversations in the unified Messages list. */
+export const MAX_CONVERSATIONS = 500;
+const MAX_PREVIEW = 200;
 
 interface Registered {
   adapter: PlatformAdapter;
@@ -158,6 +161,32 @@ export class PlatformRegistry {
     ranked.sort((a, b) => a.at - b.at);
     for (const { unit } of ranked) entries.push(...unit);
     return { entries, activeKey: this.activeKey };
+  }
+
+  /** Every platform's direct conversations in one list, most recently active first. */
+  conversations(): Conversation[] {
+    const all: Conversation[] = [];
+    for (const { adapter, module, directs } of this.platforms.values()) {
+      for (const dm of directs) {
+        const conversation: Conversation = {
+          key: railKey(adapter.platform, DM_PREFIX + dm.key),
+          platform: adapter.platform,
+          title: dm.title,
+          lastActivity: dm.lastActivity,
+          unread: dm.unread,
+          mentions: dm.mentions,
+        };
+        if (dm.avatarUrl) conversation.avatarUrl = dm.avatarUrl;
+        if (dm.preview) conversation.preview = dm.preview.slice(0, MAX_PREVIEW);
+        if (module) conversation.module = module;
+        all.push(conversation);
+      }
+    }
+    return all.sort((a, b) => b.lastActivity - a.lastActivity).slice(0, MAX_CONVERSATIONS);
+  }
+
+  get activeKeyValue(): string | null {
+    return this.activeKey;
   }
 
   totals(): { unread: boolean; mentions: number } {

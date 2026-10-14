@@ -111,7 +111,12 @@ describe("createShell", () => {
     expect(handle.registry.state().entries.filter((e) => e.kind === "server")).toHaveLength(0);
 
     ipcMain.emit(IPC.discordState, senderEvent(discordView), state);
-    expect(railView.webContents.send).toHaveBeenLastCalledWith(IPC.railState, { ...handle.registry.state(), settingsOpen: false });
+    expect(railView.webContents.send).toHaveBeenLastCalledWith(IPC.railState, {
+      ...handle.registry.state(),
+      settingsOpen: false,
+      messagesOpen: false,
+      messagesBadge: { unread: false, mentions: 0 },
+    });
     expect(handle.registry.state().entries.filter((e) => e.platform === "discord").map((e) => e.key)).toEqual([
       "discord:home",
       "discord:1",
@@ -761,5 +766,140 @@ describe("settings", () => {
     tray.menu!.template.find((item) => item.label === "Settings")!.click!();
     expect(window.show).toHaveBeenCalled();
     expect((handle.settingsView() as unknown as InstanceType<typeof WebContentsView>).visible).toBe(true);
+  });
+});
+
+describe("unified Messages", () => {
+  const dms = [
+    { id: "5", title: "Ana", unread: true, mentions: 2, lastActivity: 200 },
+    { id: "6", title: "Bo", unread: false, mentions: 0, lastActivity: 100 },
+  ];
+  async function withDms() {
+    const ctx = await shellWith();
+    ipcMain.emit(IPC.discordState, senderEvent(ctx.discordView), { guilds: [], badge: { unread: true, mentions: 2 }, dms });
+    return ctx;
+  }
+  const fluxerView = (handle: Awaited<ReturnType<typeof shellWith>>["handle"]) =>
+    handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+
+  it("opens the list across the content area and badges the rail button", async () => {
+    const { handle, window, railView, discordView } = await withDms();
+    expect(railView.webContents.send).toHaveBeenLastCalledWith(
+      IPC.railState,
+      expect.objectContaining({ messagesOpen: false, messagesBadge: { unread: true, mentions: 2 } }),
+    );
+    ipcMain.emit(IPC.railMessages, senderEvent(discordView), true); // only the rail may
+    ipcMain.emit(IPC.railMessages, senderEvent(railView), 1);
+    expect(handle.messagesView()).toBeUndefined();
+
+    ipcMain.emit(IPC.railMessages, senderEvent(railView), true);
+    const view = handle.messagesView() as unknown as InstanceType<typeof WebContentsView>;
+    expect(view.options.webPreferences).toMatchObject({ preload: path.join(DIST, "preload-messages.js"), partition: "multicord-messages", sandbox: true });
+    expect(view.webContents.loadFile).toHaveBeenCalledWith(path.join(DIST, "messages.html"));
+    expect(window.children.at(-1)).toBe(handle.tooltipView);
+    expect(view.visible).toBe(true);
+    expect(view.bounds).toEqual({ x: 72, y: 0, width: 928, height: 700 });
+    expect(discordView.visible).toBe(false);
+    expect(railView.webContents.send).toHaveBeenLastCalledWith(IPC.railState, expect.objectContaining({ messagesOpen: true, settingsOpen: false }));
+    expect(view.webContents.send).toHaveBeenLastCalledWith(IPC.messagesState, {
+      conversations: [
+        expect.objectContaining({ key: "discord:dm:5", title: "Ana", module: { label: "Discord", color: "#5865f2" } }),
+        expect.objectContaining({ key: "discord:dm:6" }),
+      ],
+      activeKey: null,
+    });
+    const check = session.fromPartition("multicord-messages").permissionCheckHandler as (...a: unknown[]) => boolean;
+    expect(check(null, "media")).toBe(false);
+
+    // Platform pages hide their own sidebars meanwhile, and learn it again after a reload.
+    expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.viewCompact, true);
+    discordView.webContents.send.mockClear();
+    discordView.webContents.emit("did-finish-load");
+    expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.viewCompact, true);
+
+    ipcMain.emit(IPC.railMessages, senderEvent(railView), false);
+    expect(view.visible).toBe(false);
+    expect(discordView.visible).toBe(true);
+    expect(discordView.webContents.send).toHaveBeenLastCalledWith(IPC.viewCompact, false);
+  });
+
+  it("opens a conversation beside the list", async () => {
+    const { handle, railView, discordView } = await withDms();
+    ipcMain.emit(IPC.railMessages, senderEvent(railView), true);
+    const view = handle.messagesView() as unknown as InstanceType<typeof WebContentsView>;
+    ipcMain.emit(IPC.messagesOpen, senderEvent(railView), "discord:dm:5");
+    ipcMain.emit(IPC.messagesOpen, senderEvent(view), "discord:dm:404"); // not a listed conversation
+    ipcMain.emit(IPC.messagesOpen, senderEvent(view), 5);
+    await flush();
+    expect(discordView.webContents.send).not.toHaveBeenCalledWith(IPC.discordNavigate, expect.anything());
+
+    ipcMain.emit(IPC.messagesOpen, senderEvent(view), "discord:dm:5");
+    await flush();
+    expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordNavigate, "dm:5");
+    expect(view.bounds).toEqual({ x: 72, y: 0, width: 320, height: 700 });
+    expect(discordView.bounds).toEqual({ x: 392, y: 0, width: 608, height: 700 });
+    expect(discordView.visible).toBe(true);
+    expect(fluxerView(handle).visible).toBe(false);
+    expect(view.webContents.send).toHaveBeenLastCalledWith(IPC.messagesState, expect.objectContaining({ activeKey: "discord:dm:5" }));
+
+    // A server from the rail leaves the Messages page.
+    ipcMain.emit(IPC.railOpen, senderEvent(railView), "discord:home");
+    await flush();
+    expect(view.visible).toBe(false);
+    expect(discordView.bounds).toEqual({ x: 72, y: 0, width: 928, height: 700 });
+  });
+
+  it("logs conversations that fail to open", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { handle, railView } = await withDms();
+    ipcMain.emit(IPC.railMessages, senderEvent(railView), true);
+    const view = handle.messagesView() as unknown as InstanceType<typeof WebContentsView>;
+    vi.spyOn(handle.registry, "open").mockRejectedValueOnce(new Error("gone")).mockResolvedValueOnce(undefined);
+    ipcMain.emit(IPC.messagesOpen, senderEvent(view), "discord:dm:5");
+    await flush();
+    expect(warn).toHaveBeenCalledWith("[messages] could not open discord:dm:5: gone");
+    ipcMain.emit(IPC.messagesOpen, senderEvent(view), "discord:dm:5"); // resolves without a target
+    await flush();
+    expect(view.bounds).toEqual({ x: 72, y: 0, width: 928, height: 700 });
+  });
+
+  it("answers the page when it is ready and only sends changes otherwise", async () => {
+    const { handle, railView, discordView } = await withDms();
+    ipcMain.emit(SETTINGS_IPC.ready, senderEvent(railView));
+    ipcMain.emit(IPC.messagesReady, senderEvent(railView)); // before the page exists
+    handle.setMessagesOpen(true);
+    const view = handle.messagesView() as unknown as InstanceType<typeof WebContentsView>;
+    view.webContents.send.mockClear();
+    ipcMain.emit(IPC.messagesReady, senderEvent(railView));
+    expect(view.webContents.send).not.toHaveBeenCalled();
+    ipcMain.emit(IPC.messagesReady, senderEvent(view));
+    expect(view.webContents.send).toHaveBeenCalledTimes(1);
+    ipcMain.emit(IPC.discordState, senderEvent(discordView), { guilds: [{ id: "1", name: "One", unread: false, mentions: 0 }], badge: { unread: true, mentions: 2 }, dms });
+    expect(view.webContents.send).toHaveBeenCalledTimes(1); // same conversations
+    ipcMain.emit(IPC.discordState, senderEvent(discordView), { guilds: [], badge: { unread: false, mentions: 0 }, dms: dms.slice(1) });
+    expect(view.webContents.send).toHaveBeenCalledTimes(2);
+  });
+
+  it("switches between settings and Messages without stacking them", async () => {
+    const { handle, railView, discordView } = await withDms();
+    handle.setMessagesOpen(true);
+    handle.setSettingsOpen(true);
+    expect((handle.messagesView() as unknown as InstanceType<typeof WebContentsView>).visible).toBe(false);
+    expect((handle.settingsView() as unknown as InstanceType<typeof WebContentsView>).visible).toBe(true);
+    expect(discordView.webContents.send).toHaveBeenLastCalledWith(IPC.viewCompact, false);
+    expect(railView.webContents.send).toHaveBeenLastCalledWith(IPC.railState, expect.objectContaining({ messagesOpen: false, settingsOpen: true }));
+  });
+
+  it("stays quiet about the conversation open beside the list", async () => {
+    const { handle, window, railView } = await shellWith();
+    const fluxer = handle.adapters.get("fluxer") as unknown as { notifications: { emit(n: unknown): void }; directsChanged: { emit(d: unknown): void } };
+    fluxer.directsChanged.emit([{ key: "900", account: {}, title: "Ana", lastActivity: 5, unread: false, mentions: 0 }]);
+    vi.spyOn(handle.adapters.get("fluxer")!, "openConversation").mockResolvedValue();
+    ipcMain.emit(IPC.railMessages, senderEvent(railView), true);
+    ipcMain.emit(IPC.messagesOpen, senderEvent(handle.messagesView() as unknown as InstanceType<typeof WebContentsView>), "fluxer:dm:900");
+    await flush();
+    window.isFocused.mockReturnValue(true);
+    fluxer.notifications.emit({ title: "Ana", body: "hi", target: "900", inView: true });
+    expect(electron.Notification.instances).toHaveLength(0);
   });
 });

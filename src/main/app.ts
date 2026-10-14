@@ -18,6 +18,7 @@ import {
 } from "electron";
 import {
   IPC,
+  type MessagesState,
   isPickerChoice,
   isRailKey,
   isRailOrder,
@@ -29,7 +30,7 @@ import type { PlatformAdapter } from "../shared/adapter";
 import { isSettingsAction, SETTINGS_IPC, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import type { GatewaySocket } from "./fluxer/gateway";
-import { computeLayout, tooltipBounds } from "./layout";
+import { computeLayout, splitContent, tooltipBounds } from "./layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
 import type { PlatformModule, ShellServices } from "./modules/types";
 import { loadPlatforms } from "./platforms";
@@ -42,8 +43,9 @@ import { toChromeUserAgent } from "./userAgent";
 import { parseWindowState, serializeWindowState } from "./windowState";
 
 export const APP_NAME = "Multicord";
-/** In memory only: the settings page keeps nothing. */
+/** In memory only: the shell's own pages keep nothing. */
 const SETTINGS_PARTITION = "multicord-settings";
+const MESSAGES_PARTITION = "multicord-messages";
 
 export interface ShellPaths {
   /** Directory holding the built JS, HTML and icon. */
@@ -83,10 +85,13 @@ export function configureSession(ses: Session, notificationsAllowed: () => boole
   ses.setPermissionCheckHandler((_wc, permission) => allowed(permission));
 }
 
-/** The settings page's own session: it may use the microphone and camera for device tests, nothing else. */
-function configureSettingsSession(ses: Session): void {
-  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(permission === "media"));
-  ses.setPermissionCheckHandler((_wc, permission) => permission === "media");
+/**
+ * A shell page's own session. Only the settings page gets a permission
+ * ("media", for device tests); the Messages page gets none.
+ */
+function configurePageSession(ses: Session, allowed: readonly string[]): void {
+  ses.setPermissionRequestHandler((_wc, permission, callback) => callback(allowed.includes(permission)));
+  ses.setPermissionCheckHandler((_wc, permission) => allowed.includes(permission));
 }
 
 /** Shows our screen share picker as an overlay and resolves with the user's choice. */
@@ -122,6 +127,9 @@ export interface ShellHandle {
   /** Created when the settings page is first opened. */
   settingsView(): WebContentsView | undefined;
   setSettingsOpen(open: boolean): void;
+  /** Created when the Messages page is first opened. */
+  messagesView(): WebContentsView | undefined;
+  setMessagesOpen(open: boolean): void;
   show(): void;
   setQuitting(): void;
   layout(): void;
@@ -174,22 +182,32 @@ export async function createShell(
   const settingsStore = new SettingsStore(path.join(paths.userData, "settings.json"));
   const general = () => settingsStore.get().general;
   let activePlatform = platforms[0]!.id;
-  let settingsOpen = false;
+  /** What the content area shows: a platform, the settings page, or the Messages list beside a conversation. */
+  let mode: "platform" | "settings" | "messages" = "platform";
   let settingsView: WebContentsView | undefined;
+  let messagesView: WebContentsView | undefined;
+  /** The platform whose conversation is open beside the Messages list. */
+  let messagesTarget: string | undefined;
+  const front = (): string | undefined => (mode === "platform" ? activePlatform : mode === "messages" ? messagesTarget : undefined);
   let quitting = false;
 
   const layout = (): void => {
     const { width, height } = window.getContentBounds();
     const { rail, content } = computeLayout(width, height);
     railView.setBounds(rail);
+    const { list, conversation } = splitContent(content);
+    const shownPlatform = front();
     for (const [id, view] of views) {
-      const shown = !settingsOpen && id === activePlatform;
-      view.setBounds(content);
+      const shown = id === shownPlatform;
+      view.setBounds(mode === "messages" ? conversation : content);
       view.setVisible(shown);
       adapters.get(id)?.setVisible?.(shown);
     }
     settingsView?.setBounds(content);
-    settingsView?.setVisible(settingsOpen);
+    settingsView?.setVisible(mode === "settings");
+    // Until a conversation is picked, the list has the whole content area.
+    messagesView?.setBounds(messagesTarget ? list : content);
+    messagesView?.setVisible(mode === "messages");
   };
 
   /** Screen share goes through our picker, as the web clients have none of their own here. */
@@ -219,6 +237,8 @@ export async function createShell(
     });
     views.set(def.id, view);
     window.contentView.addChildView(view);
+    // A reloaded page starts out full width; tell it whether it sits beside the Messages list.
+    view.webContents.on("did-finish-load", () => view.webContents.send(IPC.viewCompact, mode === "messages"));
 
     const { adapter, start } = module.load({
       def,
@@ -261,9 +281,30 @@ export async function createShell(
   });
   window.on("blur", hideTooltip);
 
+  let lastMessages = "";
+  const publishMessages = (force = false): void => {
+    if (!messagesView) return;
+    const state: MessagesState = { conversations: registry.conversations(), activeKey: registry.activeKeyValue };
+    const serialized = JSON.stringify(state);
+    if (!force && serialized === lastMessages) return;
+    lastMessages = serialized;
+    messagesView.webContents.send(IPC.messagesState, state);
+  };
+
   let lastMentions = 0;
   const publish = (): void => {
-    railView.webContents.send(IPC.railState, { ...registry.state(), settingsOpen });
+    const conversations = registry.conversations();
+    const messagesBadge = {
+      unread: conversations.some((c) => c.unread),
+      mentions: conversations.reduce((sum, c) => sum + c.mentions, 0),
+    };
+    railView.webContents.send(IPC.railState, {
+      ...registry.state(),
+      settingsOpen: mode === "settings",
+      messagesOpen: mode === "messages",
+      messagesBadge,
+    });
+    publishMessages();
     const { mentions } = registry.totals();
     window.setTitle(mentions > 0 ? `(${mentions}) ${APP_NAME}` : APP_NAME);
     app.setBadgeCount(mentions);
@@ -278,12 +319,32 @@ export async function createShell(
     window.focus();
   };
 
-  /** Shows a platform's view in front, leaving the settings page. */
-  const showPlatform = (id: string): void => {
-    activePlatform = id;
-    settingsOpen = false;
+  /** Switches the content area; platform pages learn whether they sit beside the Messages list. */
+  const setMode = (next: typeof mode): void => {
+    const compact = next === "messages";
+    if (compact !== (mode === "messages")) for (const view of views.values()) view.webContents.send(IPC.viewCompact, compact);
+    mode = next;
     layout();
     publish();
+  };
+
+  /** Shows a platform's view in front, leaving the settings and Messages pages. */
+  const showPlatform = (id: string): void => {
+    activePlatform = id;
+    setMode("platform");
+  };
+
+  /** A shell page in the content area, above the platform views and below the tooltip overlay. */
+  const pageView = (page: string, preload: string, partition: string, permissions: readonly string[]): WebContentsView => {
+    configurePageSession(session.fromPartition(partition), permissions);
+    const view = secureView(path.join(paths.dist, preload), partition);
+    view.webContents.on("will-navigate", (event) => event.preventDefault());
+    view.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    window.contentView.removeChildView(tooltipView);
+    window.contentView.addChildView(view);
+    window.contentView.addChildView(tooltipView);
+    void view.webContents.loadFile(path.join(paths.dist, page));
+    return view;
   };
 
   const settings = new SettingsController({
@@ -315,26 +376,39 @@ export async function createShell(
   });
   // Account states change as platforms connect; keep an open settings page current.
   registry.onChange(() => {
-    if (settingsOpen) settings.refresh();
+    if (mode === "settings") settings.refresh();
   });
 
   const setSettingsOpen = (open: boolean): void => {
-    if (open && !settingsView) {
-      configureSettingsSession(session.fromPartition(SETTINGS_PARTITION));
-      settingsView = secureView(path.join(paths.dist, "preload-settings.js"), SETTINGS_PARTITION);
-      settingsView.webContents.on("will-navigate", (event) => event.preventDefault());
-      settingsView.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-      // Above the platform views, below the tooltip overlay.
-      window.contentView.removeChildView(tooltipView);
-      window.contentView.addChildView(settingsView);
-      window.contentView.addChildView(tooltipView);
-      void settingsView.webContents.loadFile(path.join(paths.dist, "settings.html"));
-    }
-    settingsOpen = open;
-    layout();
-    publish();
+    if (open && !settingsView) settingsView = pageView("settings.html", "preload-settings.js", SETTINGS_PARTITION, ["media"]);
+    setMode(open ? "settings" : "platform");
     if (open) settings.refresh(true);
   };
+
+  const setMessagesOpen = (open: boolean): void => {
+    if (open && !messagesView) messagesView = pageView("messages.html", "preload-messages.js", MESSAGES_PARTITION, []);
+    setMode(open ? "messages" : "platform");
+    if (open) publishMessages(true);
+  };
+
+  ipcMain.on(IPC.railMessages, (event, open) => {
+    if (event.sender === railView.webContents && typeof open === "boolean") setMessagesOpen(open);
+  });
+  ipcMain.on(IPC.messagesReady, (event) => {
+    if (messagesView && event.sender === messagesView.webContents) publishMessages(true);
+  });
+  ipcMain.on(IPC.messagesOpen, async (event, key) => {
+    if (!messagesView || event.sender !== messagesView.webContents || !isRailKey(key)) return;
+    if (!registry.conversations().some((c) => c.key === key)) return;
+    try {
+      const target = await registry.open(key);
+      if (!target) return;
+      messagesTarget = target;
+      layout();
+    } catch (error) {
+      console.warn(`[messages] could not open ${key}: ${(error as Error).message}`);
+    }
+  });
 
   ipcMain.on(IPC.railSettings, (event, open) => {
     if (event.sender === railView.webContents && typeof open === "boolean") setSettingsOpen(open);
@@ -381,7 +455,7 @@ export async function createShell(
   for (const [id, adapter] of adapters) {
     adapter.onNotification((n) => {
       if (!general().notifications) return;
-      if (n.inView && window.isFocused() && activePlatform === id && !settingsOpen) return;
+      if (n.inView && window.isFocused() && front() === id) return;
       if (!Notification.isSupported()) return;
       const note = new Notification({ title: n.title, body: n.body });
       shownNotifications.add(note);
@@ -432,6 +506,8 @@ export async function createShell(
     settingsStore,
     settingsView: () => settingsView,
     setSettingsOpen,
+    messagesView: () => messagesView,
+    setMessagesOpen,
     show,
     setQuitting: () => {
       quitting = true;

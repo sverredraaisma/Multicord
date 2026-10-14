@@ -17,6 +17,18 @@ export function computeLayout(width: number, height: number, railWidth = RAIL_WI
   };
 }
 
+/** Width of the unified Messages list beside an open conversation. */
+export const MESSAGES_LIST_WIDTH = 320;
+
+/** Splits the content area into the Messages list and the conversation beside it. */
+export function splitContent(content: Rect, listWidth = MESSAGES_LIST_WIDTH): { list: Rect; conversation: Rect } {
+  const list = Math.min(listWidth, content.width);
+  return {
+    list: { ...content, width: list },
+    conversation: { x: content.x + list, y: content.y, width: content.width - list, height: content.height },
+  };
+}
+
 export const TOOLTIP_WIDTH = 280;
 export const TOOLTIP_HEIGHT = 44;
 

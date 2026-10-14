@@ -266,3 +266,50 @@ describe("app-owned order and module labels", () => {
     expect(registry.getOrder()).toHaveLength(5000);
   });
 });
+
+describe("unified conversations", () => {
+  it("merges every platform's DMs, newest first, with their module and preview", async () => {
+    const discord = new DiscordAdapter(vi.fn());
+    const registry = new PlatformRegistry();
+    await registry.add(discord, "Discord", { label: "Discord", color: "#5865f2" });
+    const other = {
+      platform: "fluxer",
+      listServers: async () => [],
+      listDirectConversations: async () => [
+        { key: "9", account: { platform: "fluxer", instance: "x", accountId: "a" }, title: "Bo", preview: "p".repeat(300), lastActivity: 300, unread: false, mentions: 0 },
+      ],
+      onServersChanged: () => () => {},
+      onDirectsChanged: () => () => {},
+      openServer: async () => {},
+      openConversation: vi.fn(async () => {}),
+    } as unknown as PlatformAdapter;
+    await registry.add(other, "Fluxer");
+    discord.update({
+      guilds: [],
+      badge: { unread: false, mentions: 0 },
+      dms: [
+        { id: "1", title: "Ana", avatarUrl: "https://cdn/a.png", unread: true, mentions: 2, lastActivity: 500 },
+        { id: "2", title: "Cy", unread: false, mentions: 0, lastActivity: 100 },
+      ],
+    });
+    const conversations = registry.conversations();
+    expect(conversations.map((c) => c.key)).toEqual(["discord:dm:1", "fluxer:dm:9", "discord:dm:2"]);
+    expect(conversations[0]).toEqual({
+      key: "discord:dm:1",
+      platform: "discord",
+      title: "Ana",
+      avatarUrl: "https://cdn/a.png",
+      lastActivity: 500,
+      unread: true,
+      mentions: 2,
+      module: { label: "Discord", color: "#5865f2" },
+    });
+    expect(conversations[1]!.preview).toHaveLength(200);
+    expect(conversations[1]).not.toHaveProperty("module");
+    expect(conversations[2]).not.toHaveProperty("avatarUrl");
+
+    expect(registry.activeKeyValue).toBeNull();
+    await registry.open("fluxer:dm:9");
+    expect(registry.activeKeyValue).toBe("fluxer:dm:9");
+  });
+});

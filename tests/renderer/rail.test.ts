@@ -14,7 +14,7 @@ const state: RailState = {
 };
 
 beforeEach(() => {
-  document.body.innerHTML = `<nav id="rail"></nav><footer id="rail-footer"><button id="settings-button" data-tooltip="Settings" class="rail-item"></button></footer>`;
+  document.body.innerHTML = `<header id="rail-header"><button id="messages-button" data-tooltip="Messages" class="rail-item"></button></header><nav id="rail"></nav><footer id="rail-footer"><button id="settings-button" data-tooltip="Settings" class="rail-item"></button></footer>`;
 });
 
 describe("initials", () => {
@@ -71,11 +71,31 @@ describe("startRail", () => {
     startRail(document, api);
     expect(api.ready).toHaveBeenCalled();
     push(state);
-    const home = document.querySelector<HTMLButtonElement>(".rail-item")!;
+    const home = document.querySelector<HTMLButtonElement>("#rail .rail-item")!;
     home.click();
     expect(api.open).toHaveBeenCalledWith("discord:home");
     home.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
     expect(api.tooltip).toHaveBeenCalledWith({ text: "Discord direct messages", y: expect.any(Number) });
+  });
+
+  it("opens Messages from its button and shows unread DMs on it", () => {
+    let push: (s: RailState) => void = () => {};
+    const api = { onRail: (cb: (s: RailState) => void) => (push = cb), open: vi.fn(), ready: vi.fn(), tooltip: vi.fn(), settings: vi.fn(), messages: vi.fn() } as unknown as ShellApi;
+    startRail(document, api);
+    const button = document.getElementById("messages-button")!;
+    button.click();
+    expect(api.messages).toHaveBeenLastCalledWith(true);
+    push({ ...state, activeKey: "discord:home", messagesOpen: true, messagesBadge: { unread: true, mentions: 4 } });
+    expect(button.classList.contains("active")).toBe(true);
+    expect(button.classList.contains("unread")).toBe(true);
+    expect(button.querySelector(".badge")!.textContent).toBe("4");
+    expect(document.querySelector("#rail .active")).toBeNull();
+    push({ ...state, messagesBadge: { unread: true, mentions: 0 } });
+    expect(button.querySelector(".badge")).toBeNull();
+    push(state);
+    expect(button.classList.contains("unread")).toBe(false);
+    button.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(api.tooltip).toHaveBeenCalledWith({ text: "Messages", y: expect.any(Number) });
   });
 
   it("opens and closes settings from the gear and clears the active server meanwhile", () => {

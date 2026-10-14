@@ -1,3 +1,4 @@
+import { IPC } from "../shared/ipc";
 import { NATIVE_IPC, type NativeAction, type NativeViewState } from "../shared/native";
 import { SETTINGS_IPC, type VoiceSettings } from "../shared/settings";
 import type { PreloadIpc } from "./discord/index";
@@ -8,6 +9,8 @@ export interface NativeApi {
   act(action: NativeAction): void;
   /** The user's devices and audio processing for calls. */
   onVoiceSettings(cb: (settings: VoiceSettings) => void): void;
+  /** Whether the view sits beside the unified Messages list, which replaces its sidebar. */
+  onCompact(cb: (compact: boolean) => void): void;
 }
 
 export function createNativeApi(ipc: PreloadIpc): NativeApi {
@@ -15,5 +18,6 @@ export function createNativeApi(ipc: PreloadIpc): NativeApi {
     onState: (cb) => ipc.on(NATIVE_IPC.state, (_event, state) => cb(state as NativeViewState)),
     act: (action) => ipc.send(NATIVE_IPC.action, action),
     onVoiceSettings: (cb) => ipc.on(SETTINGS_IPC.voice, (_event, settings) => cb(settings as VoiceSettings)),
+    onCompact: (cb) => ipc.on(IPC.viewCompact, (_event, compact) => cb(compact === true)),
   };
 }

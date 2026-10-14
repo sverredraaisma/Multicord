@@ -23,6 +23,18 @@ html, body {
   flex-direction: column;
 }
 
+#rail-header {
+  display: flex;
+  flex: none;
+  justify-content: center;
+  padding: 12px 0 8px;
+  border-bottom: 1px solid #2b2d31;
+}
+
+.rail-messages svg { width: 24px; height: 24px; fill: var(--muted); transition: fill 0.15s; }
+.rail-messages:hover svg, .rail-messages.active svg { fill: #fff; }
+.rail-messages.active { border-radius: 16px; background: var(--item-hover); }
+
 #rail-footer {
   display: flex;
   flex: none;

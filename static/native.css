@@ -122,6 +122,10 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
 }
 .composer:disabled { opacity: 0.5; }
 
+/* Beside the unified Messages list: the conversation only. */
+.compact .chat { grid-template-columns: 1fr; }
+.compact .sidebar { display: none; }
+
 @media (max-width: 640px) {
   .chat { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .sidebar { max-height: 40vh; }

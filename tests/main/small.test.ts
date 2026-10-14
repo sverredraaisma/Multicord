@@ -74,3 +74,14 @@ describe("tooltipBounds", () => {
     expect(tooltipBounds(10, 20).y).toBe(0);
   });
 });
+
+describe("messages layout", () => {
+  it("splits the content area into the list and the conversation", async () => {
+    const { splitContent, MESSAGES_LIST_WIDTH } = await import("../../src/main/layout");
+    expect(splitContent({ x: 72, y: 0, width: 1000, height: 700 })).toEqual({
+      list: { x: 72, y: 0, width: MESSAGES_LIST_WIDTH, height: 700 },
+      conversation: { x: 72 + MESSAGES_LIST_WIDTH, y: 0, width: 1000 - MESSAGES_LIST_WIDTH, height: 700 },
+    });
+    expect(splitContent({ x: 0, y: 0, width: 200, height: 10 }).conversation.width).toBe(0);
+  });
+});

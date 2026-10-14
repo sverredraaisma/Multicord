@@ -3,6 +3,7 @@ import { createShellApi } from "../../src/preload/shell";
 import { IPC } from "../../src/shared/ipc";
 import { createNativeApi } from "../../src/preload/native";
 import { createSettingsApi } from "../../src/preload/settings";
+import { createMessagesApi } from "../../src/preload/messages";
 import { SETTINGS_IPC } from "../../src/shared/settings";
 
 describe("createShellApi", () => {
@@ -79,5 +80,39 @@ describe("settings", () => {
     api.onVoiceSettings(onVoice);
     listeners.get(SETTINGS_IPC.voice)!(null, { echoCancellation: false });
     expect(onVoice).toHaveBeenCalledWith({ echoCancellation: false });
+  });
+});
+
+describe("messages", () => {
+  it("opens and closes the Messages page from the rail", () => {
+    const ipc = { send: vi.fn(), on: vi.fn() };
+    createShellApi(ipc).messages(true);
+    expect(ipc.send).toHaveBeenCalledWith(IPC.railMessages, true);
+  });
+
+  it("relays the Messages page's list and the conversation to open", () => {
+    const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
+    const ipc = { send: vi.fn(), on: (c: string, l: (e: unknown, p: unknown) => void) => listeners.set(c, l) };
+    const api = createMessagesApi(ipc);
+    const onState = vi.fn();
+    api.onState(onState);
+    listeners.get(IPC.messagesState)!(null, { conversations: [], activeKey: null });
+    expect(onState).toHaveBeenCalledWith({ conversations: [], activeKey: null });
+    api.open("discord:dm:1");
+    api.ready();
+    expect(ipc.send.mock.calls).toEqual([
+      [IPC.messagesOpen, "discord:dm:1"],
+      [IPC.messagesReady, null],
+    ]);
+  });
+
+  it("tells native views when they sit beside the Messages list", () => {
+    const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
+    const api = createNativeApi({ send: vi.fn(), on: (c, l) => void listeners.set(c, l) });
+    const onCompact = vi.fn();
+    api.onCompact(onCompact);
+    listeners.get(IPC.viewCompact)!(null, true);
+    listeners.get(IPC.viewCompact)!(null, "yes");
+    expect(onCompact.mock.calls).toEqual([[true], [false]]);
   });
 });

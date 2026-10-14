@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, expect, it, vi } from "vitest";
-import { placeholderImage, renderGallery, SAMPLE_RAIL } from "../../src/renderer/gallery";
+import { placeholderImage, renderGallery, SAMPLE_CONVERSATIONS, SAMPLE_RAIL } from "../../src/renderer/gallery";
 
 describe("component gallery", () => {
   it("renders every component section", () => {
@@ -9,6 +9,7 @@ describe("component gallery", () => {
     renderGallery(root);
     expect([...root.querySelectorAll(".gallery-section h2")].map((h) => h.textContent)).toEqual([
       "Server rail",
+      "Direct messages",
       "Channel list",
       "Messages",
       "Markdown",
@@ -42,5 +43,6 @@ describe("component gallery", () => {
     expect(url.startsWith("data:image/svg+xml;charset=utf-8,")).toBe(true);
     expect(decodeURIComponent(url)).toContain("<svg");
     expect(SAMPLE_RAIL.entries.every((e) => e.module)).toBe(true);
+    expect(SAMPLE_CONVERSATIONS.map((c) => c.lastActivity)).toEqual([...SAMPLE_CONVERSATIONS.map((c) => c.lastActivity)].sort((a, b) => b - a));
   });
 });
