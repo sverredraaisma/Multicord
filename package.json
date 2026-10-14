@@ -23,5 +23,8 @@
     "happy-dom": "^21.0.1",
     "typescript": "^7.0.2",
     "vitest": "^5.0.4"
+  },
+  "dependencies": {
+    "livekit-client": "^2.22.3"
   }
 }

@@ -9,6 +9,7 @@ export interface FluxerInstance {
   identity: "email" | "username";
   /** Whether attachments use the presigned upload flow (else inline multipart). */
   presignedUploads: boolean;
+  voiceEnabled: boolean;
 }
 
 const https = (value: unknown): string | undefined => {
@@ -41,5 +42,6 @@ export async function discoverInstance(origin: string, fetchFn: typeof fetch): P
     media,
     identity: features.account_identity === "username" ? "username" : "email",
     presignedUploads: features.presigned_attachment_uploads !== false,
+    voiceEnabled: features.voice_enabled !== false,
   };
 }

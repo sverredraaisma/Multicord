@@ -9,11 +9,34 @@ export const NATIVE_IPC = {
 export interface NativeSidebarItem {
   id: string;
   name: string;
-  kind: "category" | "text" | "thread" | "forum" | "dm";
+  kind: "category" | "text" | "thread" | "forum" | "voice" | "dm";
   iconUrl?: string;
   unread: boolean;
   mentions: number;
   active: boolean;
+  /** Voice channels: who is connected. */
+  members?: NativeVoiceMember[];
+}
+
+export interface NativeVoiceMember {
+  name: string;
+  avatarUrl?: string;
+  muted: boolean;
+  video: boolean;
+}
+
+/** The user's own voice connection. The LiveKit grant is short-lived and scoped to this call. */
+export interface NativeVoiceSession {
+  channelId: string;
+  channelName: string;
+  guildName: string;
+  /** LiveKit server URL and access token; absent while the server is assigning one. */
+  url?: string;
+  token?: string;
+  mute: boolean;
+  deaf: boolean;
+  video: boolean;
+  stream: boolean;
 }
 
 export interface NativeAttachment {
@@ -83,6 +106,7 @@ export type NativeViewState =
       me: string;
       sidebar: NativeSidebarItem[];
       channel: NativeChannelView | null;
+      voice: NativeVoiceSession | null;
       error?: string;
     };
 
@@ -100,6 +124,10 @@ export type NativeAction =
   | { type: "typing" }
   | { type: "attach" }
   | { type: "createPost"; name: string; content: string }
+  | { type: "joinVoice"; channelId: string }
+  | { type: "leaveVoice" }
+  | { type: "voiceState"; mute: boolean; deaf: boolean; video: boolean; stream: boolean }
+  | { type: "voiceError"; message: string }
   | { type: "removeAttachment"; index: number }
   | { type: "logout" };
 
@@ -121,6 +149,7 @@ export function isNativeAction(value: unknown): value is NativeAction {
     case "loadOlder":
     case "typing":
     case "attach":
+    case "leaveVoice":
     case "logout":
       return true;
     case "login":
@@ -132,6 +161,12 @@ export function isNativeAction(value: unknown): value is NativeAction {
     case "send":
       // Empty text is allowed: a message may be attachments only.
       return text(v.content, 0, MAX_MESSAGE_LENGTH) && (v.replyTo === undefined || id(v.replyTo));
+    case "joinVoice":
+      return id(v.channelId);
+    case "voiceState":
+      return [v.mute, v.deaf, v.video, v.stream].every((flag) => typeof flag === "boolean");
+    case "voiceError":
+      return text(v.message, 1, 500);
     case "createPost":
       return text(v.name, 1, 100) && (v.name as string).trim() !== "" && content(v.content);
     case "removeAttachment":

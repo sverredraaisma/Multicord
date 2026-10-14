@@ -283,6 +283,7 @@ describe("FluxerAdapter chat", () => {
       ["text", "orphan", false],
       ["category", "Text", false],
       ["text", "general", false],
+      ["voice", "voice", false],
     ]);
     expect(state.sidebar[3]).toMatchObject({ unread: true, mentions: 2 });
     expect(state.channel).toMatchObject({ id: "113", name: "lobby", loading: false, hasOlder: false });
@@ -887,5 +888,152 @@ describe("FluxerAdapter threads and forums", () => {
     reply = { status: 201, body: {} };
     await adapter.handleAction({ type: "createPost", name: "x", content: "y" });
     expect(chat().channel!.id).toBe("120");
+  });
+});
+
+describe("FluxerAdapter voice", () => {
+  async function online(discovery?: unknown) {
+    const ctx = setup({
+      token: "flx",
+      routes: discovery ? [(url) => (url.endsWith("/.well-known/fluxer") ? { status: 200, body: discovery } : undefined)] : [],
+    });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openServer("100");
+    const voiceOps = () => ctx.sockets.at(-1)!.sent.filter((p) => p.op === 4).map((p) => p.d);
+    const grant = (extra: Record<string, unknown> = {}) =>
+      ctx.sockets.at(-1)!.receive({
+        op: 0,
+        s: 9,
+        t: "VOICE_SERVER_UPDATE",
+        d: { guild_id: "100", channel_id: "112", token: "lk-token", endpoint: "voice.fx", connection_id: "conn1", ...extra },
+      });
+    return { ...ctx, voiceOps, grant };
+  }
+
+  it("joins through op 4 and hands the LiveKit grant to the view", async () => {
+    const { adapter, chat, voiceOps, grant } = await online();
+    await adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    expect(voiceOps()).toEqual([
+      { guild_id: "100", channel_id: "112", self_mute: false, self_deaf: false, self_video: false, self_stream: false },
+    ]);
+    expect(chat().voice).toEqual({
+      channelId: "112",
+      channelName: "voice",
+      guildName: "Alpha",
+      url: undefined,
+      token: undefined,
+      mute: false,
+      deaf: false,
+      video: false,
+      stream: false,
+    });
+    expect(chat().sidebar.find((i) => i.kind === "voice")).toMatchObject({ active: true });
+
+    grant();
+    expect(chat().voice).toMatchObject({ url: "wss://voice.fx", token: "lk-token" });
+    await adapter.handleAction({ type: "joinVoice", channelId: "112" }); // already there
+    expect(voiceOps()).toHaveLength(1);
+  });
+
+  it("sends toggles and leaves with the connection id", async () => {
+    const { adapter, chat, voiceOps, grant } = await online();
+    await adapter.handleAction({ type: "voiceState", mute: true, deaf: false, video: false, stream: false }); // not in voice
+    await adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    grant();
+    await adapter.handleAction({ type: "voiceState", mute: true, deaf: false, video: true, stream: false });
+    expect(voiceOps().at(-1)).toEqual({
+      guild_id: "100",
+      channel_id: "112",
+      connection_id: "conn1",
+      self_mute: true,
+      self_deaf: false,
+      self_video: true,
+      self_stream: false,
+    });
+    expect(chat().voice).toMatchObject({ mute: true, video: true });
+    await adapter.handleAction({ type: "leaveVoice" });
+    expect(voiceOps().at(-1)).toEqual({ guild_id: "100", channel_id: null, connection_id: "conn1" });
+    expect(chat().voice).toBeNull();
+  });
+
+  it("refuses end-to-end encrypted channels rather than joining unencrypted", async () => {
+    const { adapter, chat, voiceOps, grant } = await online();
+    await adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    grant({ e2ee_key: "secret" });
+    expect(chat().voice).toBeNull();
+    expect(chat().error).toContain("end-to-end encrypted voice");
+    expect(voiceOps().at(-1)).toEqual({ guild_id: "100", channel_id: null, connection_id: "conn1" });
+  });
+
+  it("leaves joins it has abandoned and ignores grants without a token", async () => {
+    const { adapter, chat, voiceOps, grant } = await online();
+    grant(); // nothing pending: an abandoned join
+    expect(voiceOps()).toEqual([{ guild_id: "100", channel_id: null, connection_id: "conn1" }]);
+    grant({ connection_id: undefined }); // cannot be addressed: ignored
+    expect(voiceOps()).toHaveLength(1);
+
+    await adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    grant({ token: undefined });
+    expect(chat().voice).toMatchObject({ token: undefined });
+  });
+
+  it("switches channels by leaving first", async () => {
+    const { adapter, voiceOps, grant } = await online();
+    adapter.state.apply("CHANNEL_CREATE", { id: "115", type: 2, guild_id: "100", name: "voice 2" });
+    await adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    grant();
+    await adapter.handleAction({ type: "joinVoice", channelId: "115" });
+    expect(voiceOps().slice(1)).toEqual([
+      { guild_id: "100", channel_id: null, connection_id: "conn1" },
+      expect.objectContaining({ channel_id: "115" }),
+    ]);
+  });
+
+  it("gives up when the server never answers", async () => {
+    const { adapter, chat } = await online();
+    await adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(chat()).toMatchObject({ voice: null, error: "Could not join voice: the server did not answer." });
+  });
+
+  it("drops voice on failures, new sessions and sign-out", async () => {
+    const ctx = await online();
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    ctx.grant();
+    await ctx.adapter.handleAction({ type: "voiceError", message: "ICE failed" });
+    expect(ctx.chat()).toMatchObject({ voice: null, error: "Voice failed: ICE failed" });
+
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    ctx.sockets.at(-1)!.receive({ op: 0, s: 10, t: "READY", d: readyPayload() });
+    expect(ctx.chat()).toMatchObject({ voice: null, error: "Voice disconnected when the connection was reset." });
+
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    await ctx.adapter.handleAction({ type: "logout" });
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" }); // no gateway any more
+    expect(ctx.adapter.viewState()).toMatchObject({ screen: "login" });
+  });
+
+  it("only joins guild voice channels on instances with voice", async () => {
+    const off = await online({
+      endpoints: { api_public: "https://api.fx", gateway: "wss://gw.fx", media: "https://media.fx" },
+      features: { voice_enabled: false },
+    });
+    await off.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    expect(off.chat()).toMatchObject({ voice: null, error: "Voice is turned off on this Fluxer instance." });
+
+    const on = await online();
+    await on.adapter.handleAction({ type: "joinVoice", channelId: "111" }); // text channel
+    await on.adapter.handleAction({ type: "joinVoice", channelId: "404" });
+    expect(on.voiceOps()).toEqual([]);
+  });
+
+  it("lists voice members in the sidebar", async () => {
+    const { adapter, chat } = await online();
+    adapter.state.apply("VOICE_STATE_UPDATE", { guild_id: "100", user_id: "2", channel_id: "112", connection_id: "a", self_mute: true, self_stream: true });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(chat().sidebar.find((i) => i.kind === "voice")!.members).toEqual([
+      { name: "Ana", avatarUrl: "https://media.fx/avatars/2/av.png?size=64", muted: true, video: true },
+    ]);
   });
 });

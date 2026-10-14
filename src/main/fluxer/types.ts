@@ -246,6 +246,33 @@ export function displayName(user: FluxerUser): string {
   return user.globalName ?? user.username;
 }
 
+/** Someone's connection to a voice channel; one user may have several. */
+export interface FluxerVoiceState {
+  guildId?: string;
+  channelId?: string; // undefined: the connection left
+  userId: string;
+  connectionId: string;
+  selfMute: boolean;
+  selfDeaf: boolean;
+  selfVideo: boolean;
+  selfStream: boolean;
+}
+
+export function parseVoiceState(value: unknown, guildId?: string): FluxerVoiceState | undefined {
+  if (!isRecord(value) || !isId(value.user_id)) return undefined;
+  const connectionId = typeof value.connection_id === "string" && value.connection_id !== "" ? value.connection_id : value.user_id;
+  return {
+    guildId: isId(value.guild_id) ? value.guild_id : guildId,
+    channelId: isId(value.channel_id) ? value.channel_id : undefined,
+    userId: value.user_id,
+    connectionId,
+    selfMute: value.self_mute === true,
+    selfDeaf: value.self_deaf === true,
+    selfVideo: value.self_video === true,
+    selfStream: value.self_stream === true,
+  };
+}
+
 /** message_notifications levels; Inherit defers to the next level up. */
 export const NotifyLevel = { All: 0, Mentions: 1, None: 2, Inherit: 3 } as const;
 

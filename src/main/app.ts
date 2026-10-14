@@ -161,6 +161,16 @@ export async function createShell(
     }
   };
 
+  /** Screen share goes through our picker, as the web clients have none of their own here. */
+  const handleScreenShare = (ses: Session): void =>
+    ses.setDisplayMediaRequestHandler(
+      createDisplayMediaHandler({
+        getSources: () => desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 320, height: 180 } }),
+        pick: (request) => showPicker(window, paths.dist, request),
+        platform,
+      }),
+    );
+
   for (const def of platforms) {
     const ses = session.fromPartition(def.partition);
     configureSession(ses);
@@ -179,14 +189,7 @@ export async function createShell(
       ipcMain.on(IPC.discordState, (event, state) => {
         if (event.sender === view.webContents && isDiscordState(state)) adapter.update(state);
       });
-      ses.setDisplayMediaRequestHandler(
-        createDisplayMediaHandler({
-          getSources: () =>
-            desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 320, height: 180 } }),
-          pick: (request) => showPicker(window, paths.dist, request),
-          platform,
-        }),
-      );
+      handleScreenShare(ses);
       adapters.set(def.id, adapter);
       await registry.add(adapter, def.name);
       void view.webContents.loadURL(def.url);
@@ -215,6 +218,7 @@ export async function createShell(
         event.preventDefault();
         if (decideWindowOpen(url, "file:///") === "external") void shell.openExternal(url);
       });
+      handleScreenShare(ses); // for Fluxer voice
       adapters.set(def.id, adapter);
       await registry.add(adapter, def.name);
       void view.webContents.loadFile(path.join(paths.dist, "native.html"));

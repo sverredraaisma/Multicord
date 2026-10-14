@@ -1,5 +1,12 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
-import { MAX_ATTACHMENTS, type NativeAction, type NativeMessage, type NativeSidebarItem, type NativeViewState } from "../../shared/native";
+import {
+  MAX_ATTACHMENTS,
+  type NativeAction,
+  type NativeMessage,
+  type NativeSidebarItem,
+  type NativeViewState,
+  type NativeVoiceSession,
+} from "../../shared/native";
 import { solveAltcha } from "../fluxer/captcha";
 import { discoverInstance, type FluxerInstance } from "../fluxer/discovery";
 import { FluxerGateway, type GatewayStatus, type SocketFactory } from "../fluxer/gateway";
@@ -27,6 +34,25 @@ const ACK_DELAY_MS = 750;
 const FLUXER_EPOCH = 1420070400000n;
 const LAZY_REQUEST = 14;
 const TYPING_REPEAT_MS = 8_000;
+const VOICE_STATE_UPDATE = 4;
+const VOICE_JOIN_TIMEOUT_MS = 15_000;
+
+/** LiveKit wants a ws(s) URL; Fluxer's endpoint may be a bare host. */
+export function liveKitUrl(endpoint: string): string {
+  return /^(wss?|https?):\/\//.test(endpoint) ? endpoint : `wss://${endpoint}`;
+}
+
+interface VoiceConnection {
+  guildId: string;
+  channelId: string;
+  connectionId?: string;
+  url?: string;
+  token?: string;
+  mute: boolean;
+  deaf: boolean;
+  video: boolean;
+  stream: boolean;
+}
 
 export interface SecretStore {
   load(key: string): string | undefined;
@@ -83,6 +109,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly typingSent = new Map<string, number>();
   private readonly pending = new Map<string, UploadSource[]>();
   private readonly uploading = new Set<string>();
+  private voice: VoiceConnection | undefined;
+  private voiceTimer: ReturnType<typeof setTimeout> | undefined;
   private visible = false;
 
   constructor(private readonly deps: FluxerAdapterDeps) {
@@ -142,6 +170,14 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.attach();
       case "createPost":
         return this.createPost(action.name, action.content);
+      case "joinVoice":
+        return this.joinVoice(action.channelId);
+      case "leaveVoice":
+        return this.leaveVoice(undefined);
+      case "voiceState":
+        return this.setVoiceFlags(action);
+      case "voiceError":
+        return this.leaveVoice(`Voice failed: ${action.message}`);
       case "removeAttachment":
         this.pending.get(this.selectedChannelId ?? "")?.splice(action.index, 1);
         return this.render();
@@ -279,7 +315,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       {
         dispatch: (event, data) => {
           this.state.apply(event, data);
+          if (event === "VOICE_SERVER_UPDATE") this.onVoiceServer(data);
           if (event === "READY") {
+            // A fresh session has no voice connection of ours.
+            if (this.voice) this.dropVoice("Voice disconnected when the connection was reset.");
             this.screen = "chat";
             this.render();
           }
@@ -311,6 +350,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private endSession(error: string | undefined): void {
+    this.dropVoice(undefined);
     this.gateway?.disconnect();
     this.gateway = undefined;
     if (this.rest) this.rest.token = undefined;
@@ -382,6 +422,110 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     });
     this.uploading.delete(channelId);
     this.render();
+  }
+
+  // --- Voice -----------------------------------------------------------------
+
+  /**
+   * Joins a guild voice channel: op 4 asks the server for a connection, and
+   * VOICE_SERVER_UPDATE answers with a LiveKit endpoint and token, which the
+   * view uses to carry the audio and video.
+   */
+  private async joinVoice(channelId: string): Promise<void> {
+    const channel = this.state.channels.get(channelId);
+    if (!channel?.guildId || channel.type !== ChannelType.GuildVoice || !this.gateway) return;
+    if (!this.instance!.voiceEnabled) {
+      this.error = `Voice is turned off on this ${this.deps.def.name} instance.`;
+      return this.render();
+    }
+    if (this.voice?.channelId === channelId) return;
+    if (this.voice) this.leaveVoice(undefined);
+    const mute = false;
+    const deaf = false;
+    this.voice = { guildId: channel.guildId, channelId, mute, deaf, video: false, stream: false };
+    this.error = undefined;
+    this.gateway.command(VOICE_STATE_UPDATE, {
+      guild_id: channel.guildId,
+      channel_id: channelId,
+      self_mute: mute,
+      self_deaf: deaf,
+      self_video: false,
+      self_stream: false,
+    });
+    this.voiceTimer = setTimeout(() => {
+      if (this.voice && !this.voice.token) this.leaveVoice("Could not join voice: the server did not answer.");
+    }, VOICE_JOIN_TIMEOUT_MS);
+    this.render();
+  }
+
+  private onVoiceServer(data: unknown): void {
+    const d = (typeof data === "object" && data !== null ? data : {}) as Record<string, unknown>;
+    const voice = this.voice;
+    if (!voice || d.channel_id !== voice.channelId) {
+      // Only the requesting session gets this event, so it answers a join we have since abandoned: leave it.
+      if (typeof d.guild_id === "string" && typeof d.connection_id === "string") {
+        this.gateway?.command(VOICE_STATE_UPDATE, { guild_id: d.guild_id, channel_id: null, connection_id: d.connection_id });
+      }
+      return;
+    }
+    if (typeof d.token !== "string" || typeof d.endpoint !== "string") return;
+    if (typeof d.connection_id === "string") voice.connectionId = d.connection_id;
+    // Fluxer's end-to-end encrypted voice scheme is not documented; never connect unencrypted to a channel that asks for it.
+    if (d.e2ee_key !== undefined && d.e2ee_key !== null) {
+      return this.leaveVoice("This channel uses end-to-end encrypted voice, which Multicord does not support yet.");
+    }
+    clearTimeout(this.voiceTimer);
+    voice.url = liveKitUrl(d.endpoint);
+    voice.token = d.token;
+    this.render();
+  }
+
+  private setVoiceFlags(flags: { mute: boolean; deaf: boolean; video: boolean; stream: boolean }): void {
+    const voice = this.voice;
+    if (!voice) return;
+    Object.assign(voice, flags);
+    this.gateway?.command(VOICE_STATE_UPDATE, {
+      guild_id: voice.guildId,
+      channel_id: voice.channelId,
+      connection_id: voice.connectionId,
+      self_mute: voice.mute,
+      self_deaf: voice.deaf,
+      self_video: voice.video,
+      self_stream: voice.stream,
+    });
+    this.render();
+  }
+
+  private leaveVoice(error: string | undefined): void {
+    const voice = this.voice;
+    if (voice?.connectionId) {
+      this.gateway?.command(VOICE_STATE_UPDATE, { guild_id: voice.guildId, channel_id: null, connection_id: voice.connectionId });
+    }
+    this.dropVoice(error);
+  }
+
+  /** Forgets our voice connection locally (the server already has, or will). */
+  private dropVoice(error: string | undefined): void {
+    clearTimeout(this.voiceTimer);
+    this.voice = undefined;
+    if (error) this.error = error;
+    this.render();
+  }
+
+  private voiceSession(): NativeVoiceSession | null {
+    const voice = this.voice;
+    if (!voice) return null;
+    return {
+      channelId: voice.channelId,
+      channelName: this.state.channels.get(voice.channelId)?.name ?? "Voice",
+      guildName: this.state.guilds.get(voice.guildId)?.name ?? "",
+      url: voice.url,
+      token: voice.token,
+      mute: voice.mute,
+      deaf: voice.deaf,
+      video: voice.video,
+      stream: voice.stream,
+    };
   }
 
   /** Starts a post in the open forum and opens it. */
@@ -628,12 +772,35 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     });
     if (this.selection.kind === "home") return this.state.privateChannels().map((c) => item(c, "dm"));
     const kindOf = (c: FluxerChannel): NativeSidebarItem["kind"] =>
-      c.type === ChannelType.GuildCategory ? "category" : FORUM_TYPES.has(c.type) ? "forum" : THREAD_TYPES.has(c.type) ? "thread" : "text";
+      c.type === ChannelType.GuildCategory
+        ? "category"
+        : c.type === ChannelType.GuildVoice
+          ? "voice"
+          : FORUM_TYPES.has(c.type)
+            ? "forum"
+            : THREAD_TYPES.has(c.type)
+              ? "thread"
+              : "text";
     return this.state
       .guildChannels(this.selection.guildId)
-      .filter((c) => c.type === ChannelType.GuildCategory || FORUM_TYPES.has(c.type) || TEXT_CHANNEL_TYPES.has(c.type))
+      .filter(
+        (c) =>
+          c.type === ChannelType.GuildCategory ||
+          c.type === ChannelType.GuildVoice ||
+          FORUM_TYPES.has(c.type) ||
+          TEXT_CHANNEL_TYPES.has(c.type),
+      )
       .map((c) => {
         const entry = item(c, kindOf(c));
+        if (entry.kind === "voice") {
+          entry.active = c.id === this.voice?.channelId;
+          entry.members = this.state.voiceMembers(c.id).map(({ user, state }) => ({
+            name: displayName(user),
+            avatarUrl: this.iconUrl("avatars", user.id, user.avatar, 64),
+            muted: state.selfMute || state.selfDeaf,
+            video: state.selfVideo || state.selfStream,
+          }));
+        }
         // A forum is unread when any of its posts is.
         if (entry.kind === "forum") {
           const posts = this.state.forumPosts(c.id);
@@ -683,6 +850,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                   : undefined,
               }
             : null,
+          voice: this.voiceSession(),
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };
       }

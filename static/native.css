@@ -259,3 +259,45 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
 .post .count { font-size: 12px; }
 .post .badge { position: static; border: 0; }
 .messages .empty { color: var(--muted); }
+
+/* Voice */
+.channel.voice { color: var(--muted); }
+.channel.voice.active { color: #23a55a; }
+.voice-members { margin: 0 0 4px 28px; padding: 0; list-style: none; font-size: 13px; }
+.voice-members li { display: flex; gap: 6px; align-items: center; padding: 2px 0; color: var(--muted); }
+.voice-members li.muted .name { text-decoration: line-through; }
+.voice-members .avatar { width: 20px; height: 20px; font-size: 9px; }
+.voice-members .live { padding: 0 4px; border-radius: 4px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; }
+.voice-panel { padding: 10px 12px; border-top: 1px solid var(--bg); background: #232428; }
+.voice-panel[hidden] { display: none; }
+.voice-status { color: var(--muted); font-size: 12px; font-weight: 700; }
+.voice-status.connected { color: #23a55a; }
+.voice-where { overflow: hidden; margin: 2px 0 8px; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.voice-controls { display: flex; flex-wrap: wrap; gap: 4px; }
+.voice-controls button {
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.voice-controls button.on { background: var(--danger); }
+.voice-controls button:disabled { opacity: 0.5; cursor: default; }
+.voice-controls .leave { background: var(--danger); }
+.voice-stage {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px;
+  max-height: 50%;
+  padding: 8px 16px;
+  overflow-y: auto;
+  background: #000;
+}
+.voice-stage[hidden], .voice-speakers[hidden] { display: none; }
+.video-tile { position: relative; margin: 0; }
+.video-tile video { width: 100%; border-radius: 6px; background: #111; }
+.video-tile.local video { transform: scaleX(-1); }
+.video-tile figcaption { position: absolute; bottom: 6px; left: 6px; padding: 2px 6px; border-radius: 4px; background: rgba(0, 0, 0, 0.6); font-size: 12px; }

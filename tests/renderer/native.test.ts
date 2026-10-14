@@ -1,5 +1,8 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("livekit-client", () => import("../mocks/livekit"));
+
 import { formatSize, formatTime, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
 import type { NativeApi } from "../../src/preload/native";
 import type { NativeMessage, NativeViewState } from "../../src/shared/native";
@@ -27,6 +30,7 @@ function msg(id: string, extra: Partial<NativeMessage> = {}): NativeMessage {
 function chat(extra: Partial<Chat> = {}): Chat {
   return {
     screen: "chat",
+    voice: null,
     platform: "Fluxer",
     title: "Alpha",
     me: "me",
@@ -503,5 +507,89 @@ describe("threads and forums", () => {
     form.dispatchEvent(new Event("submit", { cancelable: true }));
     expect(act).toHaveBeenCalledWith({ type: "createPost", name: "Idea", content: "first" });
     expect(title.value).toBe("");
+  });
+});
+
+describe("voice", () => {
+  const voice = (extra: Partial<NonNullable<Chat["voice"]>> = {}): NonNullable<Chat["voice"]> => ({
+    channelId: "9",
+    channelName: "Lounge",
+    guildName: "Alpha",
+    mute: false,
+    deaf: false,
+    video: false,
+    stream: false,
+    ...extra,
+  });
+
+  it("joins voice channels from the sidebar and lists who is there", () => {
+    view.update(
+      chat({
+        sidebar: [
+          {
+            id: "9",
+            name: "Lounge",
+            kind: "voice",
+            unread: false,
+            mentions: 0,
+            active: true,
+            members: [
+              { name: "Ana", avatarUrl: "https://media/a.png", muted: true, video: false },
+              { name: "Bo", muted: false, video: true },
+            ],
+          },
+          { id: "10", name: "Empty", kind: "voice", unread: false, mentions: 0, active: false, members: [] },
+        ],
+      }),
+    );
+    const channel = root.querySelector<HTMLButtonElement>(".channel.voice")!;
+    expect(channel.querySelector(".name")!.textContent).toBe("🔊 Lounge");
+    channel.click();
+    expect(act).toHaveBeenCalledWith({ type: "joinVoice", channelId: "9" });
+    const members = root.querySelectorAll(".voice-members li");
+    expect([...members].map((m) => m.querySelector(".name")!.textContent)).toEqual(["Ana", "Bo"]);
+    expect(members[0]!.classList.contains("muted")).toBe(true);
+    expect(members[1]!.querySelector(".live")).not.toBeNull();
+    expect(root.querySelectorAll(".voice-members")).toHaveLength(1);
+  });
+
+  it("shows the call panel while connecting and once connected", () => {
+    view.update(chat({ voice: voice() }));
+    const panel = root.querySelector<HTMLElement>(".voice-panel")!;
+    expect(panel.hidden).toBe(false);
+    expect(panel.querySelector(".voice-status")!.textContent).toBe("Connecting…");
+    expect(panel.querySelector(".voice-where")!.textContent).toBe("Lounge / Alpha");
+    expect(panel.querySelector<HTMLButtonElement>(".voice-controls button")!.disabled).toBe(true);
+
+    view.update(chat({ voice: voice({ guildName: "", url: "wss://v", token: "t", mute: true }) }));
+    expect(panel.querySelector(".voice-status")!.textContent).toBe("Voice connected");
+    expect(panel.querySelector(".voice-where")!.textContent).toBe("Lounge");
+    const buttons = [...panel.querySelectorAll<HTMLButtonElement>(".voice-controls button")];
+    expect(buttons.map((b) => b.textContent)).toEqual(["Unmute", "Deafen", "Camera", "Share screen", "Leave"]);
+    expect(buttons[0]!.getAttribute("aria-pressed")).toBe("true");
+
+    buttons[0]!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "voiceState", mute: false, deaf: false, video: false, stream: false });
+    buttons[1]!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "voiceState", mute: true, deaf: true, video: false, stream: false });
+    buttons[2]!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "voiceState", mute: true, deaf: false, video: true, stream: false });
+    buttons[3]!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "voiceState", mute: true, deaf: false, video: false, stream: true });
+    buttons[4]!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "leaveVoice" });
+
+    view.update(chat({ voice: voice({ token: "t", url: "wss://v", deaf: true, video: true, stream: true }) }));
+    expect([...panel.querySelectorAll(".voice-controls button")].map((b) => b.textContent)).toEqual([
+      "Mute",
+      "Undeafen",
+      "Camera off",
+      "Stop sharing",
+      "Leave",
+    ]);
+
+    view.update(chat({ voice: null }));
+    expect(panel.hidden).toBe(true);
+    view.update(login); // leaving the chat screen ends the call
   });
 });

@@ -41,6 +41,7 @@ describe("discoverInstance", () => {
       media: "https://fluxerusercontent.com",
       identity: "email",
       presignedUploads: true,
+      voiceEnabled: true,
     });
     expect(calls[0]!.url).toBe("https://fluxer.app/.well-known/fluxer");
   });

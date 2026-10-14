@@ -85,3 +85,15 @@ describe("forum post validation", () => {
     expect(isNativeAction({ type: "createPost", name: "Idea", content: "" })).toBe(false);
   });
 });
+
+describe("voice action validation", () => {
+  it("validates joins, toggles and errors", () => {
+    expect(isNativeAction({ type: "joinVoice", channelId: "5" })).toBe(true);
+    expect(isNativeAction({ type: "joinVoice", channelId: "x" })).toBe(false);
+    expect(isNativeAction({ type: "leaveVoice" })).toBe(true);
+    expect(isNativeAction({ type: "voiceState", mute: true, deaf: false, video: false, stream: false })).toBe(true);
+    expect(isNativeAction({ type: "voiceState", mute: true, deaf: false, video: false })).toBe(false);
+    expect(isNativeAction({ type: "voiceError", message: "ICE failed" })).toBe(true);
+    expect(isNativeAction({ type: "voiceError", message: "" })).toBe(false);
+  });
+});

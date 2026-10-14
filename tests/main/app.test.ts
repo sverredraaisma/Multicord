@@ -360,6 +360,11 @@ describe("native Fluxer platform", () => {
     expect(warn).toHaveBeenCalledWith("[fluxer] boom");
   });
 
+  it("gives Fluxer voice the same screen share picker", async () => {
+    await shellWith();
+    expect(session.fromPartition("persist:fluxer").displayMediaRequestHandler).toBeTypeOf("function");
+  });
+
   it("opens message links in the browser, never inside the app", async () => {
     const { handle } = await shellWith();
     const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;

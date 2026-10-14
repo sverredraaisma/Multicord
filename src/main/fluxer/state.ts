@@ -16,6 +16,7 @@ import {
   parseMessage,
   parseReadState,
   parseUser,
+  parseVoiceState,
   type FluxerChannel,
   type FluxerEmoji,
   DM_SETTINGS,
@@ -26,6 +27,7 @@ import {
   type FluxerMessage,
   type FluxerReadState,
   type FluxerUser,
+  type FluxerVoiceState,
 } from "./types";
 
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
@@ -41,6 +43,8 @@ export class FluxerState {
   readonly readStates = new Map<string, FluxerReadState>();
   readonly users = new Map<string, FluxerUser>();
   readonly messages = new Map<string, FluxerMessage[]>();
+  /** Voice connections by connection id. */
+  readonly voiceStates = new Map<string, FluxerVoiceState>();
   /** Who is typing where: channel id -> user id -> expiry (epoch ms). */
   readonly typing = new Map<string, Map<string, number>>();
   /** Notification settings per guild id, or DM_SETTINGS for DMs. */
@@ -54,7 +58,7 @@ export class FluxerState {
   reset(): void {
     this.me = undefined;
     this.folders = undefined;
-    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.notifySettings, this.typing]) map.clear();
+    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.notifySettings, this.typing, this.voiceStates]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -144,6 +148,9 @@ export class FluxerState {
         this.typing.set(d.channel_id, channel);
         break;
       }
+      case "VOICE_STATE_UPDATE":
+        this.setVoiceState(parseVoiceState(data));
+        break;
       case "MESSAGE_ACK":
         this.setReadState(parseReadState(data));
         break;
@@ -341,6 +348,10 @@ export class FluxerState {
       if (THREAD_TYPES.has(c.type) ? replaceThreads : replaceChannels) this.channels.delete(c.id);
     }
     for (const c of [...list(record.channels), ...list(record.threads)]) this.addChannel(parseChannel(c, guild.id));
+    if (Array.isArray(record.voice_states)) {
+      for (const [key, v] of [...this.voiceStates]) if (v.guildId === guild.id) this.voiceStates.delete(key);
+      for (const v of record.voice_states) this.setVoiceState(parseVoiceState(v, guild.id));
+    }
   }
 
   private removeGuild(guildId: string): void {
@@ -367,6 +378,19 @@ export class FluxerState {
 
   private setReadState(state: FluxerReadState | undefined): void {
     if (state) this.readStates.set(state.channelId, state);
+  }
+
+  /** Who is in a voice channel, in join order. */
+  voiceMembers(channelId: string): { user: FluxerUser; state: FluxerVoiceState }[] {
+    return [...this.voiceStates.values()]
+      .filter((v) => v.channelId === channelId)
+      .map((v) => ({ user: this.users.get(v.userId) ?? { id: v.userId, username: "Unknown user" }, state: v }));
+  }
+
+  private setVoiceState(state: FluxerVoiceState | undefined): void {
+    if (!state) return;
+    if (state.channelId) this.voiceStates.set(state.connectionId, state);
+    else this.voiceStates.delete(state.connectionId);
   }
 
   /** Users typing in a channel right now, excluding ourselves. */

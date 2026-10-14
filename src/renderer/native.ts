@@ -1,7 +1,8 @@
 import type { NativeApi } from "../preload/native";
-import type { NativeMessage, NativeSidebarItem, NativeViewState } from "../shared/native";
+import type { NativeMessage, NativeSidebarItem, NativeViewState, NativeVoiceSession } from "../shared/native";
 import { MAX_MESSAGE_LENGTH } from "../shared/native";
 import { initials } from "./rail";
+import { VoiceCall } from "./voice";
 
 type ChatState = Extract<NativeViewState, { screen: "chat" }>;
 
@@ -10,6 +11,7 @@ const CHANNEL_PREFIX: Record<NativeSidebarItem["kind"], string> = {
   text: "# ",
   thread: "↳ ",
   forum: "☰ ",
+  voice: "🔊 ",
   dm: "",
 };
 
@@ -73,6 +75,7 @@ export class NativeView {
   private editingId: string | undefined;
   private pickerFor: string | undefined;
   private lastState: ChatState | undefined;
+  private call: VoiceCall | undefined;
 
   constructor(
     private readonly root: HTMLElement,
@@ -99,6 +102,9 @@ export class NativeView {
   }
 
   private mount(state: NativeViewState): void {
+    // Leaving the chat screen (e.g. signing out) ends any call.
+    void this.call?.sync(null);
+    this.call = undefined;
     this.screen = state.screen;
     this.parts = {};
     this.channelId = undefined;
@@ -204,12 +210,19 @@ export class NativeView {
     logout.addEventListener("click", () => this.api.act({ type: "logout" }));
     const footer = el(doc, "footer", "account");
     footer.append(me, logout);
-    sidebar.append(title, list, footer);
+    const voicePanel = el(doc, "section", "voice-panel");
+    voicePanel.hidden = true;
+    sidebar.append(title, list, voicePanel, footer);
 
     const main = el(doc, "main", "conversation");
     const header = el(doc, "header", "conversation-title");
     const banner = el(doc, "div", "banner");
     const messages = el(doc, "ol", "messages");
+    const stage = el(doc, "div", "voice-stage");
+    stage.hidden = true;
+    const speakers = el(doc, "div", "voice-speakers");
+    speakers.hidden = true;
+    this.call = new VoiceCall(stage, speakers, (message) => this.api.act({ type: "voiceError", message }));
     const replyBar = el(doc, "div", "reply-bar");
     replyBar.hidden = true;
     const composer = el(doc, "textarea", "composer");
@@ -237,7 +250,7 @@ export class NativeView {
     attach.addEventListener("click", () => this.api.act({ type: "attach" }));
     const composerRow = el(doc, "div", "composer-row");
     composerRow.append(attach, composer);
-    main.append(header, banner, messages, typing, replyBar, pending, composerRow);
+    main.append(header, banner, stage, messages, typing, replyBar, pending, composerRow, speakers);
 
     // One edit box, reused across renders so an edit in progress survives updates.
     const editBox = el(doc, "textarea", "edit-box");
@@ -254,7 +267,21 @@ export class NativeView {
     const layout = el(doc, "div", "chat");
     layout.append(sidebar, main);
     this.root.replaceChildren(layout);
-    Object.assign(this.parts, { title, list, me, header, banner, messages, typing, replyBar, pending, attach, composer, editBox });
+    Object.assign(this.parts, {
+      title,
+      list,
+      me,
+      header,
+      banner,
+      messages,
+      typing,
+      replyBar,
+      pending,
+      attach,
+      composer,
+      editBox,
+      voicePanel,
+    });
   }
 
   private setReply(target: { id: string; author: string } | undefined): void {
@@ -290,8 +317,21 @@ export class NativeView {
     button.classList.add(item.kind);
     button.append(el(doc, "span", "name", `${CHANNEL_PREFIX[item.kind]}${item.name}`));
     if (item.mentions > 0) button.append(el(doc, "span", "badge", item.mentions > 99 ? "99+" : String(item.mentions)));
-    button.addEventListener("click", () => this.api.act({ type: "select", channelId: item.id }));
+    button.addEventListener("click", () =>
+      this.api.act(item.kind === "voice" ? { type: "joinVoice", channelId: item.id } : { type: "select", channelId: item.id }),
+    );
     li.append(button);
+    if (item.members?.length) {
+      const members = el(doc, "ul", "voice-members");
+      for (const member of item.members) {
+        const row = el(doc, "li");
+        row.classList.toggle("muted", member.muted);
+        row.append(avatar(doc, member.avatarUrl, member.name), el(doc, "span", "name", member.name));
+        if (member.video) row.append(el(doc, "span", "live", "LIVE"));
+        members.append(row);
+      }
+      li.append(members);
+    }
     return li;
   }
 
@@ -337,6 +377,36 @@ export class NativeView {
     if (message.reactions.length > 0 || this.pickerFor === message.id) body.append(this.reactionRow(message));
     li.append(avatar(doc, message.avatarUrl, message.author), body, this.messageActions(message));
     return li;
+  }
+
+  /** The call controls: connection status, channel, and toggles that report the new flags. */
+  private renderVoice(voice: NativeVoiceSession | null): void {
+    const panel = this.parts.voicePanel!;
+    panel.hidden = !voice;
+    if (!voice) return panel.replaceChildren();
+    const doc = this.doc;
+    const status = el(doc, "div", "voice-status", voice.token ? "Voice connected" : "Connecting…");
+    status.classList.toggle("connected", Boolean(voice.token));
+    const where = el(doc, "div", "voice-where", voice.guildName ? `${voice.channelName} / ${voice.guildName}` : voice.channelName);
+    const controls = el(doc, "div", "voice-controls");
+    const toggle = (label: string, on: boolean, change: Partial<NativeVoiceSession>) => {
+      const button = el(doc, "button", undefined, label);
+      button.classList.toggle("on", on);
+      button.setAttribute("aria-pressed", String(on));
+      button.disabled = !voice.token;
+      button.addEventListener("click", () =>
+        this.api.act({ type: "voiceState", mute: voice.mute, deaf: voice.deaf, video: voice.video, stream: voice.stream, ...change }),
+      );
+      controls.append(button);
+    };
+    toggle(voice.mute ? "Unmute" : "Mute", voice.mute, { mute: !voice.mute });
+    toggle(voice.deaf ? "Undeafen" : "Deafen", voice.deaf, { deaf: !voice.deaf });
+    toggle(voice.video ? "Camera off" : "Camera", voice.video, { video: !voice.video });
+    toggle(voice.stream ? "Stop sharing" : "Share screen", voice.stream, { stream: !voice.stream });
+    const leave = el(doc, "button", "leave", "Leave");
+    leave.addEventListener("click", () => this.api.act({ type: "leaveVoice" }));
+    controls.append(leave);
+    panel.replaceChildren(status, where, controls);
   }
 
   /** A forum: the new-post form (kept across renders), then its posts. */
@@ -489,6 +559,8 @@ export class NativeView {
     header!.textContent = channel ? channel.name : "Select a conversation";
     this.parts.typing!.textContent = typingText(channel?.typing ?? []);
     this.renderPending(channel);
+    this.renderVoice(state.voice);
+    void this.call?.sync(state.voice);
     // Forums take posts through their own form, not the composer.
     if (channel?.posts) (composer as HTMLTextAreaElement).disabled = true;
     (composer as HTMLTextAreaElement).placeholder = channel ? `Message ${channel.name}` : "";
