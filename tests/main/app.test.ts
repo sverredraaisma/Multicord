@@ -4,6 +4,12 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => import("../mocks/electron"));
+// Streamer mode must not run the OS's process list in tests.
+const processList = vi.hoisted(() => ({ names: [] as string[] }));
+vi.mock("../../src/main/streamer", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/main/streamer")>()),
+  listProcesses: async () => processList.names,
+}));
 
 import * as electron from "../mocks/electron";
 import { APP_NAME, createShell, startApp } from "../../src/main/app";
@@ -972,5 +978,51 @@ describe("zoom, spell check and grouping", () => {
     expect(press("a")).not.toHaveBeenCalled();
     expect(press("=", false)).not.toHaveBeenCalled();
     expect(discordView.webContents.setZoomFactor).toHaveBeenLastCalledWith(1);
+  });
+});
+
+describe("streamer mode", () => {
+  it("keeps message content out of notifications and the Messages page while on", async () => {
+    fs.writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ general: { streamerMode: "on" } }));
+    const { handle, discordView } = await shellWith();
+    const fluxer = handle.adapters.get("fluxer") as unknown as { notifications: { emit(n: unknown): void }; directsChanged: { emit(d: unknown): void } };
+    fluxer.notifications.emit({ title: "Ana", body: "secret plans", target: "900" });
+    expect(electron.Notification.instances[0]!.options).toEqual({ title: "New message", body: "On Fluxer" });
+    ipcMain.emit(IPC.discordState, senderEvent(discordView), { guilds: [], badge: { unread: false, mentions: 0 }, calls: [{ channelId: "7", from: "Ana" }] });
+    expect(electron.Notification.instances[1]!.options).toMatchObject({ title: "Incoming call", body: "Someone is calling you on Discord" });
+
+    fluxer.directsChanged.emit([{ key: "900", account: {}, title: "Ana", preview: "secret plans", lastActivity: 5, unread: false, mentions: 0 }]);
+    handle.setMessagesOpen(true);
+    const view = handle.messagesView() as unknown as InstanceType<typeof WebContentsView>;
+    const sent = view.webContents.send.mock.calls.at(-1)![1] as { conversations: { title: string; preview?: string }[] };
+    expect(sent.conversations[0]).toMatchObject({ title: "Ana" });
+    expect(sent.conversations[0]).not.toHaveProperty("preview");
+    expect(handle.settings.state().streaming).toBe(true);
+
+    handle.settingsStore.update({ general: { streamerMode: "off" } });
+    const after = view.webContents.send.mock.calls.at(-1)![1] as { conversations: { preview?: string }[] };
+    expect(after.conversations[0]!.preview).toBe("secret plans");
+  });
+
+  it("turns on by itself while streaming software runs", async () => {
+    vi.useFakeTimers();
+    try {
+      processList.names = ["obs64.exe"];
+      const { handle } = await shellWith(); // "auto" is the default
+      expect(handle.settings.state()).not.toHaveProperty("streaming");
+      handle.setSettingsOpen(true);
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(handle.settings.state().streaming).toBe(true);
+      const settingsView = handle.settingsView() as unknown as InstanceType<typeof WebContentsView>;
+      expect(settingsView.webContents.send).toHaveBeenLastCalledWith(SETTINGS_IPC.state, expect.objectContaining({ streaming: true }));
+      handle.settingsStore.update({ general: { streamerMode: "off" } });
+      expect(handle.settings.state()).not.toHaveProperty("streaming");
+      handle.settingsStore.update({ general: { streamerMode: "auto" } });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(handle.settings.state().streaming).toBe(true);
+    } finally {
+      processList.names = [];
+      vi.useRealTimers();
+    }
   });
 });

@@ -133,5 +133,8 @@ describe("zoom and other general settings", () => {
     expect(isSettingsPatch({ general: { zoom: 2, railGrouping: "mixed", spellcheck: true } })).toBe(true);
     expect(isSettingsPatch({ general: { zoom: 3 } })).toBe(false);
     expect(isSettingsPatch({ general: { railGrouping: true } })).toBe(false);
+    expect(isSettingsPatch({ general: { streamerMode: "auto" } })).toBe(true);
+    expect(isSettingsPatch({ general: { streamerMode: "loud" } })).toBe(false);
+    expect(parseSettings({ general: { streamerMode: "on" } }).general.streamerMode).toBe("on");
   });
 });

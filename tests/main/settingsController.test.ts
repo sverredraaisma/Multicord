@@ -86,6 +86,11 @@ describe("settings state", () => {
     expect(state).not.toHaveProperty("error");
   });
 
+  it("says when streamer mode is hiding content", () => {
+    expect(controller({}, { streaming: () => true }).settings.state().streaming).toBe(true);
+    expect(controller({}, { streaming: () => false }).settings.state()).not.toHaveProperty("streaming");
+  });
+
   it("only republishes changes unless forced", () => {
     const { settings, published } = controller();
     settings.refresh();

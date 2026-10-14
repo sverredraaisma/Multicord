@@ -39,6 +39,8 @@ export interface GeneralSettings {
   railGrouping: "mixed" | "platform";
   /** Zoom of the content area, one of ZOOM_LEVELS. */
   zoom: number;
+  /** Hide message content in notifications and previews: always, never, or while streaming software runs. */
+  streamerMode: "auto" | "on" | "off";
 }
 
 /** Zoom steps, as browsers offer them. */
@@ -67,7 +69,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1 },
+  general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto" },
   voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
 };
 
@@ -87,6 +89,7 @@ const GENERAL_CHECKS: { [K in keyof GeneralSettings]: (value: unknown) => value 
   spellcheck: (v): v is boolean => typeof v === "boolean",
   railGrouping: (v): v is GeneralSettings["railGrouping"] => v === "mixed" || v === "platform",
   zoom: (v): v is number => (ZOOM_LEVELS as readonly unknown[]).includes(v),
+  streamerMode: (v): v is GeneralSettings["streamerMode"] => v === "auto" || v === "on" || v === "off",
 };
 const GENERAL_KEYS = Object.keys(GENERAL_CHECKS) as (keyof GeneralSettings)[];
 const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl"] as const;
@@ -201,6 +204,8 @@ export interface SettingsViewState {
   secretsPersistent: boolean;
   launchAtLoginSupported: boolean;
   version: string;
+  /** Streamer mode is hiding message content right now. */
+  streaming?: boolean;
   /** The last action that could not be done, e.g. turning off the only service. */
   error?: string;
 }

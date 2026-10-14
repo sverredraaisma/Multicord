@@ -41,6 +41,7 @@ import { PlatformRegistry } from "./registry";
 import { createDisplayMediaHandler } from "./screenShare";
 import { SettingsController } from "./settingsController";
 import { SettingsStore } from "./settingsStore";
+import { listProcesses, StreamerWatch } from "./streamer";
 import { decideWindowOpen, isPermissionAllowed } from "./sessionPolicy";
 import { toChromeUserAgent } from "./userAgent";
 import { parseWindowState, serializeWindowState } from "./windowState";
@@ -190,6 +191,10 @@ export async function createShell(
   const front = (): string | undefined => (mode === "platform" ? activePlatform : mode === "messages" ? messagesTarget : undefined);
   let quitting = false;
   registry.setGrouping(general().railGrouping);
+  const streamer = new StreamerWatch(() => listProcesses(platform));
+  /** Streamer mode: message content stays out of notifications and previews. */
+  const streaming = (): boolean => general().streamerMode === "on" || (general().streamerMode === "auto" && streamer.active);
+  if (general().streamerMode === "auto") streamer.start();
 
   /** Platform views and our own pages share the zoom setting and its keyboard shortcuts. */
   const contentViews = new Set<WebContentsView>();
@@ -339,7 +344,9 @@ export async function createShell(
   let lastMessages = "";
   const publishMessages = (force = false): void => {
     if (!messagesView) return;
-    const state: MessagesState = { conversations: registry.conversations(), activeKey: registry.activeKeyValue };
+    // In streamer mode the page learns who wrote, never what: previews stay here.
+    const conversations = streaming() ? registry.conversations().map(({ preview: _preview, ...c }) => c) : registry.conversations();
+    const state: MessagesState = { conversations, activeKey: registry.activeKeyValue };
     const serialized = JSON.stringify(state);
     if (!force && serialized === lastMessages) return;
     lastMessages = serialized;
@@ -411,6 +418,7 @@ export async function createShell(
     secretsPersistent: () => credentials.persistent,
     launchAtLoginSupported: platform !== "linux",
     version: app.getVersion(),
+    streaming,
     openService: showPlatform,
     clearSession: async (id) => {
       await session.fromPartition(`persist:${id}`).clearStorageData();
@@ -427,6 +435,11 @@ export async function createShell(
 
   settingsStore.changed.on(({ settings: next, patch }) => {
     if (patch.general?.railGrouping !== undefined) registry.setGrouping(next.general.railGrouping);
+    if (patch.general?.streamerMode !== undefined) {
+      if (next.general.streamerMode === "auto") streamer.start();
+      else streamer.stop();
+      publishMessages();
+    }
     if (patch.general?.zoom !== undefined) for (const view of contentViews) view.webContents.setZoomFactor(next.general.zoom);
     if (patch.general?.spellcheck !== undefined) for (const ses of platformSessions) ses.setSpellCheckerEnabled(next.general.spellcheck);
     if (patch.general?.launchAtLogin === undefined || platform === "linux") return;
@@ -435,6 +448,10 @@ export async function createShell(
   });
   // Account states change as platforms connect; keep an open settings page current.
   registry.onChange(() => {
+    if (mode === "settings") settings.refresh();
+  });
+  streamer.changed.on(() => {
+    publishMessages();
     if (mode === "settings") settings.refresh();
   });
 
@@ -513,7 +530,10 @@ export async function createShell(
   const shownNotifications = new Set<Notification>();
   const notify = (id: string, n: PlatformNotification, urgent = false): void => {
     if (!general().notifications || !Notification.isSupported()) return;
-    const note = new Notification(urgent ? { title: n.title, body: n.body, urgency: "critical", timeoutType: "never" } : { title: n.title, body: n.body });
+    const name = platforms.find((p) => p.id === id)?.name ?? id;
+    // While streaming, a notification may say that something happened, not who said what.
+    const shown = streaming() ? { title: urgent ? "Incoming call" : "New message", body: urgent ? `Someone is calling you on ${name}` : `On ${name}` } : { title: n.title, body: n.body };
+    const note = new Notification(urgent ? { ...shown, urgency: "critical", timeoutType: "never" } : shown);
     shownNotifications.add(note);
     note.on("close", () => shownNotifications.delete(note));
     note.on("click", () => {

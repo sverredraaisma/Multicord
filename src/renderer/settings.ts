@@ -117,6 +117,8 @@ export class SettingsPage {
     general: Record<"closeToTray" | "launchAtLogin" | "notifications" | "spellcheck", HTMLInputElement>;
     grouped: HTMLInputElement;
     zoom: HTMLSelectElement;
+    streamer: HTMLSelectElement;
+    streamingNote: HTMLElement;
     launchHint: HTMLElement;
     secretsNote: HTMLElement;
     selects: Record<DeviceSlot, HTMLSelectElement>;
@@ -277,7 +279,23 @@ export class SettingsPage {
     zoom.addEventListener("change", () => this.update({ general: { zoom: Number(zoom.value) } }));
     const zoomRow = el(doc, "div", "field");
     zoomRow.append(el(doc, "span", "field-label", "Zoom"), zoom, el(doc, "small", "hint", "Also Ctrl and + or −, and Ctrl and 0 to reset."));
-    general.append(grouping.row, el(doc, "h2", undefined, "Appearance"), zoomRow);
+    const streamer = el(doc, "select");
+    streamer.setAttribute("aria-label", "Streamer mode");
+    for (const [value, label] of [
+      ["auto", "Automatic, while OBS or other streaming software runs"],
+      ["on", "Always on"],
+      ["off", "Off"],
+    ] as const) {
+      const option = el(doc, "option", undefined, label);
+      option.value = value;
+      streamer.append(option);
+    }
+    streamer.addEventListener("change", () => this.update({ general: { streamerMode: streamer.value as "auto" | "on" | "off" } }));
+    const streamerRow = el(doc, "div", "field");
+    const streamingNote = el(doc, "small", "hint streaming-note", "Streamer mode is on: notifications and message previews hide what was said.");
+    streamingNote.hidden = true;
+    streamerRow.append(el(doc, "span", "field-label", "Streamer mode"), streamer, el(doc, "small", "hint", "Keeps message content out of notifications and the Messages list."), streamingNote);
+    general.append(grouping.row, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
     const launchHint = el(doc, "p", "hint", "Starting with your computer is not available on this system.");
     launchHint.hidden = true;
     const secretsNote = el(doc, "p", "notice", "This system has no secure storage for passwords, so you will need to sign in to Fluxer again after each restart.");
@@ -308,6 +326,8 @@ export class SettingsPage {
       general: generalInputs,
       grouped: grouping.input,
       zoom,
+      streamer,
+      streamingNote,
       launchHint,
       secretsNote,
       selects,
@@ -356,6 +376,8 @@ export class SettingsPage {
     for (const key of ["closeToTray", "launchAtLogin", "notifications", "spellcheck"] as const) parts.general[key].checked = general[key];
     parts.grouped.checked = general.railGrouping === "platform";
     parts.zoom.value = String(general.zoom);
+    parts.streamer.value = general.streamerMode;
+    parts.streamingNote.hidden = state.streaming !== true;
     parts.general.launchAtLogin.disabled = !state.launchAtLoginSupported;
     parts.launchHint.hidden = state.launchAtLoginSupported;
     parts.secretsNote.hidden = state.secretsPersistent;

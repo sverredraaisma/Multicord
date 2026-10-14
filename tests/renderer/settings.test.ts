@@ -368,7 +368,7 @@ describe("banners", () => {
 describe("general and about", () => {
   it("general switches reflect state and send updates", () => {
     const state = viewState();
-    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25 };
+    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, streamerMode: "on" };
     mount(state);
     expect(switchFor("tray").checked).toBe(false);
     expect(switchFor("Start with").checked).toBe(true);
@@ -391,6 +391,16 @@ describe("general and about", () => {
     expect([...zoom.options].map((o) => o.textContent)).toContain("100%");
     change(zoom, "1.5");
     expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { zoom: 1.5 } } });
+    const streamer = q<HTMLSelectElement>("select[aria-label='Streamer mode']");
+    expect(streamer.value).toBe("on");
+    expect(q(".streaming-note").hidden).toBe(true);
+    change(streamer, "off");
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { streamerMode: "off" } } });
+  });
+
+  it("says when streamer mode is hiding content", () => {
+    mount(viewState({ streaming: true }));
+    expect(q(".streaming-note").hidden).toBe(false);
   });
 
   it("disables launch at login with a hint when unsupported", () => {
