@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ShellApi } from "../../src/preload/shell";
-import { initials, renderRail, startRail } from "../../src/renderer/rail";
+import { attachTooltips, initials, renderRail, startRail } from "../../src/renderer/rail";
 import type { RailState } from "../../src/shared/ipc";
 
 const state: RailState = {
@@ -46,6 +46,7 @@ describe("renderRail", () => {
       "|",
       "element:app",
     ]);
+    expect(items[1]!.hasAttribute("title")).toBe(false);
 
     items[2]!.click();
     expect(onOpen).toHaveBeenCalledWith("element:app");
@@ -66,6 +67,7 @@ describe("startRail", () => {
       onRail: (cb: (s: RailState) => void) => (push = cb),
       open: vi.fn(),
       ready: vi.fn(),
+      tooltip: vi.fn(),
     } as unknown as ShellApi;
     startRail(document, api);
     expect(api.ready).toHaveBeenCalled();
@@ -73,6 +75,8 @@ describe("startRail", () => {
     const home = document.querySelector<HTMLButtonElement>(".rail-item")!;
     home.click();
     expect(api.open).toHaveBeenCalledWith("discord:home");
+    home.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(api.tooltip).toHaveBeenCalledWith({ text: "Discord direct messages", y: expect.any(Number) });
   });
 });
 
@@ -98,5 +102,52 @@ describe("DM bubbles", () => {
     expect(dm.querySelector("img")!.getAttribute("src")).toBe("https://cdn/a.png");
     expect(dm.querySelector(".badge")!.textContent).toBe("3");
     expect(root.querySelector('[data-key="discord:dm:6"] .initials')!.textContent).toBe("BC");
+  });
+});
+
+describe("attachTooltips", () => {
+  function setup() {
+    const root = document.getElementById("rail")!;
+    renderRail(root, state, vi.fn());
+    const tooltip = vi.fn();
+    attachTooltips(root, tooltip);
+    const item = root.querySelector<HTMLElement>('[data-key="discord:1"]')!;
+    item.getBoundingClientRect = () => ({ top: 100, height: 48 }) as DOMRect;
+    return { root, item, tooltip };
+  }
+
+  it("shows the item's name centred on it, once per item", () => {
+    const { item, tooltip } = setup();
+    item.querySelector("img")!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    item.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(tooltip.mock.calls).toEqual([[{ text: "Gaming Club", y: 124 }]]);
+  });
+
+  it("hides when leaving items, the rail, or scrolling", () => {
+    const { root, item, tooltip } = setup();
+    root.dispatchEvent(new MouseEvent("mouseleave"));
+    expect(tooltip).not.toHaveBeenCalled();
+
+    item.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    root.querySelector("hr")!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(tooltip).toHaveBeenLastCalledWith(null);
+
+    item.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    root.dispatchEvent(new MouseEvent("mouseleave"));
+    expect(tooltip).toHaveBeenLastCalledWith(null);
+
+    item.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    root.dispatchEvent(new Event("scroll"));
+    expect(tooltip).toHaveBeenCalledTimes(6);
+    expect(tooltip).toHaveBeenLastCalledWith(null);
+  });
+
+  it("falls back to empty text without a label", () => {
+    const { root, tooltip } = setup();
+    const bare = document.createElement("button");
+    bare.className = "rail-item";
+    root.append(bare);
+    bare.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(tooltip).toHaveBeenCalledWith({ text: "", y: expect.any(Number) });
   });
 });

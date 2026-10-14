@@ -96,3 +96,31 @@ html, body {
 .source span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #picker footer { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; color: var(--muted); }
 .cancel { padding: 8px 16px; border: 0; border-radius: 4px; background: var(--item); color: var(--text); cursor: pointer; }
+
+/* Tooltip overlay: a transparent view beside the rail. */
+html:has(.tooltip-body), .tooltip-body { background: transparent; overflow: hidden; }
+.tooltip-body { display: flex; align-items: center; padding-left: 10px; pointer-events: none; }
+#tooltip {
+  position: relative;
+  max-width: 260px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #111214;
+  color: var(--text);
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+}
+#tooltip:empty { display: none; }
+#tooltip::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 50%;
+  border: 5px solid transparent;
+  border-left: 0;
+  border-right-color: #111214;
+  transform: translateY(-50%);
+}

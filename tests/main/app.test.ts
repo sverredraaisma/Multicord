@@ -40,10 +40,10 @@ afterEach(() => {
 
 describe("createShell", () => {
   it("creates the rail and a sandboxed Discord view in its own partition", async () => {
-    const { window, discordView, railView } = await shellWith();
+    const { handle, window, discordView, railView } = await shellWith();
     expect(window.options).toMatchObject({ title: APP_NAME, width: 1280, height: 800 });
     expect(window.maximize).not.toHaveBeenCalled();
-    expect(window.children).toEqual([railView, discordView]);
+    expect(window.children).toEqual([railView, discordView, handle.tooltipView]);
 
     expect(railView.options.webPreferences).toMatchObject({ contextIsolation: true, sandbox: true, nodeIntegration: false });
     expect(railView.webContents.loadFile).toHaveBeenCalledWith(path.join(DIST, "rail.html"));
@@ -173,6 +173,35 @@ describe("createShell", () => {
     expect(shell.openExternal).toHaveBeenCalledWith("https://example.com");
     expect(open({ url: "file:///etc" })).toEqual({ action: "deny" });
     expect(shell.openExternal).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows hovered names in a transparent overlay beside the rail", async () => {
+    const { handle, window, discordView, railView } = await shellWith();
+    const tooltip = handle.tooltipView as unknown as InstanceType<typeof WebContentsView>;
+    expect(window.children.at(-1)).toBe(tooltip);
+    expect(tooltip.setBackgroundColor).toHaveBeenCalledWith("#00000000");
+    expect(tooltip.visible).toBe(false);
+    expect(tooltip.webContents.loadFile).toHaveBeenCalledWith(path.join(DIST, "tooltip.html"));
+
+    ipcMain.emit(IPC.railTooltip, senderEvent(discordView), { text: "Spoof", y: 10 });
+    ipcMain.emit(IPC.railTooltip, senderEvent(railView), { text: "", y: 10 });
+    expect(tooltip.visible).toBe(false);
+
+    ipcMain.emit(IPC.railTooltip, senderEvent(railView), { text: "Gaming Club", y: 100 });
+    expect(tooltip.webContents.send).toHaveBeenCalledWith(IPC.tooltipShow, "Gaming Club");
+    expect(tooltip.bounds).toEqual({ x: 72, y: 78, width: 280, height: 44 });
+    expect(tooltip.visible).toBe(true);
+
+    ipcMain.emit(IPC.railTooltip, senderEvent(railView), null);
+    expect(tooltip.visible).toBe(false);
+
+    ipcMain.emit(IPC.railTooltip, senderEvent(railView), { text: "Gaming Club", y: 100 });
+    window.emit("blur");
+    expect(tooltip.visible).toBe(false);
+
+    const event = { preventDefault: vi.fn() };
+    tooltip.webContents.emit("will-navigate", event);
+    expect(event.preventDefault).toHaveBeenCalled();
   });
 
   it("blocks navigation away from the rail page", async () => {

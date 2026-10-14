@@ -14,10 +14,18 @@ import {
   type IpcMainEvent,
   type Session,
 } from "electron";
-import { IPC, isDiscordState, isPickerChoice, isRailKey, type PickerChoice, type PickerRequest } from "../shared/ipc";
+import {
+  IPC,
+  isDiscordState,
+  isPickerChoice,
+  isRailKey,
+  isTooltipRequest,
+  type PickerChoice,
+  type PickerRequest,
+} from "../shared/ipc";
 import { DiscordAdapter } from "./adapters/discordAdapter";
 import { GenericWebAdapter } from "./adapters/genericWebAdapter";
-import { computeLayout } from "./layout";
+import { computeLayout, tooltipBounds } from "./layout";
 import { loadPlatforms } from "./platforms";
 import { PlatformRegistry } from "./registry";
 import { createDisplayMediaHandler } from "./screenShare";
@@ -78,6 +86,7 @@ export function showPicker(window: BaseWindow, dist: string, request: PickerRequ
 export interface ShellHandle {
   window: BaseWindow;
   railView: WebContentsView;
+  tooltipView: WebContentsView;
   views: Map<string, WebContentsView>;
   registry: PlatformRegistry;
   show(): void;
@@ -156,6 +165,24 @@ export async function createShell(paths: ShellPaths, platform: NodeJS.Platform =
     void view.webContents.loadURL(def.url);
   }
 
+  // Added after the platform views so it draws on top of them.
+  const tooltipView = secureView(path.join(paths.dist, "preload-shell.js"));
+  tooltipView.setBackgroundColor("#00000000");
+  tooltipView.setVisible(false);
+  tooltipView.webContents.on("will-navigate", (event) => event.preventDefault());
+  window.contentView.addChildView(tooltipView);
+  void tooltipView.webContents.loadFile(path.join(paths.dist, "tooltip.html"));
+
+  const hideTooltip = (): void => tooltipView.setVisible(false);
+  ipcMain.on(IPC.railTooltip, (event, request) => {
+    if (event.sender !== railView.webContents || !isTooltipRequest(request)) return;
+    if (request === null) return hideTooltip();
+    tooltipView.setBounds(tooltipBounds(request.y, window.getContentBounds().height));
+    tooltipView.webContents.send(IPC.tooltipShow, request.text);
+    tooltipView.setVisible(true);
+  });
+  window.on("blur", hideTooltip);
+
   let lastMentions = 0;
   const publish = (): void => {
     railView.webContents.send(IPC.railState, registry.state());
@@ -215,6 +242,7 @@ export async function createShell(paths: ShellPaths, platform: NodeJS.Platform =
   return {
     window,
     railView,
+    tooltipView,
     views,
     registry,
     show,

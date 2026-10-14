@@ -18,12 +18,21 @@ describe("createShellApi", () => {
     listeners.get(IPC.pickerSources)!(null, { sources: [], audioSupported: false });
     expect(onPicker).toHaveBeenCalledWith({ sources: [], audioSupported: false });
 
+    const onTooltip = vi.fn();
+    api.onTooltip(onTooltip);
+    listeners.get(IPC.tooltipShow)!(null, "Gaming Club");
+    expect(onTooltip).toHaveBeenCalledWith("Gaming Club");
+
     api.open("discord:home");
     api.ready();
+    api.tooltip({ text: "Gaming Club", y: 10 });
+    api.tooltip(null);
     api.choose(null);
     expect(ipc.send.mock.calls).toEqual([
       [IPC.railOpen, "discord:home"],
       [IPC.railReady, null],
+      [IPC.railTooltip, { text: "Gaming Club", y: 10 }],
+      [IPC.railTooltip, null],
       [IPC.pickerChoose, null],
     ]);
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeLayout, RAIL_WIDTH } from "../../src/main/layout";
+import { computeLayout, RAIL_WIDTH, TOOLTIP_HEIGHT, TOOLTIP_WIDTH, tooltipBounds } from "../../src/main/layout";
 import { decideWindowOpen, isPermissionAllowed } from "../../src/main/sessionPolicy";
 import { toChromeUserAgent } from "../../src/main/userAgent";
 import { DEFAULT_WINDOW_STATE, parseWindowState, serializeWindowState } from "../../src/main/windowState";
@@ -63,5 +63,14 @@ describe("session policy", () => {
     expect(decideWindowOpen("http://example.com", base)).toBe("external");
     expect(decideWindowOpen("file:///C:/Windows", base)).toBe("deny");
     expect(decideWindowOpen("not a url", base)).toBe("deny");
+  });
+});
+
+describe("tooltipBounds", () => {
+  it("centres beside the rail and stays inside the window", () => {
+    expect(tooltipBounds(100, 700)).toEqual({ x: RAIL_WIDTH, y: 78, width: TOOLTIP_WIDTH, height: TOOLTIP_HEIGHT });
+    expect(tooltipBounds(5, 700).y).toBe(0);
+    expect(tooltipBounds(695, 700).y).toBe(700 - TOOLTIP_HEIGHT);
+    expect(tooltipBounds(10, 20).y).toBe(0);
   });
 });

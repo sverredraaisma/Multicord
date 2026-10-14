@@ -7,6 +7,8 @@ export const IPC = {
   railState: "shell:rail",
   railOpen: "shell:open",
   railReady: "shell:ready",
+  railTooltip: "shell:tooltip",
+  tooltipShow: "tooltip:show",
   pickerSources: "picker:sources",
   pickerChoose: "picker:choose",
 } as const;
@@ -77,6 +79,12 @@ export interface PickerChoice {
   audio: boolean;
 }
 
+/** Hover label for a rail item; y is the item's vertical centre in rail coordinates. */
+export interface TooltipRequest {
+  text: string;
+  y: number;
+}
+
 const MAX_GUILDS = 1000;
 export const MAX_DMS = 200;
 const MAX_TEXT = 200;
@@ -140,6 +148,18 @@ export function isDiscordState(value: unknown): value is DiscordState {
 export function isDiscordTarget(value: unknown): value is DiscordTarget {
   if (typeof value === "string" && value.startsWith("dm:")) return isSnowflake(value.slice(3));
   return value === "home" || isSnowflake(value);
+}
+
+export function isTooltipRequest(value: unknown): value is TooltipRequest | null {
+  return (
+    value === null ||
+    (isRecord(value) &&
+      typeof value.text === "string" &&
+      value.text.length > 0 &&
+      value.text.length <= MAX_TEXT &&
+      typeof value.y === "number" &&
+      Number.isFinite(value.y))
+  );
 }
 
 export function isRailKey(value: unknown): value is string {

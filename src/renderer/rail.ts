@@ -11,7 +11,7 @@ function renderEntry(doc: Document, entry: RailEntry, active: boolean, onOpen: (
   button.className = "rail-item";
   button.dataset.key = entry.key;
   button.dataset.kind = entry.kind;
-  button.title = entry.name;
+  // No title attribute: the shell's tooltip overlay shows the name instead.
   button.setAttribute("aria-label", entry.name);
   button.classList.toggle("active", active);
   button.classList.toggle("unread", entry.unread);
@@ -64,8 +64,32 @@ export function renderRail(root: HTMLElement, state: RailState, onOpen: (key: st
   root.replaceChildren(...children);
 }
 
+/**
+ * Shows item names on hover. The rail view is only as wide as the rail, so
+ * the label is drawn by a separate overlay view in the main process.
+ */
+export function attachTooltips(root: HTMLElement, tooltip: ShellApi["tooltip"]): void {
+  let current: Element | null = null;
+  const hide = (): void => {
+    if (current === null) return;
+    current = null;
+    tooltip(null);
+  };
+  root.addEventListener("mouseover", (event) => {
+    const item = (event.target as Element).closest(".rail-item");
+    if (item === current) return;
+    if (!item) return hide();
+    current = item;
+    const rect = item.getBoundingClientRect();
+    tooltip({ text: item.getAttribute("aria-label") ?? "", y: rect.top + rect.height / 2 });
+  });
+  root.addEventListener("mouseleave", hide);
+  root.addEventListener("scroll", hide);
+}
+
 export function startRail(doc: Document, api: ShellApi): void {
   const root = doc.getElementById("rail")!;
+  attachTooltips(root, (request) => api.tooltip(request));
   api.onRail((state) => renderRail(root, state, (key) => api.open(key)));
   api.ready();
 }

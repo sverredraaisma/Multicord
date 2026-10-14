@@ -29,7 +29,7 @@ await Promise.all([
   }),
   build({
     ...common,
-    entryPoints: { rail: "src/entries/rail.ts", picker: "src/entries/picker.ts" },
+    entryPoints: { rail: "src/entries/rail.ts", picker: "src/entries/picker.ts", tooltip: "src/entries/tooltip.ts" },
     platform: "browser",
     format: "iife",
     outdir: "dist",

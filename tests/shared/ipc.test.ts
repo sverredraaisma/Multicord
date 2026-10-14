@@ -3,6 +3,7 @@ import {
   MAX_DMS,
   isDiscordDm,
   isDiscordDmList,
+  isTooltipRequest,
   isDiscordGuild,
   isDiscordState,
   isDiscordTarget,
@@ -89,7 +90,7 @@ describe("parseTitleBadge", () => {
   });
 });
 
-describe("DM validators", () => {
+describe("DM and tooltip validators", () => {
   const dm = { id: "9", title: "Ana", unread: true, mentions: 1, lastActivity: 5 };
 
   it("validates DMs and DM lists", () => {
@@ -118,5 +119,16 @@ describe("DM validators", () => {
     expect(isDiscordTarget("dm:123")).toBe(true);
     expect(isDiscordTarget("dm:abc")).toBe(false);
     expect(isDiscordTarget("dm:")).toBe(false);
+  });
+
+  it("validates tooltip requests", () => {
+    expect(isTooltipRequest(null)).toBe(true);
+    expect(isTooltipRequest({ text: "Server", y: 10.5 })).toBe(true);
+    expect(isTooltipRequest({ text: "", y: 1 })).toBe(false);
+    expect(isTooltipRequest({ text: "x".repeat(201), y: 1 })).toBe(false);
+    expect(isTooltipRequest({ text: "x", y: Number.NaN })).toBe(false);
+    expect(isTooltipRequest({ text: "x", y: "1" })).toBe(false);
+    expect(isTooltipRequest({ text: 1, y: 1 })).toBe(false);
+    expect(isTooltipRequest("x")).toBe(false);
   });
 });

@@ -31,6 +31,8 @@ export class WebContentsView {
     this.bounds = bounds;
   }
 
+  setBackgroundColor = vi.fn();
+
   setVisible(visible: boolean): void {
     this.visible = visible;
   }
