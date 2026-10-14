@@ -88,7 +88,7 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
   **End-to-end encryption.** On devices of its own, Multicord encrypts and decrypts with the Matrix Rust crypto library (WebAssembly) in its engine:
   - it reads and sends in encrypted rooms, and marks messages from devices their owner has not verified;
   - its keys live in the engine's encrypted, per-instance storage, which is deleted on sign-out;
-  - "Verify this device" takes your Element recovery key or security phrase. It imports your cross-signing keys, so your other devices trust this one, and restores the key backup, so older messages can be read. Verifying by comparing emoji is not supported yet.
+  - "Verify this device" takes your Element recovery key or security phrase. It imports your cross-signing keys, so your other devices trust this one, and restores the key backup, so older messages can be read. You can also verify by comparing emoji with another of your devices, such as Element: start it with "Verify with another device", or accept a request your other device sends. Afterwards Multicord asks that device for the key backup's key; if none arrives, "Restore older messages" takes your recovery key.
 
   With an access token, Multicord is using Element's own device, so encrypted rooms stay locked and nothing is ever sent unencrypted into them.
 

@@ -10,12 +10,14 @@ import {
   type MatrixAdapterDeps,
   messageText,
   PAGE_SIZE,
+  REQUEST_ENTRY,
   parseSession,
   SYNC_TIMEOUT_MS,
   TOKEN_NOTICE,
   UNVERIFIED_LABEL,
 } from "../../../src/modules/matrix/adapter";
 import type { E2ee, E2eeOptions, E2eeStatus, RecoveryResult, RoomEncryption } from "../../../src/modules/matrix/crypto";
+import type { Verification, VerificationState } from "../../../src/modules/matrix/verification";
 import { OAuthError, type DeviceGrant, type DevicePoll, type OAuthServer, type OAuthTokens } from "../../../src/modules/matrix/oauth";
 import { MAX_DIRECTS } from "../../../src/shared/engine";
 import type { NativeAction, NativeViewState } from "../../../src/shared/native";
@@ -1350,6 +1352,33 @@ describe("OAuth sessions", () => {
 
 const ROOM_ENCRYPTION: MxEncryption = { algorithm: "m.megolm.v1.aes-sha2" };
 
+const EMOJI = [
+  { symbol: "🐶", name: "Dog" },
+  { symbol: "🐱", name: "Cat" },
+  { symbol: "🦁", name: "Lion" },
+  { symbol: "🐎", name: "Horse" },
+  { symbol: "🦄", name: "Unicorn" },
+  { symbol: "🐷", name: "Pig" },
+  { symbol: "🐘", name: "Elephant" },
+];
+
+class FakeVerification implements Verification {
+  current: VerificationState;
+  changed: () => void = () => {};
+  constructor(readonly outgoing: boolean) {
+    this.current = outgoing ? { phase: "waiting", device: "your other device" } : { phase: "incoming", device: "Element (EL)" };
+  }
+  state = (): VerificationState => this.current;
+  set(state: VerificationState): void {
+    this.current = state;
+    this.changed();
+  }
+  accept = vi.fn(async () => this.set({ phase: "waiting", device: "Element (EL)" }));
+  confirm = vi.fn(async () => this.set({ phase: "confirmed" }));
+  cancel = vi.fn(async (mismatch?: boolean) => this.set({ phase: "cancelled", reason: mismatch ? "the emoji did not match" : "you cancelled it", byUs: true }));
+  onChange = vi.fn((callback: () => void) => void (this.changed = callback));
+}
+
 class FakeE2ee implements E2ee {
   /** What each event decrypts to; events not listed stay encrypted. */
   readonly clear = new Map<string, MxEvent | undefined>();
@@ -1362,6 +1391,12 @@ class FakeE2ee implements E2ee {
   status = vi.fn(async (): Promise<E2eeStatus> => ({ verified: false, backup: false }));
   recover = vi.fn(async (_input: string): Promise<RecoveryResult> => ({ verified: true, backup: true, imported: 3 }));
   onKeys = vi.fn((callback: (sessions: string[]) => void) => void (this.keys = callback));
+  requested: (verification: Verification) => void = () => {};
+  statusChanged: () => void = () => {};
+  outgoing = new FakeVerification(true);
+  requestVerification = vi.fn(async (): Promise<Verification> => this.outgoing);
+  onVerification = vi.fn((callback: (verification: Verification) => void) => void (this.requested = callback));
+  onStatus = vi.fn((callback: () => void) => void (this.statusChanged = callback));
   close = vi.fn();
 }
 
@@ -1610,7 +1645,7 @@ describe("verifying with the recovery key", () => {
     expect(ctx.chat().sidebar.slice(0, 2)).toMatchObject([{ id: "security", name: "Encryption", kind: "category" }, { name: "🔑 Verify this device", kind: "text" }]);
     await ctx.act({ type: "select", channelId: verifyItem(ctx)!.id });
     expect(ctx.prompt().prompt).toMatchObject({ id: "recovery", title: "Verify this device", submit: "Verify", cancel: "Not now", fields: [{ name: "key", type: "password" }] });
-    expect(ctx.prompt().prompt.description).toContain("comparing emoji) is not supported yet; use your recovery key");
+    expect(ctx.prompt().prompt.description).toContain('To compare emoji with another device instead, choose "Verify with another device"');
     // Syncs carry on behind the screen without leaving it, and so do sync failures.
     await ctx.live(sync({}));
     expect(ctx.prompt().prompt.id).toBe("recovery");
@@ -1675,6 +1710,259 @@ describe("verifying with the recovery key", () => {
     finish({ verified: true, backup: true, imported: 0 });
     await answering;
     expect(ctx.prompt().prompt.id).toBe("login");
+  });
+});
+
+describe("verifying with another device", () => {
+  type Ctx = Awaited<ReturnType<typeof withCrypto>>;
+  const entry = (ctx: Ctx, name: string) => ctx.chat().sidebar.find((i) => i.name === name);
+  const startOutgoing = async (ctx: Ctx) => {
+    // Not awaited: the request may be held open.
+    void ctx.act({ type: "select", channelId: entry(ctx, "📱 Verify with another device")!.id });
+    await flush();
+  };
+  const incoming = async (ctx: Ctx) => {
+    const verification = new FakeVerification(false);
+    ctx.e2ee.requested(verification);
+    await flush();
+    return verification;
+  };
+
+  it("asks the other devices, shows the emoji and ends verified with the key backup", async () => {
+    const ctx = await withCrypto();
+    expect(ctx.chat().sidebar.slice(0, 3)).toMatchObject([{ name: "Encryption" }, { name: "🔑 Verify this device" }, { name: "📱 Verify with another device", kind: "text", unread: false }]);
+    let requested!: (verification: Verification) => void;
+    ctx.e2ee.requestVerification.mockImplementationOnce(() => new Promise((resolve) => (requested = resolve)));
+    await startOutgoing(ctx);
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "verify-wait", title: "Verify with another device", submit: "Waiting…", cancel: "Cancel" }, busy: true, status: "Sending the request…" });
+    expect(ctx.prompt().prompt.description).toContain("signed in as @me:x.org");
+    requested(ctx.e2ee.outgoing);
+    await flush();
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "verify-wait" }, busy: true, status: "Waiting for your other device…" });
+    // Its disabled button does nothing, and syncs carry on behind the screen.
+    await ctx.answer("verify-wait");
+    await ctx.live(sync({}));
+    expect(ctx.prompt().prompt.id).toBe("verify-wait");
+
+    ctx.e2ee.outgoing.set({ phase: "emoji", emoji: EMOJI });
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "verify-emoji", title: "🐶  🐱  🦁  🐎  🦄  🐷  🐘", submit: "They match", cancel: "They don't match" }, busy: false });
+    expect(ctx.prompt().prompt.description).toContain("Dog, Cat, Lion, Horse, Unicorn, Pig, Elephant");
+    await ctx.answer("verify-emoji");
+    expect(ctx.e2ee.outgoing.confirm).toHaveBeenCalled();
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "verify-confirmed", submit: "Waiting…" }, busy: true });
+    await ctx.answer("verify-confirmed");
+
+    ctx.e2ee.status.mockResolvedValue({ verified: true, backup: false });
+    ctx.e2ee.outgoing.set({ phase: "done" });
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "verify-done", title: "Verified", submit: "Done" }, status: undefined });
+    // The backup key arrives from the other device afterwards.
+    ctx.e2ee.status.mockResolvedValue({ verified: true, backup: true });
+    ctx.e2ee.statusChanged();
+    await flush();
+    expect(ctx.prompt().status).toBe("Your key backup is on, so older encrypted messages can be read.");
+    await ctx.answer("verify-done");
+    expect(ctx.chat().sidebar.find((i) => i.id === "security")).toBeUndefined();
+  });
+
+  it("points to the recovery key when the backup key did not come over", async () => {
+    const ctx = await withCrypto();
+    await startOutgoing(ctx);
+    ctx.e2ee.status.mockResolvedValue({ verified: true, backup: false, restorable: true });
+    ctx.e2ee.outgoing.set({ phase: "done" });
+    ctx.e2ee.statusChanged();
+    await flush();
+    expect(ctx.prompt().status).toContain('choose "Restore older messages" in the sidebar');
+    await ctx.answer("verify-done");
+    expect(ctx.chat().sidebar.slice(0, 2)).toMatchObject([{ name: "Encryption" }, { name: "🔑 Restore older messages" }]);
+    expect(entry(ctx, "🔑 Verify this device")).toBeUndefined();
+    await ctx.act({ type: "select", channelId: entry(ctx, "🔑 Restore older messages")!.id });
+    expect(ctx.prompt().prompt).toMatchObject({ id: "recovery", title: "Restore older messages", submit: "Restore", cancel: "Not now" });
+  });
+
+  it("cancels when the emoji differ, and tries again", async () => {
+    const ctx = await withCrypto();
+    await startOutgoing(ctx);
+    ctx.e2ee.outgoing.set({ phase: "emoji", emoji: EMOJI });
+    await ctx.act({ type: "cancelPrompt", id: "verify-emoji" });
+    expect(ctx.e2ee.outgoing.cancel).toHaveBeenCalledWith(true);
+    expect(ctx.prompt().prompt).toMatchObject({ id: "verify-cancelled", title: "Verification cancelled", submit: "Close", cancel: "Try again" });
+    expect(ctx.prompt().prompt.description).toBe("The devices were not verified. It ended because the emoji did not match.");
+    ctx.e2ee.outgoing = new FakeVerification(true);
+    await ctx.act({ type: "cancelPrompt", id: "verify-cancelled" });
+    await flush();
+    expect(ctx.e2ee.requestVerification).toHaveBeenCalledTimes(2);
+    expect(ctx.prompt().prompt.id).toBe("verify-wait");
+    // Cancel goes straight back to the chat.
+    const second = ctx.e2ee.outgoing;
+    await ctx.act({ type: "cancelPrompt", id: "verify-wait" });
+    expect(second.cancel).toHaveBeenCalledWith();
+    expect(ctx.chat()).toBeDefined();
+    // Its change afterwards is not followed.
+    second.set({ phase: "done" });
+    expect(ctx.chat()).toBeDefined();
+  });
+
+  it("stops while waiting for the other device to confirm, and logs a cancel that fails", async () => {
+    const ctx = await withCrypto();
+    await startOutgoing(ctx);
+    ctx.e2ee.outgoing.set({ phase: "confirmed" });
+    ctx.e2ee.outgoing.cancel.mockRejectedValueOnce(new Error("offline"));
+    await ctx.act({ type: "cancelPrompt", id: "verify-confirmed" });
+    expect(ctx.chat()).toBeDefined();
+    expect(ctx.log).toHaveBeenCalledWith("Verification not cancelled: offline");
+    // So does a failing mismatch cancel, which then shows where the flow stands.
+    const next = new FakeVerification(true);
+    ctx.e2ee.outgoing = next;
+    await startOutgoing(ctx);
+    next.set({ phase: "emoji", emoji: EMOJI });
+    next.cancel.mockRejectedValueOnce(new Error("offline"));
+    await ctx.act({ type: "cancelPrompt", id: "verify-emoji" });
+    expect(ctx.prompt().prompt.id).toBe("verify-emoji");
+  });
+
+  it("shows why a request could not be sent", async () => {
+    const ctx = await withCrypto();
+    ctx.e2ee.requestVerification.mockRejectedValueOnce(new Error("You are not signed in on another device."));
+    await startOutgoing(ctx);
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "verify-cancelled", cancel: "Try again" }, error: "You are not signed in on another device." });
+    expect(ctx.prompt().prompt.description).toBe("The devices were not verified.");
+    await ctx.answer("verify-cancelled");
+    expect(ctx.chat()).toBeDefined();
+  });
+
+  it("drops a request answered after cancelling or signing out", async () => {
+    const ctx = await withCrypto();
+    let requested!: (verification: Verification) => void;
+    ctx.e2ee.requestVerification.mockImplementationOnce(() => new Promise((resolve) => (requested = resolve)));
+    await startOutgoing(ctx);
+    await ctx.act({ type: "cancelPrompt", id: "verify-wait" });
+    ctx.e2ee.outgoing.cancel.mockRejectedValueOnce(new Error("offline"));
+    requested(ctx.e2ee.outgoing);
+    await flush();
+    expect(ctx.e2ee.outgoing.cancel).toHaveBeenCalled();
+    expect(ctx.chat()).toBeDefined();
+
+    let failed!: (error: Error) => void;
+    ctx.e2ee.requestVerification.mockImplementationOnce(() => new Promise((_resolve, reject) => (failed = reject)));
+    await startOutgoing(ctx);
+    await ctx.adapter.signOut();
+    failed(new Error("late"));
+    await flush();
+    expect(ctx.prompt().prompt.id).toBe("login");
+  });
+
+  it("shows the other side cancelling", async () => {
+    const ctx = await withCrypto();
+    await startOutgoing(ctx);
+    ctx.e2ee.outgoing.set({ phase: "cancelled", reason: "it was cancelled on the other device", byUs: false });
+    expect(ctx.prompt().prompt.description).toBe("The devices were not verified. It ended because it was cancelled on the other device.");
+    await ctx.answer("verify-cancelled");
+    expect(entry(ctx, "📱 Verify with another device")).toBeDefined();
+  });
+
+  it("offers another device's request in the sidebar and with a notification, then verifies it", async () => {
+    const ctx = await withCrypto();
+    ctx.adapter.setVisible(true);
+    const request = await incoming(ctx);
+    expect(ctx.notifications.at(-1)).toEqual({ title: "Verification request", body: "Element (EL) asks to verify by comparing emoji.", target: REQUEST_ENTRY, railKey: "home", inView: true });
+    expect(ctx.chat().sidebar.slice(0, 2)).toMatchObject([{ name: "Encryption" }, { name: "📱 Verification request", unread: true, mentions: 1 }]);
+    await ctx.adapter.openConversation(REQUEST_ENTRY);
+    expect(ctx.prompt().prompt).toMatchObject({ id: "verify-incoming", title: "Verify your other device?", submit: "Accept", cancel: "Decline" });
+    expect(ctx.prompt().prompt.description).toContain("Element (EL), signed in to your account");
+    await ctx.answer("verify-incoming");
+    expect(request.accept).toHaveBeenCalled();
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "verify-wait", title: "Verifying Element (EL)" }, busy: true });
+    request.set({ phase: "emoji", emoji: EMOJI });
+    await ctx.answer("verify-emoji");
+    request.set({ phase: "done" });
+    expect(ctx.prompt().prompt.id).toBe("verify-done");
+    await ctx.answer("verify-done");
+    expect(entry(ctx, "📱 Verification request")).toBeUndefined();
+    // A notification clicked after it ended does nothing.
+    await ctx.adapter.openConversation(REQUEST_ENTRY);
+    expect(ctx.chat()).toBeDefined();
+  });
+
+  it("declines another device's request, and shows no way to try again for one that was cancelled", async () => {
+    const ctx = await withCrypto();
+    const request = await incoming(ctx);
+    expect(ctx.notifications.at(-1)!.inView).toBe(false);
+    await ctx.act({ type: "select", channelId: entry(ctx, "📱 Verification request")!.id });
+    await ctx.act({ type: "cancelPrompt", id: "verify-incoming" });
+    expect(request.cancel).toHaveBeenCalled();
+    expect(entry(ctx, "📱 Verification request")).toBeUndefined();
+
+    const next = await incoming(ctx);
+    await ctx.adapter.openConversation(REQUEST_ENTRY);
+    await ctx.answer("verify-incoming");
+    next.set({ phase: "cancelled", reason: "it took too long: nothing happened for 10 minutes", byUs: true });
+    expect(ctx.prompt().prompt.cancel).toBeUndefined();
+    // Only the buttons on screen do anything.
+    await ctx.act({ type: "cancelPrompt", id: "verify-cancelled" });
+    expect(ctx.chat()).toBeDefined();
+  });
+
+  it("drops a waiting request that ends elsewhere, and ignores requests during another verification", async () => {
+    const ctx = await withCrypto();
+    const request = await incoming(ctx);
+    // Still waiting: a second request is left alone.
+    await incoming(ctx);
+    expect(ctx.notifications).toHaveLength(1);
+    request.set({ phase: "incoming", device: "Element (EL)" });
+    expect(entry(ctx, "📱 Verification request")).toBeDefined();
+    request.set({ phase: "cancelled", reason: "another of your devices answered it", byUs: false });
+    expect(entry(ctx, "📱 Verification request")).toBeUndefined();
+    // Once it ended, the next request is taken; the notification names the device.
+    const next = new FakeVerification(false);
+    next.current = { phase: "waiting", device: "x" };
+    ctx.e2ee.requested(next);
+    expect(ctx.notifications.at(-1)!.body).toBe("Your other device asks to verify by comparing emoji.");
+  });
+
+  it("shows why accepting failed", async () => {
+    const ctx = await withCrypto();
+    const request = await incoming(ctx);
+    await ctx.adapter.openConversation(REQUEST_ENTRY);
+    request.accept.mockRejectedValueOnce(new Error("offline"));
+    await ctx.answer("verify-incoming");
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "verify-incoming" }, busy: false, error: "offline" });
+  });
+
+  it("forgets the verification when signing out", async () => {
+    const ctx = await withCrypto();
+    const request = await incoming(ctx);
+    await ctx.adapter.openConversation(REQUEST_ENTRY);
+    let accepted!: () => void;
+    request.accept.mockImplementationOnce(() => new Promise<void>((resolve) => (accepted = resolve)));
+    const answering = ctx.answer("verify-incoming");
+    await ctx.adapter.signOut();
+    accepted();
+    await answering;
+    expect(ctx.prompt().prompt.id).toBe("login");
+    // A request from the old session's crypto state is ignored.
+    ctx.e2ee.requested(new FakeVerification(false));
+    expect(ctx.notifications).toHaveLength(1);
+  });
+
+  it("drops a mismatch that finishes after signing out", async () => {
+    const ctx = await withCrypto();
+    await startOutgoing(ctx);
+    ctx.e2ee.outgoing.set({ phase: "emoji", emoji: EMOJI });
+    let cancelled!: () => void;
+    ctx.e2ee.outgoing.cancel.mockImplementationOnce(() => new Promise<void>((resolve) => (cancelled = resolve)));
+    const cancelling = ctx.act({ type: "cancelPrompt", id: "verify-emoji" });
+    await ctx.adapter.signOut();
+    cancelled();
+    await cancelling;
+    expect(ctx.prompt().prompt.id).toBe("login");
+  });
+
+  it("ignores the verification entries outside the chat", async () => {
+    const ctx = await withCrypto();
+    const id = entry(ctx, "📱 Verify with another device")!.id;
+    await startOutgoing(ctx);
+    await ctx.act({ type: "select", channelId: id });
+    expect(ctx.e2ee.requestVerification).toHaveBeenCalledTimes(1);
   });
 });
 

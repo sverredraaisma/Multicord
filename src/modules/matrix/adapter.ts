@@ -23,6 +23,7 @@ import {
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { cleanName, userId } from "./events";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
+import type { Verification, VerificationState } from "./verification";
 
 export const PAGE_SIZE = 50;
 /** Profile pictures fetched per refresh; the rest show initials. */
@@ -39,8 +40,11 @@ const OAUTH_CLIENT_KEY = "oauth-client";
 /** The encrypted key store's name and passphrase. */
 const CRYPTO_STORE_KEY = "crypto-store";
 const MEGOLM = "m.megolm.v1.aes-sha2";
-/** The sidebar entry that opens recovery; Matrix ids never look like this. */
+/** The sidebar entries that open recovery and verification with another device; Matrix ids never look like these. */
 const VERIFY_ENTRY = "#verify";
+const DEVICE_ENTRY = "#verify-device";
+/** Another device's verification request, in the sidebar and as a notification's target. */
+export const REQUEST_ENTRY = "#verify-request";
 const EDITABLE = new Set(["m.text", "m.notice", "m.emote"]);
 export const ENCRYPTED_TEXT = "🔒 Encrypted message — open this chat in Element to read it";
 export const ENCRYPTED_NOTICE =
@@ -85,9 +89,24 @@ export function hostsOf(...urls: (string | undefined)[]): string[] {
   return [...new Set(urls.filter((url): url is string => url !== undefined).map((url) => new URL(url).hostname.toLowerCase()))];
 }
 
-type Step = "connecting" | "oauth" | "device" | "login" | "token" | "retry" | "chat" | "recovery";
+/** The screens of a verification by comparing emoji, one per phase. */
+type VerifyStep = "verify-incoming" | "verify-wait" | "verify-emoji" | "verify-confirmed" | "verify-done" | "verify-cancelled";
+type Step = "connecting" | "oauth" | "device" | "login" | "token" | "retry" | "chat" | "recovery" | VerifyStep;
 /** The sign-in screens the secondary button cycles through. */
 type SignInStep = "oauth" | "login" | "token";
+
+const VERIFY_STEPS: Record<VerificationState["phase"], VerifyStep> = {
+  incoming: "verify-incoming",
+  waiting: "verify-wait",
+  emoji: "verify-emoji",
+  confirmed: "verify-confirmed",
+  done: "verify-done",
+  cancelled: "verify-cancelled",
+};
+
+const isVerifyStep = (step: Step): step is VerifyStep => step.startsWith("verify-");
+/** Neither done nor cancelled. */
+const going = (verification: Verification): boolean => !["done", "cancelled"].includes(verification.state().phase);
 
 type Shown = Extract<MxEvent, { kind: "message" | "encrypted" }>;
 type Message = Extract<MxEvent, { kind: "message" }>;
@@ -236,6 +255,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private cryptoStatus: E2eeStatus | undefined;
   /** Why encryption is off on a device of our own. */
   private cryptoProblem: string | undefined;
+  /** The verification by comparing emoji on screen, or another device's request waiting in the sidebar. */
+  private verification: Verification | undefined;
+  /** Counts verification requests, so one answered after it was cancelled is dropped. */
+  private verifyAttempt = 0;
   private readonly rooms = new Map<string, Room>();
   /** DM room id -> the other user, from m.direct. */
   private dmUsers = new Map<string, string>();
@@ -383,6 +406,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   async openConversation(key: string): Promise<void> {
+    if (key === REQUEST_ENTRY) return this.select(this.local(REQUEST_ENTRY));
     const room = this.rooms.get(key);
     if (room) await this.select(room.local);
   }
@@ -483,8 +507,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   // --- Signing in ---------------------------------------------------------------
 
   /** The secondary button: the next way to sign in, back from a code or out of recovery. */
-  private cancel(step: string): void {
+  private async cancel(step: string): Promise<void> {
     if (step !== this.step || this.busy) return;
+    if (isVerifyStep(step)) return this.cancelVerification(step);
     if (step === "device") {
       this.grantAttempt++;
       this.grant = undefined;
@@ -508,6 +533,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (step === "retry") return this.retry!();
     if (step === "oauth" || step === "device") return this.startDeviceSignIn();
     if (step === "recovery") return this.recover(values.key ?? "");
+    if (isVerifyStep(step)) return this.answerVerification(step);
     this.busy = true;
     this.error = undefined;
     this.render();
@@ -642,20 +668,34 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       return prompt;
     };
     const encryption = this.deps.crypto ? "Multicord gets a device of its own, with end-to-end encryption." : "Encrypted rooms cannot be read in Multicord.";
+    if (isVerifyStep(this.step)) return this.verifyPrompt(this.step);
     switch (this.step) {
       case "retry":
         return { id: "retry", title: "Matrix is not reachable", fields: [], submit: "Try again" };
-      case "recovery":
+      case "recovery": {
+        const field = { name: "key", label: "Recovery key or security phrase", type: "password", autocomplete: "off" } as const;
+        const kept = "It stays on this device and is never sent anywhere.";
+        if (this.cryptoStatus?.verified) {
+          return {
+            id: "recovery",
+            title: "Restore older messages",
+            description: `Enter the recovery key you saved when you set up recovery in Element (48 letters and digits), or your security phrase. Multicord then restores your message keys from the key backup, so older encrypted messages can be read. ${kept}`,
+            fields: [field],
+            submit: "Restore",
+            cancel: "Not now",
+          };
+        }
         return {
           id: "recovery",
           title: "Verify this device",
           description:
             "Enter the recovery key you saved when you set up recovery in Element (48 letters and digits), or your security phrase. Multicord then signs this device with your cross-signing keys, so your other devices and contacts trust it, and restores your message keys from the key backup, so older encrypted messages can be read. " +
-            "Verifying from another device (comparing emoji) is not supported yet; use your recovery key. It stays on this device and is never sent anywhere.",
-          fields: [{ name: "key", label: "Recovery key or security phrase", type: "password", autocomplete: "off" }],
+            `To compare emoji with another device instead, choose "Verify with another device" in the sidebar. ${kept}`,
+          fields: [field],
           submit: "Verify",
           cancel: "Not now",
         };
+      }
       case "device": {
         const grant = this.grant!;
         const page = new URL(grant.verificationUri).host;
@@ -739,6 +779,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       if (generation !== this.generation) return crypto.close();
       this.crypto = crypto;
       crypto.onKeys((sessions) => void this.retryDecryption(new Set(sessions)));
+      crypto.onStatus(() => void this.refreshCryptoStatus(crypto));
+      crypto.onVerification((verification) => this.verificationRequested(crypto, verification));
     } catch (error) {
       this.cryptoProblem = messageOf(error);
       this.log(`Encryption could not start: ${this.cryptoProblem}`);
@@ -750,6 +792,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.crypto?.close();
     this.crypto = undefined;
     this.cryptoStatus = undefined;
+    this.verification = undefined;
     if (!forget || !this.deps.crypto) return;
     const stored = parseStore(await this.deps.secrets.load(CRYPTO_STORE_KEY));
     if (stored) await this.deps.crypto.deleteStore(stored.name).catch((error: unknown) => this.log(`Key store not deleted: ${messageOf(error)}`));
@@ -824,6 +867,175 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       this.busy = false;
     }
     this.render();
+  }
+
+  // --- Verifying by comparing emoji -------------------------------------------------
+
+  /** Follows a verification: the screen shows its phase; one waiting in the sidebar disappears once it ends elsewhere. */
+  private follow(verification: Verification): void {
+    this.verification = verification;
+    verification.onChange(() => {
+      if (verification !== this.verification) return;
+      if (isVerifyStep(this.step)) this.step = VERIFY_STEPS[verification.state().phase];
+      else if (!going(verification)) this.verification = undefined;
+      this.render();
+    });
+  }
+
+  /** Another of the user's devices asks to verify: a sidebar entry and a notification, never a screen taking over the chat. */
+  private verificationRequested(crypto: E2ee, verification: Verification): void {
+    // One at a time: a request during another verification is left to time out.
+    if (crypto !== this.crypto || (this.verification && going(this.verification))) return;
+    this.follow(verification);
+    const state = verification.state();
+    const device = state.phase === "incoming" ? state.device : "Your other device";
+    this.notifications.emit({
+      title: "Verification request",
+      body: `${device} asks to verify by comparing emoji.`.slice(0, 200),
+      target: REQUEST_ENTRY,
+      railKey: "home",
+      inView: this.visible && this.step === "chat",
+    });
+    this.render();
+  }
+
+  /** Sends a verification request to the user's other devices and waits for one to answer. */
+  private async startVerification(): Promise<void> {
+    const crypto = this.crypto!;
+    const attempt = ++this.verifyAttempt;
+    this.verification = undefined;
+    this.step = "verify-wait";
+    this.error = undefined;
+    this.render();
+    try {
+      const verification = await crypto.requestVerification();
+      // Cancelled meanwhile, or signed out.
+      if (attempt !== this.verifyAttempt || crypto !== this.crypto) return void verification.cancel().catch(() => undefined);
+      this.follow(verification);
+      this.step = VERIFY_STEPS[verification.state().phase];
+    } catch (error) {
+      if (attempt !== this.verifyAttempt || crypto !== this.crypto) return;
+      this.step = "verify-cancelled";
+      this.error = friendly(error);
+    }
+    this.render();
+  }
+
+  private async answerVerification(step: VerifyStep): Promise<void> {
+    const verification = this.verification;
+    // The waiting screens' buttons are disabled.
+    if (step === "verify-wait" || step === "verify-confirmed") return;
+    if (step === "verify-done" || step === "verify-cancelled" || !verification) return this.closeVerification();
+    this.busy = true;
+    this.error = undefined;
+    this.render();
+    try {
+      await (step === "verify-incoming" ? verification.accept() : verification.confirm());
+    } catch (error) {
+      this.error = friendly(error);
+    } finally {
+      this.busy = false;
+    }
+    if (verification !== this.verification) return;
+    this.step = VERIFY_STEPS[verification.state().phase];
+    this.render();
+  }
+
+  /** Back to the chat; a finished verification is forgotten. */
+  private closeVerification(): void {
+    if (this.verification && !going(this.verification)) this.verification = undefined;
+    this.step = "chat";
+    this.error = undefined;
+    this.status = undefined;
+    this.render();
+  }
+
+  /** The secondary button: "They don't match", "Try again", or declining or stopping the verification. */
+  private async cancelVerification(step: VerifyStep): Promise<void> {
+    const verification = this.verification;
+    if (step === "verify-cancelled") return this.verification?.outgoing === false ? this.closeVerification() : this.startVerification();
+    if (step === "verify-emoji" && verification) {
+      // Shows why it ended: the emoji did not match.
+      await verification.cancel(true).catch((error: unknown) => this.log(`Verification not cancelled: ${messageOf(error)}`));
+      if (verification !== this.verification) return;
+      this.step = VERIFY_STEPS[verification.state().phase];
+      return this.render();
+    }
+    this.verifyAttempt++;
+    this.verification = undefined;
+    this.closeVerification();
+    await verification?.cancel().catch((error: unknown) => this.log(`Verification not cancelled: ${messageOf(error)}`));
+  }
+
+  private verifyPrompt(step: VerifyStep): NativePrompt {
+    const state = this.verification?.state();
+    const device = state && "device" in state ? state.device : "your other device";
+    const outgoing = this.verification?.outgoing !== false;
+    switch (step) {
+      case "verify-incoming":
+        return {
+          id: step,
+          title: "Verify your other device?",
+          description: `${device}, signed in to your account, asks to verify by comparing emoji. Accept only if you started this on that device just now. Once verified, your devices trust each other.`,
+          fields: [],
+          submit: "Accept",
+          cancel: "Decline",
+        };
+      case "verify-wait":
+        return {
+          id: step,
+          title: outgoing ? "Verify with another device" : `Verifying ${device}`,
+          description: outgoing
+            ? `Open Element (or another Matrix app) where you are signed in as ${this.session!.userId}, and accept the verification request there. You then compare emoji on both screens.`
+            : `Waiting for ${device} to show the emoji. If it asks how to verify, choose to compare emoji.`,
+          fields: [],
+          submit: "Waiting…",
+          cancel: "Cancel",
+        };
+      case "verify-emoji": {
+        // This screen shows only while the verification is at the emoji.
+        const { emoji } = state as Extract<VerificationState, { phase: "emoji" }>;
+        return {
+          id: step,
+          title: emoji.map((e) => e.symbol).join("  "),
+          description: `Check that your other device shows the same emoji in the same order: ${emoji.map((e) => e.name).join(", ")}. If they differ, someone may be listening in: choose "They don't match".`,
+          fields: [],
+          submit: "They match",
+          cancel: "They don't match",
+        };
+      }
+      case "verify-confirmed":
+        return { id: step, title: "Waiting for your other device", description: "Confirm on your other device that the emoji match.", fields: [], submit: "Waiting…", cancel: "Cancel" };
+      case "verify-done":
+        return {
+          id: step,
+          title: "Verified",
+          description: "Your devices now trust each other: your messages from here show as verified, and your other devices share message keys with this one.",
+          fields: [],
+          submit: "Done",
+        };
+      default: {
+        const reason = state?.phase === "cancelled" ? ` It ended because ${state.reason}.` : "";
+        const prompt: NativePrompt = { id: step, title: "Verification cancelled", description: `The devices were not verified.${reason}`, fields: [], submit: "Close" };
+        if (outgoing) prompt.cancel = "Try again";
+        return prompt;
+      }
+    }
+  }
+
+  /** The prompt's status line; the verification screens say what they wait for. */
+  private promptStatus(): string | undefined {
+    if (this.step === "verify-wait") return this.verification ? "Waiting for your other device…" : "Sending the request…";
+    if (this.step === "verify-done") return this.backupNote();
+    return this.status;
+  }
+
+  /** After a verification: whether older messages can be read, or how to make them readable. */
+  private backupNote(): string | undefined {
+    const status = this.cryptoStatus;
+    if (status?.backup) return "Your key backup is on, so older encrypted messages can be read.";
+    if (status?.restorable) return 'To read older encrypted messages, choose "Restore older messages" in the sidebar and enter your recovery key.';
+    return undefined;
   }
 
   /** Why nothing may be sent into this room from here (the composer's notice, and the short form for errors), or undefined when it may. */
@@ -942,8 +1154,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       }
       for (const event of update.timeline) this.addEvent(room, event, !initial);
     }
-    // Recovery is a screen of its own; syncs carry on behind it.
-    if (this.step !== "recovery") this.step = "chat";
+    // Recovery and verification are screens of their own; syncs carry on behind them.
+    if (this.step !== "recovery" && !isVerifyStep(this.step)) this.step = "chat";
     this.status = undefined;
     if (this.error === CONNECTION_LOST) this.error = undefined;
     const open = this.selectedRoom();
@@ -1039,9 +1251,17 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private async select(local: string): Promise<void> {
-    if (this.byLocal.get(local) === VERIFY_ENTRY) {
+    const entry = this.byLocal.get(local);
+    if (entry === VERIFY_ENTRY || entry === DEVICE_ENTRY || entry === REQUEST_ENTRY) {
       if (!this.crypto || this.step !== "chat") return;
-      this.step = "recovery";
+      if (entry === DEVICE_ENTRY) return this.startVerification();
+      if (entry === REQUEST_ENTRY) {
+        // The notification may outlive the request.
+        if (!this.verification) return;
+        this.step = VERIFY_STEPS[this.verification.state().phase];
+      } else {
+        this.step = "recovery";
+      }
       this.error = undefined;
       this.status = undefined;
       return this.render();
@@ -1295,15 +1515,23 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private viewState(): NativeViewState {
     const platform = this.deps.def.name;
     if (this.step === "connecting") return { screen: "connecting", platform, status: this.status! };
-    if (this.step !== "chat") return { screen: "prompt", platform, prompt: this.prompt(), busy: this.busy, status: this.status, error: this.error };
+    if (this.step !== "chat") {
+      // The waiting screens have nothing to submit.
+      const waiting = this.step === "verify-wait" || this.step === "verify-confirmed";
+      return { screen: "prompt", platform, prompt: this.prompt(), busy: this.busy || waiting, status: this.promptStatus(), error: this.error };
+    }
     const dms = this.dmRooms();
     const rooms = this.otherRooms();
     const sidebar: NativeSidebarItem[] = [];
     const category = (id: string, name: string): NativeSidebarItem => ({ id, name, kind: "category", unread: false, mentions: 0, active: false });
-    // Until this device is verified, the way to verify it sits at the top.
-    if (this.crypto && this.cryptoStatus && !this.cryptoStatus.verified) {
-      sidebar.push(category("security", "Encryption"), { id: this.local(VERIFY_ENTRY), name: "🔑 Verify this device", kind: "text", unread: false, mentions: 0, active: false });
-    }
+    const entry = (id: string, name: string, attention = false): NativeSidebarItem => ({ id: this.local(id), name, kind: "text", unread: attention, mentions: attention ? 1 : 0, active: false });
+    // Until this device is verified, the ways to verify it sit at the top, with another device's request and the way to older messages.
+    const security: NativeSidebarItem[] = [];
+    const status = this.crypto ? this.cryptoStatus : undefined;
+    if (this.verification?.state().phase === "incoming") security.push(entry(REQUEST_ENTRY, "📱 Verification request", true));
+    if (status && !status.verified) security.push(entry(VERIFY_ENTRY, "🔑 Verify this device"), entry(DEVICE_ENTRY, "📱 Verify with another device"));
+    if (status?.verified && status.restorable) security.push(entry(VERIFY_ENTRY, "🔑 Restore older messages"));
+    if (security.length) sidebar.push(category("security", "Encryption"), ...security);
     if (dms.length) sidebar.push(category("dms", "Direct messages"), ...dms.map((r) => this.sidebarItem(r, true)));
     if (rooms.length) sidebar.push(category("rooms", "Rooms"), ...rooms.map((r) => this.sidebarItem(r, false)));
     const room = this.selectedRoom();

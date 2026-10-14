@@ -5,7 +5,9 @@
 // queries and claims, to-device messages, signatures, backups), and uses it
 // to decrypt and encrypt room events. Recovery with the user's recovery key
 // (secret storage) imports the cross-signing keys, signs this device and
-// turns on the key backup.
+// turns on the key backup. Verification by comparing emoji with another of
+// the user's devices is in verification.ts; afterwards the backup key is
+// asked for from the other device, and used when it arrives.
 
 import {
   BackupDecryptionKey,
@@ -17,25 +19,31 @@ import {
   HistoryVisibility,
   MegolmDecryptionError,
   OlmMachine,
+  OwnUserIdentity,
+  ProcessedToDeviceEventType,
   RequestType,
   RoomId,
   ShieldColor,
   TrustRequirement,
   UserId,
+  VerificationRequestPhase,
   type KeysBackupRequest,
   type KeysClaimRequest,
   type KeysQueryRequest,
   type KeysUploadRequest,
+  type PlainTextToDeviceEvent,
   type RoomMessageRequest,
   type SignatureUploadRequest,
   type ToDeviceRequest,
 } from "@matrix-org/matrix-sdk-crypto-wasm";
 import { MatrixError, type MxCryptoSync, type MxEncryptedEvent, type MxEncryption, type MxEvent } from "./api";
-import { isRecord, parseEvent, roomId as checkRoomId } from "./events";
+import { cleanName, isRecord, parseEvent, roomId as checkRoomId } from "./events";
 import { checkKey, decodeRecoveryKey, decryptSecret, fromBase64, keyFromPassphrase, parseEncryptedSecret, parseKeyDescription } from "./recovery";
+import { SAS_METHODS, SasFlow, type FlowHost, type Verification } from "./verification";
 
 export const MEGOLM = "m.megolm.v1.aes-sha2";
 const BACKUP_ALGORITHM = "m.megolm_backup.v1.curve25519-aes-sha2";
+const BACKUP_SECRET = "m.megolm_backup.v1";
 /** The library's own defaults, which rooms may shorten but not lengthen. */
 const ROTATION_MS = 7 * 24 * 3600 * 1000;
 const ROTATION_MSGS = 100;
@@ -72,6 +80,8 @@ export interface E2eeStatus {
   verified: boolean;
   /** Keys are restored from (and saved to) the key backup. */
   backup: boolean;
+  /** Set on a verified device without the backup's key when the account has a key backup: the recovery key would restore older messages. */
+  restorable?: true;
 }
 
 export interface RecoveryResult extends E2eeStatus {
@@ -91,6 +101,12 @@ export interface E2ee {
   recover(input: string): Promise<RecoveryResult>;
   /** Calls back when room keys arrive, with their session ids. */
   onKeys(callback: (sessionIds: string[]) => void): void;
+  /** Asks the user's other devices to verify this one by comparing emoji. */
+  requestVerification(): Promise<Verification>;
+  /** Calls back when another of the user's devices asks to verify; requests from other users are ignored. */
+  onVerification(callback: (verification: Verification) => void): void;
+  /** Calls back when status() may have changed by itself, e.g. after a verification. */
+  onStatus(callback: () => void): void;
   close(): void;
 }
 
@@ -161,6 +177,8 @@ export async function openE2ee(options: E2eeOptions): Promise<MatrixE2ee> {
   const machine = await OlmMachine.initialize(new UserId(options.userId), new DeviceId(options.deviceId), options.store?.name, options.store?.passphrase);
   const e2ee = new MatrixE2ee(machine, options);
   await e2ee.loadBackup();
+  // A backup key another device sent while Multicord was closing.
+  for (const secret of await machine.getSecretsFromInbox(BACKUP_SECRET)) await e2ee.gossipedSecret(BACKUP_SECRET, secret);
   return e2ee;
 }
 
@@ -182,6 +200,7 @@ export async function deleteCryptoStore(name: string, factory: IDBFactory | unde
   );
 }
 
+type ProcessedToDeviceEvent = Awaited<ReturnType<OlmMachine["receiveSyncChanges"]>>[number];
 type Request = KeysUploadRequest | KeysQueryRequest | KeysClaimRequest | ToDeviceRequest | SignatureUploadRequest | RoomMessageRequest | KeysBackupRequest;
 
 export class MatrixE2ee implements E2ee {
@@ -195,16 +214,30 @@ export class MatrixE2ee implements E2ee {
   /** Sessions already looked up in the backup, so a missing key is asked for once. */
   private readonly lookedUp = new Set<string>();
   private keysCallback: (sessionIds: string[]) => void = () => {};
+  private verificationCallback: ((verification: Verification) => void) | undefined;
+  private statusCallback: () => void = () => {};
+  /** Verifications still going, checked for timeouts at each sync. */
+  private readonly flows = new Map<string, SasFlow>();
 
   constructor(
     private readonly machine: OlmMachine,
     private readonly options: E2eeOptions,
   ) {
     machine.registerRoomKeyUpdatedCallback(async (keys) => this.keysCallback(keys.map((k) => k.sessionId)));
+    // Secrets arrive only from the user's own verified devices (the library checks); not awaited, as restoring the backup takes a while.
+    machine.registerReceiveSecretCallback(async (name, value) => void this.gossipedSecret(name, value));
   }
 
   onKeys(callback: (sessionIds: string[]) => void): void {
     this.keysCallback = callback;
+  }
+
+  onVerification(callback: (verification: Verification) => void): void {
+    this.verificationCallback = callback;
+  }
+
+  onStatus(callback: () => void): void {
+    this.statusCallback = callback;
   }
 
   close(): void {
@@ -241,14 +274,45 @@ export class MatrixE2ee implements E2ee {
 
   async receiveSync(sync: MxCryptoSync): Promise<void> {
     const lists = new DeviceLists(userIds(sync.changed), userIds(sync.left));
-    await this.machine.receiveSyncChanges(
+    const processed = await this.machine.receiveSyncChanges(
       sync.toDevice,
       lists,
       new Map(Object.entries(sync.oneTimeKeys)),
       sync.fallbackKeys ? new Set(sync.fallbackKeys) : undefined,
       this.settings(),
     );
+    for (const event of processed) await this.verificationRequested(event);
+    // Each sync returns within half a minute, often enough to notice a verification gone quiet.
+    for (const [id, flow] of this.flows) if (!(await flow.expireIfDue())) this.flows.delete(id);
     await this.flush();
+  }
+
+  /** A verification request from another of the user's own devices: the library has it, the adapter hears of it. */
+  private async verificationRequested(event: ProcessedToDeviceEvent): Promise<void> {
+    // Verification requests between devices are sent in the clear. The library wrote this JSON from the event it checked; the fields are still the sender's.
+    if (event.type !== ProcessedToDeviceEventType.PlainText) return;
+    const raw: unknown = JSON.parse((event as PlainTextToDeviceEvent).rawEvent);
+    if (!isRecord(raw) || raw.type !== "m.key.verification.request" || raw.sender !== this.options.userId || !isRecord(raw.content)) return;
+    const flowId = raw.content.transaction_id;
+    if (typeof flowId !== "string" || flowId.length > 255 || this.flows.has(flowId)) return;
+    const request = this.machine.getVerificationRequest(this.machine.userId, flowId);
+    if (!request || request.weStarted() || request.phase() !== VerificationRequestPhase.Requested) return;
+    // Requests from another device always name it (from_device).
+    const other = request.otherDeviceId!;
+    const deviceId = other.toString().slice(0, 64);
+    const name = cleanName((await this.machine.getDevice(this.machine.userId, other))?.displayName)?.slice(0, 64);
+    const flow = new SasFlow(request, this.flowHost(), name ? `${name} (${deviceId})` : deviceId);
+    this.flows.set(flowId, flow);
+    this.verificationCallback?.(flow);
+  }
+
+  private flowHost(): FlowHost {
+    return {
+      send: (request) => this.send(request),
+      flush: () => this.flush(),
+      done: () => this.verified(),
+      log: (message) => this.options.log?.(message),
+    };
   }
 
   /** Sends whatever the library wants sent, until it wants nothing more. One run at a time; a call during a run makes it go again. */
@@ -407,7 +471,54 @@ export class MatrixE2ee implements E2ee {
 
   async status(): Promise<E2eeStatus> {
     const device = await this.machine.getDevice(this.machine.userId, this.machine.deviceId);
-    return { verified: device?.isCrossSigningTrusted() ?? false, backup: this.backup !== undefined };
+    const status: E2eeStatus = { verified: device?.isCrossSigningTrusted() ?? false, backup: this.backup !== undefined };
+    if (status.verified && !status.backup && (await this.hasBackup())) status.restorable = true;
+    return status;
+  }
+
+  /** Whether the account has a key backup this device could restore; unknown counts as no. */
+  private async hasBackup(): Promise<boolean> {
+    const info = await this.options.http("GET", "/v3/room_keys/version").catch(() => undefined);
+    return info?.algorithm === BACKUP_ALGORITHM;
+  }
+
+  /** Sends a verification request to the user's other devices. */
+  async requestVerification(): Promise<Verification> {
+    await this.queryOwnKeys();
+    const identity = await this.machine.getIdentity(this.machine.userId);
+    if (!(identity instanceof OwnUserIdentity)) throw new Error("Your account has no cross-signing keys yet. Set up encryption in Element first.");
+    const own = this.options.deviceId;
+    const others = (await this.machine.getUserDevices(this.machine.userId)).devices().filter((d) => d.deviceId.toString() !== own && !d.isDehydrated);
+    if (others.length === 0) throw new Error("You are not signed in on another device. Sign in to Element somewhere else, or use your recovery key.");
+    const [request, outgoing] = await identity.requestVerification(SAS_METHODS);
+    const flow = new SasFlow(request, this.flowHost(), "your other device");
+    this.flows.set(request.flowId, flow);
+    await this.send(outgoing);
+    return flow;
+  }
+
+  /** After a verification: learns the new signatures and asks the other device for the secrets this one lacks, such as the backup key. */
+  private async verified(): Promise<void> {
+    await this.queryOwnKeys();
+    await this.machine.requestMissingSecretsIfNeeded();
+    await this.flush();
+    this.statusCallback();
+  }
+
+  /**
+   * A secret one of the user's verified devices sent (the library checked
+   * that). The backup key turns on the key backup and restores from it; the
+   * library keeps cross-signing keys itself.
+   */
+  async gossipedSecret(name: string, value: string): Promise<void> {
+    if (name !== BACKUP_SECRET) return;
+    try {
+      if (!this.backup && validSecret(value)) await this.restoreBackup(value);
+    } catch (error) {
+      this.options.log?.(`Key backup not restored: ${messageOf(error)}`);
+    }
+    await this.machine.deleteSecretsFromInbox(name).catch(() => undefined);
+    this.statusCallback();
   }
 
   /** Asks the server for our own devices and cross-signing keys now. */
@@ -435,12 +546,12 @@ export class MatrixE2ee implements E2ee {
       const data = await accountData(name);
       const encrypted = isRecord(data) && isRecord(data.encrypted) ? parseEncryptedSecret(data.encrypted[keyId]) : undefined;
       const value = encrypted ? await decryptSecret(recoveryKey, name, encrypted).catch(() => undefined) : undefined;
-      return value !== undefined && KEY_SECRET.test(value) && fromBase64(value)?.length === 32 ? value : undefined;
+      return value !== undefined && validSecret(value) ? value : undefined;
     };
     const master = await secret("m.cross_signing.master");
     const selfSigning = await secret("m.cross_signing.self_signing");
     const userSigning = await secret("m.cross_signing.user_signing");
-    const backupKey = await secret("m.megolm_backup.v1");
+    const backupKey = await secret(BACKUP_SECRET);
 
     if (master && selfSigning) {
       await this.queryOwnKeys();
@@ -487,4 +598,9 @@ export class MatrixE2ee implements E2ee {
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** Cross-signing and backup keys: 32 bytes, as unpadded base64. */
+function validSecret(value: string): boolean {
+  return KEY_SECRET.test(value) && fromBase64(value)?.length === 32;
 }

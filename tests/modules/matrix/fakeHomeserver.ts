@@ -9,6 +9,8 @@ type Json = Record<string, any>;
 
 interface DeviceState {
   keys?: Json;
+  /** Shown to the user's other devices, unsigned. */
+  displayName?: string;
   oneTimeKeys: Map<string, Json>;
   fallbackKeys: Map<string, Json>;
   inbox: Json[];
@@ -54,6 +56,16 @@ export class FakeHomeserver {
 
   account(user: string): (type: string) => Promise<Json | undefined> {
     return async (type) => this.accountData.get(user)?.get(type);
+  }
+
+  setDisplayName(user: string, device: string, name: string): void {
+    this.device(user, device).displayName = name;
+    this.changed(user);
+  }
+
+  /** Delivers a to-device event as the server would. */
+  deliver(user: string, device: string, event: Json): void {
+    this.device(user, device).inbox.push(event);
   }
 
   setAccountData(user: string, type: string, content: Json): void {
@@ -139,7 +151,9 @@ export class FakeHomeserver {
     const response: Json = { device_keys: {}, master_keys: {}, self_signing_keys: {}, user_signing_keys: {}, failures: {} };
     for (const user of Object.keys(body.device_keys as Json)) {
       response.device_keys[user] = {};
-      for (const [id, state] of this.devices.get(user) ?? []) if (state.keys) response.device_keys[user][id] = state.keys;
+      for (const [id, state] of this.devices.get(user) ?? []) {
+        if (state.keys) response.device_keys[user][id] = state.displayName ? { ...state.keys, unsigned: { device_display_name: state.displayName } } : state.keys;
+      }
       const cross = this.crossSigning.get(user);
       if (cross?.master) response.master_keys[user] = cross.master;
       if (cross?.self_signing) response.self_signing_keys[user] = cross.self_signing;
