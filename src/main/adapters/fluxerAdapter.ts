@@ -25,7 +25,7 @@ import {
   type FluxerEmoji,
   type FluxerMessage,
 } from "../fluxer/types";
-import { FLUXER, type PlatformDef } from "../platforms";
+import type { PlatformDef } from "../platforms";
 import { BaseAdapter } from "./baseAdapter";
 
 export const FOLDER_PREFIX = "folder:";
@@ -55,11 +55,7 @@ interface VoiceConnection {
   stream: boolean;
 }
 
-export interface SecretStore {
-  load(key: string): string | undefined;
-  save(key: string, value: string): void;
-  delete(key: string): void;
-}
+import type { SecretStore } from "../credentials";
 
 export interface FluxerAdapterDeps {
   def: PlatformDef;
@@ -129,32 +125,15 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
-  /** One token per platform instance, so two accounts on one Fluxer instance stay apart. */
+  /** The secret store is this instance's own, so two accounts on one Fluxer instance stay apart. */
   private get secretKey(): string {
-    return `${this.deps.def.id}:${this.account.instance}:token`;
-  }
-
-  /**
-   * Tokens used to be stored per instance host only; move such a token to
-   * this instance's key. On fluxer.app that old key is the built-in
-   * account's own, so it never moves to another account there.
-   */
-  private loadToken(): string | undefined {
-    const token = this.deps.secrets.load(this.secretKey);
-    if (token !== undefined) return token;
-    const legacyKey = `fluxer:${this.account.instance}:token`;
-    if (legacyKey === this.secretKey || this.account.instance === new URL(FLUXER.url).host) return undefined;
-    const legacy = this.deps.secrets.load(legacyKey);
-    if (legacy === undefined) return undefined;
-    this.deps.secrets.save(this.secretKey, legacy);
-    this.deps.secrets.delete(legacyKey);
-    return legacy;
+    return `${this.account.instance}:token`;
   }
 
   /** Discovers the instance and resumes a saved session, else shows the login screen. */
   async start(): Promise<void> {
     if (!(await this.ensureInstance())) return this.render();
-    const token = this.loadToken();
+    const token = this.deps.secrets.load(this.secretKey);
     if (token) this.openSession(token);
     else this.render();
   }

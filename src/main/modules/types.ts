@@ -1,6 +1,6 @@
 import type { BaseWindow, Session, WebContentsView } from "electron";
 import type { PlatformAdapter } from "../../shared/adapter";
-import type { SecretBox } from "../credentials";
+import type { SecretBox, SecretStore } from "../credentials";
 import type { SocketFactory } from "../fluxer/gateway";
 import type { PlatformDef } from "../platforms";
 
@@ -22,18 +22,18 @@ export interface ModuleManifest {
   preload?: string;
 }
 
-/** Network and secret-store access for modules; replaceable in tests. */
-export interface ShellServices {
+/** Network access for modules; replaceable in tests. */
+export interface ModuleServices {
   fetch: typeof fetch;
   createSocket: SocketFactory;
+}
+
+/** What the shell itself uses: module services plus the OS secret store, which modules never get. */
+export interface ShellServices extends ModuleServices {
   secrets: SecretBox;
 }
 
-export interface SecretStore {
-  load(key: string): string | undefined;
-  save(key: string, value: string): void;
-  delete(key: string): void;
-}
+export type { SecretStore };
 
 /** What the shell gives a module for one platform instance. */
 export interface ModuleHost {
@@ -44,7 +44,8 @@ export interface ModuleHost {
   /** Directory holding the built pages and scripts. */
   dist: string;
   platform: NodeJS.Platform;
-  services: ShellServices;
+  services: ModuleServices;
+  /** This instance's own secrets only. */
   secrets: SecretStore;
   /** Routes getDisplayMedia in this view through the shell's screen picker. */
   enableScreenShare(): void;

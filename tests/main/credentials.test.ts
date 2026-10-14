@@ -46,6 +46,21 @@ describe("CredentialStore", () => {
     expect(new CredentialStore(file, fakeBox(false)).load("k")).toBeUndefined();
   });
 
+  it("gives each service instance only its own keys", () => {
+    const store = new CredentialStore(file, fakeBox());
+    const fluxer = store.scope("fluxer");
+    const other = store.scope("fluxer-2");
+    fluxer.save("fluxer.app:token", "mine");
+    expect(store.load("fluxer:fluxer.app:token")).toBe("mine");
+    expect(other.load("fluxer.app:token")).toBeUndefined();
+    expect(other.load("../fluxer:fluxer.app:token")).toBeUndefined();
+    other.save(":fluxer.app:token", "x"); // stays under fluxer-2
+    expect(fluxer.load("fluxer.app:token")).toBe("mine");
+    fluxer.delete("fluxer.app:token");
+    expect(store.load("fluxer:fluxer.app:token")).toBeUndefined();
+    expect(() => store.scope("Bad:Id")).toThrow("Invalid instance id");
+  });
+
   it("forgets every secret of a removed service", () => {
     const store = new CredentialStore(file, fakeBox());
     store.save("el:x:token", "1");

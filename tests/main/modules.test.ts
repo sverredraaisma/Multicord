@@ -25,3 +25,18 @@ describe("module registry", () => {
     }
   });
 });
+
+describe("module boundaries", () => {
+  it("keeps the OS secret store and the credential file out of module code", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const dirs = ["src/main/modules", "src/main/adapters", "src/main/fluxer"];
+    for (const dir of dirs) {
+      for (const name of fs.readdirSync(dir)) {
+        const source = fs.readFileSync(path.join(dir, name), "utf8");
+        expect(source, `${dir}/${name}`).not.toMatch(/safeStorage|credentials\.json|new CredentialStore/);
+        expect(source, `${dir}/${name}`).not.toMatch(/import \{[^}]*\bCredentialStore\b[^}]*\} from/);
+      }
+    }
+  });
+});

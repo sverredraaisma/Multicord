@@ -247,8 +247,8 @@ export async function createShell(
       window,
       dist: paths.dist,
       platform,
-      services,
-      secrets: credentials,
+      services: { fetch: services.fetch, createSocket: services.createSocket },
+      secrets: credentials.scope(def.id),
       enableScreenShare: () => handleScreenShare(ses),
     });
     adapters.set(def.id, adapter);

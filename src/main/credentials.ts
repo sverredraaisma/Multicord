@@ -1,6 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 
+/** A module's own secrets; see CredentialStore.scope. */
+export interface SecretStore {
+  load(key: string): string | undefined;
+  save(key: string, value: string): void;
+  delete(key: string): void;
+}
+
 /** The subset of Electron's safeStorage we use (OS keychain, DPAPI or libsecret). */
 export interface SecretBox {
   isEncryptionAvailable(): boolean;
@@ -54,6 +61,21 @@ export class CredentialStore {
     if (!(key in all)) return;
     delete all[key];
     this.writeAll(all);
+  }
+
+  /**
+   * A view of this store limited to one service instance: every key gets
+   * the instance id as prefix, so a module can never name another
+   * instance's secrets.
+   */
+  scope(instanceId: string): SecretStore {
+    if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(instanceId)) throw new Error(`Invalid instance id: ${instanceId}`);
+    const full = (key: string): string => `${instanceId}:${key}`;
+    return {
+      load: (key) => this.load(full(key)),
+      save: (key, value) => this.save(full(key), value),
+      delete: (key) => this.delete(full(key)),
+    };
   }
 
   /** Forgets every secret whose key starts with `prefix`, e.g. a removed service's. */

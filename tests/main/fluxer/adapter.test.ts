@@ -53,7 +53,7 @@ function setup(options: { token?: string; routes?: Handler[]; files?: FluxerAdap
     return { ok: reply.status < 300, status: reply.status, json: async () => reply.body } as Response;
   });
   const sockets: FakeSocket[] = [];
-  const secrets = new Map<string, string>(options.secrets ?? (options.token ? [["fluxer:fluxer.app:token", options.token]] : []));
+  const secrets = new Map<string, string>(options.secrets ?? (options.token ? [["fluxer.app:token", options.token]] : []));
   const renders: NativeViewState[] = [];
   const adapter = new FluxerAdapter({
     def: options.def ?? FLUXER,
@@ -120,7 +120,7 @@ describe("FluxerAdapter session", () => {
 
     down = false;
     await adapter.handleAction({ type: "login", identity: "a@b.c", password: "pw" });
-    expect(secrets.get("fluxer:fluxer.app:token")).toBe("flx_new");
+    expect(secrets.get("fluxer.app:token")).toBe("flx_new");
     expect(last()).toMatchObject({ screen: "connecting", status: "Connecting…" });
   });
 
@@ -175,7 +175,7 @@ describe("FluxerAdapter session", () => {
     captchaShown = renders.some((r) => r.screen === "login" && r.status === "Checking you are human…");
     expect(captchaShown).toBe(true);
     expect(renders.some((r) => r.screen === "login" && r.busy && r.status === "Signing in…")).toBe(true);
-    expect(secrets.get("fluxer:fluxer.app:token")).toBe("flx_cap");
+    expect(secrets.get("fluxer.app:token")).toBe("flx_cap");
     expect(sockets).toHaveLength(1);
     expect(calls.filter((c) => c.url.endsWith("/auth/login"))).toHaveLength(2);
   });
@@ -204,7 +204,7 @@ describe("FluxerAdapter session", () => {
 
     await adapter.handleAction({ type: "login", identity: "a@b.c", password: "pw" });
     await adapter.handleAction({ type: "mfa", code: "123456" });
-    expect(secrets.get("fluxer:fluxer.app:token")).toBe("flx_mfa");
+    expect(secrets.get("fluxer.app:token")).toBe("flx_mfa");
   });
 
   it("offers backup codes to accounts protected only by a security key", async () => {
@@ -243,7 +243,7 @@ describe("FluxerAdapter session", () => {
     await adapter.start();
     await goOnline();
     sockets[0]!.serverClose(4004);
-    expect(secrets.has("fluxer:fluxer.app:token")).toBe(false);
+    expect(secrets.has("fluxer.app:token")).toBe(false);
     expect(last()).toMatchObject({ screen: "login", error: "Your session has ended. Please sign in again." });
     expect(servers).toHaveBeenLastCalledWith([]);
   });
@@ -1077,25 +1077,6 @@ describe("accounts", () => {
     expect(adapter.accountStatus()).toEqual({ state: "signed-out" });
   });
 
-  it("keeps a second account on the same instance apart", async () => {
-    const second: PlatformDef = { ...FLUXER, id: "fluxer-2", name: "Second", partition: "persist:fluxer-2" };
-    const { adapter, sockets, secrets } = setup({ def: second, secrets: [["fluxer:fluxer.app:token", "flx_first"]] });
-    await adapter.start();
-    expect(sockets).toHaveLength(0); // the first account's token is not this one's
-    expect(secrets.get("fluxer:fluxer.app:token")).toBe("flx_first");
-  });
-
-  it("moves a self-hosted instance's token to its own key", async () => {
-    const own: PlatformDef = { id: "home", name: "Home", url: "https://chat.example", partition: "persist:home", module: "fluxer" };
-    const { adapter, sockets, secrets } = setup({ def: own, secrets: [["fluxer:chat.example:token", "flx_old"]] });
-    await adapter.start();
-    expect(sockets).toHaveLength(1);
-    expect(secrets.get("home:chat.example:token")).toBe("flx_old");
-    expect(secrets.has("fluxer:chat.example:token")).toBe(false);
-    const fresh = setup({ def: own });
-    await fresh.adapter.start();
-    expect(fresh.sockets).toHaveLength(0);
-  });
 });
 
 describe("DM previews", () => {
