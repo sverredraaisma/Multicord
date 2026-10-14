@@ -1,9 +1,9 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
-import type { NativeAction, NativeMessage, NativeSidebarItem, NativeViewState } from "../../shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeMessage, type NativeSidebarItem, type NativeViewState } from "../../shared/native";
 import { solveAltcha } from "../fluxer/captcha";
 import { discoverInstance, type FluxerInstance } from "../fluxer/discovery";
 import { FluxerGateway, type GatewayStatus, type SocketFactory } from "../fluxer/gateway";
-import { FluxerRest, type LoginResult, type RestOptions } from "../fluxer/rest";
+import { FluxerRest, type LoginResult, type RestOptions, type UploadSource } from "../fluxer/rest";
 import { FluxerState, TYPING_MS } from "../fluxer/state";
 import {
   ChannelType,
@@ -41,6 +41,8 @@ export interface FluxerAdapterDeps {
   render(state: NativeViewState): void;
   rest?: Partial<RestOptions>;
   platform?: string;
+  /** Lets the user pick files; the view never touches the file system itself. */
+  files?: { pick(): Promise<string[]>; open(path: string): Promise<UploadSource> };
 }
 
 type Selection = { kind: "home" } | { kind: "guild"; guildId: string };
@@ -77,6 +79,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
   private typingTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly typingSent = new Map<string, number>();
+  private readonly pending = new Map<string, UploadSource[]>();
+  private readonly uploading = new Set<string>();
   private visible = false;
 
   constructor(private readonly deps: FluxerAdapterDeps) {
@@ -132,6 +136,11 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.loadOlder();
       case "typing":
         return this.sendTyping();
+      case "attach":
+        return this.attach();
+      case "removeAttachment":
+        this.pending.get(this.selectedChannelId ?? "")?.splice(action.index, 1);
+        return this.render();
       case "logout":
         return this.logout();
     }
@@ -349,11 +358,42 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
 
   private async send(content: string, replyTo?: string): Promise<void> {
     const channelId = this.selectedChannelId;
-    if (!channelId || !this.rest) return;
+    if (!channelId || !this.rest || this.uploading.has(channelId)) return;
+    const files = this.pending.get(channelId) ?? [];
+    if (content.trim() === "" && files.length === 0) return;
+    if (files.length > 0 && !this.instance!.presignedUploads) {
+      this.error = "This instance only accepts inline uploads, which Multicord does not support yet.";
+      return this.render();
+    }
     const nonce = String(Date.now()) + String(Math.floor(Math.random() * 1e6));
+    this.uploading.add(channelId);
+    this.render();
     await this.attempt("Message not sent", async () => {
-      const sent = await this.rest!.sendMessage(channelId, content, nonce, replyTo);
+      const attachments = files.length > 0 ? await this.rest!.upload(channelId, files) : [];
+      const sent = await this.rest!.sendMessage(channelId, content, nonce, replyTo, attachments);
+      this.pending.delete(channelId);
       if (sent) this.state.addHistory(channelId, [sent], false);
+    });
+    this.uploading.delete(channelId);
+    this.render();
+  }
+
+  /** Adds files from the OS picker to the open channel's next message. */
+  private async attach(): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.deps.files) return;
+    await this.attempt("Could not attach", async () => {
+      const paths = await this.deps.files!.pick();
+      const list = this.pending.get(channelId) ?? [];
+      for (const path of paths) {
+        if (list.length >= MAX_ATTACHMENTS) {
+          this.error = `At most ${MAX_ATTACHMENTS} files per message.`;
+          break;
+        }
+        list.push(await this.deps.files!.open(path));
+      }
+      this.pending.set(channelId, list);
+      this.render();
     });
   }
 
@@ -601,6 +641,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                 loading: this.loading.has(channel.id),
                 hasOlder: this.hasOlder.get(channel.id) ?? false,
                 typing: this.state.typingIn(channel.id).map((u) => displayName(u)),
+                pending: (this.pending.get(channel.id) ?? []).map((f) => ({ name: f.filename, size: f.size })),
+                uploading: this.uploading.has(channel.id),
               }
             : null,
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),

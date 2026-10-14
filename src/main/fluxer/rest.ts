@@ -13,6 +13,24 @@ export class FluxerApiError extends Error {
   }
 }
 
+/** A file to attach: its size must be exact, as Fluxer checks it. */
+export interface UploadSource {
+  filename: string;
+  size: number;
+  contentType: string;
+  /** Reads bytes [start, end) of the file. */
+  read(start: number, end: number): Promise<Uint8Array>;
+}
+
+/** What a sent message claims for each uploaded file. */
+export interface UploadedAttachment {
+  id: number;
+  filename: string;
+  upload_filename: string;
+  file_size: number;
+  content_type: string;
+}
+
 export type LoginResult = { token: string; user?: FluxerUser } | { mfa: true; ticket: string; totp: boolean };
 
 export interface RestOptions {
@@ -107,10 +125,64 @@ export class FluxerRest {
     return (Array.isArray(data) ? data : []).flatMap((m) => parseMessage(m) ?? []).reverse();
   }
 
-  async sendMessage(channelId: string, content: string, nonce: string, replyTo?: string): Promise<FluxerMessage | undefined> {
+  async sendMessage(
+    channelId: string,
+    content: string,
+    nonce: string,
+    replyTo?: string,
+    attachments: UploadedAttachment[] = [],
+  ): Promise<FluxerMessage | undefined> {
     const body: Record<string, unknown> = { content, nonce };
     if (replyTo) body.message_reference = { message_id: replyTo };
+    if (attachments.length > 0) body.attachments = attachments;
     return parseMessage(await this.request("POST", `/channels/${channelId}/messages`, body));
+  }
+
+  /**
+   * Uploads files with Fluxer's presigned flow: plan the uploads, PUT the
+   * bytes (in parts for large files) to the returned URLs without our token,
+   * complete multipart uploads, and return what the message must claim.
+   */
+  async upload(channelId: string, files: UploadSource[]): Promise<UploadedAttachment[]> {
+    const plan = await this.request("POST", `/channels/${channelId}/attachments`, {
+      attachments: files.map((f, id) => ({ id, filename: f.filename, file_size: f.size, content_type: f.contentType })),
+    });
+    const entries = isRecord(plan) && Array.isArray(plan.attachments) ? plan.attachments : [];
+    if (entries.length !== files.length) throw new FluxerApiError(200, "UNEXPECTED_RESPONSE", "Unexpected upload plan", plan);
+
+    const multipart: { upload_filename: string; upload_id: string }[] = [];
+    const claimed: UploadedAttachment[] = [];
+    for (const [index, raw] of entries.entries()) {
+      const entry = isRecord(raw) ? raw : {};
+      const file = files[index]!;
+      const uploadFilename = typeof entry.upload_filename === "string" ? entry.upload_filename : "";
+      const contentType = typeof entry.content_type === "string" ? entry.content_type : file.contentType;
+      if (!uploadFilename) throw new FluxerApiError(200, "UNEXPECTED_RESPONSE", "Unexpected upload plan", plan);
+      if (typeof entry.upload_url === "string") {
+        await this.put(entry.upload_url, await file.read(0, file.size), contentType);
+      } else if (typeof entry.upload_id === "string" && typeof entry.part_size === "number" && Array.isArray(entry.parts)) {
+        for (const part of entry.parts) {
+          const number = isRecord(part) && typeof part.part_number === "number" ? part.part_number : 0;
+          const url = isRecord(part) && typeof part.upload_url === "string" ? part.upload_url : "";
+          if (number < 1 || !url) throw new FluxerApiError(200, "UNEXPECTED_RESPONSE", "Unexpected upload plan", plan);
+          const start = (number - 1) * entry.part_size;
+          await this.put(url, await file.read(start, Math.min(file.size, start + entry.part_size)), contentType);
+        }
+        multipart.push({ upload_filename: uploadFilename, upload_id: entry.upload_id });
+      } else {
+        throw new FluxerApiError(200, "UNEXPECTED_RESPONSE", "Unexpected upload plan", plan);
+      }
+      claimed.push({ id: index, filename: file.filename, upload_filename: uploadFilename, file_size: file.size, content_type: contentType });
+    }
+    if (multipart.length > 0) await this.request("POST", `/channels/${channelId}/attachments/complete`, { uploads: multipart });
+    return claimed;
+  }
+
+  /** PUTs bytes to a presigned URL as-is; it carries its own authorisation. */
+  private async put(url: string, data: Uint8Array, contentType: string): Promise<void> {
+    const body = new Uint8Array(data); // an ArrayBuffer-backed copy, as fetch bodies require
+    const response = await this.options.fetch(url, { method: "PUT", headers: { "Content-Type": contentType }, body });
+    if (!response.ok) throw new FluxerApiError(response.status, `HTTP_${response.status}`, `Upload failed (HTTP ${response.status})`, undefined);
   }
 
   async typing(channelId: string): Promise<void> {

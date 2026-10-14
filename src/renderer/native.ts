@@ -32,6 +32,12 @@ function avatar(doc: Document, url: string | undefined, name: string): HTMLEleme
   return el(doc, "span", "avatar initials", initials(name));
 }
 
+export function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 /** "Ana is typing…", "Ana and Bo are typing…", or a summary for more people. */
 export function typingText(names: string[]): string {
   if (names.length === 0) return "";
@@ -206,7 +212,8 @@ export class NativeView {
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
       const content = composer.value;
-      if (content.trim() === "") return;
+      const hasFiles = (this.lastState?.channel?.pending.length ?? 0) > 0;
+      if (content.trim() === "" && !hasFiles) return;
       this.api.act(this.replyTo ? { type: "send", content, replyTo: this.replyTo.id } : { type: "send", content });
       composer.value = "";
       this.setReply(undefined);
@@ -215,7 +222,14 @@ export class NativeView {
       if (composer.value.trim() !== "") this.api.act({ type: "typing" });
     });
     const typing = el(doc, "div", "typing");
-    main.append(header, banner, messages, typing, replyBar, composer);
+    const pending = el(doc, "ul", "pending-files");
+    const attach = el(doc, "button", "attach", "+");
+    attach.title = "Attach files";
+    attach.setAttribute("aria-label", "Attach files");
+    attach.addEventListener("click", () => this.api.act({ type: "attach" }));
+    const composerRow = el(doc, "div", "composer-row");
+    composerRow.append(attach, composer);
+    main.append(header, banner, messages, typing, replyBar, pending, composerRow);
 
     // One edit box, reused across renders so an edit in progress survives updates.
     const editBox = el(doc, "textarea", "edit-box");
@@ -232,7 +246,7 @@ export class NativeView {
     const layout = el(doc, "div", "chat");
     layout.append(sidebar, main);
     this.root.replaceChildren(layout);
-    Object.assign(this.parts, { title, list, me, header, banner, messages, typing, replyBar, composer, editBox });
+    Object.assign(this.parts, { title, list, me, header, banner, messages, typing, replyBar, pending, attach, composer, editBox });
   }
 
   private setReply(target: { id: string; author: string } | undefined): void {
@@ -316,6 +330,27 @@ export class NativeView {
     return li;
   }
 
+  /** Files queued for the next message, each removable, plus upload progress. */
+  private renderPending(channel: ChatState["channel"]): void {
+    const doc = this.doc;
+    const files = channel?.pending ?? [];
+    const uploading = channel?.uploading ?? false;
+    (this.parts.composer as HTMLTextAreaElement).disabled = !channel || uploading;
+    (this.parts.attach as HTMLButtonElement).disabled = !channel || uploading;
+    const items = files.map((file, index) => {
+      const li = el(doc, "li", "pending-file");
+      li.append(el(doc, "span", "name", file.name), el(doc, "span", "size", formatSize(file.size)));
+      const remove = el(doc, "button", "link", "×");
+      remove.setAttribute("aria-label", `Remove ${file.name}`);
+      remove.disabled = uploading;
+      remove.addEventListener("click", () => this.api.act({ type: "removeAttachment", index }));
+      li.append(remove);
+      return li;
+    });
+    if (uploading) items.push(el(doc, "li", "uploading", files.length > 0 ? "Uploading…" : "Sending…"));
+    this.parts.pending!.replaceChildren(...items);
+  }
+
   private reactionRow(message: NativeMessage): HTMLElement {
     const doc = this.doc;
     const row = el(doc, "div", "reactions");
@@ -395,7 +430,7 @@ export class NativeView {
     const channel = state.channel;
     header!.textContent = channel ? channel.name : "Select a conversation";
     this.parts.typing!.textContent = typingText(channel?.typing ?? []);
-    (composer as HTMLTextAreaElement).disabled = !channel;
+    this.renderPending(channel);
     (composer as HTMLTextAreaElement).placeholder = channel ? `Message ${channel.name}` : "";
 
     const scroller = messages!;

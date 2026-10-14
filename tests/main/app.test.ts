@@ -382,6 +382,18 @@ describe("native Fluxer platform", () => {
     expect(setVisible).toHaveBeenLastCalledWith(false);
   });
 
+  it("picks files through the OS dialog for the native client", async () => {
+    const { handle, window } = await shellWith();
+    const files = (handle.adapters.get("fluxer") as unknown as { deps: { files: { pick(): Promise<string[]>; open(p: string): Promise<unknown> } } }).deps.files;
+    expect(await files.pick()).toEqual([]);
+    electron.dialog.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: ["C:/a.txt"] });
+    expect(await files.pick()).toEqual(["C:/a.txt"]);
+    expect(electron.dialog.showOpenDialog).toHaveBeenCalledWith(window, { title: "Attach files", properties: ["openFile", "multiSelections"] });
+    const file = path.join(userData, "note.txt");
+    fs.writeFileSync(file, "hi");
+    expect(await files.open(file)).toMatchObject({ filename: "note.txt", size: 2, contentType: "text/plain" });
+  });
+
   it("resumes a stored session with the default network services", async () => {
     // Stored as the mocked safeStorage encrypts it (byte-reversed).
     const encrypted = Buffer.from("flx_saved").reverse().toString("base64");

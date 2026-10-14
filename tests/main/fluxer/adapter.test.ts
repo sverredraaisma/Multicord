@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FluxerAdapter } from "../../../src/main/adapters/fluxerAdapter";
+import { FluxerAdapter, type FluxerAdapterDeps } from "../../../src/main/adapters/fluxerAdapter";
 import type { GatewaySocket } from "../../../src/main/fluxer/gateway";
 import { FLUXER } from "../../../src/main/platforms";
 import type { NativeViewState } from "../../../src/shared/native";
@@ -34,7 +34,7 @@ function message(id: string, channelId: string, extra: Record<string, unknown> =
   return { id, channel_id: channelId, author: ANA, content: `m${id}`, timestamp: "2026-10-14T12:00:00Z", ...extra };
 }
 
-function setup(options: { token?: string; routes?: Handler[] } = {}) {
+function setup(options: { token?: string; routes?: Handler[]; files?: FluxerAdapterDeps["files"] } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const routes: Handler[] = [...(options.routes ?? [])];
   const fetch = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -70,6 +70,7 @@ function setup(options: { token?: string; routes?: Handler[] } = {}) {
     render: (state) => renders.push(state),
     rest: { sleep: async () => {}, solveCaptcha: async () => ({ counter: 1, derivedKey: "00", time: 1 }) },
     platform: "win32",
+    files: options.files,
   });
   const last = () => renders.at(-1)!;
   const chat = () => {
@@ -722,5 +723,95 @@ describe("FluxerAdapter typing", () => {
     expect(ctx.chat().channel!.typing).toEqual(["Ana"]);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(ctx.chat().channel!.typing).toEqual([]);
+  });
+});
+
+describe("FluxerAdapter attachments", () => {
+  const source = (name: string) => ({ filename: name, size: 2, contentType: "text/plain", read: async () => new Uint8Array([104, 105]) });
+
+  async function withFiles(picked: string[][], routes: Handler[] = [], discovery?: unknown) {
+    const pick = vi.fn(async () => picked.shift() ?? []);
+    const open = vi.fn(async (p: string) => source(p));
+    const ctx = setup({
+      token: "flx",
+      files: { pick, open },
+      routes: [
+        ...(discovery ? [(url: string) => (url.endsWith("/.well-known/fluxer") ? { status: 200, body: discovery } : undefined)] : []),
+        ...routes,
+        (url) =>
+          url.endsWith("/channels/113/attachments")
+            ? { status: 200, body: { attachments: [{ upload_filename: "up/a", upload_url: "https://store/a" }, { upload_filename: "up/b", upload_url: "https://store/b" }] } }
+            : url.startsWith("https://store/")
+              ? { status: 200 }
+              : undefined,
+      ],
+    });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openServer("100");
+    return { ...ctx, pick, open };
+  }
+
+  it("queues picked files, removes them on request and uploads them with the message", async () => {
+    const { adapter, chat, calls } = await withFiles([["a.txt", "b.txt", "c.txt"]]);
+    await adapter.handleAction({ type: "attach" });
+    expect(chat().channel!.pending).toEqual([
+      { name: "a.txt", size: 2 },
+      { name: "b.txt", size: 2 },
+      { name: "c.txt", size: 2 },
+    ]);
+    await adapter.handleAction({ type: "removeAttachment", index: 2 });
+    expect(chat().channel!.pending.map((f) => f.name)).toEqual(["a.txt", "b.txt"]);
+
+    const sending = adapter.handleAction({ type: "send", content: "" });
+    expect(chat().channel!.uploading).toBe(true);
+    await adapter.handleAction({ type: "send", content: "again" }); // ignored while uploading
+    await sending;
+    const sent = calls.filter((c) => c.init.method === "POST" && c.url.endsWith("/channels/113/messages"));
+    expect(sent).toHaveLength(1);
+    expect(JSON.parse(String(sent[0]!.init.body)).attachments.map((a: { upload_filename: string }) => a.upload_filename)).toEqual(["up/a", "up/b"]);
+    expect(chat().channel).toMatchObject({ pending: [], uploading: false });
+  });
+
+  it("caps attachments per message", async () => {
+    const { adapter, chat } = await withFiles([Array.from({ length: 12 }, (_, i) => `f${i}.txt`)]);
+    await adapter.handleAction({ type: "attach" });
+    expect(chat().channel!.pending).toHaveLength(10);
+    expect(chat().error).toBe("At most 10 files per message.");
+  });
+
+  it("keeps files queued when sending fails, and reports picker errors", async () => {
+    const { adapter, chat, pick } = await withFiles([["a.txt"]], [(url) => (url.endsWith("/channels/113/attachments") ? { status: 413, body: { code: "FILE_TOO_LARGE", message: "Too large" } } : undefined)]);
+    await adapter.handleAction({ type: "attach" });
+    await adapter.handleAction({ type: "send", content: "x" });
+    expect(chat().error).toBe("Message not sent: Too large");
+    expect(chat().channel!.pending).toHaveLength(1);
+
+    pick.mockRejectedValueOnce(new Error("dialog failed"));
+    await adapter.handleAction({ type: "attach" });
+    expect(chat().error).toBe("Could not attach: dialog failed");
+  });
+
+  it("explains instances without presigned uploads", async () => {
+    const discovery = {
+      endpoints: { api_public: "https://api.fx", gateway: "wss://gw.fx", media: "https://media.fx" },
+      features: { presigned_attachment_uploads: false },
+    };
+    const { adapter, chat } = await withFiles([["a.txt"]], [], discovery);
+    await adapter.handleAction({ type: "attach" });
+    await adapter.handleAction({ type: "send", content: "" });
+    expect(chat().error).toContain("inline uploads");
+  });
+
+  it("ignores empty sends and attach without a picker or channel", async () => {
+    const ctx = setup({ token: "flx" });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.handleAction({ type: "attach" });
+    await ctx.adapter.openServer("100");
+    await ctx.adapter.handleAction({ type: "attach" }); // no picker
+    await ctx.adapter.handleAction({ type: "send", content: "   " });
+    await ctx.adapter.handleAction({ type: "removeAttachment", index: 0 });
+    expect(ctx.calls.some((c) => c.init.method === "POST" && c.url.endsWith("/messages"))).toBe(false);
   });
 });

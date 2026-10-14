@@ -4,6 +4,7 @@ import {
   app,
   BaseWindow,
   desktopCapturer,
+  dialog,
   ipcMain,
   Menu,
   nativeImage,
@@ -31,6 +32,7 @@ import { DiscordAdapter } from "./adapters/discordAdapter";
 import { FluxerAdapter } from "./adapters/fluxerAdapter";
 import { GenericWebAdapter } from "./adapters/genericWebAdapter";
 import { CredentialStore, type SecretBox } from "./credentials";
+import { uploadSource } from "./files";
 import type { GatewaySocket, SocketFactory } from "./fluxer/gateway";
 import { computeLayout, tooltipBounds } from "./layout";
 import { loadPlatforms } from "./platforms";
@@ -196,6 +198,13 @@ export async function createShell(
         secrets: credentials,
         render: (state) => view.webContents.send(NATIVE_IPC.state, state),
         platform,
+        files: {
+          pick: async () => {
+            const result = await dialog.showOpenDialog(window, { title: "Attach files", properties: ["openFile", "multiSelections"] });
+            return result.canceled ? [] : result.filePaths;
+          },
+          open: uploadSource,
+        },
       });
       ipcMain.on(NATIVE_IPC.action, (event, action) => {
         if (event.sender !== view.webContents || !isNativeAction(action)) return;

@@ -7,6 +7,8 @@ export interface FluxerInstance {
   media: string;
   /** Whether login asks for an email address or a username. */
   identity: "email" | "username";
+  /** Whether attachments use the presigned upload flow (else inline multipart). */
+  presignedUploads: boolean;
 }
 
 const https = (value: unknown): string | undefined => {
@@ -38,5 +40,6 @@ export async function discoverInstance(origin: string, fetchFn: typeof fetch): P
     gateway,
     media,
     identity: features.account_identity === "username" ? "username" : "email",
+    presignedUploads: features.presigned_attachment_uploads !== false,
   };
 }

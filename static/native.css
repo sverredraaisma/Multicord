@@ -197,3 +197,29 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
 }
 .reply-bar[hidden] { display: none; }
 .typing { min-height: 18px; padding: 0 16px 2px; color: var(--muted); font-size: 12px; }
+.composer-row { display: flex; gap: 8px; align-items: flex-end; margin: 0 16px 16px; }
+.composer-row .composer { flex: 1; margin: 0; }
+.attach {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: 50%;
+  background: #383a40;
+  color: var(--text);
+  font-size: 20px;
+  cursor: pointer;
+}
+.attach:disabled { opacity: 0.5; cursor: default; }
+.pending-files { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 16px 6px; padding: 0; list-style: none; }
+.pending-files:empty { display: none; }
+.pending-file, .uploading {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--panel);
+  font-size: 12px;
+}
+.pending-file .size, .uploading { color: var(--muted); }

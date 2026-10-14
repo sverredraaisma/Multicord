@@ -40,16 +40,21 @@ describe("discoverInstance", () => {
       gateway: "wss://gateway.fluxer.app",
       media: "https://fluxerusercontent.com",
       identity: "email",
+      presignedUploads: true,
     });
     expect(calls[0]!.url).toBe("https://fluxer.app/.well-known/fluxer");
   });
 
   it("falls back to the api endpoint and reads username identity", async () => {
-    const body = { endpoints: { ...OFFICIAL.endpoints, api_public: undefined }, features: { account_identity: "username" } };
+    const body = {
+      endpoints: { ...OFFICIAL.endpoints, api_public: undefined },
+      features: { account_identity: "username", presigned_attachment_uploads: false },
+    };
     const { fetch } = fakeFetch({ status: 200, body });
     expect(await discoverInstance("https://self.example", fetch)).toMatchObject({
       api: "https://web.fluxer.app/api/v1",
       identity: "username",
+      presignedUploads: false,
     });
   });
 

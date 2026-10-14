@@ -14,6 +14,9 @@ describe("isNativeAction", () => {
       { type: "mfa", code: "123456" },
       { type: "select", channelId: "123" },
       { type: "send", content: "hi" },
+      { type: "send", content: "" },
+      { type: "attach" },
+      { type: "removeAttachment", index: 0 },
       { type: "send", content: "x".repeat(MAX_MESSAGE_LENGTH) },
     ]) {
       expect(isNativeAction(action)).toBe(true);
@@ -32,8 +35,10 @@ describe("isNativeAction", () => {
       { type: "mfa", code: 123456 },
       { type: "select", channelId: "../x" },
       { type: "select" },
-      { type: "send", content: "   " },
-      { type: "send", content: "" },
+      { type: "send", content: 5 },
+      { type: "removeAttachment", index: 10 },
+      { type: "removeAttachment", index: 1.5 },
+      { type: "removeAttachment" },
       { type: "send", content: "x".repeat(MAX_MESSAGE_LENGTH + 1) },
     ]) {
       expect(isNativeAction(action)).toBe(false);

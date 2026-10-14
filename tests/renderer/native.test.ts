@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { formatTime, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
+import { formatSize, formatTime, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
 import type { NativeApi } from "../../src/preload/native";
 import type { NativeMessage, NativeViewState } from "../../src/shared/native";
 
@@ -36,7 +36,7 @@ function chat(extra: Partial<Chat> = {}): Chat {
       { id: "3", name: "Ana", kind: "dm", iconUrl: "https://media/a.png", unread: false, mentions: 120, active: false },
       { id: "4", name: "Bo", kind: "dm", unread: false, mentions: 0, active: false },
     ],
-    channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: false, typing: [] },
+    channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: false, typing: [], pending: [], uploading: false },
     ...extra,
   };
 }
@@ -130,6 +130,8 @@ describe("chat screen", () => {
           loading: false,
           hasOlder: false,
           typing: [],
+          pending: [],
+          uploading: false,
           messages: [
             msg("10", {
               content: "<img src=x onerror=alert(1)>",
@@ -192,14 +194,14 @@ describe("chat screen", () => {
   });
 
   it("offers older history and shows loading states", () => {
-    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: true, typing: [] } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: true, typing: [], pending: [], uploading: false } }));
     const older = root.querySelector<HTMLButtonElement>("button.older")!;
     expect(older.textContent).toBe("Load older messages");
     older.click();
     expect(act).toHaveBeenCalledWith({ type: "loadOlder" });
-    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: true, hasOlder: true, typing: [] } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: true, hasOlder: true, typing: [], pending: [], uploading: false } }));
     expect(root.querySelector<HTMLButtonElement>("button.older")!.disabled).toBe(true);
-    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: true, hasOlder: false, typing: [] } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: true, hasOlder: false, typing: [], pending: [], uploading: false } }));
     expect(root.querySelector(".older-row")!.textContent).toBe("Loading…");
   });
 
@@ -210,7 +212,7 @@ describe("chat screen", () => {
     Object.defineProperty(list, "scrollHeight", { get: () => list.children.length * 500, configurable: true });
     Object.defineProperty(list, "clientHeight", { value: 400, configurable: true });
     const update = (...ids: string[]) =>
-      view.update(chat({ channel: { id: "2", name: "general", messages: ids.map((id) => msg(id)), loading: false, hasOlder: false, typing: [] } }));
+      view.update(chat({ channel: { id: "2", name: "general", messages: ids.map((id) => msg(id)), loading: false, hasOlder: false, typing: [], pending: [], uploading: false } }));
 
     // Reading at the top: older messages are prepended, the view stays on the same message.
     list.scrollTop = 0;
@@ -255,7 +257,7 @@ describe("helpers", () => {
 describe("message actions", () => {
   const ownMessage = msg("10", { mine: true, canEdit: true, canDelete: true, source: "raw <@2>", content: "raw @Ana" });
   const withMessages = (...messages: NativeMessage[]) =>
-    chat({ channel: { id: "2", name: "general", messages, loading: false, hasOlder: false, typing: [] } });
+    chat({ channel: { id: "2", name: "general", messages, loading: false, hasOlder: false, typing: [], pending: [], uploading: false } });
   const button = (label: string, scope: ParentNode = root) =>
     [...scope.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === label);
 
@@ -382,7 +384,7 @@ describe("message actions", () => {
     view.update(withMessages(ownMessage));
     button("Reply")!.click();
     button("Edit")!.click();
-    view.update(chat({ channel: { id: "3", name: "other", messages: [ownMessage], loading: false, hasOlder: false, typing: [] } }));
+    view.update(chat({ channel: { id: "3", name: "other", messages: [ownMessage], loading: false, hasOlder: false, typing: [], pending: [], uploading: false } }));
     expect(root.querySelector<HTMLElement>(".reply-bar")!.hidden).toBe(true);
     expect(root.querySelector(".edit-box")).toBeNull();
   });
@@ -398,7 +400,7 @@ describe("typing", () => {
   });
 
   it("shows typing and reports our own typing", () => {
-    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: ["Ana"] } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: ["Ana"], pending: [], uploading: false } }));
     expect(root.querySelector(".typing")!.textContent).toBe("Ana is typing…");
     const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
     composer.value = "  ";
@@ -409,5 +411,45 @@ describe("typing", () => {
     expect(act).toHaveBeenCalledWith({ type: "typing" });
     view.update(chat({ channel: null }));
     expect(root.querySelector(".typing")!.textContent).toBe("");
+  });
+});
+
+describe("attachments", () => {
+  const withFiles = (pending: { name: string; size: number }[], uploading = false) =>
+    chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: [], pending, uploading } });
+
+  it("formats sizes", () => {
+    expect(formatSize(512)).toBe("512 B");
+    expect(formatSize(2048)).toBe("2.0 KB");
+    expect(formatSize(5 * 1024 * 1024)).toBe("5.0 MB");
+  });
+
+  it("attaches, lists and removes pending files, and sends attachments without text", () => {
+    view.update(withFiles([]));
+    root.querySelector<HTMLButtonElement>("button.attach")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "attach" });
+
+    const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
+    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(act).toHaveBeenCalledTimes(1); // nothing to send yet
+
+    view.update(withFiles([{ name: "cat.png", size: 2048 }, { name: "notes.txt", size: 10 }]));
+    const chips = root.querySelectorAll(".pending-file");
+    expect([...chips].map((c) => c.textContent)).toEqual(["cat.png2.0 KB×", "notes.txt10 B×"]);
+    chips[1]!.querySelector<HTMLButtonElement>("button")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "removeAttachment", index: 1 });
+
+    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(act).toHaveBeenLastCalledWith({ type: "send", content: "" });
+  });
+
+  it("locks the composer while uploading", () => {
+    view.update(withFiles([{ name: "cat.png", size: 2048 }], true));
+    expect(root.querySelector<HTMLTextAreaElement>(".composer")!.disabled).toBe(true);
+    expect(root.querySelector<HTMLButtonElement>("button.attach")!.disabled).toBe(true);
+    expect(root.querySelector<HTMLButtonElement>(".pending-file button")!.disabled).toBe(true);
+    expect(root.querySelector(".uploading")!.textContent).toBe("Uploading…");
+    view.update(withFiles([], true));
+    expect(root.querySelector(".uploading")!.textContent).toBe("Sending…");
   });
 });

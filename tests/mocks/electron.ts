@@ -172,3 +172,7 @@ export class Notification extends EventEmitter {
     Notification.instances.push(this);
   }
 }
+
+export const dialog = {
+  showOpenDialog: vi.fn(async (_window: unknown, _options: unknown) => ({ canceled: true, filePaths: [] as string[] })),
+};

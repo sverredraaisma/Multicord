@@ -57,6 +57,9 @@ export interface NativeChannelView {
   hasOlder: boolean;
   /** Names of people typing here right now. */
   typing: string[];
+  /** Files picked for the next message. */
+  pending: { name: string; size: number }[];
+  uploading: boolean;
 }
 
 export type NativeViewState =
@@ -85,9 +88,13 @@ export type NativeAction =
   | { type: "react"; messageId: string; emoji: string; add: boolean }
   | { type: "loadOlder" }
   | { type: "typing" }
+  | { type: "attach" }
+  | { type: "removeAttachment"; index: number }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
+/** Fluxer's default max_attachments_per_message. */
+export const MAX_ATTACHMENTS = 10;
 
 const text = (value: unknown, min: number, max: number): boolean =>
   typeof value === "string" && value.length >= min && value.length <= max;
@@ -102,6 +109,7 @@ export function isNativeAction(value: unknown): value is NativeAction {
     case "cancelMfa":
     case "loadOlder":
     case "typing":
+    case "attach":
     case "logout":
       return true;
     case "login":
@@ -111,7 +119,10 @@ export function isNativeAction(value: unknown): value is NativeAction {
     case "select":
       return id(v.channelId);
     case "send":
-      return content(v.content) && (v.replyTo === undefined || id(v.replyTo));
+      // Empty text is allowed: a message may be attachments only.
+      return text(v.content, 0, MAX_MESSAGE_LENGTH) && (v.replyTo === undefined || id(v.replyTo));
+    case "removeAttachment":
+      return typeof v.index === "number" && Number.isInteger(v.index) && v.index >= 0 && v.index < MAX_ATTACHMENTS;
     case "edit":
       return id(v.messageId) && content(v.content);
     case "delete":
