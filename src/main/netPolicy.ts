@@ -111,6 +111,34 @@ const FORBIDDEN_REQUEST_HEADERS = new Set([
   "proxy-connection",
 ]);
 
+/**
+ * Reads a body as it arrives and gives up as soon as it passes `limit`, so a
+ * body without (or lying about) its length never sits whole in memory.
+ */
+export async function readCapped(response: Response, limit: number): Promise<Uint8Array> {
+  if (!response.body) return new Uint8Array(0);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel().catch(() => {});
+      throw new Error("Response too large");
+    }
+    chunks.push(value);
+  }
+  const data = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return data;
+}
+
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 export const MAX_REDIRECTS = 5;
 
@@ -152,9 +180,11 @@ export async function performHttp(fetchImpl: FetchLike, request: HttpRequest, po
       continue;
     }
     const length = Number(response.headers.get("content-length") ?? 0);
-    if (length > MAX_HTTP_BODY) throw new Error("Response too large");
-    const data = new Uint8Array(await response.arrayBuffer());
-    if (data.byteLength > MAX_HTTP_BODY) throw new Error("Response too large");
+    if (length > MAX_HTTP_BODY) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error("Response too large");
+    }
+    const data = await readCapped(response, MAX_HTTP_BODY);
     const out: Record<string, string> = {};
     response.headers.forEach((value, name) => {
       if (name !== "set-cookie" && name !== "set-cookie2") out[name] = value;

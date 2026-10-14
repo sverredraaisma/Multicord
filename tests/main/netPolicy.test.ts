@@ -162,8 +162,9 @@ describe("performHttp", () => {
   it("rejects oversized responses by header and by actual size", async () => {
     const big = new Response("x", { headers: { "content-length": String(MAX_HTTP_BODY + 1) } });
     await expect(performHttp(fetchOf(big), req(), policy)).rejects.toThrow("Response too large");
-    const fake = { status: 200, headers: new Headers(), arrayBuffer: async () => new ArrayBuffer(MAX_HTTP_BODY + 1) } as unknown as Response;
-    await expect(performHttp(fetchOf(fake), req(), policy)).rejects.toThrow("Response too large");
+    // No length given: the body is counted as it arrives.
+    const unannounced = new Response(new Blob([new Uint8Array(MAX_HTTP_BODY + 1)]).stream());
+    await expect(performHttp(fetchOf(unannounced), req(), policy)).rejects.toThrow("Response too large");
   });
 
   it("checks the final URL when the fetch followed redirects itself", async () => {
@@ -191,5 +192,27 @@ describe("host locks", () => {
     expect(narrowHosts(["api.stoat.chat"], ["*.stoat.chat"])).toBeUndefined();
     expect(narrowHosts(undefined, ["router.local"])).toBeUndefined();
     expect(narrowHosts(undefined, ["*.localhost"])).toBeUndefined();
+  });
+});
+
+describe("readCapped", () => {
+  it("reads bodies in pieces and stops at the limit", async () => {
+    const { readCapped } = await import("../../src/main/netPolicy");
+    const stream = (chunks: number[]) => {
+      let pulled = 0;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (pulled < chunks.length) controller.enqueue(new Uint8Array(chunks[pulled++]!).fill(1));
+          else controller.close();
+        },
+      });
+      return { response: new Response(body), pulled: () => pulled };
+    };
+    expect((await readCapped(stream([3, 4]).response, 10)).byteLength).toBe(7);
+    // Endless in principle: reading stops once past the limit, not at the end.
+    const big = stream([6, 6, 6, 6, 6]);
+    await expect(readCapped(big.response, 10)).rejects.toThrow("Response too large");
+    expect(big.pulled()).toBeLessThan(5);
+    expect((await readCapped(new Response(null), 10)).byteLength).toBe(0);
   });
 });
