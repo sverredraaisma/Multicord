@@ -737,15 +737,28 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   directs(): DirectConversation[] {
-    return this.state.privateChannels().map((c) => ({
-      key: c.id,
-      account: this.account,
-      title: this.channelTitle(c),
-      avatarUrl: this.dmAvatar(c),
-      lastActivity: timestampOf(c.lastMessageId),
-      unread: this.state.isUnread(c),
-      mentions: this.state.mentions(c.id),
-    }));
+    return this.state.privateChannels().map((c) => {
+      const direct: DirectConversation = {
+        key: c.id,
+        account: this.account,
+        title: this.channelTitle(c),
+        avatarUrl: this.dmAvatar(c),
+        lastActivity: timestampOf(c.lastMessageId),
+        unread: this.state.isUnread(c),
+        mentions: this.state.mentions(c.id),
+      };
+      // READY carries no message text; the preview is known once the last message has arrived or been loaded.
+      const last = this.state.latest.get(c.id);
+      if (last && last.id === c.lastMessageId) direct.preview = this.previewText(last);
+      return direct;
+    });
+  }
+
+  /** One line for the Messages list: the text with mentions resolved, else the attachment names. */
+  private previewText(message: FluxerMessage): string {
+    const text = this.renderContent(message.content).replace(/\s+/g, " ").trim();
+    if (text) return text;
+    return message.attachments.map((a) => `📎 ${a.filename}`).join(", ");
   }
 
   /** Message text with user and channel mentions resolved to names. */

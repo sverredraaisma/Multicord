@@ -3,6 +3,7 @@ import { FluxerAdapter, type FluxerAdapterDeps } from "../../../src/main/adapter
 import type { GatewaySocket } from "../../../src/main/fluxer/gateway";
 import { FLUXER, type PlatformDef } from "../../../src/main/platforms";
 import type { NativeViewState } from "../../../src/shared/native";
+import { parseMessage } from "../../../src/main/fluxer/types";
 import { ANA, ME, readyPayload } from "./fixtures";
 
 const DISCOVERY = {
@@ -1094,5 +1095,37 @@ describe("accounts", () => {
     const fresh = setup({ def: own });
     await fresh.adapter.start();
     expect(fresh.sockets).toHaveLength(0);
+  });
+});
+
+describe("DM previews", () => {
+  it("previews the last message once it is known, else its attachments", async () => {
+    const { adapter, goOnline } = setup({ token: "flx_saved" });
+    await adapter.start();
+    await goOnline();
+    expect(adapter.directs().find((d) => d.key === "900")).not.toHaveProperty("preview");
+    adapter.state.apply("MESSAGE_CREATE", message("950", "900", { content: "hi  <@2>\nthere" }));
+    expect(adapter.directs().find((d) => d.key === "900")!.preview).toBe("hi @Ana there");
+    adapter.state.apply("MESSAGE_CREATE", message("951", "900", { content: "", attachments: [{ id: "1", filename: "cat.png" }, { id: "2", filename: "a.txt" }] }));
+    expect(adapter.directs().find((d) => d.key === "900")!.preview).toBe("📎 cat.png, 📎 a.txt");
+  });
+});
+
+describe("DM preview upkeep", () => {
+  it("follows edits and drops a deleted last message", async () => {
+    const { adapter, goOnline } = setup({ token: "flx_saved" });
+    await adapter.start();
+    await goOnline();
+    const preview = () => adapter.directs().find((d) => d.key === "900")!.preview;
+    adapter.state.apply("MESSAGE_CREATE", message("950", "900", { content: "first" }));
+    adapter.state.addHistory("900", [parseMessage(message("940", "900", { content: "older" }))!], true);
+    expect(preview()).toBe("first");
+    adapter.state.apply("MESSAGE_UPDATE", message("950", "900", { content: "edited", edited_timestamp: "2026-10-14T12:01:00Z" }));
+    expect(preview()).toBe("edited");
+    adapter.state.removeMessage("900", "950");
+    expect(preview()).toBeUndefined();
+    adapter.state.apply("MESSAGE_CREATE", message("960", "900", { content: "again" }));
+    adapter.state.apply("MESSAGE_DELETE", { id: "960", channel_id: "900" });
+    expect(preview()).toBeUndefined();
   });
 });

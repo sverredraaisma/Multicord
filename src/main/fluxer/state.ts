@@ -45,6 +45,8 @@ export class FluxerState {
   readonly readStates = new Map<string, FluxerReadState>();
   readonly users = new Map<string, FluxerUser>();
   readonly messages = new Map<string, FluxerMessage[]>();
+  /** The newest message seen per channel, loaded or not, for previews. */
+  readonly latest = new Map<string, FluxerMessage>();
   /** Each guild's custom emoji. */
   readonly emojis = new Map<string, FluxerGuildEmoji[]>();
   /** Voice connections by connection id. */
@@ -62,7 +64,7 @@ export class FluxerState {
   reset(): void {
     this.me = undefined;
     this.folders = undefined;
-    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.notifySettings, this.typing, this.voiceStates, this.emojis]) map.clear();
+    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.notifySettings, this.typing, this.voiceStates, this.emojis]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -142,6 +144,8 @@ export class FluxerState {
         const channelId = isId(d.channel_id) ? d.channel_id : undefined;
         const cached = channelId ? this.messages.get(channelId) : undefined;
         if (cached) this.messages.set(channelId!, cached.filter((m) => !ids.has(m.id)));
+        // A deleted last message leaves no preview rather than a stale one.
+        if (channelId && ids.has(this.latest.get(channelId)?.id ?? "")) this.latest.delete(channelId);
         break;
       }
       case "TYPING_START": {
@@ -178,6 +182,7 @@ export class FluxerState {
 
   /** Swaps in an edited message where it is cached; returns whether it was. */
   replaceMessage(message: FluxerMessage): boolean {
+    if (this.latest.get(message.channelId)?.id === message.id) this.latest.set(message.channelId, message);
     const cached = this.messages.get(message.channelId);
     const index = cached?.findIndex((m) => m.id === message.id) ?? -1;
     if (index < 0) return false;
@@ -188,6 +193,7 @@ export class FluxerState {
   removeMessage(channelId: string, messageId: string): void {
     const cached = this.messages.get(channelId);
     if (cached) this.messages.set(channelId, cached.filter((m) => m.id !== messageId));
+    if (this.latest.get(channelId)?.id === messageId) this.latest.delete(channelId);
     this.changed.emit();
   }
 
@@ -237,6 +243,7 @@ export class FluxerState {
     const known = new Set(existing.map((m) => m.id));
     const fresh = messages.filter((m) => !known.has(m.id));
     this.messages.set(channelId, older ? [...fresh, ...existing] : [...existing, ...fresh]);
+    for (const m of fresh) this.noteLatest(m);
     this.changed.emit();
   }
 
@@ -412,12 +419,18 @@ export class FluxerState {
       .flatMap(([userId]) => this.users.get(userId) ?? []);
   }
 
+  private noteLatest(message: FluxerMessage): void {
+    const current = this.latest.get(message.channelId);
+    if (!current || compareIds(message.id, current.id) >= 0) this.latest.set(message.channelId, message);
+  }
+
   private onMessageCreate(message: FluxerMessage | undefined): void {
     if (!message) return;
     this.typing.get(message.channelId)?.delete(message.author.id);
     this.addUser(message.author);
     const channel = this.channels.get(message.channelId);
     if (channel) channel.lastMessageId = message.id;
+    this.noteLatest(message);
     const cached = this.messages.get(message.channelId);
     if (cached && !cached.some((m) => m.id === message.id)) {
       cached.push(message);
