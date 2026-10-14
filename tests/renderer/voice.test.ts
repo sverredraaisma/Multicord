@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("livekit-client", () => import("../mocks/livekit"));
 
-import { FakeTrack, Room, resetLiveKit } from "../mocks/livekit";
+import { FakeMicTrack, FakeTrack, Room, resetLiveKit } from "../mocks/livekit";
 import { resolveDevice, VoiceCall } from "../../src/renderer/voice";
 import { DEFAULT_SETTINGS } from "../../src/shared/settings";
 import type { NativeVoiceSession } from "../../src/shared/native";
@@ -160,6 +160,7 @@ describe("devices", () => {
       echoCancellation: false,
       noiseSuppression: true,
       autoGainControl: false,
+      enhancedNoiseSuppression: false,
     });
     await withDevices.sync(session());
     expect(Room.instances[0]!.options).toEqual({
@@ -210,5 +211,45 @@ describe("devices", () => {
     await none.sync(session({ token: "t2" }));
     expect((Room.instances[1]!.options as { audioCaptureDefaults: { deviceId?: string } }).audioCaptureDefaults.deviceId).toBeUndefined();
     vi.unstubAllGlobals();
+  });
+});
+
+describe("enhanced noise suppression", () => {
+  const denoiser = () => ({ name: "rnnoise" }) as never;
+  const on = { ...DEFAULT_SETTINGS.voice, enhancedNoiseSuppression: true };
+
+  it("runs the microphone through the processor while the setting is on", async () => {
+    const call = new VoiceCall(stage, speakers, onError, undefined, undefined, denoiser);
+    await call.configure(on);
+    await call.sync(session());
+    const room = Room.instances[0]!;
+    expect(room.mic!.setProcessor).toHaveBeenCalledTimes(1);
+    await call.sync(session({ mute: true }));
+    await call.sync(session());
+    expect(room.mic!.setProcessor).toHaveBeenCalledTimes(1); // still running after unmute
+    await call.configure(DEFAULT_SETTINGS.voice);
+    expect(room.mic!.stopProcessor).toHaveBeenCalled();
+    await call.configure(on);
+    expect(room.mic!.setProcessor).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the plain microphone when the processor fails, and does nothing without one", async () => {
+    FakeMicTrack.failProcessor = new Error("no worklet");
+    const call = new VoiceCall(stage, speakers, onError, undefined, undefined, denoiser);
+    await call.configure(on);
+    await call.sync(session());
+    expect(onError).toHaveBeenCalledWith("Enhanced noise suppression could not start: no worklet");
+
+    const plain = new VoiceCall(stage, speakers, onError);
+    await plain.configure(on);
+    await plain.sync(session({ token: "t2" }));
+    expect(Room.instances[1]!.mic!.setProcessor).not.toHaveBeenCalled();
+  });
+
+  it("waits for the microphone before adding the processor", async () => {
+    const call = new VoiceCall(stage, speakers, onError, undefined, undefined, denoiser);
+    await call.sync(session({ mute: true }));
+    await call.configure(on);
+    expect(Room.instances[0]!.mic).toBeUndefined();
   });
 });

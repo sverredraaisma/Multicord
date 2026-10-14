@@ -9,7 +9,21 @@ export const RoomEvent = {
   Disconnected: "disconnected",
 } as const;
 
-export const Track = { Kind: { Audio: "audio", Video: "video" } } as const;
+export const Track = { Kind: { Audio: "audio", Video: "video" }, Source: { Microphone: "microphone" } } as const;
+
+/** A local microphone track that can carry a processor. */
+export class FakeMicTrack {
+  processor: { name: string } | undefined;
+  getProcessor = vi.fn(() => this.processor);
+  setProcessor = vi.fn(async (processor: { name: string }) => {
+    if (FakeMicTrack.failProcessor) throw FakeMicTrack.failProcessor;
+    this.processor = processor;
+  });
+  stopProcessor = vi.fn(async () => {
+    this.processor = undefined;
+  });
+  static failProcessor: Error | undefined;
+}
 
 export class FakeTrack {
   readonly elements: HTMLMediaElement[] = [];
@@ -33,8 +47,12 @@ export class Room {
   });
   disconnect = vi.fn(async () => this.emit(RoomEvent.Disconnected));
   switchActiveDevice = vi.fn(async (_kind: string, _id: string) => true);
+  mic: FakeMicTrack | undefined;
   localParticipant = {
-    setMicrophoneEnabled: vi.fn(async (_on: boolean) => undefined),
+    setMicrophoneEnabled: vi.fn(async (on: boolean) => {
+      if (on) this.mic ??= new FakeMicTrack();
+    }),
+    getTrackPublication: vi.fn((source: string) => (source === Track.Source.Microphone && this.mic ? { audioTrack: this.mic } : undefined)),
     setCameraEnabled: vi.fn(async (_on: boolean) => undefined),
     setScreenShareEnabled: vi.fn(async (_on: boolean, _options?: unknown) => undefined),
   };
@@ -56,4 +74,5 @@ export class Room {
 export function resetLiveKit(): void {
   Room.instances = [];
   Room.failConnect = undefined;
+  FakeMicTrack.failProcessor = undefined;
 }

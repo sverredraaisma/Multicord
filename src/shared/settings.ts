@@ -29,6 +29,8 @@ export interface VoiceSettings {
   echoCancellation: boolean;
   noiseSuppression: boolean;
   autoGainControl: boolean;
+  /** RNNoise on the microphone in Multicord's own calls, on top of the browser's processing. */
+  enhancedNoiseSuppression: boolean;
   /** While Multicord is in front: hold this key (a KeyboardEvent code) to talk; absent: voice activity. */
   pushToTalk?: string;
 }
@@ -104,7 +106,7 @@ export interface AppSettings {
 
 export const DEFAULT_SETTINGS: AppSettings = {
   general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto", openLinks: false, autoUpdate: true },
-  voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, enhancedNoiseSuppression: false },
   // Off by default: global shortcuts take keys away from every other app.
   shortcuts: { toggleMute: null, toggleDeafen: null, showApp: null },
 };
@@ -129,7 +131,7 @@ export interface SettingsPatch {
   general?: Partial<GeneralSettings>;
   shortcuts?: Partial<ShortcutSettings>;
   voice?: Partial<Record<"input" | "output" | "camera", DeviceChoice | null>> &
-    Partial<Pick<VoiceSettings, "echoCancellation" | "noiseSuppression" | "autoGainControl">> & { pushToTalk?: string | null };
+    Partial<Pick<VoiceSettings, "echoCancellation" | "noiseSuppression" | "autoGainControl" | "enhancedNoiseSuppression">> & { pushToTalk?: string | null };
 }
 
 const MAX_TEXT = 200;
@@ -146,7 +148,7 @@ const GENERAL_CHECKS: { [K in keyof GeneralSettings]: (value: unknown) => value 
   autoUpdate: (v): v is boolean => typeof v === "boolean",
 };
 const GENERAL_KEYS = Object.keys(GENERAL_CHECKS) as (keyof GeneralSettings)[];
-const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl"] as const;
+const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl", "enhancedNoiseSuppression"] as const;
 const DEVICE_KEYS = ["input", "output", "camera"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

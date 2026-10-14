@@ -1,4 +1,14 @@
-import { Room, RoomEvent, Track, type LocalTrackPublication, type Participant, type RemoteTrack, type RoomOptions } from "livekit-client";
+import {
+  Room,
+  RoomEvent,
+  Track,
+  type AudioProcessorOptions,
+  type LocalTrackPublication,
+  type Participant,
+  type RemoteTrack,
+  type RoomOptions,
+  type TrackProcessor,
+} from "livekit-client";
 import type { NativeVoiceSession } from "../shared/native";
 import { DEFAULT_SETTINGS, type DeviceChoice, type VoiceSettings } from "../shared/settings";
 import type { DeviceInfo } from "./media";
@@ -41,6 +51,8 @@ export class VoiceCall {
     private readonly onError: (message: string) => void,
     private readonly createRoom: (options: RoomOptions) => Room = (options) => new Room(options),
     private readonly devices: () => Promise<DeviceInfo[]> = listDevices,
+    /** Makes the enhanced noise suppression processor; absent where it cannot run. */
+    private readonly denoiser?: () => TrackProcessor<Track.Kind.Audio, AudioProcessorOptions>,
   ) {}
 
   /**
@@ -58,6 +70,7 @@ export class VoiceCall {
         await room.switchActiveDevice("audioinput", ids.input ?? "default");
         await room.switchActiveDevice("audiooutput", ids.output ?? "default");
         if (ids.camera) await room.switchActiveDevice("videoinput", ids.camera);
+        await this.syncDenoise(room);
       })
       .catch((error: unknown) => this.onError(message(error)));
     return this.queue;
@@ -130,12 +143,34 @@ export class VoiceCall {
   private async setFlags(flags: Flags): Promise<void> {
     const room = this.room!;
     const micOn = !flags.mute && !flags.deaf;
-    if (micOn !== (!this.applied.mute && !this.applied.deaf)) await room.localParticipant.setMicrophoneEnabled(micOn);
+    if (micOn !== (!this.applied.mute && !this.applied.deaf)) {
+      await room.localParticipant.setMicrophoneEnabled(micOn);
+      if (micOn) await this.syncDenoise(room);
+    }
     if (flags.video !== this.applied.video) await room.localParticipant.setCameraEnabled(flags.video);
     if (flags.stream !== this.applied.stream) await room.localParticipant.setScreenShareEnabled(flags.stream, { audio: true });
     // Deafened: keep receiving, but play nothing.
     for (const audio of this.speakers.querySelectorAll("audio")) audio.muted = flags.deaf;
     this.applied = { ...flags };
+  }
+
+  /**
+   * Runs the microphone through RNNoise while the setting is on. A processor
+   * that fails to start leaves the plain microphone in use and says why.
+   */
+  private async syncDenoise(room: Room): Promise<void> {
+    const mic = room.localParticipant.getTrackPublication(Track.Source.Microphone)?.audioTrack;
+    if (!mic || !this.denoiser) return;
+    const running = mic.getProcessor() !== undefined;
+    if (this.settings.enhancedNoiseSuppression && !running) {
+      try {
+        await mic.setProcessor(this.denoiser());
+      } catch (error) {
+        this.onError(`Enhanced noise suppression could not start: ${message(error)}`);
+      }
+    } else if (!this.settings.enhancedNoiseSuppression && running) {
+      await mic.stopProcessor();
+    }
   }
 
   private show(track: { kind: string; attach(): HTMLMediaElement; sid?: string }, label: string, local: boolean): void {

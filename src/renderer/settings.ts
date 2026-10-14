@@ -245,7 +245,7 @@ export class SettingsPage {
     launchHint: HTMLElement;
     secretsNote: HTMLElement;
     selects: Record<DeviceSlot, HTMLSelectElement>;
-    processing: Record<"echoCancellation" | "noiseSuppression" | "autoGainControl", HTMLInputElement>;
+    processing: Record<"echoCancellation" | "noiseSuppression" | "autoGainControl" | "enhancedNoiseSuppression", HTMLInputElement>;
     meter: HTMLElement;
     micTest: HTMLButtonElement;
     cameraTest: HTMLButtonElement;
@@ -369,6 +369,7 @@ export class SettingsPage {
       ["echoCancellation", "Echo cancellation", "Stops others hearing themselves through your speakers."],
       ["noiseSuppression", "Noise suppression", "Filters steady background noise."],
       ["autoGainControl", "Automatic gain control", "Evens out your microphone volume."],
+      ["enhancedNoiseSuppression", "Enhanced noise suppression", "RNNoise also removes keyboard, fan and street noise in Fluxer calls. Discord uses its own."],
     ] as const) {
       const { row, input } = switchRow(doc, label, hint, (on) => this.update({ voice: { [key]: on } }));
       processing[key] = input;
@@ -580,7 +581,7 @@ export class SettingsPage {
     parts.general.launchAtLogin.disabled = !state.launchAtLoginSupported;
     parts.launchHint.hidden = state.launchAtLoginSupported;
     parts.secretsNote.hidden = state.secretsPersistent;
-    for (const key of ["echoCancellation", "noiseSuppression", "autoGainControl"] as const) parts.processing[key].checked = voice[key];
+    for (const key of ["echoCancellation", "noiseSuppression", "autoGainControl", "enhancedNoiseSuppression"] as const) parts.processing[key].checked = voice[key];
     this.renderDevices(voice);
     parts.version.textContent = `Multicord ${state.version}`;
   }

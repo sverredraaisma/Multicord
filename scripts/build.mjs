@@ -6,6 +6,9 @@ const common = { bundle: true, sourcemap: true, target: "chrome140", logLevel: "
 
 mkdirSync("dist", { recursive: true });
 cpSync("static", "dist", { recursive: true });
+// RNNoise's AudioWorklet script, loaded by native views for enhanced noise suppression.
+mkdirSync("dist/audio", { recursive: true });
+cpSync("node_modules/@sapphi-red/web-noise-suppressor/dist/rnnoise/workletProcessor.js", "dist/audio/rnnoise-worklet.js");
 
 await Promise.all([
   build({
@@ -47,6 +50,7 @@ await Promise.all([
     platform: "browser",
     format: "iife",
     outdir: "dist",
+    loader: { ".wasm": "binary" },
   }),
   // Module engines: sandboxed pages, served from dist/engines.
   build({
