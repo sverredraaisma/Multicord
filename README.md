@@ -75,12 +75,22 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
   - notifications that follow your Stoat notification settings.
 
   Self-hosted instances can be added with `"module": "stoat-native"` and the instance URL. The web client stays available as "Stoat (web)". Voice is not built in.
-- **Matrix, native:** a built-in Matrix client for any homeserver; matrix.org is the default, and Element stays available as a web view. It talks to the homeserver's API directly from its engine, with no SDK. You sign in with a password, or with an access token copied from Element where the homeserver has no password sign-in (as on matrix.org). It covers:
+- **Matrix, native:** a built-in Matrix client for any homeserver; matrix.org is the default, and Element stays available as a web view. It talks to the homeserver's API directly from its engine, with no SDK. There are three ways to sign in:
+  - **Your homeserver's account page, in the browser** (OAuth 2.0 with a code you confirm). matrix.org and other homeservers that run the Matrix Authentication Service give Multicord a device of its own this way, and your password never passes through Multicord.
+  - **A password**, where the homeserver offers password sign-in.
+  - **An access token copied from Element.**
+
+  It covers:
   - direct chats as DM bubbles and in the unified Messages page, with previews, unread counts and profile pictures, plus your other rooms in its sidebar;
   - history, sending, replying, and editing and deleting your own messages;
   - notifications for DMs and mentions.
 
-  End-to-end encryption is not supported. Encrypted messages show as such, and in encrypted rooms the composer is locked, so Multicord never sends an unencrypted message into one.
+  **End-to-end encryption.** On devices of its own, Multicord encrypts and decrypts with the Matrix Rust crypto library (WebAssembly) in its engine:
+  - it reads and sends in encrypted rooms, and marks messages from devices their owner has not verified;
+  - its keys live in the engine's encrypted, per-instance storage, which is deleted on sign-out;
+  - "Verify this device" takes your Element recovery key or security phrase. It imports your cross-signing keys, so your other devices trust this one, and restores the key backup, so older messages can be read. Verifying by comparing emoji is not supported yet.
+
+  With an access token, Multicord is using Element's own device, so encrypted rooms stay locked and nothing is ever sent unencrypted into them.
 
   Telegram gives API credentials per app (my.telegram.org, "API development tools"). Builds can include them via the `MULTICORD_TELEGRAM_API_ID` and `MULTICORD_TELEGRAM_API_HASH` environment variables; otherwise Multicord asks for an API ID and hash on first sign-in and stores them encrypted.
 - **Component gallery:** `npm run gallery` opens `dist/gallery.html`, which shows every component with sample data. Use it to check designs without signing in anywhere.

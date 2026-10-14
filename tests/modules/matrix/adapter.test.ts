@@ -1,16 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import { MatrixError, type MatrixApi, type MxEvent, type MxPage, type MxRoomUpdate, type MxSession, type MxSync } from "../../../src/modules/matrix/api";
+import { MatrixError, type MatrixApi, type MxCryptoSync, type MxEncryptedEvent, type MxEncryption, type MxEvent, type MxOAuthSession, type MxPage, type MxRoomUpdate, type MxSession, type MxSync } from "../../../src/modules/matrix/api";
 import {
+  ALGORITHM_NOTICE,
   AVATAR_LIMIT,
   ENCRYPTED_NOTICE,
   ENCRYPTED_TEXT,
   MatrixAdapter,
+  type MatrixAdapterDeps,
   messageText,
   PAGE_SIZE,
   parseSession,
   SYNC_TIMEOUT_MS,
+  TOKEN_NOTICE,
+  UNVERIFIED_LABEL,
 } from "../../../src/modules/matrix/adapter";
+import type { E2ee, E2eeOptions, E2eeStatus, RecoveryResult, RoomEncryption } from "../../../src/modules/matrix/crypto";
+import { OAuthError, type DeviceGrant, type DevicePoll, type OAuthServer, type OAuthTokens } from "../../../src/modules/matrix/oauth";
 import { MAX_DIRECTS } from "../../../src/shared/engine";
 import type { NativeAction, NativeViewState } from "../../../src/shared/native";
 
@@ -77,7 +83,11 @@ class FakeMatrixApi implements MatrixApi {
     return new Promise((resolve, reject) => (this.waiting = { resolve, reject }));
   });
   messages = vi.fn(async (_s: MxSession, _room: string, _from: string, _limit: number): Promise<MxPage> => ({ events: [], state: { members: {} } }));
-  encrypted = vi.fn(async (_s: MxSession, _room: string) => false);
+  check = vi.fn(async (_s: MxSession) => {});
+  encryption = vi.fn(async (_s: MxSession, _room: string): Promise<MxEncryption | undefined> => undefined);
+  members = vi.fn(async (_s: MxSession, _room: string): Promise<string[]> => [ME, BO]);
+  accountData = vi.fn(async (_s: MxSession, _type: string): Promise<Record<string, unknown> | undefined> => undefined);
+  request = vi.fn(async (_s: MxSession, _method: string, _path: string, _body?: unknown, _query?: Record<string, string>): Promise<Record<string, unknown>> => ({}));
   send = vi.fn(async (_s: MxSession, _room: string, _content: Record<string, unknown>) => `$sent${this.send.mock.calls.length}`);
   redact = vi.fn(async (_s: MxSession, _room: string, _id: string) => {});
   markRead = vi.fn(async (_s: MxSession, _room: string, _id: string) => {});
@@ -94,7 +104,7 @@ class FakeMatrixApi implements MatrixApi {
   }
 }
 
-function setup(secretsInit: Record<string, string> = {}, realDelay = false) {
+function setup(secretsInit: Record<string, string> = {}, realDelay = false, extra: Partial<MatrixAdapterDeps> = {}) {
   const api = new FakeMatrixApi();
   const secrets = new Map(Object.entries(secretsInit));
   const renders: NativeViewState[] = [];
@@ -111,6 +121,7 @@ function setup(secretsInit: Record<string, string> = {}, realDelay = false) {
     render: (state) => renders.push(state),
     api,
     delay: realDelay ? undefined : delay,
+    ...extra,
   });
   adapter.onDirectsChanged((d) => directs.push(d));
   adapter.onNotification((n) => notifications.push(n));
@@ -207,7 +218,7 @@ describe("starting", () => {
   it("resumes a stored session and syncs", async () => {
     const ctx = setup({ session: SESSION_JSON });
     await ctx.adapter.start();
-    expect(ctx.api.whoami).toHaveBeenCalledWith(BASE, "tok");
+    expect(ctx.api.check).toHaveBeenCalledWith(SESSION);
     expect(ctx.renders.map((r) => r.screen === "connecting" && r.status)).toEqual(["Connecting to x.org…", "Loading your chats…"]);
     expect(ctx.adapter.accountStatus()).toEqual({ state: "signed-in", name: ME });
     expect(ctx.api.sync).toHaveBeenCalledWith(SESSION, undefined, 0);
@@ -218,7 +229,7 @@ describe("starting", () => {
 
   it("signs in again when the stored session has ended", async () => {
     const ctx = setup({ session: SESSION_JSON });
-    ctx.api.whoami.mockRejectedValueOnce(new MatrixError(401, "M_UNKNOWN_TOKEN", "gone"));
+    ctx.api.check.mockRejectedValueOnce(new MatrixError(401, "M_UNKNOWN_TOKEN", "gone"));
     await ctx.adapter.start();
     expect(ctx.secrets.has("session")).toBe(false);
     expect(ctx.prompt()).toMatchObject({ prompt: { id: "login" }, error: "Your Matrix session has ended. Sign in again." });
@@ -227,7 +238,7 @@ describe("starting", () => {
 
   it("keeps the stored session when the homeserver is unreachable, and retries", async () => {
     const ctx = setup({ session: SESSION_JSON });
-    ctx.api.whoami.mockRejectedValueOnce("offline");
+    ctx.api.check.mockRejectedValueOnce("offline");
     await ctx.adapter.start();
     expect(ctx.prompt()).toMatchObject({ prompt: { id: "retry" }, error: "Could not reach x.org: offline" });
     expect(ctx.adapter.accountStatus()).toEqual({ state: "signed-in" });
@@ -386,7 +397,7 @@ describe("syncing", () => {
 
   it("keeps other errors when the connection comes back", async () => {
     const ctx = await signedIn();
-    ctx.api.encrypted.mockRejectedValueOnce(new Error("nope"));
+    ctx.api.encryption.mockRejectedValueOnce(new Error("nope"));
     await ctx.open("Bo");
     await ctx.act({ type: "send", content: "x" });
     await ctx.live(sync());
@@ -759,7 +770,7 @@ describe("sending", () => {
     const ctx = await signedIn();
     await ctx.open("Bo");
     await ctx.act({ type: "send", content: "hey *you*" });
-    expect(ctx.api.encrypted).toHaveBeenCalledWith(SESSION, "!dm:x.org");
+    expect(ctx.api.encryption).toHaveBeenCalledWith(SESSION, "!dm:x.org");
     expect(ctx.api.send).toHaveBeenCalledWith(SESSION, "!dm:x.org", { msgtype: "m.text", body: "hey *you*", "m.mentions": {} });
     expect(ctx.messages().at(-1)).toMatchObject({ content: "hey \\*you\\*", mine: true, canEdit: true });
     expect(ctx.directs.at(-1)![0]!.preview).toBe("hey *you*");
@@ -783,7 +794,7 @@ describe("sending", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     await ctx.act({ type: "send", content: "plaintext" });
-    expect(ctx.api.encrypted).not.toHaveBeenCalled();
+    expect(ctx.api.encryption).not.toHaveBeenCalled();
     expect(ctx.api.send).not.toHaveBeenCalled();
     expect(ctx.chat().error).toBe("Message not sent: this room is end-to-end encrypted, which Multicord does not support");
   });
@@ -791,12 +802,12 @@ describe("sending", () => {
   it("never sends when the server says the room is encrypted", async () => {
     const ctx = await signedIn();
     await ctx.open("Lounge");
-    ctx.api.encrypted.mockResolvedValueOnce(true);
+    ctx.api.encryption.mockResolvedValueOnce({ algorithm: "m.megolm.v1.aes-sha2" });
     await ctx.act({ type: "send", content: "plaintext" });
     expect(ctx.api.send).not.toHaveBeenCalled();
     expect(ctx.chat().channel!.locked).toBe(ENCRYPTED_NOTICE);
     await ctx.act({ type: "send", content: "again" });
-    expect(ctx.api.encrypted).toHaveBeenCalledTimes(1);
+    expect(ctx.api.encryption).toHaveBeenCalledTimes(1);
     expect(ctx.api.send).not.toHaveBeenCalled();
   });
 
@@ -1025,5 +1036,799 @@ describe("shell interface", () => {
     const renders = ctx.renders.length;
     for (const action of [{ type: "typing" }, { type: "attach" }, { type: "react", messageId: "1", emoji: "👍", add: true }] as NativeAction[]) await ctx.act(action);
     expect(ctx.renders).toHaveLength(renders);
+  });
+});
+
+// --- OAuth 2.0 sign-in ----------------------------------------------------------
+
+const OAUTH_SERVER: OAuthServer = {
+  issuer: "https://account.x.org/",
+  deviceEndpoint: "https://account.x.org/device",
+  tokenEndpoint: "https://account.x.org/token",
+  registrationEndpoint: "https://account.x.org/register",
+  revocationEndpoint: "https://account.x.org/revoke",
+};
+const grantOf = (extra: Partial<DeviceGrant> = {}): DeviceGrant => ({
+  deviceCode: "dc",
+  userCode: "ABC123",
+  verificationUri: "https://account.x.org/link",
+  expiresAt: Date.now() + 600_000,
+  interval: 5000,
+  ...extra,
+});
+const TOKENS = { accessToken: "at", refreshToken: "rt", expiresAt: 5_000_000_000_000 };
+
+function fakeOAuth() {
+  return {
+    discover: vi.fn(async (_base: string): Promise<OAuthServer | undefined> => OAUTH_SERVER),
+    register: vi.fn(async (_server: OAuthServer) => "client1"),
+    authorizeDevice: vi.fn(async (_server: OAuthServer, _client: string, _device: string) => grantOf()),
+    pollDevice: vi.fn(async (_server: OAuthServer, _client: string, _code: string): Promise<DevicePoll> => ({ state: "done", tokens: TOKENS })),
+    refresh: vi.fn(async (_session: MxOAuthSession): Promise<OAuthTokens> => ({ accessToken: "at2", refreshToken: "rt2", expiresAt: 6_000_000_000_000 })),
+    revoke: vi.fn(async (_session: MxOAuthSession, _token: string, _hint: string) => {}),
+  };
+}
+
+async function atOAuth(secretsInit: Record<string, string> = {}) {
+  const oauth = fakeOAuth();
+  const ctx = setup(secretsInit, false, { oauth });
+  await ctx.adapter.start();
+  return { ...ctx, oauth };
+}
+
+describe("signing in with OAuth 2.0", () => {
+  it("offers the browser first and cycles through the other ways", async () => {
+    const ctx = await atOAuth();
+    expect(ctx.oauth.discover).toHaveBeenCalledWith(BASE);
+    expect(ctx.prompt().prompt).toMatchObject({ id: "oauth", title: "Sign in to x.org", fields: [], submit: "Sign in with the browser", cancel: "Use a password instead" });
+    expect(ctx.prompt().prompt.description).toContain("account.x.org");
+    expect(ctx.prompt().prompt.description).toContain("Encrypted rooms cannot be read");
+    await ctx.act({ type: "cancelPrompt", id: "oauth" });
+    expect(ctx.prompt().prompt).toMatchObject({ id: "login", cancel: "Use an access token instead" });
+    await ctx.act({ type: "cancelPrompt", id: "login" });
+    expect(ctx.prompt().prompt).toMatchObject({ id: "token", cancel: "Sign in with the browser instead" });
+    expect(ctx.prompt().prompt.description).not.toContain("does not offer password sign-in");
+    await ctx.act({ type: "cancelPrompt", id: "token" });
+    expect(ctx.prompt().prompt.id).toBe("oauth");
+    // Stale or unknown cancels change nothing.
+    await ctx.act({ type: "cancelPrompt", id: "login" });
+    await ctx.act({ type: "cancelPrompt", id: "retry" });
+    expect(ctx.prompt().prompt.id).toBe("oauth");
+  });
+
+  it("skips the browser when there is no account server", async () => {
+    const oauth = fakeOAuth();
+    oauth.discover.mockRejectedValueOnce(new Error("offline"));
+    const ctx = setup({}, false, { oauth });
+    await ctx.adapter.start();
+    expect(ctx.prompt().prompt.id).toBe("login");
+  });
+
+  it("shows a code, waits for the approval and signs in with a device of its own", async () => {
+    const ctx = await atOAuth();
+    ctx.oauth.pollDevice.mockResolvedValueOnce({ state: "pending" }).mockResolvedValueOnce({ state: "slow_down" });
+    ctx.oauth.pollDevice.mockImplementationOnce(async () => {
+      expect(ctx.prompt()).toMatchObject({ status: "Waiting for you to approve the sign-in…", prompt: { id: "device", title: "Your code: ABC123", submit: "Get a new code", cancel: "Back" } });
+      expect(ctx.prompt().prompt.link).toEqual({ url: "https://account.x.org/link", label: "Open account.x.org" });
+      expect(ctx.prompt().prompt.description).toContain("enter the code ABC123");
+      return { state: "done", tokens: TOKENS };
+    });
+    ctx.api.whoami.mockResolvedValueOnce({ userId: ME, deviceId: "SERVERDEV1" });
+    await ctx.answer("oauth");
+    await flush();
+    expect(ctx.renders).toContainEqual({ screen: "connecting", platform: "Matrix", status: "Getting a sign-in code…" });
+    expect(ctx.oauth.register).toHaveBeenCalledWith(OAUTH_SERVER);
+    const deviceId = ctx.oauth.authorizeDevice.mock.calls[0]![2];
+    expect(deviceId).toMatch(/^[A-Z0-9]{10}$/);
+    // Slowed down: five seconds more between polls from then on.
+    expect(ctx.delay.mock.calls.map(([ms]) => ms)).toEqual([5000, 5000, 10000]);
+    expect(ctx.api.whoami).toHaveBeenCalledWith(BASE, "at");
+    const stored = JSON.parse(ctx.secrets.get("session")!);
+    expect(stored).toEqual({
+      baseUrl: BASE,
+      accessToken: "at",
+      userId: ME,
+      deviceId: "SERVERDEV1",
+      ownDevice: true,
+      oauth: { clientId: "client1", tokenEndpoint: OAUTH_SERVER.tokenEndpoint, revocationEndpoint: OAUTH_SERVER.revocationEndpoint, refreshToken: "rt", expiresAt: TOKENS.expiresAt },
+    });
+    expect(parseSession(ctx.secrets.get("session"))).toEqual(stored);
+    expect(JSON.parse(ctx.secrets.get("oauth-client")!)).toEqual({ issuer: OAUTH_SERVER.issuer, clientId: "client1" });
+    expect(ctx.adapter.accountStatus()).toEqual({ state: "signed-in", name: ME });
+  });
+
+  it("uses the requested device id when whoami names none, and the complete link when offered", async () => {
+    const ctx = await atOAuth({ "oauth-client": JSON.stringify({ issuer: OAUTH_SERVER.issuer, clientId: "kept" }) });
+    ctx.oauth.authorizeDevice.mockResolvedValueOnce(grantOf({ verificationUriComplete: "https://account.x.org/link?code=ABC123" }));
+    ctx.oauth.pollDevice.mockImplementationOnce(async () => {
+      expect(ctx.prompt().prompt.link!.url).toBe("https://account.x.org/link?code=ABC123");
+      return { state: "done", tokens: { accessToken: "at" } };
+    });
+    ctx.api.whoami.mockResolvedValueOnce({ userId: ME });
+    await ctx.answer("oauth");
+    await flush();
+    expect(ctx.oauth.register).not.toHaveBeenCalled();
+    expect(ctx.oauth.authorizeDevice).toHaveBeenCalledWith(OAUTH_SERVER, "kept", expect.any(String));
+    const stored = JSON.parse(ctx.secrets.get("session")!);
+    expect(stored.deviceId).toBe(ctx.oauth.authorizeDevice.mock.calls[0]![2]);
+    expect(stored.oauth).toEqual({ clientId: "kept", tokenEndpoint: OAUTH_SERVER.tokenEndpoint, revocationEndpoint: OAUTH_SERVER.revocationEndpoint });
+  });
+
+  it.each([
+    ["for another server", JSON.stringify({ issuer: "https://other.org/", clientId: "old" })],
+    ["that is not ours", "{nope"],
+    ["without an id", JSON.stringify({ issuer: OAUTH_SERVER.issuer, clientId: "" })],
+  ])("registers again with a stored client id %s", async (_name, stored) => {
+    const ctx = await atOAuth({ "oauth-client": stored });
+    await ctx.answer("oauth");
+    await flush();
+    expect(ctx.oauth.register).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["denied", "The sign-in was declined."],
+    ["expired", "The code expired. Get a new one to try again."],
+  ] as const)("goes back when the code is %s", async (state, error) => {
+    const ctx = await atOAuth();
+    ctx.oauth.pollDevice.mockResolvedValueOnce({ state });
+    await ctx.answer("oauth");
+    await flush();
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "oauth" }, error });
+  });
+
+  it("gives up when the code ran out, or the server refuses, and keeps polling through network trouble", async () => {
+    const ctx = await atOAuth();
+    ctx.oauth.authorizeDevice.mockResolvedValueOnce(grantOf({ expiresAt: Date.now() - 1 }));
+    await ctx.answer("oauth");
+    await flush();
+    expect(ctx.prompt().error).toBe("The code expired. Get a new one to try again.");
+    expect(ctx.oauth.pollDevice).not.toHaveBeenCalled();
+
+    ctx.oauth.pollDevice.mockRejectedValueOnce(new Error("offline")).mockRejectedValueOnce(new OAuthError("invalid_client", "Unknown client"));
+    await ctx.answer("oauth");
+    await flush();
+    expect(ctx.oauth.pollDevice).toHaveBeenCalledTimes(2);
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "oauth" }, error: "Signing in failed: Unknown client" });
+  });
+
+  it("says when a code cannot be had", async () => {
+    const ctx = await atOAuth();
+    ctx.oauth.register.mockRejectedValueOnce(new OAuthError("unauthorized_client", "This server does not let apps sign in with a code"));
+    await ctx.answer("oauth");
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "oauth" }, error: "Could not start signing in: This server does not let apps sign in with a code" });
+  });
+
+  it("stops waiting on Back, and starts over with a new code", async () => {
+    const ctx = await atOAuth();
+    let release!: () => void;
+    ctx.delay.mockImplementationOnce(() => new Promise<void>((resolve) => (release = resolve)));
+    await ctx.answer("oauth");
+    await ctx.act({ type: "cancelPrompt", id: "device" });
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "oauth" } });
+    release();
+    await flush();
+    expect(ctx.oauth.pollDevice).not.toHaveBeenCalled();
+    expect(ctx.secrets.has("session")).toBe(false);
+
+    // A new code replaces the one on screen; the old one's poll finds itself abandoned.
+    let releaseFirst!: () => void;
+    ctx.delay.mockImplementationOnce(() => new Promise<void>((resolve) => (releaseFirst = resolve)));
+    ctx.oauth.authorizeDevice.mockResolvedValueOnce(grantOf({ userCode: "FIRST1" }));
+    await ctx.answer("oauth");
+    let releaseSecond!: () => void;
+    ctx.delay.mockImplementationOnce(() => new Promise<void>((resolve) => (releaseSecond = resolve)));
+    await ctx.answer("device");
+    expect(ctx.oauth.authorizeDevice).toHaveBeenCalledTimes(3);
+    releaseFirst();
+    await flush();
+    expect(ctx.oauth.pollDevice).not.toHaveBeenCalled();
+    releaseSecond();
+    await flush();
+    expect(ctx.oauth.pollDevice).toHaveBeenCalledTimes(1);
+    expect(ctx.adapter.accountStatus().state).toBe("signed-in");
+  });
+
+  it("drops a code abandoned while it was being fetched", async () => {
+    const ctx = await atOAuth();
+    let resolve!: (grant: DeviceGrant) => void;
+    ctx.oauth.authorizeDevice.mockImplementationOnce(() => new Promise((r) => (resolve = r)));
+    const first = ctx.answer("oauth");
+    await flush();
+    ctx.oauth.authorizeDevice.mockRejectedValueOnce(new Error("later failure"));
+    // The view only offers the device screen's buttons once the code is there, but a second answer may race.
+    (ctx.adapter as unknown as { step: string }).step = "oauth";
+    await ctx.answer("oauth");
+    resolve(grantOf());
+    await first;
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "oauth" }, error: "Could not start signing in: later failure" });
+  });
+
+  it("revokes the tokens of a sign-in abandoned or failed after approval", async () => {
+    const ctx = await atOAuth();
+    let approve!: (poll: DevicePoll) => void;
+    ctx.oauth.pollDevice.mockImplementationOnce(() => new Promise((r) => (approve = r)));
+    await ctx.answer("oauth");
+    await flush();
+    await ctx.act({ type: "cancelPrompt", id: "device" });
+    approve({ state: "done", tokens: TOKENS });
+    await flush();
+    expect(ctx.oauth.revoke).toHaveBeenCalledWith(expect.objectContaining({ clientId: "client1", refreshToken: "rt" }), "rt", "refresh_token");
+    expect(ctx.api.whoami).not.toHaveBeenCalled();
+
+    // Back while checking the new token.
+    let who!: (value: { userId: string }) => void;
+    ctx.api.whoami.mockImplementationOnce(() => new Promise((r) => (who = r)));
+    await ctx.answer("oauth");
+    await flush();
+    await ctx.act({ type: "cancelPrompt", id: "device" });
+    who({ userId: ME });
+    await flush();
+    expect(ctx.oauth.revoke).toHaveBeenCalledTimes(2);
+    expect(ctx.secrets.has("session")).toBe(false);
+
+    // The token does not work.
+    ctx.oauth.pollDevice.mockResolvedValueOnce({ state: "done", tokens: { accessToken: "bad" } });
+    ctx.api.whoami.mockRejectedValueOnce(new MatrixError(401, "M_UNKNOWN_TOKEN", "x"));
+    await ctx.answer("oauth");
+    await flush();
+    expect(ctx.oauth.revoke).toHaveBeenLastCalledWith(expect.anything(), "bad", "access_token");
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "oauth" }, error: "Signing in failed: That access token is not valid (anymore)." });
+  });
+});
+
+describe("OAuth sessions", () => {
+  const OAUTH_SESSION: MxSession = { ...SESSION, oauth: { clientId: "client1", tokenEndpoint: OAUTH_SERVER.tokenEndpoint, revocationEndpoint: OAUTH_SERVER.revocationEndpoint, refreshToken: "rt", expiresAt: 1000 } };
+
+  it("reads only stored OAuth details we wrote", () => {
+    const stored = (oauth: unknown) => parseSession(JSON.stringify({ ...SESSION, oauth }));
+    expect(stored(OAUTH_SESSION.oauth)).toEqual(OAUTH_SESSION);
+    expect(stored({ clientId: "c", tokenEndpoint: "https://a.org/t" })).toEqual({ ...SESSION, oauth: { clientId: "c", tokenEndpoint: "https://a.org/t" } });
+    for (const bad of [{ clientId: "" }, { clientId: 1 }, { tokenEndpoint: "http://a.org" }, { revocationEndpoint: "x" }, { refreshToken: "" }, { refreshToken: 5 }, { expiresAt: "soon" }]) {
+      expect(stored({ ...OAUTH_SESSION.oauth, ...bad })).toBeUndefined();
+    }
+  });
+
+  it("refreshes tokens in place and stores them", async () => {
+    const oauth = fakeOAuth();
+    const ctx = setup({ session: JSON.stringify(OAUTH_SESSION) }, false, { oauth });
+    await ctx.adapter.start();
+    const session = ctx.api.check.mock.calls[0]![0];
+    await ctx.adapter.refreshSession(session);
+    expect(oauth.refresh).toHaveBeenCalledWith(session.oauth);
+    expect(session).toMatchObject({ accessToken: "at2", oauth: { refreshToken: "rt2", expiresAt: 6_000_000_000_000 } });
+    expect(JSON.parse(ctx.secrets.get("session")!).accessToken).toBe("at2");
+  });
+
+  it("ends the session when the account server refuses to refresh, and retries network failures later", async () => {
+    const oauth = fakeOAuth();
+    const ctx = setup({ session: JSON.stringify(OAUTH_SESSION) }, false, { oauth });
+    await ctx.adapter.start();
+    const session = ctx.api.check.mock.calls[0]![0];
+    oauth.refresh.mockRejectedValueOnce(new OAuthError("invalid_grant", "revoked"));
+    await expect(ctx.adapter.refreshSession(session)).rejects.toMatchObject({ status: 401, errcode: "M_UNKNOWN_TOKEN" });
+    oauth.refresh.mockRejectedValueOnce(new Error("offline"));
+    await expect(ctx.adapter.refreshSession(session)).rejects.toThrow("offline");
+    await expect(ctx.adapter.refreshSession(SESSION)).rejects.toMatchObject({ status: 401 });
+    const plain = setup();
+    await expect(plain.adapter.refreshSession(OAUTH_SESSION)).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("does not store a refresh that lands after signing out", async () => {
+    const oauth = fakeOAuth();
+    const ctx = setup({ session: JSON.stringify(OAUTH_SESSION) }, false, { oauth });
+    await ctx.adapter.start();
+    const session = ctx.api.check.mock.calls[0]![0];
+    await ctx.adapter.signOut();
+    await ctx.adapter.refreshSession(session);
+    expect(ctx.secrets.has("session")).toBe(false);
+  });
+
+  it("signs out by revoking the refresh token, or else the access token", async () => {
+    const oauth = fakeOAuth();
+    const ctx = setup({}, false, { oauth });
+    ctx.api.push(initialSync());
+    ctx.secrets.set("session", JSON.stringify(OAUTH_SESSION));
+    await ctx.adapter.start();
+    await flush();
+    oauth.revoke.mockRejectedValueOnce(new Error("offline"));
+    await ctx.adapter.signOut();
+    expect(oauth.revoke).toHaveBeenCalledWith(OAUTH_SESSION.oauth, "rt", "refresh_token");
+    expect(ctx.api.logout).not.toHaveBeenCalled();
+    expect(ctx.secrets.has("session")).toBe(false);
+
+    const { refreshToken: _r, ...withoutRefresh } = OAUTH_SESSION.oauth!;
+    ctx.secrets.set("session", JSON.stringify({ ...OAUTH_SESSION, oauth: withoutRefresh }));
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.signOut();
+    expect(oauth.revoke).toHaveBeenLastCalledWith(withoutRefresh, "tok", "access_token");
+  });
+});
+
+// --- End-to-end encryption ----------------------------------------------------------
+
+const ROOM_ENCRYPTION: MxEncryption = { algorithm: "m.megolm.v1.aes-sha2" };
+
+class FakeE2ee implements E2ee {
+  /** What each event decrypts to; events not listed stay encrypted. */
+  readonly clear = new Map<string, MxEvent | undefined>();
+  keys: (sessions: string[]) => void = () => {};
+  receiveSync = vi.fn(async (_sync: MxCryptoSync) => {});
+  decrypt = vi.fn(async (_room: string, event: MxEncryptedEvent): Promise<MxEvent | undefined> =>
+    this.clear.has(event.id) ? this.clear.get(event.id) : { ...event, problem: "the key has not arrived (yet)" },
+  );
+  encrypt = vi.fn(async (_room: string, _settings: RoomEncryption, _members: string[], _type: string, _content: Record<string, unknown>) => ({ algorithm: "m.megolm.v1.aes-sha2", ciphertext: "secret" }));
+  status = vi.fn(async (): Promise<E2eeStatus> => ({ verified: false, backup: false }));
+  recover = vi.fn(async (_input: string): Promise<RecoveryResult> => ({ verified: true, backup: true, imported: 3 }));
+  onKeys = vi.fn((callback: (sessions: string[]) => void) => void (this.keys = callback));
+  close = vi.fn();
+}
+
+const encRaw = (id: string, sender: string, ts: number, extra: Partial<MxEncryptedEvent> = {}): MxEncryptedEvent => ({ kind: "encrypted", id: `$${id}`, sender, ts, raw: `{"event_id":"$${id}"}`, sessionId: "S1", ...extra });
+
+/** A signed-in adapter with encryption: a DM with Bo and an encrypted room, both with encrypted events. */
+async function withCrypto(options: { session?: MxSession; first?: MxSync; secrets?: Record<string, string> } = {}) {
+  const e2ee = new FakeE2ee();
+  e2ee.clear.set("$c1", msg("c1", BO, "decrypted hello", 3000));
+  const crypto = { open: vi.fn(async (_options: E2eeOptions): Promise<E2ee> => e2ee), deleteStore: vi.fn(async (_name: string) => {}) };
+  const log = vi.fn();
+  const ctx = setup({ session: JSON.stringify(options.session ?? SESSION), ...options.secrets }, false, { crypto, log });
+  ctx.api.push(
+    options.first ??
+      sync({
+        directs: { [BO]: ["!dm:x.org"] },
+        joined: [
+          room("!dm:x.org", { state: { encrypted: true, encryption: ROOM_ENCRYPTION, members: { [BO]: { name: "Bo", membership: "join" } } }, timeline: [encRaw("c1", BO, 3000), encRaw("c2", BO, 4000)] }),
+          room("!sec:x.org", { state: { name: "Secret", encrypted: true, encryption: ROOM_ENCRYPTION, history: "joined", members: {} }, timeline: [msg("p1", ANA, "plain", 100)] }),
+        ],
+        crypto: { toDevice: "[]", changed: [ME], left: [], oneTimeKeys: { signed_curve25519: 50 } },
+      }),
+  );
+  await ctx.adapter.start();
+  await flush();
+  return { ...ctx, e2ee, crypto, log };
+}
+
+describe("end-to-end encryption", () => {
+  it("opens the device's own key store, made once with a random passphrase", async () => {
+    const ctx = await withCrypto();
+    const options = ctx.crypto.open.mock.calls[0]![0];
+    expect(options).toMatchObject({ userId: ME, deviceId: "D", store: { name: "multicord:matrix-native:@me:x.org:D" } });
+    expect(options.store!.passphrase.length).toBeGreaterThanOrEqual(32);
+    expect(JSON.parse(ctx.secrets.get("crypto-store")!)).toEqual(options.store);
+    // Its requests go out as this session.
+    await options.http("POST", "/v3/keys/upload", { a: 1 }, { b: "2" });
+    expect(ctx.api.request).toHaveBeenCalledWith(SESSION, "POST", "/v3/keys/upload", { a: 1 }, { b: "2" });
+    await options.accountData("m.secret_storage.default_key");
+    expect(ctx.api.accountData).toHaveBeenCalledWith(SESSION, "m.secret_storage.default_key");
+    options.log!("x");
+    expect(ctx.log).toHaveBeenCalledWith("x");
+    expect(ctx.e2ee.receiveSync).toHaveBeenCalledWith({ toDevice: "[]", changed: [ME], left: [], oneTimeKeys: { signed_curve25519: 50 } });
+  });
+
+  it("keeps the store for the same device and deletes another device's", async () => {
+    const same = await withCrypto({ secrets: { "crypto-store": JSON.stringify({ name: "multicord:matrix-native:@me:x.org:D", passphrase: "p".repeat(44) }) } });
+    expect(same.crypto.open.mock.calls[0]![0].store).toEqual({ name: "multicord:matrix-native:@me:x.org:D", passphrase: "p".repeat(44) });
+    expect(same.crypto.deleteStore).not.toHaveBeenCalled();
+    const other = await withCrypto({ secrets: { "crypto-store": JSON.stringify({ name: "old-store", passphrase: "p".repeat(44) }) } });
+    expect(other.crypto.deleteStore).toHaveBeenCalledWith("old-store");
+    expect(JSON.parse(other.secrets.get("crypto-store")!).name).toBe("multicord:matrix-native:@me:x.org:D");
+    const junk = await withCrypto({ secrets: { "crypto-store": "{nope" } });
+    expect(junk.crypto.deleteStore).not.toHaveBeenCalled();
+  });
+
+  it("decrypts the timeline, and says why where it cannot", async () => {
+    const ctx = await withCrypto();
+    await ctx.open("Bo");
+    expect(ctx.messages().map((m) => [m.author, m.content])).toEqual([
+      ["Bo", "decrypted hello"],
+      ["Bo", "🔒 Unable to decrypt: the key has not arrived (yet)"],
+    ]);
+    expect(ctx.chat().channel!.locked).toBeUndefined();
+    expect(ctx.directs.at(-1)![0]!.preview).toBe("🔒 Encrypted message");
+  });
+
+  it("notifies with the decrypted text, and marks unverified devices", async () => {
+    const ctx = await withCrypto();
+    ctx.e2ee.clear.set("$c3", { ...(msg("c3", BO, "news", 5000) as Extract<MxEvent, { kind: "message" }>), unverified: "Encrypted by a device not verified by its owner." });
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [encRaw("c3", BO, 5000)] })] }));
+    expect(ctx.notifications.at(-1)).toMatchObject({ title: "Bo", body: "news" });
+    await ctx.open("Bo");
+    expect(ctx.messages().at(-1)).toMatchObject({ author: `Bo · ${UNVERIFIED_LABEL}`, content: "news" });
+  });
+
+  it("carries on when handing a sync to the crypto state fails, or a decryption throws", async () => {
+    const ctx = await withCrypto();
+    ctx.e2ee.receiveSync.mockRejectedValueOnce(new Error("keys upload failed"));
+    ctx.e2ee.decrypt.mockRejectedValueOnce(new Error("broken"));
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [encRaw("c4", BO, 6000)] })], crypto: { toDevice: "[]", changed: [], left: [], oneTimeKeys: {} } }));
+    expect(ctx.log).toHaveBeenCalledWith("Encryption sync: keys upload failed");
+    await ctx.open("Bo");
+    expect(ctx.messages().at(-1)!.content).toBe("🔒 Unable to decrypt: broken");
+  });
+
+  it("decrypts events again when their keys arrive", async () => {
+    const ctx = await withCrypto({
+      first: sync({
+        directs: { [BO]: ["!dm:x.org"] },
+        joined: [
+          room("!dm:x.org", {
+            state: { encrypted: true, encryption: ROOM_ENCRYPTION, members: { [BO]: { name: "Bo", membership: "join" } } },
+            timeline: [msg("m0", ME, "original", 500), encRaw("k1", BO, 1000), encRaw("k2", BO, 2000), encRaw("k3", BO, 3000), encRaw("k4", ME, 4000, { sessionId: "S2" }), encRaw("k5", BO, 5000, { raw: undefined })],
+          }),
+        ],
+      }),
+    });
+    await ctx.open("Bo");
+    expect(ctx.messages()).toHaveLength(6);
+    ctx.e2ee.decrypt.mockClear();
+    ctx.e2ee.clear.set("$k1", msg("k1", BO, "now readable", 1000));
+    // An edit, and an event of a type that is not shown.
+    ctx.e2ee.clear.set("$k2", msg("k2", ME, "edited", 2000, { replaces: "$m0", sender: ME }));
+    ctx.e2ee.clear.set("$k3", undefined);
+    ctx.e2ee.keys(["S1"]);
+    await flush();
+    // Only events of that session, and only those that can be decrypted at all.
+    expect(ctx.e2ee.decrypt.mock.calls.map(([, e]) => e.id)).toEqual(["$k1", "$k2", "$k3"]);
+    expect(ctx.messages().map((m) => m.content)).toEqual(["edited", "now readable", "🔒 Unable to decrypt: the key has not arrived (yet)", "🔒 Unable to decrypt: the key has not arrived (yet)"]);
+    // Still nothing new: no re-render.
+    const renders = ctx.renders.length;
+    ctx.e2ee.keys(["S9"]);
+    await flush();
+    expect(ctx.renders).toHaveLength(renders);
+  });
+
+  it("leaves out encrypted edits it cannot read, live and in history", async () => {
+    const ctx = await withCrypto();
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [encRaw("e1", BO, 7000, { replaces: "$c1" })] })] }));
+    ctx.api.messages.mockResolvedValueOnce({ events: [encRaw("h1", BO, 10, { replaces: "$c1" }), encRaw("h2", BO, 20)], state: { members: {} } });
+    (ctx.adapter as unknown as { rooms: Map<string, { prevBatch?: string }> }).rooms.get("!dm:x.org")!.prevBatch = "p";
+    await ctx.open("Bo");
+    await ctx.act({ type: "loadOlder" });
+    await flush();
+    expect(ctx.messages().map((m) => m.id)).not.toContain(undefined);
+    expect(ctx.e2ee.decrypt.mock.calls.map(([, e]) => e.id)).toEqual(expect.arrayContaining(["$e1", "$h1", "$h2"]));
+    expect(ctx.messages()).toHaveLength(3);
+  });
+
+  it("encrypts messages for the room's members, fetching them once", async () => {
+    const ctx = await withCrypto();
+    await ctx.open("Secret");
+    await ctx.act({ type: "send", content: "hush" });
+    expect(ctx.api.encryption).not.toHaveBeenCalled();
+    expect(ctx.api.members).toHaveBeenCalledWith(SESSION, "!sec:x.org");
+    expect(ctx.e2ee.encrypt).toHaveBeenCalledWith("!sec:x.org", { encryption: ROOM_ENCRYPTION, history: "joined" }, [ME, BO], "m.room.message", { msgtype: "m.text", body: "hush", "m.mentions": {} });
+    expect(ctx.api.send).toHaveBeenCalledWith(SESSION, "!sec:x.org", { algorithm: "m.megolm.v1.aes-sha2", ciphertext: "secret" }, "m.room.encrypted");
+    expect(ctx.messages().at(-1)).toMatchObject({ content: "hush", mine: true, canEdit: true });
+
+    // Membership changes keep the list current; a gap makes it fetched again.
+    await ctx.live(sync({ joined: [room("!sec:x.org", { state: { members: { [ANA]: { membership: "join" }, [BO]: { membership: "leave" } } } })] }));
+    await ctx.act({ type: "send", content: "again" });
+    expect(ctx.e2ee.encrypt.mock.calls[1]![2]).toEqual([ME, ANA]);
+    expect(ctx.api.members).toHaveBeenCalledTimes(1);
+    await ctx.live(sync({ joined: [room("!sec:x.org", { limited: true })] }));
+    await ctx.act({ type: "send", content: "third" });
+    expect(ctx.api.members).toHaveBeenCalledTimes(2);
+
+    // Edits are encrypted too.
+    const mine = ctx.messages().find((m) => m.content === "third")!;
+    await ctx.act({ type: "edit", messageId: mine.id, content: "3rd" });
+    expect(ctx.e2ee.encrypt.mock.calls.at(-1)![4]).toMatchObject({ "m.new_content": { body: "3rd" }, "m.relates_to": { rel_type: "m.replace" } });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!sec:x.org", expect.anything(), "m.room.encrypted");
+  });
+
+  it("encrypts in a room the server says turned encrypted", async () => {
+    const ctx = await withCrypto();
+    ctx.api.push(sync({ joined: [room("!plain:x.org", { state: { name: "Plain", members: {} } })] }));
+    await flush();
+    ctx.api.encryption.mockResolvedValueOnce(ROOM_ENCRYPTION);
+    await ctx.open("Plain");
+    await ctx.act({ type: "send", content: "hi" });
+    expect(ctx.e2ee.encrypt).toHaveBeenCalledWith("!plain:x.org", { encryption: ROOM_ENCRYPTION, history: undefined }, [ME, BO], "m.room.message", expect.anything());
+  });
+
+  it("refuses rooms with an algorithm it does not know", async () => {
+    const ctx = await withCrypto();
+    await ctx.live(sync({ joined: [room("!odd:x.org", { state: { name: "Odd", encrypted: true, encryption: { algorithm: "m.olm.v2" }, members: {} } })] }));
+    await ctx.open("Odd");
+    expect(ctx.chat().channel!.locked).toBe(ALGORITHM_NOTICE);
+    await ctx.act({ type: "send", content: "hi" });
+    expect(ctx.chat().error).toBe("Message not sent: this room uses an encryption algorithm Multicord does not support");
+    expect(ctx.e2ee.encrypt).not.toHaveBeenCalled();
+  });
+
+  it("keeps encrypted rooms locked for sessions on another app's device", async () => {
+    const ctx = await withCrypto({ session: { ...SESSION, ownDevice: false } });
+    expect(ctx.crypto.open).not.toHaveBeenCalled();
+    await ctx.open("Secret");
+    expect(ctx.chat().channel!.locked).toBe(TOKEN_NOTICE);
+    await ctx.act({ type: "send", content: "hi" });
+    expect(ctx.chat().error).toBe("Message not sent: this room is end-to-end encrypted, and with an access token Multicord cannot encrypt");
+    const tokenPrompt = setup({}, false, { crypto: { open: vi.fn(), deleteStore: vi.fn() } });
+    tokenPrompt.api.flows = { password: false };
+    await tokenPrompt.adapter.start();
+    expect(tokenPrompt.prompt().prompt.description).toContain("Encrypted rooms stay locked");
+  });
+
+  it("locks encrypted rooms when encryption could not start, saying why", async () => {
+    const e2ee = new FakeE2ee();
+    const crypto = { open: vi.fn(async (): Promise<E2ee> => Promise.reject(new Error("IndexedDB is not available"))), deleteStore: vi.fn(async () => {}) };
+    const log = vi.fn();
+    const ctx = setup({ session: SESSION_JSON }, false, { crypto, log });
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    await flush();
+    await ctx.open("Secret");
+    expect(ctx.chat().channel!.locked).toBe("🔒 This room is end-to-end encrypted, but encryption could not start (IndexedDB is not available). Nothing is sent here until it does; restart Multicord to try again.");
+    expect(log).toHaveBeenCalledWith("Encryption could not start: IndexedDB is not available");
+    await ctx.act({ type: "send", content: "hi" });
+    expect(ctx.chat().error).toBe("Message not sent: encryption could not start (IndexedDB is not available)");
+    expect(e2ee.encrypt).not.toHaveBeenCalled();
+    // Without a reason the notice still says it.
+    (ctx.adapter as unknown as { cryptoProblem?: string }).cryptoProblem = undefined;
+    await ctx.act({ type: "ready" });
+    expect(ctx.chat().channel!.locked).toContain("encryption could not start. Nothing is sent");
+  });
+
+  it("closes a crypto state that opened after signing out", async () => {
+    const e2ee = new FakeE2ee();
+    let open!: (value: E2ee) => void;
+    const crypto = { open: vi.fn(() => new Promise<E2ee>((resolve) => (open = resolve))), deleteStore: vi.fn(async () => {}) };
+    const ctx = setup({ session: SESSION_JSON }, false, { crypto });
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.signOut();
+    open(e2ee);
+    await flush();
+    expect(e2ee.close).toHaveBeenCalled();
+    expect(ctx.api.sync).not.toHaveBeenCalled();
+  });
+
+  it("deletes the key store on sign-out and when the session ends", async () => {
+    const ctx = await withCrypto();
+    const name = JSON.parse(ctx.secrets.get("crypto-store")!).name;
+    ctx.crypto.deleteStore.mockRejectedValueOnce(new Error("blocked"));
+    await ctx.adapter.signOut();
+    expect(ctx.e2ee.close).toHaveBeenCalled();
+    expect(ctx.crypto.deleteStore).toHaveBeenCalledWith(name);
+    expect(ctx.log).toHaveBeenCalledWith("Key store not deleted: blocked");
+    expect(ctx.secrets.has("crypto-store")).toBe(false);
+
+    const ended = await withCrypto();
+    await ended.live(new MatrixError(401, "M_UNKNOWN_TOKEN", "gone"));
+    expect(ended.crypto.deleteStore).toHaveBeenCalledWith(name);
+    expect(ended.secrets.has("crypto-store")).toBe(false);
+  });
+});
+
+describe("verifying with the recovery key", () => {
+  const verifyItem = (ctx: Awaited<ReturnType<typeof withCrypto>>) => ctx.chat().sidebar.find((i) => i.name === "🔑 Verify this device");
+
+  it("offers verification until the device is verified", async () => {
+    const ctx = await withCrypto();
+    expect(ctx.chat().sidebar.slice(0, 2)).toMatchObject([{ id: "security", name: "Encryption", kind: "category" }, { name: "🔑 Verify this device", kind: "text" }]);
+    await ctx.act({ type: "select", channelId: verifyItem(ctx)!.id });
+    expect(ctx.prompt().prompt).toMatchObject({ id: "recovery", title: "Verify this device", submit: "Verify", cancel: "Not now", fields: [{ name: "key", type: "password" }] });
+    expect(ctx.prompt().prompt.description).toContain("comparing emoji) is not supported yet; use your recovery key");
+    // Syncs carry on behind the screen without leaving it, and so do sync failures.
+    await ctx.live(sync({}));
+    expect(ctx.prompt().prompt.id).toBe("recovery");
+    await ctx.live(new Error("offline"));
+    expect(ctx.prompt().prompt.id).toBe("recovery");
+    expect(ctx.prompt().status).toBeUndefined();
+    // Selecting it again from there does nothing.
+    await ctx.act({ type: "select", channelId: "1" });
+    await ctx.act({ type: "cancelPrompt", id: "recovery" });
+    expect(ctx.chat()).toBeDefined();
+  });
+
+  it("verifies, restores keys and decrypts what it now can", async () => {
+    const ctx = await withCrypto();
+    await ctx.act({ type: "select", channelId: verifyItem(ctx)!.id });
+    let finish!: (result: RecoveryResult) => void;
+    ctx.e2ee.recover.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    const answering = ctx.answer("recovery", { key: "  EsTc abcd  " });
+    expect(ctx.prompt()).toMatchObject({ busy: true, status: "Verifying… restoring keys can take a moment." });
+    // A second submit while busy is ignored.
+    await ctx.answer("recovery", { key: "again" });
+    expect(ctx.e2ee.recover).toHaveBeenCalledTimes(1);
+    expect(ctx.e2ee.recover).toHaveBeenCalledWith("EsTc abcd");
+    ctx.e2ee.clear.set("$c2", msg("c2", BO, "restored", 4000));
+    finish({ verified: true, backup: true, imported: 3 });
+    await answering;
+    await flush();
+    expect(verifyItem(ctx)).toBeUndefined();
+    await ctx.open("Bo");
+    expect(ctx.messages().map((m) => m.content)).toEqual(["decrypted hello", "restored"]);
+  });
+
+  it("shows what went wrong and stays on the screen", async () => {
+    const ctx = await withCrypto();
+    await ctx.act({ type: "select", channelId: verifyItem(ctx)!.id });
+    ctx.e2ee.recover.mockRejectedValueOnce(new Error("That recovery key is not right."));
+    await ctx.answer("recovery", {});
+    expect(ctx.e2ee.recover).toHaveBeenCalledWith("");
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "recovery" }, busy: false, error: "That recovery key is not right." });
+  });
+
+  it("checks the device's status again when its own keys change, and ignores failures", async () => {
+    const ctx = await withCrypto();
+    expect(ctx.e2ee.status).toHaveBeenCalledTimes(1);
+    ctx.e2ee.status.mockResolvedValueOnce({ verified: true, backup: false });
+    await ctx.live(sync({ crypto: { toDevice: "[]", changed: [ME], left: [], oneTimeKeys: {} } }));
+    expect(verifyItem(ctx)).toBeUndefined();
+    await ctx.live(sync({ crypto: { toDevice: "[]", changed: [BO], left: [], oneTimeKeys: {} } }));
+    expect(ctx.e2ee.status).toHaveBeenCalledTimes(2);
+    ctx.e2ee.status.mockRejectedValueOnce(new Error("x"));
+    await ctx.live(sync({ crypto: { toDevice: "[]", changed: [ME], left: [], oneTimeKeys: {} } }));
+    expect(verifyItem(ctx)).toBeUndefined();
+  });
+
+  it("drops a recovery that finishes after signing out", async () => {
+    const ctx = await withCrypto();
+    await ctx.act({ type: "select", channelId: verifyItem(ctx)!.id });
+    let finish!: (result: RecoveryResult) => void;
+    ctx.e2ee.recover.mockImplementationOnce(() => new Promise((resolve) => (finish = resolve)));
+    const answering = ctx.answer("recovery", { key: "k" });
+    await ctx.adapter.signOut();
+    finish({ verified: true, backup: true, imported: 0 });
+    await answering;
+    expect(ctx.prompt().prompt.id).toBe("login");
+  });
+});
+
+describe("encryption edge cases", () => {
+  it("keeps placeholders whose keys still do not work, and copes with failures and removals meanwhile", async () => {
+    const ctx = await withCrypto();
+    await ctx.open("Bo");
+    // Still no key, then a throwing decryption: both stay as they were.
+    ctx.e2ee.keys(["S1"]);
+    await flush();
+    ctx.e2ee.decrypt.mockRejectedValueOnce(new Error("broken"));
+    ctx.e2ee.keys(["S1"]);
+    await flush();
+    expect(ctx.messages().at(-1)!.content).toBe("🔒 Unable to decrypt: the key has not arrived (yet)");
+
+    // The event is redacted while it is being decrypted.
+    let decrypted!: (event: MxEvent) => void;
+    ctx.e2ee.decrypt.mockImplementationOnce(() => new Promise((resolve) => (decrypted = resolve)));
+    ctx.e2ee.keys(["S1"]);
+    await flush();
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [{ kind: "redaction", id: "$r1", sender: BO, ts: 9000, redacts: "$c2" }] })] }));
+    decrypted(msg("c2", BO, "too late", 4000));
+    await flush();
+    expect(ctx.messages().map((m) => m.content)).toEqual(["decrypted hello"]);
+  });
+
+  it("stops decrypting again once signed out", async () => {
+    const ctx = await withCrypto();
+    let decrypted!: (event: MxEvent) => void;
+    ctx.e2ee.decrypt.mockImplementationOnce(() => new Promise((resolve) => (decrypted = resolve)));
+    ctx.e2ee.keys(["S1"]);
+    await flush();
+    await ctx.adapter.signOut();
+    decrypted(msg("c2", BO, "late", 4000));
+    ctx.e2ee.keys(["S1"]);
+    await flush();
+    expect(ctx.e2ee.decrypt).toHaveBeenCalledTimes(3);
+  });
+
+  it("drops decrypted events of types that are not shown", async () => {
+    const ctx = await withCrypto();
+    ctx.e2ee.clear.set("$x1", undefined);
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [encRaw("x1", BO, 8000)] })] }));
+    await ctx.open("Bo");
+    expect(ctx.messages()).toHaveLength(2);
+  });
+
+  it("stops a sync whose decryption outlasts the session", async () => {
+    const ctx = await withCrypto();
+    let received!: () => void;
+    ctx.e2ee.receiveSync.mockImplementationOnce(() => new Promise<void>((resolve) => (received = resolve)));
+    ctx.api.push(sync({ joined: [room("!dm:x.org", { timeline: [msg("late", BO, "late", 9000)] })], crypto: { toDevice: "[]", changed: [], left: [], oneTimeKeys: {} } }));
+    await flush();
+    await ctx.adapter.signOut();
+    received();
+    await flush();
+    expect(ctx.e2ee.receiveSync).toHaveBeenCalledTimes(2);
+    expect(ctx.directs.at(-1)).toEqual([]);
+  });
+
+  it("logs to the console by default, never with secrets", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const crypto = { open: vi.fn(async (): Promise<E2ee> => Promise.reject("no IndexedDB")), deleteStore: vi.fn(async () => {}) };
+    const ctx = setup({ session: SESSION_JSON }, false, { crypto, log: undefined });
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    await flush();
+    expect(warn).toHaveBeenCalledWith("[matrix] Encryption could not start: no IndexedDB");
+  });
+
+  it("signs out of a session without a key store", async () => {
+    const crypto = { open: vi.fn(), deleteStore: vi.fn(async () => {}) };
+    const ctx = setup({ session: JSON.stringify({ ...SESSION, ownDevice: false }) }, false, { crypto });
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.signOut();
+    expect(crypto.deleteStore).not.toHaveBeenCalled();
+  });
+
+  it("ignores the verify entry outside the chat", async () => {
+    const ctx = await withCrypto();
+    const id = ctx.chat().sidebar.find((i) => i.name === "🔑 Verify this device")!.id;
+    await ctx.act({ type: "select", channelId: id });
+    const renders = ctx.renders.length;
+    await ctx.act({ type: "select", channelId: id });
+    expect(ctx.renders).toHaveLength(renders);
+  });
+
+  it("does nothing for the retry screen's missing secondary button", async () => {
+    const ctx = setup();
+    ctx.api.loginFlows.mockRejectedValueOnce(new Error("offline"));
+    await ctx.adapter.start();
+    const renders = ctx.renders.length;
+    await ctx.act({ type: "cancelPrompt", id: "retry" });
+    expect(ctx.renders).toHaveLength(renders);
+  });
+});
+
+describe("abandoned OAuth sign-ins", () => {
+  it("ignores failures and answers that arrive after Back", async () => {
+    const ctx = await atOAuth();
+    // The code request fails after Back.
+    let fail!: (error: Error) => void;
+    ctx.oauth.authorizeDevice.mockImplementationOnce(() => new Promise((_resolve, reject) => (fail = reject)));
+    const answering = ctx.answer("oauth");
+    await flush();
+    (ctx.adapter as unknown as { grantAttempt: number }).grantAttempt++;
+    fail(new Error("late"));
+    await answering;
+    expect(ctx.renders.at(-1)).toEqual({ screen: "connecting", platform: "Matrix", status: "Getting a sign-in code…" });
+    (ctx.adapter as unknown as { step: string }).step = "oauth";
+
+    // A pending answer and a failing poll, both after Back.
+    for (const outcome of [() => Promise.resolve({ state: "pending" } as DevicePoll), () => Promise.reject(new Error("offline"))]) {
+      let answer!: () => void;
+      ctx.oauth.pollDevice.mockImplementationOnce(() => new Promise((resolve, reject) => (answer = () => void outcome().then(resolve, reject))));
+      await ctx.answer("oauth");
+      await flush();
+      await ctx.act({ type: "cancelPrompt", id: "device" });
+      answer();
+      await flush();
+      expect(ctx.prompt().prompt.id).toBe("oauth");
+      expect(ctx.prompt().error).toBeUndefined();
+    }
+
+    // The token check fails after Back.
+    let reject!: (error: Error) => void;
+    ctx.api.whoami.mockImplementationOnce(() => new Promise((_resolve, r) => (reject = r)));
+    await ctx.answer("oauth");
+    await flush();
+    await ctx.act({ type: "cancelPrompt", id: "device" });
+    reject(new Error("late"));
+    await flush();
+    expect(ctx.prompt().error).toBeUndefined();
+  });
+
+  it("signs in through a server without a revocation endpoint", async () => {
+    const ctx = await atOAuth();
+    const { revocationEndpoint: _r, ...server } = OAUTH_SERVER;
+    (ctx.adapter as unknown as { oauthServer: OAuthServer }).oauthServer = server;
+    await ctx.answer("oauth");
+    await flush();
+    expect(JSON.parse(ctx.secrets.get("session")!).oauth).not.toHaveProperty("revocationEndpoint");
+  });
+});
+
+describe("decrypting again", () => {
+  it("leaves events of no known session alone when only some sessions got keys", async () => {
+    const ctx = await withCrypto();
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [encRaw("n1", BO, 9000, { sessionId: undefined })] })] }));
+    ctx.e2ee.decrypt.mockClear();
+    ctx.e2ee.keys(["S1"]);
+    await flush();
+    expect(ctx.e2ee.decrypt.mock.calls.map(([, e]) => e.id)).toEqual(["$c2"]);
   });
 });

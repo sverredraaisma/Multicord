@@ -5,10 +5,14 @@ import {
   emptyState,
   eventId,
   MAX_BODY,
+  MAX_EVENT_JSON,
   MAX_NAME,
   MAX_ROOM_ID,
   parseContent,
+  parseCryptoSync,
+  parseEncryption,
   parseEvent,
+  parseMembers,
   parseMxc,
   parsePage,
   parseSync,
@@ -123,7 +127,8 @@ describe("timeline events", () => {
   });
 
   it("parses encrypted events, redactions and redacted events", () => {
-    expect(parseEvent(ev({ type: "m.room.encrypted", content: { ciphertext: "…" } }))).toEqual({ kind: "encrypted", id: "$e1", sender: "@ana:x.org", ts: 1000 });
+    const encrypted = ev({ type: "m.room.encrypted", content: { ciphertext: "…" } });
+    expect(parseEvent(encrypted)).toEqual({ kind: "encrypted", id: "$e1", sender: "@ana:x.org", ts: 1000, raw: JSON.stringify(encrypted) });
     expect(parseEvent(ev({ type: "m.room.redaction", redacts: "$old", content: {} }))).toMatchObject({ kind: "redaction", redacts: "$old" });
     expect(parseEvent(ev({ type: "m.room.redaction", content: { redacts: "$v11" } }))).toMatchObject({ kind: "redaction", redacts: "$v11" });
     expect(parseEvent(ev({ type: "m.room.redaction", content: {} }))).toBeUndefined();
@@ -230,7 +235,12 @@ describe("sync responses", () => {
   });
 
   it("leaves out DMs when account data has none, and handles a bare response", () => {
-    expect(parseSync({ next_batch: "s", account_data: { events: [] }, rooms: { join: [], leave: "x" } })).toEqual({ nextBatch: "s", joined: [], left: [] });
+    expect(parseSync({ next_batch: "s", account_data: { events: [] }, rooms: { join: [], leave: "x" } })).toEqual({
+      nextBatch: "s",
+      joined: [],
+      left: [],
+      crypto: { toDevice: "[]", changed: [], left: [], oneTimeKeys: {} },
+    });
     expect(parseSync({ next_batch: "s", account_data: { events: [{ type: "m.direct", content: "junk" }] } }).directs).toEqual({});
   });
 
@@ -258,5 +268,72 @@ describe("history pages", () => {
     expect(parsePage({ chunk: [] })).toEqual({ events: [], state: { members: {} } });
     expect(parsePage({ end: "" }).end).toBeUndefined();
     expect(() => parsePage("x")).toThrow("unreadable history");
+  });
+});
+
+describe("encryption", () => {
+  it("keeps encrypted events whole for decrypting, with their session and edit target", () => {
+    const edit = ev({ type: "m.room.encrypted", content: { session_id: "S1", "m.relates_to": { rel_type: "m.replace", event_id: "$orig" } } });
+    expect(parseEvent(edit)).toEqual({ kind: "encrypted", id: "$e1", sender: "@ana:x.org", ts: 1000, raw: JSON.stringify(edit), sessionId: "S1", replaces: "$orig" });
+    const reply = parseEvent(ev({ type: "m.room.encrypted", content: { session_id: "", "m.relates_to": { "m.in_reply_to": { event_id: "$x" } } } }));
+    expect(reply).not.toHaveProperty("sessionId");
+    expect(reply).not.toHaveProperty("replaces");
+    expect(parseEvent(ev({ type: "m.room.encrypted", content: { session_id: "x".repeat(129), "m.relates_to": { rel_type: "m.replace", event_id: "bad" } } }))).toEqual({
+      kind: "encrypted",
+      id: "$e1",
+      sender: "@ana:x.org",
+      ts: 1000,
+      raw: expect.any(String),
+    });
+    // Larger than any genuine event: not handed to the crypto library.
+    const huge = parseEvent(ev({ type: "m.room.encrypted", content: { ciphertext: "x".repeat(MAX_EVENT_JSON) } }));
+    expect(huge).toEqual({ kind: "encrypted", id: "$e1", sender: "@ana:x.org", ts: 1000 });
+  });
+
+  it("reads the room's encryption settings and history visibility", () => {
+    const state = emptyState();
+    applyState(state, st("m.room.encryption", { algorithm: "m.megolm.v1.aes-sha2", rotation_period_ms: 3600000, rotation_period_msgs: 50 }));
+    applyState(state, st("m.room.history_visibility", { history_visibility: "joined" }));
+    expect(state).toMatchObject({ encrypted: true, encryption: { algorithm: "m.megolm.v1.aes-sha2", rotationMs: 3600000, rotationMsgs: 50 }, history: "joined" });
+    const odd = emptyState();
+    applyState(odd, st("m.room.encryption", { algorithm: 5, rotation_period_ms: -1, rotation_period_msgs: 1.5 }, "x"));
+    applyState(odd, st("m.room.history_visibility", { history_visibility: 1 }));
+    applyState(odd, st("m.room.history_visibility", { history_visibility: "shared" }, "x"));
+    // Encrypted all the same, but with no settings to encrypt by.
+    expect(odd).toEqual({ encrypted: true, members: {} });
+    expect(parseEncryption({ algorithm: "x".repeat(65), rotation_period_ms: 0 })).toEqual({ algorithm: "" });
+  });
+
+  it("reads the encryption parts of a sync, checking their outline", () => {
+    const toDevice = { type: "m.room.encrypted", sender: "@bo:x.org", content: { ciphertext: {} } };
+    const crypto = parseCryptoSync({
+      to_device: {
+        events: [toDevice, { type: "x", sender: "bo", content: {} }, { type: 5, sender: "@bo:x.org", content: {} }, { type: "x", sender: "@bo:x.org" }, { type: "x".repeat(256), sender: "@bo:x.org", content: {} }, { type: "big", sender: "@bo:x.org", content: { x: "y".repeat(MAX_EVENT_JSON) } }, "junk"],
+      },
+      device_lists: { changed: ["@a:x.org", "bad", 5], left: ["@b:x.org"] },
+      device_one_time_keys_count: { signed_curve25519: 12, odd: -1, frac: 1.5, ["x".repeat(65)]: 1, big: 1e9 },
+      device_unused_fallback_key_types: ["signed_curve25519", 5],
+    });
+    expect(crypto).toEqual({ toDevice: JSON.stringify([toDevice]), changed: ["@a:x.org"], left: ["@b:x.org"], oneTimeKeys: { signed_curve25519: 12, big: 1_000_000 }, fallbackKeys: ["signed_curve25519"] });
+    expect(parseCryptoSync({ "org.matrix.msc2732.device_unused_fallback_key_types": [] }).fallbackKeys).toEqual([]);
+    expect(parseCryptoSync({ device_lists: "x", to_device: "x" })).toEqual({ toDevice: "[]", changed: [], left: [], oneTimeKeys: {} });
+    expect(parseSync({ next_batch: "s", device_one_time_keys_count: { signed_curve25519: 3 } }).crypto?.oneTimeKeys).toEqual({ signed_curve25519: 3 });
+  });
+
+  it("lists joined and invited members", () => {
+    const member = (user: unknown, membership: unknown) => ({ type: "m.room.member", state_key: user, content: { membership } });
+    expect(
+      parseMembers({
+        chunk: [member("@a:x.org", "join"), member("@b:x.org", "invite"), member("@c:x.org", "leave"), member("@a:x.org", "join"), member("bad", "join"), { type: "m.room.name", state_key: "@d:x.org", content: { membership: "join" } }, { type: "m.room.member", state_key: "@e:x.org" }, "junk"],
+      }),
+    ).toEqual(["@a:x.org", "@b:x.org"]);
+    expect(parseMembers(null)).toEqual([]);
+  });
+});
+
+describe("rooms without counts", () => {
+  it("leaves unread counts out when the server sends none", () => {
+    const sync = parseSync({ next_batch: "s", rooms: { join: { "!r:x.org": { timeline: { events: [] } } } } });
+    expect(sync.joined[0]).not.toHaveProperty("unread");
   });
 });

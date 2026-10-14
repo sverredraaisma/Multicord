@@ -1,30 +1,41 @@
 import { bridgeFetch, bridgeSecrets, engineInfo, serveAdapter } from "../../engine/runtime";
 import type { EngineBridge } from "../../preload/engine";
-import { MatrixAdapter } from "./adapter";
+import { MatrixAdapter, type MatrixCryptoDeps } from "./adapter";
 import type { MatrixApi } from "./api";
-import { createMatrixClient } from "./client";
+import { createMatrixClient, type MatrixClientOptions } from "./client";
+import { createOAuthClient, type MatrixOAuth } from "./oauth";
 
 export interface MatrixEngineOptions {
-  createApi?: (fetchFn: typeof fetch) => MatrixApi;
+  createApi?: (fetchFn: typeof fetch, options: MatrixClientOptions) => MatrixApi;
+  createOAuth?: (fetchFn: typeof fetch) => MatrixOAuth;
+  /** End-to-end encryption; the entry passes it with the WebAssembly bundled in. */
+  crypto?: MatrixCryptoDeps;
 }
 
 /**
  * Runs the Matrix client in its engine: the API goes over the bridge's
- * fetch (which keeps it off local and private addresses) and the session
- * lives in the instance's own secrets.
+ * fetch (which keeps it off local and private addresses), the session
+ * lives in the instance's own secrets, and encryption keys in the engine's
+ * own storage.
  */
 export async function startMatrixEngine(bridge: EngineBridge, options: MatrixEngineOptions = {}): Promise<MatrixAdapter> {
   const info = await engineInfo(bridge);
   const createApi = options.createApi ?? createMatrixClient;
+  const fetchFn = bridgeFetch(bridge);
   let served: { sync(): void } | undefined;
-  const adapter = new MatrixAdapter({
+  // The client refreshes OAuth tokens through the adapter, which stores them.
+  let adapter: MatrixAdapter | undefined;
+  const api = createApi(fetchFn, { refresh: (session) => adapter!.refreshSession(session) });
+  adapter = new MatrixAdapter({
     def: info,
     secrets: bridgeSecrets(bridge),
     render: (state) => {
       bridge.render(state);
       served?.sync();
     },
-    api: createApi(bridgeFetch(bridge)),
+    api,
+    oauth: (options.createOAuth ?? createOAuthClient)(fetchFn),
+    crypto: options.crypto,
   });
   served = serveAdapter(bridge, adapter);
   await adapter.start();

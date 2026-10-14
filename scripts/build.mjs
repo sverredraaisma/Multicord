@@ -55,10 +55,21 @@ await Promise.all([
   // Module engines: sandboxed pages, served from dist/engines.
   build({
     ...common,
-    entryPoints: { "engines/fluxer": "src/entries/engine-fluxer.ts", "engines/matrix": "src/entries/engine-matrix.ts", "engines/stoat": "src/entries/engine-stoat.ts" },
+    entryPoints: { "engines/fluxer": "src/entries/engine-fluxer.ts", "engines/stoat": "src/entries/engine-stoat.ts" },
     platform: "browser",
     format: "iife",
     outdir: "dist",
+  }),
+  // Matrix bundles the crypto library's WebAssembly as bytes: the engine's origin serves nothing but its script.
+  build({
+    ...common,
+    entryPoints: { "engines/matrix": "src/entries/engine-matrix.ts" },
+    platform: "browser",
+    format: "iife",
+    outdir: "dist",
+    loader: { ".wasm": "binary" },
+    // The package's own loader builds a default URL from import.meta.url when imported; it is never fetched.
+    define: { "import.meta.url": JSON.stringify("multicord-engine://matrix/engine.js") },
   }),
   build({
     ...common,

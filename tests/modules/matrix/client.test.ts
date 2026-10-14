@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MatrixError, matrixErrcode, type MxSession } from "../../../src/modules/matrix/api";
-import { createMatrixClient, httpsBase, MAX_THUMBNAIL_BYTES, SYNC_FILTER } from "../../../src/modules/matrix/client";
+import { createMatrixClient, httpsBase, MAX_THUMBNAIL_BYTES, REFRESH_MARGIN_MS, SYNC_FILTER } from "../../../src/modules/matrix/client";
 
 const BASE = "https://hs.x.org";
 const SESSION: MxSession = { baseUrl: BASE, accessToken: "tok", userId: "@me:x.org", deviceId: "D", ownDevice: true };
@@ -142,7 +142,7 @@ describe("signing in", () => {
 describe("syncing and history", () => {
   it("syncs with the filter, timeout and token, without changing presence", async () => {
     const { client, fetchFn } = fakeFetch(() => json({ next_batch: "s2" }));
-    expect(await client.sync(SESSION, undefined, 0)).toEqual({ nextBatch: "s2", joined: [], left: [] });
+    expect(await client.sync(SESSION, undefined, 0)).toMatchObject({ nextBatch: "s2", joined: [], left: [] });
     let { url } = callOf(fetchFn);
     expect(url.pathname).toBe("/_matrix/client/v3/sync");
     expect(url.searchParams.get("filter")).toBe(SYNC_FILTER);
@@ -168,19 +168,19 @@ describe("syncing and history", () => {
 describe("encryption check", () => {
   it("asks the server for the room's encryption state", async () => {
     const yes = fakeFetch(() => json({ algorithm: "m.megolm.v1.aes-sha2" }));
-    expect(await yes.client.encrypted(SESSION, "!r:x.org")).toBe(true);
+    expect(await yes.client.encryption(SESSION, "!r:x.org")).toEqual({ algorithm: "m.megolm.v1.aes-sha2" });
     expect(callOf(yes.fetchFn).url.pathname).toBe("/_matrix/client/v3/rooms/!r%3Ax.org/state/m.room.encryption/");
     const no = fakeFetch(() => json({ errcode: "M_NOT_FOUND", error: "no" }, 404));
-    expect(await no.client.encrypted(SESSION, "!r:x.org")).toBe(false);
+    expect(await no.client.encryption(SESSION, "!r:x.org")).toBeUndefined();
   });
 
   it("does not take other failures for unencrypted", async () => {
     const forbidden = fakeFetch(() => json({ errcode: "M_FORBIDDEN" }, 403));
-    await expect(forbidden.client.encrypted(SESSION, "!r:x.org")).rejects.toMatchObject({ errcode: "M_FORBIDDEN" });
+    await expect(forbidden.client.encryption(SESSION, "!r:x.org")).rejects.toMatchObject({ errcode: "M_FORBIDDEN" });
     const odd404 = fakeFetch(() => json({ errcode: "M_UNRECOGNIZED" }, 404));
-    await expect(odd404.client.encrypted(SESSION, "!r:x.org")).rejects.toMatchObject({ status: 404 });
+    await expect(odd404.client.encryption(SESSION, "!r:x.org")).rejects.toMatchObject({ status: 404 });
     const offline = fakeFetch(() => Promise.reject(new Error("offline")));
-    await expect(offline.client.encrypted(SESSION, "!r:x.org")).rejects.toThrow("offline");
+    await expect(offline.client.encryption(SESSION, "!r:x.org")).rejects.toThrow("offline");
   });
 });
 
@@ -249,5 +249,150 @@ describe("thumbnails", () => {
     const { client, fetchFn } = fakeFetch(() => image(new Uint8Array([1])));
     expect(await client.thumbnail(SESSION, "mxc://x.org/../../admin")).toBeUndefined();
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+});
+
+describe("encryption endpoints", () => {
+  it("lists joined and invited members for key sharing", async () => {
+    const { client, fetchFn } = fakeFetch(() =>
+      json({ chunk: [{ type: "m.room.member", state_key: "@a:x.org", content: { membership: "join" } }, { type: "m.room.member", state_key: "@b:x.org", content: { membership: "invite" } }] }),
+    );
+    expect(await client.members(SESSION, "!r:x.org")).toEqual(["@a:x.org", "@b:x.org"]);
+    const { url } = callOf(fetchFn);
+    expect(url.pathname).toBe("/_matrix/client/v3/rooms/!r%3Ax.org/members");
+    expect(url.searchParams.get("not_membership")).toBe("leave");
+  });
+
+  it("sends other event types", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({ event_id: "$new" }));
+    await client.send(SESSION, "!r:x.org", { algorithm: "m.megolm.v1.aes-sha2" }, "m.room.encrypted");
+    expect(callOf(fetchFn).url.pathname).toMatch(/\/send\/m\.room\.encrypted\/mc/);
+  });
+
+  it("reads account data, with none as undefined", async () => {
+    const { client, fetchFn } = fakeFetch((url) => (url.pathname.endsWith("m.secret_storage.default_key") ? json({ key: "K" }) : json({ errcode: "M_NOT_FOUND" }, 404)));
+    expect(await client.accountData(SESSION, "m.secret_storage.default_key")).toEqual({ key: "K" });
+    expect(callOf(fetchFn).url.pathname).toBe("/_matrix/client/v3/user/%40me%3Ax.org/account_data/m.secret_storage.default_key");
+    expect(await client.accountData(SESSION, "m.cross_signing.master")).toBeUndefined();
+    await expect(client.accountData(SESSION, "../../admin")).rejects.toThrow("Invalid account data type");
+    const forbidden = fakeFetch(() => json({ errcode: "M_FORBIDDEN" }, 403));
+    await expect(forbidden.client.accountData(SESSION, "m.x")).rejects.toMatchObject({ errcode: "M_FORBIDDEN" });
+  });
+
+  it("makes the crypto library's requests", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({ one_time_key_counts: {} }));
+    expect(await client.request(SESSION, "POST", "/v3/keys/upload", { device_keys: {} }, { version: "1" })).toEqual({ one_time_key_counts: {} });
+    const { url, init, body } = callOf(fetchFn);
+    expect(url.href).toBe("https://hs.x.org/_matrix/client/v3/keys/upload?version=1");
+    expect(init.method).toBe("POST");
+    expect(init.headers).toMatchObject({ Authorization: "Bearer tok" });
+    expect(body).toEqual({ device_keys: {} });
+  });
+
+  it("reads the room's encryption settings", async () => {
+    const { client } = fakeFetch(() => json({ algorithm: "m.megolm.v1.aes-sha2", rotation_period_ms: 1000, rotation_period_msgs: 10 }));
+    expect(await client.encryption(SESSION, "!r:x.org")).toEqual({ algorithm: "m.megolm.v1.aes-sha2", rotationMs: 1000, rotationMsgs: 10 });
+  });
+});
+
+describe("checking a stored session", () => {
+  it("accepts the session's own account only", async () => {
+    const ok = fakeFetch(() => json({ user_id: "@me:x.org" }));
+    await ok.client.check(SESSION);
+    expect(callOf(ok.fetchFn).init.headers).toMatchObject({ Authorization: "Bearer tok" });
+    const other = fakeFetch(() => json({ user_id: "@other:x.org" }));
+    await expect(other.client.check(SESSION)).rejects.toMatchObject({ status: 401, errcode: "M_UNKNOWN_TOKEN" });
+  });
+});
+
+describe("OAuth token refresh", () => {
+  const oauthSession = (extra: Partial<NonNullable<MxSession["oauth"]>> = {}): MxSession => ({
+    ...SESSION,
+    accessToken: "old",
+    oauth: { clientId: "c", tokenEndpoint: "https://account.x.org/token", refreshToken: "r", ...extra },
+  });
+
+  function refreshing(respond: (url: URL, init: RequestInit) => Response | Promise<Response>, now = 1000) {
+    const refresh = vi.fn(async (session: MxSession) => {
+      session.accessToken = `new${refresh.mock.calls.length}`;
+    });
+    const fetchFn = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => respond(new URL(String(input)), init));
+    return { refresh, fetchFn, client: createMatrixClient(fetchFn as unknown as typeof fetch, { refresh, now: () => now }) };
+  }
+  const tokenOf = (init: RequestInit) => (init.headers as Record<string, string>).Authorization;
+  const expired = () => json({ errcode: "M_UNKNOWN_TOKEN", error: "expired", soft_logout: true }, 401);
+
+  it("refreshes a token that is about to expire before using it", async () => {
+    const { client, refresh, fetchFn } = refreshing(() => json({ event_id: "$e" }), 100_000);
+    const session = oauthSession({ expiresAt: 100_000 + REFRESH_MARGIN_MS - 1 });
+    await client.send(session, "!r:x.org", {});
+    expect(refresh).toHaveBeenCalledWith(session);
+    expect(tokenOf(fetchFn.mock.calls[0]![1]!)).toBe("Bearer new1");
+    // Not yet due: no refresh.
+    const later = oauthSession({ expiresAt: 100_000 + REFRESH_MARGIN_MS + 1 });
+    await client.send(later, "!r:x.org", {});
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes once and retries when the server says the token expired", async () => {
+    const { client, refresh, fetchFn } = refreshing((_url, init) => (tokenOf(init) === "Bearer old" ? expired() : json({ user_id: "@me:x.org" })));
+    const session = oauthSession();
+    await client.check(session);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(tokenOf(fetchFn.mock.calls[1]![1]!)).toBe("Bearer new1");
+  });
+
+  it("shares one refresh between concurrent calls", async () => {
+    const { client, refresh } = refreshing((_url, init) => (tokenOf(init) === "Bearer old" ? expired() : json({ event_id: "$e" })));
+    const session = oauthSession();
+    await Promise.all([client.send(session, "!r:x.org", {}), client.send(session, "!r:x.org", {}), client.send(session, "!r:x.org", {})]);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // A later expiry refreshes again.
+    session.accessToken = "old";
+    await client.send(session, "!r:x.org", {});
+    expect(refresh).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not refresh a hard logout, a session without refresh token, or without a refresher", async () => {
+    const hard = refreshing(() => json({ errcode: "M_UNKNOWN_TOKEN", error: "gone" }, 401));
+    await expect(hard.client.check(oauthSession())).rejects.toMatchObject({ errcode: "M_UNKNOWN_TOKEN", softLogout: false });
+    expect(hard.refresh).not.toHaveBeenCalled();
+    const soft = refreshing(() => expired());
+    await expect(soft.client.check(oauthSession({ refreshToken: undefined }))).rejects.toMatchObject({ softLogout: true });
+    await expect(soft.client.check(SESSION)).rejects.toMatchObject({ status: 401 });
+    expect(soft.refresh).not.toHaveBeenCalled();
+    const plain = fakeFetch(() => expired());
+    await expect(plain.client.check(oauthSession({ expiresAt: 0 }))).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("refreshes a due token before fetching thumbnails", async () => {
+    const { client, refresh, fetchFn } = refreshing(() => new Response(new Uint8Array([1]), { headers: { "Content-Type": "image/png" } }), 10);
+    await client.thumbnail(oauthSession({ expiresAt: 0 }), "mxc://x.org/abc");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(tokenOf(fetchFn.mock.calls[0]![1]!)).toBe("Bearer new1");
+  });
+});
+
+describe("refreshing before expiry", () => {
+  it("shares one refresh between calls that find the token due", async () => {
+    let finish!: () => void;
+    const refresh = vi.fn(
+      (session: MxSession) =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            session.accessToken = "new";
+            resolve();
+          };
+        }),
+    );
+    const fetchFn = vi.fn(async () => json({ event_id: "$e" }));
+    const client = createMatrixClient(fetchFn as unknown as typeof fetch, { refresh, now: () => 1000 });
+    const session: MxSession = { ...SESSION, oauth: { clientId: "c", tokenEndpoint: "https://a.org/t", refreshToken: "r", expiresAt: 0 } };
+    const sends = [client.send(session, "!r:x.org", {}), client.send(session, "!r:x.org", {})];
+    await Promise.resolve();
+    finish();
+    await Promise.all(sends);
+    expect(refresh).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,5 @@
-import { MatrixError, type MatrixApi, type MxLoginFlows, type MxPage, type MxSession, type MxSync } from "./api";
-import { eventId, isRecord, parseMxc, parsePage, parseSync, userId } from "./events";
+import { MatrixError, type MatrixApi, type MxEncryption, type MxLoginFlows, type MxPage, type MxSession, type MxSync } from "./api";
+import { eventId, isRecord, parseEncryption, parseMembers, parseMxc, parsePage, parseSync, userId } from "./events";
 
 const CLIENT = "/_matrix/client/v3";
 /** Timeline events kept per room in a sync, and the event types asked for. */
@@ -13,11 +13,13 @@ const TIMELINE_TYPES = [
   "m.room.canonical_alias",
   "m.room.avatar",
   "m.room.encryption",
+  "m.room.history_visibility",
   "m.room.member",
 ];
 /**
  * What /sync returns: members only as needed (lazy loading), no presence,
- * typing or receipts, and of the account data only the DM list.
+ * typing or receipts, and of the account data only the DM list. To-device
+ * messages and device lists come unfiltered, for encryption.
  */
 export const SYNC_FILTER = JSON.stringify({
   presence: { not_types: ["*"] },
@@ -34,6 +36,9 @@ const HISTORY_FILTER = JSON.stringify({ lazy_load_members: true, types: TIMELINE
 export const MAX_THUMBNAIL_BYTES = 140_000;
 const THUMBNAIL_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 const MAX_ACCESS_TOKEN = 4096;
+/** OAuth access tokens are refreshed this long before they expire. */
+export const REFRESH_MARGIN_MS = 60_000;
+const ACCOUNT_DATA_TYPE = /^[A-Za-z0-9._-]{1,128}$/;
 
 /** An https URL as a client API base: no credentials, query or trailing slash. */
 export function httpsBase(value: unknown): string | undefined {
@@ -53,15 +58,43 @@ function base64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+export interface MatrixClientOptions {
+  /**
+   * Gets a new access token for an OAuth session, updating the session in
+   * place. Called shortly before the token expires, and once when the server
+   * says it expired (M_UNKNOWN_TOKEN with soft_logout).
+   */
+  refresh?(session: MxSession): Promise<void>;
+  now?(): number;
+}
+
 /**
  * The Client-Server API over plain fetch (in the engine, the shell's HTTP
  * bridge). No SDK: only the endpoints the adapter needs, every response
  * validated in events.ts or here.
  */
-export function createMatrixClient(fetchFn: typeof fetch): MatrixApi {
+export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOptions = {}): MatrixApi {
   let txn = 0;
+  const now = config.now ?? Date.now;
   /** Transaction ids make retried sends idempotent; they only need to be unique per device. */
-  const txnId = (): string => `mc${Date.now().toString(36)}.${++txn}`;
+  const txnId = (): string => `mc${now().toString(36)}.${++txn}`;
+  /** One refresh at a time per session; concurrent calls wait for it. */
+  const refreshing = new WeakMap<MxSession, Promise<void>>();
+
+  function refresh(session: MxSession): Promise<void> {
+    let pending = refreshing.get(session);
+    if (!pending) {
+      pending = config.refresh!(session).finally(() => refreshing.delete(session));
+      refreshing.set(session, pending);
+    }
+    return pending;
+  }
+
+  /** Refreshes an OAuth token that is about to expire. */
+  async function fresh(session: MxSession): Promise<void> {
+    const expiresAt = session.oauth?.expiresAt;
+    if (config.refresh && expiresAt !== undefined && now() >= expiresAt - REFRESH_MARGIN_MS) await refresh(session);
+  }
 
   async function call(
     base: string,
@@ -83,10 +116,29 @@ export function createMatrixClient(fetchFn: typeof fetch): MatrixApi {
       const body = isRecord(json) ? json : {};
       const errcode = typeof body.errcode === "string" ? body.errcode.slice(0, 64) : "M_UNKNOWN";
       const message = typeof body.error === "string" && body.error !== "" ? body.error.slice(0, 200) : `HTTP ${response.status}`;
-      throw new MatrixError(response.status, errcode, message);
+      throw new MatrixError(response.status, errcode, message, body.soft_logout === true);
     }
     if (!isRecord(json)) throw new Error("The homeserver sent an unreadable response");
     return json;
+  }
+
+  /** A call as the session's user: an OAuth token is refreshed when due, and once more if the server says it expired. */
+  async function authed(
+    session: MxSession,
+    path: string,
+    options: { method?: string; body?: unknown; query?: Record<string, string> } = {},
+  ): Promise<Record<string, unknown>> {
+    await fresh(session);
+    const token = session.accessToken;
+    try {
+      return await call(session.baseUrl, path, { ...options, token });
+    } catch (error) {
+      const expired = error instanceof MatrixError && error.status === 401 && error.errcode === "M_UNKNOWN_TOKEN" && error.softLogout;
+      if (!expired || !config.refresh || !session.oauth?.refreshToken) throw error;
+      // Another call may have refreshed meanwhile.
+      if (session.accessToken === token) await refresh(session);
+      return call(session.baseUrl, path, { ...options, token: session.accessToken });
+    }
   }
 
   const room = (roomId: string): string => `${CLIENT}/rooms/${encodeURIComponent(roomId)}`;
@@ -141,46 +193,56 @@ export function createMatrixClient(fetchFn: typeof fetch): MatrixApi {
       return typeof body.device_id === "string" && body.device_id !== "" && body.device_id.length <= 255 ? { userId: id, deviceId: body.device_id } : { userId: id };
     },
 
+    async check(session) {
+      const body = await authed(session, `${CLIENT}/account/whoami`);
+      // A token that now belongs to someone else must not show this account's chats.
+      if (body.user_id !== session.userId) throw new MatrixError(401, "M_UNKNOWN_TOKEN", "The session belongs to another account");
+    },
+
     async sync(session, since, timeoutMs): Promise<MxSync> {
       const query: Record<string, string> = { filter: SYNC_FILTER, timeout: String(timeoutMs), set_presence: "offline" };
       if (since) query.since = since;
-      return parseSync(await call(session.baseUrl, `${CLIENT}/sync`, { token: session.accessToken, query }));
+      return parseSync(await authed(session, `${CLIENT}/sync`, { query }));
     },
 
     async messages(session, roomId, from, limit): Promise<MxPage> {
       const query = { dir: "b", from, limit: String(limit), filter: HISTORY_FILTER };
-      return parsePage(await call(session.baseUrl, `${room(roomId)}/messages`, { token: session.accessToken, query }));
+      return parsePage(await authed(session, `${room(roomId)}/messages`, { query }));
     },
 
-    async encrypted(session, roomId) {
+    async encryption(session, roomId): Promise<MxEncryption | undefined> {
       try {
-        await call(session.baseUrl, `${room(roomId)}/state/m.room.encryption/`, { token: session.accessToken });
-        return true;
+        return parseEncryption(await authed(session, `${room(roomId)}/state/m.room.encryption/`));
       } catch (error) {
         // Only a definite "no such state" means unencrypted; anything else is not an answer.
-        if (error instanceof MatrixError && error.status === 404 && error.errcode === "M_NOT_FOUND") return false;
+        if (error instanceof MatrixError && error.status === 404 && error.errcode === "M_NOT_FOUND") return undefined;
         throw error;
       }
     },
 
-    async send(session, roomId, content) {
-      const body = await call(session.baseUrl, `${room(roomId)}/send/m.room.message/${txnId()}`, { method: "PUT", token: session.accessToken, body: content });
+    async members(session, roomId) {
+      return parseMembers(await authed(session, `${room(roomId)}/members`, { query: { not_membership: "leave" } }));
+    },
+
+    async send(session, roomId, content, type = "m.room.message") {
+      const body = await authed(session, `${room(roomId)}/send/${encodeURIComponent(type)}/${txnId()}`, { method: "PUT", body: content });
       const id = eventId(body.event_id);
       if (!id) throw new Error("The homeserver sent an unreadable response");
       return id;
     },
 
     async redact(session, roomId, id) {
-      await call(session.baseUrl, `${room(roomId)}/redact/${encodeURIComponent(id)}/${txnId()}`, { method: "PUT", token: session.accessToken, body: {} });
+      await authed(session, `${room(roomId)}/redact/${encodeURIComponent(id)}/${txnId()}`, { method: "PUT", body: {} });
     },
 
     async markRead(session, roomId, id) {
-      await call(session.baseUrl, `${room(roomId)}/read_markers`, { method: "POST", token: session.accessToken, body: { "m.fully_read": id, "m.read": id } });
+      await authed(session, `${room(roomId)}/read_markers`, { method: "POST", body: { "m.fully_read": id, "m.read": id } });
     },
 
     async thumbnail(session, mxc) {
       const parsed = parseMxc(mxc);
       if (!parsed) return undefined;
+      await fresh(session);
       // Authenticated media (Matrix 1.11): the media repository wants the access token too.
       const url = new URL(`${session.baseUrl}/_matrix/client/v1/media/thumbnail/${encodeURIComponent(parsed.server)}/${encodeURIComponent(parsed.media)}`);
       for (const [name, value] of Object.entries({ width: "64", height: "64", method: "crop", animated: "false" })) url.searchParams.set(name, value);
@@ -192,8 +254,22 @@ export function createMatrixClient(fetchFn: typeof fetch): MatrixApi {
       return `data:${type};base64,${base64(bytes)}`;
     },
 
+    async accountData(session, type) {
+      if (!ACCOUNT_DATA_TYPE.test(type)) throw new Error("Invalid account data type");
+      try {
+        return await authed(session, `${CLIENT}/user/${encodeURIComponent(session.userId)}/account_data/${type}`);
+      } catch (error) {
+        if (error instanceof MatrixError && error.status === 404) return undefined;
+        throw error;
+      }
+    },
+
+    async request(session, method, path, body, query) {
+      return authed(session, `/_matrix/client${path}`, { method, body, query });
+    },
+
     async logout(session) {
-      await call(session.baseUrl, `${CLIENT}/logout`, { method: "POST", token: session.accessToken, body: {} });
+      await authed(session, `${CLIENT}/logout`, { method: "POST", body: {} });
     },
   };
 }

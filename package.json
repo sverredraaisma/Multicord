@@ -17,6 +17,7 @@
   },
   "license": "AGPL-3.0-or-later",
   "devDependencies": {
+    "@matrix-org/matrix-sdk-crypto-wasm": "^18.9.0",
     "@sapphi-red/web-noise-suppressor": "^0.4.1",
     "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.4",

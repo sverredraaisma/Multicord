@@ -14,8 +14,43 @@ export interface MxSession {
    * Whether Multicord created this device by signing in. A token copied from
    * another client belongs to that client's device: signing out here only
    * forgets it, since /logout would end the other client's session too.
+   * Only our own devices get end-to-end encryption: keys uploaded for
+   * another client's device would clash with that client's own.
    */
   ownDevice: boolean;
+  /** Set for sessions from OAuth 2.0 sign-in: how to refresh and revoke the token. */
+  oauth?: MxOAuthSession;
+}
+
+/** The OAuth 2.0 side of a session (Matrix's OAuth 2.0 API, as with matrix.org's account service). */
+export interface MxOAuthSession {
+  clientId: string;
+  tokenEndpoint: string;
+  revocationEndpoint?: string;
+  refreshToken?: string;
+  /** When the access token expires, epoch ms. */
+  expiresAt?: number;
+}
+
+/** A room's m.room.encryption settings. */
+export interface MxEncryption {
+  /** Only m.megolm.v1.aes-sha2 is supported; "" when the event named none. */
+  algorithm: string;
+  rotationMs?: number;
+  rotationMsgs?: number;
+}
+
+/** What a sync carries for end-to-end encryption, as the crypto library takes it. */
+export interface MxCryptoSync {
+  /** The to-device events, a JSON array of checked events. */
+  toDevice: string;
+  /** Users whose devices changed, and users we no longer share a room with. */
+  changed: string[];
+  left: string[];
+  /** One-time keys left on the server, by algorithm. */
+  oneTimeKeys: Record<string, number>;
+  /** Algorithms of unused fallback keys; absent when the server did not say. */
+  fallbackKeys?: string[];
 }
 
 export interface MxLoginFlows {
@@ -36,6 +71,10 @@ export interface MxRoomState {
   avatar?: string;
   /** Set once the room has m.room.encryption state; Matrix never turns it off. */
   encrypted?: boolean;
+  /** The m.room.encryption settings, from a well-formed event. */
+  encryption?: MxEncryption;
+  /** m.room.history_visibility, e.g. "shared". */
+  history?: string;
   members: Record<string, MxMember>;
 }
 
@@ -63,11 +102,25 @@ export type MxEvent =
       replyTo?: string;
       /** Set on edits: the event this one replaces, with the new content. */
       replaces?: string;
+      /** Decrypted messages from a device its owner has not verified: why, in a few words. */
+      unverified?: string;
     })
-  | (MxEventBase & { kind: "encrypted" })
+  | (MxEventBase & {
+      kind: "encrypted";
+      /** The whole event as JSON, for decrypting; absent when it is too large to be genuine. */
+      raw?: string;
+      /** The Megolm session it was encrypted with. */
+      sessionId?: string;
+      /** Set when it is an encrypted edit: the event it replaces (the relation stays unencrypted). */
+      replaces?: string;
+      /** Why it could not be decrypted, once that was tried. */
+      problem?: string;
+    })
   | (MxEventBase & { kind: "redaction"; redacts: string })
   /** An event whose content was removed; it is dropped from view. */
   | (MxEventBase & { kind: "redacted" });
+
+export type MxEncryptedEvent = Extract<MxEvent, { kind: "encrypted" }>;
 
 export interface MxRoomUpdate {
   roomId: string;
@@ -91,6 +144,8 @@ export interface MxSync {
   joined: MxRoomUpdate[];
   /** Rooms the user left or was removed from. */
   left: string[];
+  /** Device keys and to-device messages, for end-to-end encryption. */
+  crypto?: MxCryptoSync;
 }
 
 export interface MxPage {
@@ -108,17 +163,28 @@ export interface MatrixApi {
   login(baseUrl: string, user: string, password: string): Promise<MxSession>;
   /** Checks a token; for tokens copied from elsewhere, also learns the user and device. */
   whoami(baseUrl: string, accessToken: string): Promise<{ userId: string; deviceId?: string }>;
+  /** Checks that a stored session still works (refreshing an OAuth token first when it expired). */
+  check(session: MxSession): Promise<void>;
   sync(session: MxSession, since: string | undefined, timeoutMs: number): Promise<MxSync>;
   /** History before `from`, newest page first as Matrix pages it, returned oldest first. */
   messages(session: MxSession, roomId: string, from: string, limit: number): Promise<MxPage>;
-  /** Asks the server, not our cache, whether a room is encrypted. */
-  encrypted(session: MxSession, roomId: string): Promise<boolean>;
-  /** Sends an m.room.message; returns its event id. */
-  send(session: MxSession, roomId: string, content: Record<string, unknown>): Promise<string>;
+  /** Asks the server, not our cache, whether a room is encrypted, and how. */
+  encryption(session: MxSession, roomId: string): Promise<MxEncryption | undefined>;
+  /** Joined and invited members: who gets the keys for an encrypted message. */
+  members(session: MxSession, roomId: string): Promise<string[]>;
+  /** Sends a room event (m.room.message unless said otherwise); returns its event id. */
+  send(session: MxSession, roomId: string, content: Record<string, unknown>, type?: string): Promise<string>;
   redact(session: MxSession, roomId: string, eventId: string): Promise<void>;
   markRead(session: MxSession, roomId: string, eventId: string): Promise<void>;
   /** A small thumbnail of an mxc:// image as a data: URL. */
   thumbnail(session: MxSession, mxc: string): Promise<string | undefined>;
+  /** The user's account data of a type, or undefined when there is none. */
+  accountData(session: MxSession, type: string): Promise<Record<string, unknown> | undefined>;
+  /**
+   * Any other Client-Server call, for the crypto library's requests (keys,
+   * to-device, backup). `path` is below /_matrix/client and already encoded.
+   */
+  request(session: MxSession, method: string, path: string, body?: unknown, query?: Record<string, string>): Promise<Record<string, unknown>>;
   logout(session: MxSession): Promise<void>;
 }
 
@@ -128,6 +194,8 @@ export class MatrixError extends Error {
     readonly status: number,
     readonly errcode: string,
     message: string,
+    /** The server ended the session but a refreshed token may continue it (soft_logout). */
+    readonly softLogout = false,
   ) {
     super(message);
     this.name = "MatrixError";

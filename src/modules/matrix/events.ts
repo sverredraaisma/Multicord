@@ -2,7 +2,7 @@
 // the network is untrusted: ids, names and bodies are checked for type and
 // length, and whatever does not fit is dropped rather than passed on.
 
-import type { MxContent, MxEvent, MxMember, MxPage, MxRoomState, MxRoomUpdate, MxSync } from "./api";
+import type { MxContent, MxCryptoSync, MxEncryption, MxEvent, MxMember, MxPage, MxRoomState, MxRoomUpdate, MxSync } from "./api";
 
 /** Room ids are used in rail keys (at most 200 characters with the instance prefix). */
 export const MAX_ROOM_ID = 150;
@@ -16,6 +16,12 @@ const MAX_EVENTS = 1000;
 const MAX_MENTIONS = 100;
 const MAX_HEROES = 5;
 const MAX_COUNT = 1_000_000;
+/** Matrix events are at most 64 KiB; a larger one is not passed to the crypto library. */
+export const MAX_EVENT_JSON = 65_536;
+const MAX_TO_DEVICE = 1000;
+/** Users in a device list change, and members of a room taken for key sharing. */
+const MAX_USERS = 20_000;
+const MAX_SESSION_ID = 128;
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -108,8 +114,17 @@ export function parseEvent(raw: unknown): MxEvent | undefined {
   const content = isRecord(raw.content) ? raw.content : {};
   if (isRecord(raw.unsigned) && raw.unsigned.redacted_because !== undefined) return { kind: "redacted", ...base };
   switch (raw.type) {
-    case "m.room.encrypted":
-      return { kind: "encrypted", ...base };
+    case "m.room.encrypted": {
+      const event: MxEvent = { kind: "encrypted", ...base };
+      const json = JSON.stringify(raw);
+      if (json.length <= MAX_EVENT_JSON) event.raw = json;
+      if (typeof content.session_id === "string" && content.session_id !== "" && content.session_id.length <= MAX_SESSION_ID) event.sessionId = content.session_id;
+      // Relations stay readable on encrypted events, so an edit is known as one before it is decrypted.
+      const relates = isRecord(content["m.relates_to"]) ? content["m.relates_to"] : {};
+      const replaces = relates.rel_type === "m.replace" ? eventId(relates.event_id) : undefined;
+      if (replaces) event.replaces = replaces;
+      return event;
+    }
     case "m.room.redaction": {
       // Room version 11 moved `redacts` into the content.
       const redacts = eventId(content.redacts) ?? eventId(raw.redacts);
@@ -144,6 +159,18 @@ export function parseEvent(raw: unknown): MxEvent | undefined {
 
 export const emptyState = (): MxRoomState => ({ members: {} });
 
+const positive = (value: unknown): number | undefined => (typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined);
+
+/** An m.room.encryption content; an algorithm we cannot name stays "", which nothing encrypts with. */
+export function parseEncryption(content: Record<string, unknown>): MxEncryption {
+  const encryption: MxEncryption = { algorithm: typeof content.algorithm === "string" && content.algorithm.length <= 64 ? content.algorithm : "" };
+  const rotationMs = positive(content.rotation_period_ms);
+  const rotationMsgs = positive(content.rotation_period_msgs);
+  if (rotationMs) encryption.rotationMs = rotationMs;
+  if (rotationMsgs) encryption.rotationMsgs = rotationMsgs;
+  return encryption;
+}
+
 /**
  * Applies a state event to `state`. A cleared name, alias or avatar becomes
  * "". Any m.room.encryption event marks the room encrypted, even a
@@ -156,6 +183,10 @@ export function applyState(state: MxRoomState, raw: unknown): void {
   switch (raw.type) {
     case "m.room.encryption":
       state.encrypted = true;
+      if (global) state.encryption = parseEncryption(content);
+      return;
+    case "m.room.history_visibility":
+      if (global && typeof content.history_visibility === "string") state.history = content.history_visibility.slice(0, 32);
       return;
     case "m.room.name":
       if (global) state.name = cleanName(content.name) ?? "";
@@ -227,7 +258,48 @@ export function parseSync(raw: unknown): MxSync {
   }
   const leave = isRecord(rooms.leave) ? rooms.leave : {};
   sync.left = Object.keys(leave).slice(0, MAX_ROOMS).filter((id) => roomId(id));
+  sync.crypto = parseCryptoSync(raw);
   return sync;
+}
+
+const users = (value: unknown): string[] => list(value, MAX_USERS).flatMap((u) => userId(u) ?? []);
+
+/**
+ * The encryption parts of a sync. To-device events are only checked for
+ * their outline (the crypto library parses them itself) and dropped when
+ * oversized; key counts must be counts.
+ */
+export function parseCryptoSync(raw: Record<string, unknown>): MxCryptoSync {
+  const toDevice = list(isRecord(raw.to_device) ? raw.to_device.events : undefined, MAX_TO_DEVICE).filter(
+    (event) =>
+      isRecord(event) &&
+      typeof event.type === "string" &&
+      event.type.length <= 255 &&
+      userId(event.sender) !== undefined &&
+      isRecord(event.content) &&
+      JSON.stringify(event).length <= MAX_EVENT_JSON,
+  );
+  const lists = isRecord(raw.device_lists) ? raw.device_lists : {};
+  const oneTimeKeys: Record<string, number> = {};
+  const counts = isRecord(raw.device_one_time_keys_count) ? raw.device_one_time_keys_count : {};
+  for (const [algorithm, value] of Object.entries(counts).slice(0, 20)) {
+    if (algorithm.length <= 64 && typeof value === "number" && Number.isInteger(value) && value >= 0) oneTimeKeys[algorithm] = Math.min(value, MAX_COUNT);
+  }
+  const crypto: MxCryptoSync = { toDevice: JSON.stringify(toDevice), changed: users(lists.changed), left: users(lists.left), oneTimeKeys };
+  const fallback = raw.device_unused_fallback_key_types ?? raw["org.matrix.msc2732.device_unused_fallback_key_types"];
+  if (Array.isArray(fallback)) crypto.fallbackKeys = list(fallback, 20).filter((t): t is string => typeof t === "string" && t.length <= 64);
+  return crypto;
+}
+
+/** The joined and invited members in a /members response. */
+export function parseMembers(raw: unknown): string[] {
+  const members = new Set<string>();
+  for (const event of list(isRecord(raw) ? raw.chunk : undefined, MAX_USERS)) {
+    if (!isRecord(event) || event.type !== "m.room.member" || !isRecord(event.content)) continue;
+    const user = userId(event.state_key);
+    if (user && (event.content.membership === "join" || event.content.membership === "invite")) members.add(user);
+  }
+  return [...members];
 }
 
 /** A /messages page (dir=b): Matrix sends it newest first. */

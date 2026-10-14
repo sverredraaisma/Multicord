@@ -4,6 +4,7 @@ import type { PlatformModule } from "./types";
  * Native Matrix client. Its logic (plain Client-Server API calls) runs in
  * the sandboxed "matrix" engine. Homeservers can be anywhere, so it declares
  * no hosts; the HTTP bridge still keeps it off local and private addresses.
+ * End-to-end encryption keys stay in the engine's own storage on disk.
  * The web-view module "matrix" (Element) stays alongside it.
  */
 export const matrixNativeModule: PlatformModule = {
@@ -16,6 +17,8 @@ export const matrixNativeModule: PlatformModule = {
     defaultUrl: "https://matrix.org",
     preload: "preload-native.js",
     engine: "matrix",
+    // Encryption keys live in the engine's own IndexedDB, kept on disk per instance.
+    storage: true,
     home: true,
     capabilities: { directMessages: true, messagePreviews: true, voice: false, screenShare: false },
   },

@@ -5,8 +5,24 @@ import { MAX_DIRECTS } from "../../shared/engine";
 import { escapeMarkdown } from "../../shared/markdown";
 import type { NativeAction, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState } from "../../shared/native";
 import type { AccountStatus } from "../../shared/settings";
-import { MatrixError, matrixErrcode, type MatrixApi, type MxContent, type MxEvent, type MxMember, type MxPage, type MxRoomState, type MxSession, type MxSync } from "./api";
+import {
+  MatrixError,
+  matrixErrcode,
+  type MatrixApi,
+  type MxContent,
+  type MxEncryptedEvent,
+  type MxEncryption,
+  type MxEvent,
+  type MxMember,
+  type MxOAuthSession,
+  type MxPage,
+  type MxRoomState,
+  type MxSession,
+  type MxSync,
+} from "./api";
+import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { cleanName, userId } from "./events";
+import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 
 export const PAGE_SIZE = 50;
 /** Profile pictures fetched per refresh; the rest show initials. */
@@ -15,11 +31,24 @@ export const AVATAR_LIMIT = 40;
 export const SYNC_TIMEOUT_MS = 30_000;
 const RETRY_MIN_MS = 2000;
 const RETRY_MAX_MS = 60_000;
+/** Added to the poll interval when the account server says to slow down (RFC 8628). */
+const SLOW_DOWN_MS = 5000;
 const SESSION_KEY = "session";
+/** The OAuth client id Multicord registered, per account server. */
+const OAUTH_CLIENT_KEY = "oauth-client";
+/** The encrypted key store's name and passphrase. */
+const CRYPTO_STORE_KEY = "crypto-store";
+const MEGOLM = "m.megolm.v1.aes-sha2";
+/** The sidebar entry that opens recovery; Matrix ids never look like this. */
+const VERIFY_ENTRY = "#verify";
 const EDITABLE = new Set(["m.text", "m.notice", "m.emote"]);
 export const ENCRYPTED_TEXT = "🔒 Encrypted message — open this chat in Element to read it";
 export const ENCRYPTED_NOTICE =
   "🔒 This room is end-to-end encrypted, which Multicord does not support. Messages here can only be read and sent in Element or another Matrix app with encryption; Multicord never sends unencrypted messages into it.";
+export const TOKEN_NOTICE =
+  "🔒 This room is end-to-end encrypted. With an access token, Multicord uses Element's device and cannot keep encryption keys of its own, so messages here can only be read and sent in Element. Sign out and sign in with your account (in the browser or with a password) to use encryption in Multicord.";
+export const ALGORITHM_NOTICE = "🔒 This room uses an encryption algorithm Multicord does not support, so nothing can be sent here from Multicord.";
+export const UNVERIFIED_LABEL = "unverified device";
 const CONNECTION_LOST = "Connection lost. Reconnecting…";
 
 export interface MatrixInstanceDef {
@@ -29,16 +58,29 @@ export interface MatrixInstanceDef {
   url: string;
 }
 
+/** End-to-end encryption, when the build has it: opening a device's crypto state, and deleting its store. */
+export interface MatrixCryptoDeps {
+  open(options: E2eeOptions): Promise<E2ee>;
+  deleteStore(name: string): Promise<void>;
+}
+
 export interface MatrixAdapterDeps {
   def: MatrixInstanceDef;
   secrets: AsyncSecretStore;
   render(state: NativeViewState): void;
   api: MatrixApi;
-  /** Waits before retrying a failed sync; tests pass their own. */
+  /** OAuth 2.0 sign-in; without it only passwords and access tokens are offered. */
+  oauth?: MatrixOAuth;
+  crypto?: MatrixCryptoDeps;
+  /** Waits before retrying a failed sync, and between sign-in polls; tests pass their own. */
   delay?: (ms: number) => Promise<void>;
+  /** Reports background failures (never secrets). */
+  log?: (message: string) => void;
 }
 
-type Step = "connecting" | "login" | "token" | "retry" | "chat";
+type Step = "connecting" | "oauth" | "device" | "login" | "token" | "retry" | "chat" | "recovery";
+/** The sign-in screens the secondary button cycles through. */
+type SignInStep = "oauth" | "login" | "token";
 
 type Shown = Extract<MxEvent, { kind: "message" | "encrypted" }>;
 type Message = Extract<MxEvent, { kind: "message" }>;
@@ -51,7 +93,11 @@ interface Room {
   alias: string;
   avatar: string;
   encrypted: boolean;
+  encryption?: MxEncryption;
+  history?: string;
   members: Map<string, MxMember>;
+  /** Joined and invited members, once fetched for encrypting; kept up to date from membership events. */
+  memberIds?: Set<string>;
   heroes: string[];
   /** Messages and encrypted events, oldest first; edits are kept apart. */
   events: Shown[];
@@ -89,12 +135,14 @@ export function messageText(content: MxContent): string {
   return [text, content.media].filter(Boolean).join("\n");
 }
 
+const optionalText = (value: unknown): boolean => value === undefined || (typeof value === "string" && value !== "" && value.length <= 4096);
+
 /** A stored session, if it is one we wrote. */
 export function parseSession(text: string | undefined): MxSession | undefined {
   if (!text) return undefined;
   try {
     const value = JSON.parse(text) as Partial<MxSession>;
-    const { baseUrl, accessToken, deviceId, ownDevice } = value;
+    const { baseUrl, accessToken, deviceId, ownDevice, oauth } = value;
     if (
       typeof baseUrl === "string" &&
       baseUrl.startsWith("https://") &&
@@ -104,7 +152,25 @@ export function parseSession(text: string | undefined): MxSession | undefined {
       typeof deviceId === "string" &&
       typeof ownDevice === "boolean"
     ) {
-      return { baseUrl, accessToken, userId: value.userId!, deviceId, ownDevice };
+      const session: MxSession = { baseUrl, accessToken, userId: value.userId!, deviceId, ownDevice };
+      if (oauth !== undefined) {
+        const { clientId, tokenEndpoint, revocationEndpoint, refreshToken, expiresAt } = oauth;
+        if (
+          typeof clientId !== "string" ||
+          clientId === "" ||
+          !httpsUrl(tokenEndpoint) ||
+          (revocationEndpoint !== undefined && !httpsUrl(revocationEndpoint)) ||
+          !optionalText(refreshToken) ||
+          (expiresAt !== undefined && typeof expiresAt !== "number")
+        ) {
+          return undefined;
+        }
+        session.oauth = { clientId, tokenEndpoint };
+        if (revocationEndpoint) session.oauth.revocationEndpoint = revocationEndpoint;
+        if (refreshToken) session.oauth.refreshToken = refreshToken;
+        if (expiresAt !== undefined) session.oauth.expiresAt = expiresAt;
+      }
+      return session;
     }
   } catch {
     // Not stored by us; sign in again.
@@ -112,15 +178,33 @@ export function parseSession(text: string | undefined): MxSession | undefined {
   return undefined;
 }
 
+/** A stored key store record, if it is one we wrote. */
+function parseStore(text: string | undefined): { name: string; passphrase: string } | undefined {
+  try {
+    const value: unknown = text ? JSON.parse(text) : undefined;
+    const { name, passphrase } = (value ?? {}) as Record<string, unknown>;
+    return typeof name === "string" && typeof passphrase === "string" && passphrase.length >= 32 ? { name, passphrase } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function randomSecret(): string {
+  return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+}
+
 const defaultDelay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /**
- * Native Matrix adapter: signs in with a password or an access token, lists
- * direct chats (m.direct) as direct messages in the rail and the unified
- * Messages page, and every other joined room in its view's sidebar. Runs in
- * its sandboxed engine over plain Client-Server API calls. End-to-end
- * encryption is not supported: encrypted messages show as such, and nothing
- * is ever sent into an encrypted room.
+ * Native Matrix adapter: signs in through the homeserver's account page
+ * (OAuth 2.0), with a password or with an access token; lists direct chats
+ * (m.direct) as direct messages in the rail and the unified Messages page,
+ * and every other joined room in its view's sidebar. Runs in its sandboxed
+ * engine over plain Client-Server API calls. Devices Multicord owns get
+ * end-to-end encryption (crypto.ts); with an access token copied from
+ * Element encrypted rooms stay locked, and nothing is ever sent unencrypted
+ * into an encrypted room.
  */
 export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   override readonly mode = "native" as const;
@@ -132,10 +216,19 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private error: string | undefined;
   private baseUrl: string | undefined;
   private passwordLogin = false;
+  private oauthServer: OAuthServer | undefined;
+  /** The code on screen while signing in with OAuth, and a counter that stops the polling for an abandoned one. */
+  private grant: DeviceGrant | undefined;
+  private grantAttempt = 0;
   /** What "Try again" on the retry screen does. */
   private retry: (() => Promise<void>) | undefined;
   private session: MxSession | undefined;
   private hasSession = false;
+  /** End-to-end encryption for this session; while unset, encrypted rooms are locked. */
+  private crypto: E2ee | undefined;
+  private cryptoStatus: E2eeStatus | undefined;
+  /** Why encryption is off on a device of our own. */
+  private cryptoProblem: string | undefined;
   private readonly rooms = new Map<string, Room>();
   /** DM room id -> the other user, from m.direct. */
   private dmUsers = new Map<string, string>();
@@ -153,10 +246,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   /** Counts sign-ins and sign-outs, so a sync loop or task started for one session stops for the next. */
   private generation = 0;
   private readonly delay: (ms: number) => Promise<void>;
+  private readonly log: (message: string) => void;
 
   constructor(private readonly deps: MatrixAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
     this.delay = deps.delay ?? defaultDelay;
+    this.log = deps.log ?? ((message) => console.warn(`[matrix] ${message}`));
   }
 
   /** Resumes a saved session, else starts signing in. */
@@ -174,7 +269,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private async resume(saved: MxSession): Promise<void> {
     this.connecting(`Connecting to ${this.host()}…`);
     try {
-      await this.deps.api.whoami(saved.baseUrl, saved.accessToken);
+      await this.deps.api.check(saved);
     } catch (error) {
       if (ended(error)) {
         await this.forgetSession();
@@ -185,7 +280,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.signedIn(saved);
   }
 
-  /** Finds the homeserver and its sign-in options, then asks for a password or token. */
+  /** Finds the homeserver and its sign-in options, then asks how to sign in. */
   private async showSignIn(error?: string): Promise<void> {
     this.connecting(`Looking up ${this.host()}…`);
     try {
@@ -194,10 +289,27 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     } catch (failure) {
       return this.showRetry(`Could not reach a Matrix homeserver at ${this.host()}: ${friendly(failure)}`, () => this.showSignIn(error));
     }
-    this.step = this.passwordLogin ? "login" : "token";
+    // Discovery never throws: without an account server, the other ways remain.
+    this.oauthServer = await this.deps.oauth?.discover(this.baseUrl).catch(() => undefined);
+    this.step = this.signInSteps()[0]!;
     this.status = undefined;
     this.error = error;
     this.render();
+  }
+
+  private signInSteps(): SignInStep[] {
+    const steps: SignInStep[] = [];
+    if (this.oauthServer) steps.push("oauth");
+    if (this.passwordLogin) steps.push("login");
+    steps.push("token");
+    return steps;
+  }
+
+  /** The sign-in screen the secondary button leads to, if there is another. */
+  private nextSignIn(step: SignInStep): SignInStep | undefined {
+    const steps = this.signInSteps();
+    const next = steps[(steps.indexOf(step) + 1) % steps.length]!;
+    return next === step ? undefined : next;
   }
 
   private showRetry(error: string, retry: () => Promise<void>): void {
@@ -226,6 +338,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.hasSession = false;
     this.session = undefined;
     await this.deps.secrets.delete(SESSION_KEY);
+    await this.stopCrypto(true);
   }
 
   // --- Shell interface ---------------------------------------------------------
@@ -274,7 +387,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const session = this.session;
     this.generation++;
     // A token copied from another app is that app's device: ending it would sign that app out too.
-    if (session?.ownDevice) await this.deps.api.logout(session).catch(() => undefined);
+    if (session?.ownDevice) {
+      // An OAuth session ends by revoking its token at the account server, which removes the device.
+      if (session.oauth && this.deps.oauth) await this.revoke(session.oauth, session.accessToken);
+      else await this.deps.api.logout(session).catch(() => undefined);
+    }
     await this.forgetSession();
     this.rooms.clear();
     this.dmUsers.clear();
@@ -299,6 +416,29 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     await this.showSignIn("Your Matrix session has ended. Sign in again.");
   }
 
+  /**
+   * Gets a new access token for an OAuth session (the client calls this when
+   * the token is due), updating the session in place and storing it. A
+   * refused refresh ends the session.
+   */
+  async refreshSession(session: MxSession): Promise<void> {
+    const oauth = session.oauth;
+    if (!oauth || !this.deps.oauth) throw new MatrixError(401, "M_UNKNOWN_TOKEN", "The session cannot be refreshed");
+    let tokens: OAuthTokens;
+    try {
+      tokens = await this.deps.oauth.refresh(oauth);
+    } catch (error) {
+      // A network failure is worth another try later; the account server refusing is not.
+      if (error instanceof OAuthError) throw new MatrixError(401, "M_UNKNOWN_TOKEN", "Your Matrix session has ended");
+      throw error;
+    }
+    session.accessToken = tokens.accessToken;
+    oauth.refreshToken = tokens.refreshToken;
+    oauth.expiresAt = tokens.expiresAt;
+    // Signed out meanwhile: nothing to keep.
+    if (this.hasSession) await this.deps.secrets.save(SESSION_KEY, JSON.stringify(session));
+  }
+
   async handleAction(action: NativeAction): Promise<void> {
     switch (action.type) {
       case "ready":
@@ -306,13 +446,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       case "prompt":
         return this.answer(action.id, action.values);
       case "cancelPrompt":
-        // The secondary button switches between password and access token.
-        if (action.id === "login" || (action.id === "token" && this.passwordLogin)) {
-          this.step = action.id === "login" ? "token" : "login";
-          this.error = undefined;
-          this.render();
-        }
-        return;
+        return this.cancel(action.id);
       case "select":
         return this.select(action.channelId);
       case "send":
@@ -333,9 +467,32 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   // --- Signing in ---------------------------------------------------------------
 
+  /** The secondary button: the next way to sign in, back from a code or out of recovery. */
+  private cancel(step: string): void {
+    if (step !== this.step || this.busy) return;
+    if (step === "device") {
+      this.grantAttempt++;
+      this.grant = undefined;
+      this.step = "oauth";
+    } else if (step === "recovery") {
+      this.step = "chat";
+    } else if (step === "oauth" || step === "login" || step === "token") {
+      const next = this.nextSignIn(step);
+      if (!next) return;
+      this.step = next;
+    } else {
+      return;
+    }
+    this.error = undefined;
+    this.status = undefined;
+    this.render();
+  }
+
   private async answer(step: string, values: Record<string, string>): Promise<void> {
     if (step !== this.step || this.busy) return;
     if (step === "retry") return this.retry!();
+    if (step === "oauth" || step === "device") return this.startDeviceSignIn();
+    if (step === "recovery") return this.recover(values.key ?? "");
     this.busy = true;
     this.error = undefined;
     this.render();
@@ -362,48 +519,326 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.render();
   }
 
+  /** Multicord's client id at this account server, registering once. */
+  private async clientId(server: OAuthServer): Promise<string> {
+    try {
+      const stored = JSON.parse((await this.deps.secrets.load(OAUTH_CLIENT_KEY)) ?? "null") as { issuer?: unknown; clientId?: unknown } | null;
+      if (stored?.issuer === server.issuer && typeof stored.clientId === "string" && stored.clientId !== "") return stored.clientId;
+    } catch {
+      // Not ours; register again.
+    }
+    const clientId = await this.deps.oauth!.register(server);
+    await this.deps.secrets.save(OAUTH_CLIENT_KEY, JSON.stringify({ issuer: server.issuer, clientId }));
+    return clientId;
+  }
+
+  /** Gets a code for the user to approve in their browser, then waits for the approval. */
+  private async startDeviceSignIn(): Promise<void> {
+    const server = this.oauthServer!;
+    const attempt = ++this.grantAttempt;
+    this.error = undefined;
+    this.connecting("Getting a sign-in code…");
+    try {
+      const clientId = await this.clientId(server);
+      const deviceId = newDeviceId();
+      const grant = await this.deps.oauth!.authorizeDevice(server, clientId, deviceId);
+      if (attempt !== this.grantAttempt) return;
+      this.grant = grant;
+      this.step = "device";
+      this.status = "Waiting for you to approve the sign-in…";
+      this.render();
+      void this.pollDevice(attempt, server, clientId, deviceId, grant);
+    } catch (error) {
+      if (attempt === this.grantAttempt) this.deviceFailed(`Could not start signing in: ${friendly(error)}`);
+    }
+  }
+
+  private deviceFailed(error: string): void {
+    this.grant = undefined;
+    this.step = "oauth";
+    this.status = undefined;
+    this.error = error;
+    this.render();
+  }
+
+  private async pollDevice(attempt: number, server: OAuthServer, clientId: string, deviceId: string, grant: DeviceGrant): Promise<void> {
+    let interval = grant.interval;
+    for (;;) {
+      await this.delay(interval);
+      if (attempt !== this.grantAttempt) return;
+      if (Date.now() >= grant.expiresAt) return this.deviceFailed("The code expired. Get a new one to try again.");
+      let tokens: OAuthTokens | undefined;
+      try {
+        const result = await this.deps.oauth!.pollDevice(server, clientId, grant.deviceCode);
+        if (attempt !== this.grantAttempt) return result.state === "done" ? this.discard(server, clientId, result.tokens) : undefined;
+        if (result.state === "denied") return this.deviceFailed("The sign-in was declined.");
+        if (result.state === "expired") return this.deviceFailed("The code expired. Get a new one to try again.");
+        if (result.state === "slow_down") interval += SLOW_DOWN_MS;
+        if (result.state === "done") tokens = result.tokens;
+      } catch (error) {
+        if (attempt !== this.grantAttempt) return;
+        // The account server refusing ends it; a lost connection is tried again at the next poll.
+        if (error instanceof OAuthError) return this.deviceFailed(`Signing in failed: ${error.message}`);
+      }
+      if (tokens) return this.finishDeviceSignIn(attempt, server, clientId, deviceId, tokens);
+    }
+  }
+
+  /** Revokes an OAuth session's token (the refresh token when there is one), which ends it on the server. */
+  private async revoke(oauth: MxOAuthSession, accessToken: string): Promise<void> {
+    const [token, hint] = oauth.refreshToken ? [oauth.refreshToken, "refresh_token" as const] : [accessToken, "access_token" as const];
+    await this.deps.oauth!.revoke(oauth, token, hint).catch(() => undefined);
+  }
+
+  private oauthSession(server: OAuthServer, clientId: string, tokens: OAuthTokens): MxOAuthSession {
+    const oauth: MxOAuthSession = { clientId, tokenEndpoint: server.tokenEndpoint };
+    if (server.revocationEndpoint) oauth.revocationEndpoint = server.revocationEndpoint;
+    if (tokens.refreshToken) oauth.refreshToken = tokens.refreshToken;
+    if (tokens.expiresAt !== undefined) oauth.expiresAt = tokens.expiresAt;
+    return oauth;
+  }
+
+  /** Ends the session the account server made for a sign-in that was abandoned or failed, so no stray device stays behind. */
+  private discard(server: OAuthServer, clientId: string, tokens: OAuthTokens): void {
+    void this.revoke(this.oauthSession(server, clientId, tokens), tokens.accessToken);
+  }
+
+  private async finishDeviceSignIn(attempt: number, server: OAuthServer, clientId: string, deviceId: string, tokens: OAuthTokens): Promise<void> {
+    const baseUrl = this.baseUrl!;
+    try {
+      const who = await this.deps.api.whoami(baseUrl, tokens.accessToken);
+      // Abandoned meanwhile (Back): keep nothing.
+      if (attempt !== this.grantAttempt) return this.discard(server, clientId, tokens);
+      const session: MxSession = { baseUrl, accessToken: tokens.accessToken, userId: who.userId, deviceId: who.deviceId ?? deviceId, ownDevice: true, oauth: this.oauthSession(server, clientId, tokens) };
+      await this.deps.secrets.save(SESSION_KEY, JSON.stringify(session));
+      this.grant = undefined;
+      this.signedIn(session);
+    } catch (error) {
+      this.discard(server, clientId, tokens);
+      if (attempt === this.grantAttempt) this.deviceFailed(`Signing in failed: ${friendly(error)}`);
+    }
+  }
+
   private prompt(): NativePrompt {
     const host = this.host();
+    const withCancel = (prompt: NativePrompt, step: SignInStep): NativePrompt => {
+      const next = this.nextSignIn(step);
+      if (next) prompt.cancel = { oauth: "Sign in with the browser instead", login: "Use a password instead", token: "Use an access token instead" }[next];
+      return prompt;
+    };
+    const encryption = this.deps.crypto ? "Multicord gets a device of its own, with end-to-end encryption." : "Encrypted rooms cannot be read in Multicord.";
     switch (this.step) {
       case "retry":
         return { id: "retry", title: "Matrix is not reachable", fields: [], submit: "Try again" };
-      case "token": {
-        const prompt: NativePrompt = {
-          id: "token",
-          title: `Sign in to ${host} with an access token`,
-          description:
-            `${this.passwordLogin ? "" : `${host} does not offer password sign-in to other apps; homeservers that sign in through their own account page (such as matrix.org) work this way. `}` +
-            "Copy an access token from Element: Settings > Help & About > Access token. Multicord then shares Element's session: signing out here only forgets the token, and signing out in Element ends it here too. The token is stored encrypted on this device.",
-          fields: [{ name: "token", label: "Access token", type: "password", autocomplete: "off" }],
-          submit: "Sign in",
-        };
-        if (this.passwordLogin) prompt.cancel = "Use a password instead";
-        return prompt;
-      }
-      default:
+      case "recovery":
         return {
-          id: "login",
-          title: `Sign in to ${host}`,
-          description: "Your password goes only to your homeserver, and your session is stored encrypted on this device. Encrypted rooms cannot be read in Multicord.",
-          fields: [
-            { name: "user", label: "Username", type: "text", autocomplete: "username", placeholder: "@alice:matrix.org" },
-            { name: "password", label: "Password", type: "password", autocomplete: "current-password" },
-          ],
-          submit: "Sign in",
-          cancel: "Use an access token instead",
+          id: "recovery",
+          title: "Verify this device",
+          description:
+            "Enter the recovery key you saved when you set up recovery in Element (48 letters and digits), or your security phrase. Multicord then signs this device with your cross-signing keys, so your other devices and contacts trust it, and restores your message keys from the key backup, so older encrypted messages can be read. " +
+            "Verifying from another device (comparing emoji) is not supported yet; use your recovery key. It stays on this device and is never sent anywhere.",
+          fields: [{ name: "key", label: "Recovery key or security phrase", type: "password", autocomplete: "off" }],
+          submit: "Verify",
+          cancel: "Not now",
         };
+      case "device": {
+        const grant = this.grant!;
+        const page = new URL(grant.verificationUri).host;
+        return {
+          id: "device",
+          title: `Your code: ${grant.userCode}`,
+          description: `Open ${grant.verificationUri} in your browser, sign in to ${host} there if asked, and enter the code ${grant.userCode}. Multicord continues by itself once you approve.`,
+          link: { url: grant.verificationUriComplete ?? grant.verificationUri, label: `Open ${page}` },
+          fields: [],
+          submit: "Get a new code",
+          cancel: "Back",
+        };
+      }
+      case "oauth":
+        return withCancel(
+          {
+            id: "oauth",
+            title: `Sign in to ${host}`,
+            description: `You sign in on ${new URL(this.oauthServer!.issuer).host}, your homeserver's account page, in your browser, and confirm a code there: your password never passes through Multicord. ${encryption}`,
+            fields: [],
+            submit: "Sign in with the browser",
+          },
+          "oauth",
+        );
+      case "token":
+        return withCancel(
+          {
+            id: "token",
+            title: `Sign in to ${host} with an access token`,
+            description:
+              `${this.passwordLogin || this.oauthServer ? "" : `${host} does not offer password sign-in to other apps; homeservers that sign in through their own account page (such as matrix.org) work this way. `}` +
+              "Copy an access token from Element: Settings > Help & About > Access token. Multicord then shares Element's session: signing out here only forgets the token, and signing out in Element ends it here too. Encrypted rooms stay locked, since the device is Element's. The token is stored encrypted on this device.",
+            fields: [{ name: "token", label: "Access token", type: "password", autocomplete: "off" }],
+            submit: "Sign in",
+          },
+          "token",
+        );
+      default:
+        return withCancel(
+          {
+            id: "login",
+            title: `Sign in to ${host}`,
+            description: `Your password goes only to your homeserver, and your session is stored encrypted on this device. ${encryption}`,
+            fields: [
+              { name: "user", label: "Username", type: "text", autocomplete: "username", placeholder: "@alice:matrix.org" },
+              { name: "password", label: "Password", type: "password", autocomplete: "current-password" },
+            ],
+            submit: "Sign in",
+          },
+          "login",
+        );
     }
+  }
+
+  // --- Encryption ---------------------------------------------------------------
+
+  /** The key store's name and passphrase for this device, made once; another device's store is deleted. */
+  private async cryptoStore(session: MxSession): Promise<{ name: string; passphrase: string }> {
+    const name = `multicord:${this.deps.def.id}:${session.userId}:${session.deviceId}`;
+    const stored = parseStore(await this.deps.secrets.load(CRYPTO_STORE_KEY));
+    if (stored?.name === name) return stored;
+    if (stored) await this.deps.crypto!.deleteStore(stored.name);
+    const store = { name, passphrase: randomSecret() };
+    await this.deps.secrets.save(CRYPTO_STORE_KEY, JSON.stringify(store));
+    return store;
+  }
+
+  private async startCrypto(generation: number, session: MxSession): Promise<void> {
+    this.cryptoProblem = undefined;
+    if (!this.deps.crypto || !session.ownDevice || session.deviceId === "") return;
+    try {
+      const store = await this.cryptoStore(session);
+      const crypto = await this.deps.crypto.open({
+        userId: session.userId,
+        deviceId: session.deviceId,
+        store,
+        http: (method, path, body, query) => this.deps.api.request(session, method, path, body, query),
+        accountData: (type) => this.deps.api.accountData(session, type),
+        log: this.log,
+      });
+      if (generation !== this.generation) return crypto.close();
+      this.crypto = crypto;
+      crypto.onKeys((sessions) => void this.retryDecryption(new Set(sessions)));
+    } catch (error) {
+      this.cryptoProblem = messageOf(error);
+      this.log(`Encryption could not start: ${this.cryptoProblem}`);
+    }
+  }
+
+  /** Closes the crypto state; on sign-out also deletes its store, so no keys stay behind. */
+  private async stopCrypto(forget: boolean): Promise<void> {
+    this.crypto?.close();
+    this.crypto = undefined;
+    this.cryptoStatus = undefined;
+    if (!forget || !this.deps.crypto) return;
+    const stored = parseStore(await this.deps.secrets.load(CRYPTO_STORE_KEY));
+    if (stored) await this.deps.crypto.deleteStore(stored.name).catch((error: unknown) => this.log(`Key store not deleted: ${messageOf(error)}`));
+    await this.deps.secrets.delete(CRYPTO_STORE_KEY);
+  }
+
+  private async refreshCryptoStatus(crypto: E2ee): Promise<void> {
+    const status = await crypto.status().catch(() => undefined);
+    if (crypto !== this.crypto || !status) return;
+    this.cryptoStatus = status;
+    this.render();
+  }
+
+  /** Decrypts what can be; events that cannot be stay, with the reason. */
+  private async decryptAll(roomId: string, events: MxEvent[]): Promise<MxEvent[]> {
+    const crypto = this.crypto;
+    if (!crypto) return events;
+    const out: MxEvent[] = [];
+    for (const event of events) {
+      if (event.kind !== "encrypted") {
+        out.push(event);
+        continue;
+      }
+      const decrypted = await crypto.decrypt(roomId, event).catch((error: unknown): MxEvent => ({ ...event, problem: messageOf(error) }));
+      if (decrypted) out.push(decrypted);
+    }
+    return out;
+  }
+
+  /** Tries again to decrypt events whose keys may have arrived (all of them without `sessions`). */
+  private async retryDecryption(sessions?: Set<string>): Promise<void> {
+    const crypto = this.crypto;
+    if (!crypto) return;
+    let changed = false;
+    for (const room of [...this.rooms.values()]) {
+      const waiting = room.events.filter((e): e is MxEncryptedEvent => e.kind === "encrypted" && e.raw !== undefined && (!sessions || sessions.has(e.sessionId ?? "")));
+      for (const event of waiting) {
+        const result = await crypto.decrypt(room.id, event).catch(() => event);
+        if (crypto !== this.crypto) return;
+        if (result?.kind === "encrypted") continue;
+        changed = true;
+        const index = room.events.findIndex((e) => e.id === event.id);
+        if (index < 0) continue;
+        // A message takes the placeholder's place; anything else (an edit, a hidden type) removes it.
+        if (result?.kind === "message" && !result.replaces) room.events[index] = result;
+        else {
+          room.events.splice(index, 1);
+          if (result) this.addEvent(room, result, false);
+        }
+      }
+    }
+    if (changed) this.publish();
+  }
+
+  private async recover(input: string): Promise<void> {
+    // The recovery screen opens only with encryption running, and signing out leaves it.
+    const crypto = this.crypto!;
+    this.busy = true;
+    this.error = undefined;
+    this.status = "Verifying… restoring keys can take a moment.";
+    this.render();
+    try {
+      const result = await crypto.recover(input.trim());
+      if (crypto !== this.crypto) return;
+      this.cryptoStatus = { verified: result.verified, backup: result.backup };
+      this.step = "chat";
+      this.status = undefined;
+      void this.retryDecryption();
+    } catch (error) {
+      this.error = friendly(error);
+    } finally {
+      this.busy = false;
+    }
+    this.render();
+  }
+
+  /** Why nothing may be sent into this room from here (the composer's notice, and the short form for errors), or undefined when it may. */
+  private lock(room: Room): { notice: string; reason: string } | undefined {
+    if (!room.encrypted) return undefined;
+    if (!this.deps.crypto) return { notice: ENCRYPTED_NOTICE, reason: "this room is end-to-end encrypted, which Multicord does not support" };
+    if (!this.session!.ownDevice) return { notice: TOKEN_NOTICE, reason: "this room is end-to-end encrypted, and with an access token Multicord cannot encrypt" };
+    if (!this.crypto) {
+      const why = this.cryptoProblem ? ` (${this.cryptoProblem})` : "";
+      return {
+        notice: `🔒 This room is end-to-end encrypted, but encryption could not start${why}. Nothing is sent here until it does; restart Multicord to try again.`,
+        reason: `encryption could not start${why}`,
+      };
+    }
+    if (room.encryption?.algorithm !== MEGOLM) return { notice: ALGORITHM_NOTICE, reason: "this room uses an encryption algorithm Multicord does not support" };
+    return undefined;
   }
 
   // --- Syncing --------------------------------------------------------------------
 
   private async syncLoop(generation: number, session: MxSession): Promise<void> {
+    await this.startCrypto(generation, session);
     let since: string | undefined;
     let wait = RETRY_MIN_MS;
     while (generation === this.generation) {
       try {
         // The first sync returns at once; later ones wait for news.
         const sync = await this.deps.api.sync(session, since, since === undefined ? 0 : SYNC_TIMEOUT_MS);
+        if (generation !== this.generation) return;
+        await this.receiveCrypto(session, sync, since === undefined);
         if (generation !== this.generation) return;
         this.applySync(sync, since === undefined);
         since = sync.nextBatch;
@@ -412,12 +847,24 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         if (generation !== this.generation) return;
         if (ended(error)) return this.sessionEnded();
         if (this.step === "chat") this.error = CONNECTION_LOST;
-        else this.status = `Could not reach ${this.host()}: ${friendly(error)}. Retrying…`;
+        else if (this.step === "connecting") this.status = `Could not reach ${this.host()}: ${friendly(error)}. Retrying…`;
         this.render();
         await this.delay(wait);
         wait = Math.min(wait * 2, RETRY_MAX_MS);
       }
     }
+  }
+
+  /** Hands the sync's keys and to-device messages to the crypto state, then decrypts its timelines. */
+  private async receiveCrypto(session: MxSession, sync: MxSync, initial: boolean): Promise<void> {
+    const crypto = this.crypto;
+    if (!crypto) return;
+    if (sync.crypto) {
+      // The keys that did arrive are in; requests that failed are asked for again.
+      await crypto.receiveSync(sync.crypto).catch((error: unknown) => this.log(`Encryption sync: ${messageOf(error)}`));
+      if (initial || sync.crypto.changed.includes(session.userId)) void this.refreshCryptoStatus(crypto);
+    }
+    for (const update of sync.joined) update.timeline = await this.decryptAll(update.roomId, update.timeline);
   }
 
   private local(id: string): string {
@@ -444,7 +891,14 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (state.alias !== undefined) room.alias = state.alias;
     if (state.avatar !== undefined) room.avatar = state.avatar;
     if (state.encrypted) room.encrypted = true;
-    for (const [user, member] of Object.entries(state.members)) room.members.set(user, member);
+    if (state.encryption) room.encryption = state.encryption;
+    if (state.history !== undefined) room.history = state.history;
+    for (const [user, member] of Object.entries(state.members)) {
+      room.members.set(user, member);
+      // Whoever joins or is invited gets the keys of the next encrypted message; whoever leaves does not.
+      if (member.membership === "join" || member.membership === "invite") room.memberIds?.add(user);
+      else room.memberIds?.delete(user);
+    }
   }
 
   private applySync(sync: MxSync, initial: boolean): void {
@@ -468,10 +922,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         // A gap: what we had no longer joins up with the new events.
         if (!fresh) room.events = [];
         room.prevBatch = update.prevBatch;
+        // Membership changes may be in the gap too.
+        room.memberIds = undefined;
       }
       for (const event of update.timeline) this.addEvent(room, event, !initial);
     }
-    this.step = "chat";
+    // Recovery is a screen of its own; syncs carry on behind it.
+    if (this.step !== "recovery") this.step = "chat";
     this.status = undefined;
     if (this.error === CONNECTION_LOST) this.error = undefined;
     const open = this.selectedRoom();
@@ -499,6 +956,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       if (!known || known.ts <= event.ts) room.edits.set(key, event);
       return;
     }
+    // An edit that cannot be read changes nothing that can be shown.
+    if (event.kind === "encrypted" && event.replaces) return;
     if (room.events.some((e) => e.id === event.id)) return;
     room.events.push(event);
     room.lastActivity = Math.max(room.lastActivity, event.ts);
@@ -565,6 +1024,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private async select(local: string): Promise<void> {
+    if (this.byLocal.get(local) === VERIFY_ENTRY) {
+      if (!this.crypto || this.step !== "chat") return;
+      this.step = "recovery";
+      this.error = undefined;
+      this.status = undefined;
+      return this.render();
+    }
     const room = this.rooms.get(this.byLocal.get(local) ?? "");
     if (!room) return;
     this.selected = room.id;
@@ -582,6 +1048,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     let page: MxPage | undefined;
     try {
       page = await this.deps.api.messages(session, room.id, room.prevBatch, PAGE_SIZE);
+      page.events = await this.decryptAll(room.id, page.events);
     } catch (error) {
       this.error = `Could not load messages: ${friendly(error)}`;
     }
@@ -594,7 +1061,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       for (const event of page.events) {
         if (event.kind === "message" && event.replaces) this.addEvent(room, event, false);
         else if (event.kind === "redaction") this.removeEvent(room, event.redacts);
-        else if ((event.kind === "message" || event.kind === "encrypted") && !known.has(event.id)) older.push(event);
+        else if ((event.kind === "message" || (event.kind === "encrypted" && !event.replaces)) && !known.has(event.id)) older.push(event);
       }
       // Redactions in this page may also remove events from it.
       const redacted = new Set(page.events.flatMap((e) => (e.kind === "redaction" ? [e.redacts] : [])));
@@ -632,16 +1099,29 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   /**
-   * Refuses to write into an encrypted room. The cached state could be
-   * stale, so unless it already says so, the server is asked first; if it
-   * cannot answer, nothing is sent.
+   * Sends a message's content, encrypted when the room is. The cached state
+   * could be stale, so unless it already says the room is encrypted, the
+   * server is asked first; if it cannot answer, nothing is sent. Into an
+   * encrypted room nothing goes without working encryption.
    */
-  private async ensureUnencrypted(session: MxSession, room: Room): Promise<void> {
-    if (!room.encrypted && (await this.deps.api.encrypted(session, room.id))) room.encrypted = true;
-    if (room.encrypted) {
-      this.render();
-      throw new Error("this room is end-to-end encrypted, which Multicord does not support");
+  private async sendContent(session: MxSession, room: Room, content: Record<string, unknown>): Promise<string> {
+    if (!room.encrypted) {
+      const encryption = await this.deps.api.encryption(session, room.id);
+      if (encryption) {
+        room.encrypted = true;
+        room.encryption = encryption;
+      }
     }
+    if (!room.encrypted) return this.deps.api.send(session, room.id, content);
+    const lock = this.lock(room);
+    if (lock) {
+      this.render();
+      throw new Error(lock.reason);
+    }
+    // The member list (who gets the room key) is fetched in full once; lazy-loaded syncs only name some members.
+    room.memberIds ??= new Set(await this.deps.api.members(session, room.id));
+    const encrypted = await this.crypto!.encrypt(room.id, { encryption: room.encryption!, history: room.history }, [...room.memberIds], "m.room.message", content);
+    return this.deps.api.send(session, room.id, encrypted, "m.room.encrypted");
   }
 
   private findEvent(room: Room, local: string): Shown | undefined {
@@ -654,11 +1134,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (!room || text.trim() === "") return;
     const session = this.session!;
     await this.attempt("Message not sent", async () => {
-      await this.ensureUnencrypted(session, room);
       const content: Record<string, unknown> = { msgtype: "m.text", body: text, "m.mentions": {} };
       const replied = replyTo ? this.findEvent(room, replyTo) : undefined;
       if (replied) content["m.relates_to"] = { "m.in_reply_to": { event_id: replied.id } };
-      const id = await this.deps.api.send(session, room.id, content);
+      const id = await this.sendContent(session, room, content);
       const sent: Message = { kind: "message", id, sender: session.userId, ts: Date.now(), content: { msgtype: "m.text", text }, mentions: [] };
       if (replied) sent.replyTo = replied.id;
       this.addEvent(room, sent, false);
@@ -672,9 +1151,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const target = room && this.findEvent(room, local);
     if (!room || target?.kind !== "message" || target.sender !== session.userId || !EDITABLE.has(target.content.msgtype)) return;
     await this.attempt("Message not edited", async () => {
-      await this.ensureUnencrypted(session, room);
       const { msgtype } = target.content;
-      const id = await this.deps.api.send(session, room.id, {
+      const id = await this.sendContent(session, room, {
         msgtype,
         body: `* ${text}`,
         "m.new_content": { msgtype, body: text, "m.mentions": {} },
@@ -721,7 +1199,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private eventText(room: Room, event: Shown): string {
-    return event.kind === "encrypted" ? ENCRYPTED_TEXT : messageText(this.shownContent(room, event).content);
+    if (event.kind === "encrypted") return event.problem ? `🔒 Unable to decrypt: ${event.problem}` : ENCRYPTED_TEXT;
+    return messageText(this.shownContent(room, event).content);
   }
 
   private dmRooms(): Room[] {
@@ -757,7 +1236,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.render();
   }
 
-  private toNative(room: Room, event: Shown): NativeMessage {
+  private toNative(room: Room, event: Shown, locked: boolean): NativeMessage {
     const mine = event.sender === this.session!.userId;
     const native: NativeMessage = {
       id: this.local(event.id),
@@ -772,9 +1251,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       attachments: [],
     };
     if (event.kind !== "message") return native;
+    // A quiet note on the author line: the message decrypted, but from a device its owner has not verified.
+    if (event.unverified) native.author = `${native.author} · ${UNVERIFIED_LABEL}`;
     const { content, edited } = this.shownContent(room, event);
     native.edited = edited;
-    native.canEdit = mine && !room.encrypted && EDITABLE.has(event.content.msgtype);
+    native.canEdit = mine && !locked && EDITABLE.has(event.content.msgtype);
     if (native.canEdit) native.source = content.text;
     const replied = event.replyTo ? room.events.find((e) => e.id === event.replyTo) : undefined;
     // Reply previews are plain text in the view.
@@ -804,10 +1285,15 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const rooms = this.otherRooms();
     const sidebar: NativeSidebarItem[] = [];
     const category = (id: string, name: string): NativeSidebarItem => ({ id, name, kind: "category", unread: false, mentions: 0, active: false });
+    // Until this device is verified, the way to verify it sits at the top.
+    if (this.crypto && this.cryptoStatus && !this.cryptoStatus.verified) {
+      sidebar.push(category("security", "Encryption"), { id: this.local(VERIFY_ENTRY), name: "🔑 Verify this device", kind: "text", unread: false, mentions: 0, active: false });
+    }
     if (dms.length) sidebar.push(category("dms", "Direct messages"), ...dms.map((r) => this.sidebarItem(r, true)));
     if (rooms.length) sidebar.push(category("rooms", "Rooms"), ...rooms.map((r) => this.sidebarItem(r, false)));
     const room = this.selectedRoom();
     const userId = this.session!.userId;
+    const locked = room ? this.lock(room)?.notice : undefined;
     return {
       screen: "chat",
       platform,
@@ -818,13 +1304,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         ? {
             id: room.local,
             name: this.title(room),
-            messages: room.events.map((e) => this.toNative(room, e)),
+            messages: room.events.map((e) => this.toNative(room, e, locked !== undefined)),
             loading: this.loading.has(room.id),
             hasOlder: room.prevBatch !== undefined,
             typing: [],
             pending: [],
             uploading: false,
-            ...(room.encrypted ? { locked: ENCRYPTED_NOTICE } : {}),
+            ...(locked ? { locked } : {}),
           }
         : null,
       voice: null,
