@@ -563,3 +563,26 @@ describe("FluxerAdapter notifications", () => {
     expect(chat()).toMatchObject({ title: "Alpha", channel: { id: "111" } });
   });
 });
+
+describe("FluxerAdapter guild subscriptions", () => {
+  it("makes the open guild active so large guilds deliver every message", async () => {
+    const ctx = setup({ token: "flx" });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    const lazy = () => ctx.sockets.at(-1)!.sent.filter((p) => p.op === 14);
+    await ctx.adapter.openServer("100");
+    expect(lazy()).toEqual([{ op: 14, d: { subscriptions: { "100": { active: true, typing: true } } } }]);
+    await ctx.adapter.openConversation("211");
+    await ctx.adapter.openConversation("900"); // DM: no subscription
+    expect(lazy().map((p) => Object.keys((p.d as { subscriptions: object }).subscriptions))).toEqual([["100"], ["200"]]);
+
+    // After a reconnect the subscription is renewed.
+    ctx.sockets[0]!.serverClose(1006);
+    await vi.advanceTimersByTimeAsync(1000);
+    await ctx.adapter.openServer("200");
+    ctx.sockets[1]!.receive({ op: 10, d: { heartbeat_interval: 40_000 } });
+    ctx.sockets[1]!.receive({ op: 0, s: 2, t: "RESUMED", d: {} });
+    // Nothing is sent before the session is ready again; RESUMED renews the subscription.
+    expect(lazy().map((p) => Object.keys((p.d as { subscriptions: object }).subscriptions))).toEqual([["200"]]);
+  });
+});

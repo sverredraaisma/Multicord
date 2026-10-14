@@ -175,3 +175,47 @@ export function parseFolders(settings: unknown): FluxerFolder[] | undefined {
 export function displayName(user: FluxerUser): string {
   return user.globalName ?? user.username;
 }
+
+/** message_notifications levels; Inherit defers to the next level up. */
+export const NotifyLevel = { All: 0, Mentions: 1, None: 2, Inherit: 3 } as const;
+
+export interface FluxerNotifySettings {
+  level?: number;
+  /** Muted until this epoch ms; Infinity for an open-ended mute. */
+  mutedUntil?: number;
+  suppressEveryone: boolean;
+  channels: Map<string, { level?: number; mutedUntil?: number }>;
+}
+
+/** Key for DM settings, which Fluxer files under guild id null, 0 or "@me". */
+export const DM_SETTINGS = "@me";
+
+function mutedUntil(muted: unknown, config: unknown): number | undefined {
+  if (muted !== true) return undefined;
+  const end = isRecord(config) && typeof config.end_time === "string" ? Date.parse(config.end_time) : NaN;
+  return Number.isNaN(end) ? Infinity : end;
+}
+
+const level = (value: unknown): number | undefined =>
+  typeof value === "number" && value >= NotifyLevel.All && value <= NotifyLevel.Inherit ? value : undefined;
+
+/** Parses one user guild settings object; returns its guild key and settings. */
+export function parseGuildSettings(value: unknown): [string, FluxerNotifySettings] | undefined {
+  if (!isRecord(value)) return undefined;
+  const key = isId(value.guild_id) && value.guild_id !== "0" ? value.guild_id : DM_SETTINGS;
+  const channels = new Map<string, { level?: number; mutedUntil?: number }>();
+  if (isRecord(value.channel_overrides)) {
+    for (const [id, o] of Object.entries(value.channel_overrides)) {
+      if (isId(id) && isRecord(o)) channels.set(id, { level: level(o.message_notifications), mutedUntil: mutedUntil(o.muted, o.mute_config) });
+    }
+  }
+  return [
+    key,
+    {
+      level: level(value.message_notifications),
+      mutedUntil: mutedUntil(value.muted, value.mute_config),
+      suppressEveryone: value.suppress_everyone === true,
+      channels,
+    },
+  ];
+}

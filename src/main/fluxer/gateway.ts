@@ -37,6 +37,7 @@ export class FluxerGateway {
   private acked = true;
   private seq: number | null = null;
   private sessionId: string | undefined;
+  private ready = false;
   private attempts = 0;
   private stopped = true;
 
@@ -55,6 +56,7 @@ export class FluxerGateway {
 
   disconnect(): void {
     this.stopped = true;
+    this.ready = false;
     clearTimeout(this.retry);
     this.stopHeartbeat();
     const socket = this.socket;
@@ -64,6 +66,7 @@ export class FluxerGateway {
   }
 
   private open(): void {
+    this.ready = false;
     this.handlers.status(this.sessionId ? "reconnecting" : "connecting");
     const socket = this.createSocket(`${this.url}/?v=1&encoding=json`);
     this.socket = socket;
@@ -73,6 +76,14 @@ export class FluxerGateway {
     socket.addEventListener("close", (event) => {
       if (socket === this.socket) this.onClose(event.code);
     });
+  }
+
+  /**
+   * Sends a command (e.g. op 4 voice state, op 14 lazy request) on a ready
+   * session; dropped otherwise, as commands before Identify close the socket.
+   */
+  command(op: number, d: unknown): void {
+    if (this.ready) this.send(op, d);
   }
 
   private send(op: number, d: unknown): void {
@@ -109,6 +120,7 @@ export class FluxerGateway {
         break;
       case Op.InvalidSession:
         // The socket stays open; start a fresh session on it.
+        this.ready = false;
         this.sessionId = undefined;
         this.seq = null;
         this.identify();
@@ -124,6 +136,7 @@ export class FluxerGateway {
     }
     if (payload.t === "READY" || payload.t === "RESUMED") {
       this.attempts = 0;
+      this.ready = true;
       this.handlers.status("ready");
     }
     this.handlers.dispatch(payload.t, payload.d);
@@ -161,6 +174,7 @@ export class FluxerGateway {
 
   /** Drops the socket and opens a new one, resuming if possible. */
   private reconnect(): void {
+    this.ready = false;
     const socket = this.socket;
     this.socket = undefined;
     this.stopHeartbeat();
@@ -169,6 +183,7 @@ export class FluxerGateway {
   }
 
   private onClose(code: number): void {
+    this.ready = false;
     this.socket = undefined;
     this.stopHeartbeat();
     if (code === AUTH_FAILED) {

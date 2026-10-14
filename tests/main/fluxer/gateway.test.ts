@@ -183,3 +183,17 @@ describe("FluxerGateway", () => {
     expect(sockets).toHaveLength(9);
   });
 });
+
+describe("FluxerGateway commands", () => {
+  it("sends commands only on a ready session", () => {
+    const { gateway, current, hello, ready } = setup();
+    gateway.command(14, { a: 1 });
+    hello();
+    gateway.command(14, { a: 2 });
+    ready();
+    gateway.command(14, { a: 3 });
+    current().receive({ op: 9, d: false });
+    gateway.command(14, { a: 4 });
+    expect(current().sent.filter((p) => p.op === 14)).toEqual([{ op: 14, d: { a: 3 } }]);
+  });
+});

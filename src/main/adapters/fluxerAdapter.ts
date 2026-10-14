@@ -14,6 +14,7 @@ const PAGE_SIZE = 50;
 const PUBLISH_DELAY_MS = 100;
 const ACK_DELAY_MS = 750;
 const FLUXER_EPOCH = 1420070400000n;
+const LAZY_REQUEST = 14;
 
 export interface SecretStore {
   load(key: string): string | undefined;
@@ -135,6 +136,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   async openServer(key: string): Promise<void> {
     if (!this.state.guilds.has(key)) throw new Error(`Unknown Fluxer guild: ${key}`);
     this.selection = { kind: "guild", guildId: key };
+    this.subscribe(key);
     const first = this.state.guildChannels(key).find((c) => TEXT_CHANNEL_TYPES.has(c.type));
     const channelId = this.lastChannel.get(key) ?? first?.id;
     if (channelId) await this.selectChannel(channelId);
@@ -148,6 +150,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   async openConversation(key: string): Promise<void> {
     const guildId = this.state.channels.get(key)?.guildId;
     this.selection = guildId ? { kind: "guild", guildId } : { kind: "home" };
+    if (guildId) this.subscribe(guildId);
     await this.selectChannel(key);
   }
 
@@ -242,6 +245,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
             this.screen = "chat";
             this.render();
           }
+          if ((event === "READY" || event === "RESUMED") && this.selection.kind === "guild") this.subscribe(this.selection.guildId);
         },
         status: (status) => {
           this.connection = status;
@@ -253,6 +257,14 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     );
     this.gateway.connect();
     this.render();
+  }
+
+  /**
+   * In guilds over 250 members a session is passive and only gets its own
+   * messages and mentions; op 14 makes the open guild active, with typing.
+   */
+  private subscribe(guildId: string): void {
+    this.gateway?.command(LAZY_REQUEST, { subscriptions: { [guildId]: { active: true, typing: true } } });
   }
 
   private async logout(): Promise<void> {
@@ -339,13 +351,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     );
   }
 
-  /** DMs and mentions notify, like Fluxer's default notification settings. */
+  /** Notifies as the user's Fluxer notification settings say (see FluxerState.shouldNotify). */
   private notify(message: FluxerMessage): void {
     const channel = this.state.channels.get(message.channelId);
-    const me = this.state.me;
-    if (!channel || !me) return;
-    const isDm = channel.type === ChannelType.Dm || channel.type === ChannelType.GroupDm;
-    if (!isDm && !message.mentionEveryone && !message.mentionIds.includes(me.id)) return;
+    if (!channel || !this.state.shouldNotify(message)) return;
     const author = displayName(this.state.users.get(message.author.id) ?? message.author);
     const guild = channel.guildId ? this.state.guilds.get(channel.guildId) : undefined;
     const where =

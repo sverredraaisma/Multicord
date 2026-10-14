@@ -160,3 +160,76 @@ describe("FluxerState", () => {
     state.apply("MESSAGE_CREATE", { id: "1", channel_id: "2", author: ANA });
   });
 });
+
+describe("notification settings", () => {
+  const msg = (channelId: string, extra: Record<string, unknown> = {}) => ({
+    id: "9000",
+    channelId,
+    author: { id: "2", username: "ana" },
+    content: "",
+    timestamp: "",
+    edited: false,
+    mentionIds: [] as string[],
+    mentionEveryone: false,
+    attachments: [],
+    ...extra,
+  });
+
+  function withSettings(settings: unknown[]) {
+    const state = new FluxerState();
+    state.apply("READY", { ...readyPayload(), user_guild_settings: settings });
+    return state;
+  }
+
+  it("defaults to every DM message and guild mentions", () => {
+    const state = withSettings([]);
+    expect(state.shouldNotify(msg("900"))).toBe(true);
+    expect(state.shouldNotify(msg("111"))).toBe(false);
+    expect(state.shouldNotify(msg("111", { mentionIds: ["1"] }))).toBe(true);
+    expect(state.shouldNotify(msg("111", { mentionEveryone: true }))).toBe(true);
+    expect(state.shouldNotify(msg("111", { author: { id: "1", username: "me" }, mentionIds: ["1"] }))).toBe(false);
+    expect(state.shouldNotify(msg("404"))).toBe(false);
+  });
+
+  it("follows guild levels, channel overrides and suppress_everyone", () => {
+    const state = withSettings([
+      {
+        guild_id: "100",
+        message_notifications: 0,
+        suppress_everyone: true,
+        channel_overrides: { "113": { message_notifications: 1 }, "114": { message_notifications: 3 }, bad: {}, "115": "x" },
+      },
+      { guild_id: "200", message_notifications: 2 },
+      { guild_id: null, message_notifications: 1 },
+      "junk",
+    ]);
+    expect(state.shouldNotify(msg("111"))).toBe(true); // guild: all
+    expect(state.shouldNotify(msg("113"))).toBe(false); // override: mentions only
+    expect(state.shouldNotify(msg("113", { mentionEveryone: true }))).toBe(false); // @everyone suppressed
+    expect(state.shouldNotify(msg("113", { mentionIds: ["1"] }))).toBe(true);
+    expect(state.shouldNotify(msg("114"))).toBe(true); // inherit -> guild level
+    expect(state.shouldNotify(msg("211", { mentionIds: ["1"] }))).toBe(false); // nothing
+    expect(state.shouldNotify(msg("900"))).toBe(false); // DMs: mentions only
+  });
+
+  it("respects mutes until they expire", () => {
+    const now = Date.parse("2026-10-14T12:00:00Z");
+    const state = withSettings([
+      { guild_id: "100", muted: true, mute_config: { end_time: "2026-10-14T13:00:00Z" } },
+      { guild_id: "200", channel_overrides: { "211": { muted: true, mute_config: null } } },
+      { guild_id: "0", muted: true, mute_config: { end_time: "2026-10-14T11:00:00Z" } },
+    ]);
+    expect(state.shouldNotify(msg("111", { mentionIds: ["1"] }), now)).toBe(false);
+    expect(state.shouldNotify(msg("111", { mentionIds: ["1"] }), now + 2 * 3600_000)).toBe(true);
+    expect(state.shouldNotify(msg("211", { mentionIds: ["1"] }), now)).toBe(false); // open-ended
+    expect(state.shouldNotify(msg("900"), now)).toBe(true); // DM mute expired
+  });
+
+  it("applies settings updates and clears them on reset", () => {
+    const state = withSettings([]);
+    state.apply("USER_GUILD_SETTINGS_UPDATE", { guild_id: "100", message_notifications: 0 });
+    expect(state.shouldNotify(msg("111"))).toBe(true);
+    state.reset();
+    expect(state.notifySettings.size).toBe(0);
+  });
+});

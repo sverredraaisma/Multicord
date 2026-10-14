@@ -8,11 +8,15 @@ import {
   parseChannel,
   parseFolders,
   parseGuild,
+  parseGuildSettings,
   parseMessage,
   parseReadState,
   parseUser,
   type FluxerChannel,
+  DM_SETTINGS,
+  NotifyLevel,
   type FluxerFolder,
+  type FluxerNotifySettings,
   type FluxerGuild,
   type FluxerMessage,
   type FluxerReadState,
@@ -30,6 +34,8 @@ export class FluxerState {
   readonly readStates = new Map<string, FluxerReadState>();
   readonly users = new Map<string, FluxerUser>();
   readonly messages = new Map<string, FluxerMessage[]>();
+  /** Notification settings per guild id, or DM_SETTINGS for DMs. */
+  readonly notifySettings = new Map<string, FluxerNotifySettings>();
   folders: FluxerFolder[] | undefined;
 
   readonly changed = new Emitter<void>();
@@ -39,7 +45,7 @@ export class FluxerState {
   reset(): void {
     this.me = undefined;
     this.folders = undefined;
-    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages]) map.clear();
+    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.notifySettings]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -54,6 +60,10 @@ export class FluxerState {
         for (const c of list(d.private_channels)) this.addChannel(parseChannel(c));
         for (const r of list(d.read_states)) this.setReadState(parseReadState(r));
         this.folders = parseFolders(d.user_settings);
+        for (const g of list(d.user_guild_settings)) this.setNotifySettings(parseGuildSettings(g));
+        break;
+      case "USER_GUILD_SETTINGS_UPDATE":
+        this.setNotifySettings(parseGuildSettings(data));
         break;
       case "GUILD_CREATE":
       case "GUILD_SYNC":
@@ -184,6 +194,28 @@ export class FluxerState {
     }
     for (const id of this.guilds.keys()) if (!placed.has(id)) slots.push({ guildIds: [id] });
     return slots;
+  }
+
+  /**
+   * Whether a message from someone else should raise a desktop notification,
+   * following the user's settings: channel override, then guild, then the
+   * default (every DM message, mentions only in guilds). Mutes win.
+   */
+  shouldNotify(message: FluxerMessage, now: number = Date.now()): boolean {
+    const channel = this.channels.get(message.channelId);
+    if (!channel || !this.me || message.author.id === this.me.id) return false;
+    const settings = this.notifySettings.get(channel.guildId ?? DM_SETTINGS);
+    const override = settings?.channels.get(channel.id);
+    if ((override?.mutedUntil ?? 0) > now || (settings?.mutedUntil ?? 0) > now) return false;
+    const pick = (value: number | undefined) => (value === undefined || value === NotifyLevel.Inherit ? undefined : value);
+    const level = pick(override?.level) ?? pick(settings?.level) ?? (channel.guildId ? NotifyLevel.Mentions : NotifyLevel.All);
+    if (level === NotifyLevel.All) return true;
+    if (level === NotifyLevel.None) return false;
+    return message.mentionIds.includes(this.me.id) || (message.mentionEveryone && !settings?.suppressEveryone);
+  }
+
+  private setNotifySettings(entry: [string, FluxerNotifySettings] | undefined): void {
+    if (entry) this.notifySettings.set(entry[0], entry[1]);
   }
 
   private addUser(user: FluxerUser | undefined): void {
