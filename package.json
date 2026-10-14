@@ -1,0 +1,26 @@
+{
+  "name": "multicord",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unified chat client: Discord's web client plus alternative platforms behind one server rail",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && electron .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "coverage": "vitest run --coverage",
+    "check": "npm run typecheck && npm run coverage"
+  },
+  "license": "AGPL-3.0-only",
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@vitest/coverage-v8": "^5.0.4",
+    "electron": "^44.7.2",
+    "esbuild": "^0.28.2",
+    "happy-dom": "^21.0.1",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.4"
+  }
+}
