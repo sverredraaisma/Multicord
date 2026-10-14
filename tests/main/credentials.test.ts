@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CredentialStore, type SecretBox } from "../../src/main/credentials";
+import { CredentialStore, MAX_SCOPED_CHARS, MAX_SCOPED_SECRETS, type SecretBox } from "../../src/main/credentials";
 
 // Reversible stand-in for safeStorage: base64 of a reversed string.
 function fakeBox(available = true): SecretBox {
@@ -59,6 +59,24 @@ describe("CredentialStore", () => {
     fluxer.delete("fluxer.app:token");
     expect(store.load("fluxer:fluxer.app:token")).toBeUndefined();
     expect(() => store.scope("Bad:Id")).toThrow("Invalid instance id");
+  });
+
+  it("caps what one instance may keep, leaving the others alone", () => {
+    for (const persistent of [true, false]) {
+      const store = new CredentialStore(file, fakeBox(persistent));
+      const greedy = store.scope("greedy");
+      for (let i = 0; i < MAX_SCOPED_SECRETS; i++) greedy.save(`k${i}`, "v");
+      expect(() => greedy.save("one-more", "v")).toThrow("too many secrets");
+      greedy.save("k0", "changed"); // replacing an existing key is fine
+      store.scope("other").save("token", "fine");
+      expect(store.load("other:token")).toBe("fine");
+      store.deletePrefix("greedy:");
+      store.deletePrefix("other:");
+      const big = store.scope("big");
+      expect(() => big.save("blob", "x".repeat(MAX_SCOPED_CHARS + 1))).toThrow("too many secrets");
+      big.save("blob", "x".repeat(1000));
+      store.deletePrefix("big:");
+    }
   });
 
   it("forgets every secret of a removed service", () => {

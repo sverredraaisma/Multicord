@@ -1,6 +1,11 @@
 import fs from "node:fs";
 import path from "node:path";
 
+/** Secrets one instance may keep: a module that saves more is refused, not the others. */
+export const MAX_SCOPED_SECRETS = 64;
+/** Characters of stored values one instance may keep, all keys together. */
+export const MAX_SCOPED_CHARS = 512 * 1024;
+
 /** A module's own secrets; see CredentialStore.scope. */
 export interface SecretStore {
   load(key: string): string | undefined;
@@ -73,9 +78,23 @@ export class CredentialStore {
     const full = (key: string): string => `${instanceId}:${key}`;
     return {
       load: (key) => this.load(full(key)),
-      save: (key, value) => this.save(full(key), value),
+      save: (key, value) => {
+        this.checkQuota(`${instanceId}:`, full(key), value);
+        this.save(full(key), value);
+      },
       delete: (key) => this.delete(full(key)),
     };
+  }
+
+  /** Throws when saving `value` under `key` would take the instance past its share. */
+  private checkQuota(prefix: string, key: string, value: string): void {
+    const sizes = new Map<string, number>();
+    for (const [name, stored] of Object.entries(this.readAll())) if (name.startsWith(prefix) && typeof stored === "string") sizes.set(name, stored.length);
+    for (const [name, plain] of this.memory) if (name.startsWith(prefix) && !sizes.has(name)) sizes.set(name, plain.length);
+    sizes.set(key, value.length);
+    let total = 0;
+    for (const size of sizes.values()) total += size;
+    if (sizes.size > MAX_SCOPED_SECRETS || total > MAX_SCOPED_CHARS) throw new Error("This service keeps too many secrets");
   }
 
   /** Forgets every secret whose key starts with `prefix`, e.g. a removed service's. */
