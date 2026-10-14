@@ -182,6 +182,26 @@ describe("EngineHub", () => {
     expect(decide("file:///C:/Users/me/credentials.json")).toBe(true);
   });
 
+  it("lets an engine lock itself to fewer hosts, for HTTP and WebSockets, but never widen", async () => {
+    const { ask } = setup();
+    const http = session.fromPartition("engine-demo-http");
+    const sockets = session.fromPartition("engine-demo").beforeRequest!;
+    const cancelled = (filter: typeof sockets, url: string) => {
+      let cancel: boolean | undefined;
+      filter({ url }, (response) => (cancel = response.cancel));
+      return cancel;
+    };
+    expect(cancelled(sockets, "wss://anywhere.example/")).toBe(false);
+    expect(await ask({ type: "lockHosts", hosts: ["*.demo.example"] })).toEqual(["*.demo.example"]);
+    expect(cancelled(sockets, "wss://gw.demo.example/")).toBe(false);
+    expect(cancelled(sockets, "wss://anywhere.example/")).toBe(true);
+    expect(cancelled(http.beforeRequest!, "https://anywhere.example/")).toBe(true);
+    await expect(ask({ type: "http", request: { url: "https://anywhere.example/", method: "GET", headers: {} } })).rejects.toThrow("not one of this module's hosts");
+    await expect(ask({ type: "lockHosts", hosts: ["anywhere.example"] })).rejects.toThrow("can only narrow");
+    expect(await ask({ type: "lockHosts", hosts: ["api.demo.example"] })).toEqual(["api.demo.example"]);
+    expect(cancelled(sockets, "wss://gw.demo.example/")).toBe(true);
+  });
+
   it("answers only its own engines, and holds messages until the engine is up", async () => {
     const { adapter, engine, view, fromEngine, ask } = setup();
     await expect(ipcMain.invoke(ENGINE_IPC.invoke, { sender: view.webContents }, { type: "info" })).rejects.toThrow("Not an engine");

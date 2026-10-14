@@ -102,7 +102,13 @@ export type EngineRequest =
   | { type: "secretDelete"; key: string }
   | { type: "http"; request: HttpRequest }
   | { type: "pickFiles" }
-  | { type: "readFile"; handle: string; start: number; end: number };
+  | { type: "readFile"; handle: string; start: number; end: number }
+  /** From now on reach only these hosts ("example.com" or "*.example.com"); a lock can only narrow. */
+  | { type: "lockHosts"; hosts: string[] };
+
+/** Hosts an engine may lock itself to at once. */
+export const MAX_LOCKED_HOSTS = 16;
+const HOST_PATTERN = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,62})(\.[a-z0-9]([a-z0-9-]{0,62}))+$/;
 
 export const MAX_SERVERS = 1000;
 export const MAX_DIRECTS = 500;
@@ -257,6 +263,13 @@ export function isEngineRequest(value: unknown): value is EngineRequest {
       return isText(value.key, MAX_KEY, 1) && isText(value.value, MAX_SECRET);
     case "http":
       return isHttpRequest(value.request);
+    case "lockHosts":
+      return (
+        Array.isArray(value.hosts) &&
+        value.hosts.length >= 1 &&
+        value.hosts.length <= MAX_LOCKED_HOSTS &&
+        value.hosts.every((h) => typeof h === "string" && h.length <= 253 && HOST_PATTERN.test(h))
+      );
     case "readFile":
       return (
         isText(value.handle, 64, 1) &&

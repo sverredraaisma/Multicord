@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { checkUrl, hostMatches, isPrivateHost, MAX_REDIRECTS, performHttp, type FetchLike, type UrlPolicy } from "../../src/main/netPolicy";
+import { checkUrl, hostMatches, isPrivateHost, MAX_REDIRECTS, narrowHosts, patternWithin, performHttp, type FetchLike, type UrlPolicy } from "../../src/main/netPolicy";
 import { MAX_HTTP_BODY, type HttpRequest } from "../../src/shared/engine";
 
 describe("isPrivateHost", () => {
@@ -172,5 +172,24 @@ describe("performHttp", () => {
     const fetchImpl = vi.fn(async () => landed);
     await expect(performHttp(fetchImpl, { url: "https://api.example.com/", method: "GET", headers: {} }, { schemes: ["https:"] }, "follow")).rejects.toThrow("Request blocked");
     expect(fetchImpl).toHaveBeenCalledWith("https://api.example.com/", expect.objectContaining({ redirect: "follow" }));
+  });
+});
+
+describe("host locks", () => {
+  it("knows which patterns fall within others", () => {
+    expect(patternWithin("api.example.com", "*.example.com")).toBe(true);
+    expect(patternWithin("api.example.com", "api.example.com")).toBe(true);
+    expect(patternWithin("*.cdn.example.com", "*.example.com")).toBe(true);
+    expect(patternWithin("*.example.com", "api.example.com")).toBe(false);
+    expect(patternWithin("evil.com", "*.example.com")).toBe(false);
+  });
+
+  it("only ever narrows, and never to private hosts", () => {
+    expect(narrowHosts(undefined, ["API.Stoat.chat", "*.stoatusercontent.com"])).toEqual(["api.stoat.chat", "*.stoatusercontent.com"]);
+    expect(narrowHosts(["*.stoat.chat"], ["api.stoat.chat"])).toEqual(["api.stoat.chat"]);
+    expect(narrowHosts(["api.stoat.chat"], ["api.stoat.chat", "evil.example"])).toBeUndefined();
+    expect(narrowHosts(["api.stoat.chat"], ["*.stoat.chat"])).toBeUndefined();
+    expect(narrowHosts(undefined, ["router.local"])).toBeUndefined();
+    expect(narrowHosts(undefined, ["*.localhost"])).toBeUndefined();
   });
 });

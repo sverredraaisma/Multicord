@@ -21,7 +21,7 @@ import { isNativeAction, NATIVE_IPC } from "../shared/native";
 import type { AccountStatus } from "../shared/settings";
 import type { SecretStore } from "./credentials";
 import { contentTypeFor, readRange } from "./files";
-import { checkUrl, performHttp, type UrlPolicy } from "./netPolicy";
+import { checkUrl, narrowHosts, performHttp, type UrlPolicy } from "./netPolicy";
 import type { PlatformDef } from "./platforms";
 
 /**
@@ -179,6 +179,8 @@ interface Running {
   /** Crashes since the engine last ran stably, and when it last became ready. */
   crashes: number;
   readyAt: number;
+  /** The hosts the engine may reach now: the module's, or narrower once the engine locks itself. */
+  allowed: { hosts?: readonly string[] };
   /** Messages for the engine, held until it has loaded. */
   queue: { channel: string; payload: unknown }[];
 }
@@ -262,7 +264,8 @@ export class EngineHub {
     // In memory unless the module keeps storage; either way the instance's own.
     const partition = engineStoragePartition(spec.def.id, spec.persistent === true);
     const ses = session.fromPartition(partition);
-    this.lockDown(ses, spec);
+    const allowed: Running["allowed"] = { hosts: spec.hosts };
+    this.lockDown(ses, spec, allowed);
     const engine = new WebContentsView({
       webPreferences: {
         preload: path.join(this.deps.dist, "preload-engine.js"),
@@ -283,7 +286,12 @@ export class EngineHub {
     const http = session.fromPartition(`engine-${spec.def.id}-http`);
     http.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     // net.fetch follows redirects itself, so every hop is checked here as well.
-    const httpPolicy: UrlPolicy = { schemes: ["https:"], hosts: spec.hosts };
+    const httpPolicy: UrlPolicy = {
+      schemes: ["https:"],
+      get hosts() {
+        return allowed.hosts;
+      },
+    };
     http.webRequest.onBeforeRequest((details, callback) => callback({ cancel: checkUrl(details.url, httpPolicy) !== undefined }));
     const running: Running = {
       spec,
@@ -295,6 +303,7 @@ export class EngineHub {
       health: { state: "starting", responsive: true, restarts: 0 },
       crashes: 0,
       readyAt: 0,
+      allowed,
       queue: [],
     };
     running.adapter = new EngineAdapter(spec.def.id, new URL(spec.def.url).host, spec.capabilities, (command) => this.deliver(running, ENGINE_IPC.command, command), spec.home);
@@ -326,12 +335,17 @@ export class EngineHub {
   }
 
   /** The engine session: no permissions, no navigation, and network only to the module's hosts. */
-  private lockDown(ses: Session, spec: EngineSpec): void {
+  private lockDown(ses: Session, spec: EngineSpec, allowed: Running["allowed"]): void {
     ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     ses.setPermissionCheckHandler(() => false);
     ses.protocol.handle(ENGINE_SCHEME, (request) => serveEngine(this.deps.dist, spec.engine, request.url));
     // HTTP goes through the bridge; engines open only WebSockets themselves.
-    const socketPolicy: UrlPolicy = { schemes: ["wss:"], hosts: spec.hosts };
+    const socketPolicy: UrlPolicy = {
+      schemes: ["wss:"],
+      get hosts() {
+        return allowed.hosts;
+      },
+    };
     ses.webRequest.onBeforeRequest((details, callback) => {
       const { protocol } = new URL(details.url);
       const own = protocol === `${ENGINE_SCHEME}:` || protocol === "blob:" || protocol === "data:";
@@ -365,7 +379,13 @@ export class EngineHub {
       case "secretDelete":
         return spec.secrets.delete(request.key);
       case "http":
-        return performHttp((url, init) => running.http.fetch(url, init), request.request, { schemes: ["https:"], hosts: spec.hosts }, "follow");
+        return performHttp((url, init) => running.http.fetch(url, init), request.request, { schemes: ["https:"], hosts: running.allowed.hosts }, "follow");
+      case "lockHosts": {
+        const hosts = narrowHosts(running.allowed.hosts, request.hosts);
+        if (!hosts) throw new Error("A host lock can only narrow what the engine may reach");
+        running.allowed.hosts = hosts;
+        return hosts;
+      }
       case "pickFiles":
         return this.pickFiles(running);
       case "readFile": {

@@ -54,6 +54,24 @@ export function hostMatches(host: string, pattern: string): boolean {
   return h === base || h.endsWith(`.${base}`);
 }
 
+/** Whether every host `pattern` covers is also covered by `allowed`. */
+export function patternWithin(pattern: string, allowed: string): boolean {
+  if (!pattern.startsWith("*.")) return hostMatches(pattern, allowed);
+  return allowed.startsWith("*.") && hostMatches(pattern.slice(2), allowed);
+}
+
+/**
+ * The hosts an engine may reach after it asks to lock itself to `requested`:
+ * the request when it stays within what is allowed now, else undefined.
+ * Locks only narrow, so an engine taken over later cannot widen its reach.
+ */
+export function narrowHosts(current: readonly string[] | undefined, requested: readonly string[]): string[] | undefined {
+  const hosts = requested.map((h) => h.toLowerCase());
+  if (hosts.some((h) => isPrivateHost(h.replace(/^\*\./, "")))) return undefined;
+  if (current && !hosts.every((h) => current.some((c) => patternWithin(h, c)))) return undefined;
+  return hosts;
+}
+
 export interface UrlPolicy {
   schemes: readonly string[];
   /** When set, the only hosts allowed. */

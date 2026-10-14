@@ -224,3 +224,13 @@ describe("isEngineRequest", () => {
     for (const v of [null, undefined, "info", []]) expect(isEngineRequest(v)).toBe(false);
   });
 });
+
+describe("host lock requests", () => {
+  it("accepts a short list of lowercase host patterns", async () => {
+    const { isEngineRequest, MAX_LOCKED_HOSTS } = await import("../../src/shared/engine");
+    expect(isEngineRequest({ type: "lockHosts", hosts: ["api.stoat.chat", "*.stoatusercontent.com"] })).toBe(true);
+    for (const hosts of [[], "x.com", ["localhost"], ["API.x.com"], ["*.*.x.com"], ["x.com/path"], ["https://x.com"], [5], Array(MAX_LOCKED_HOSTS + 1).fill("x.com")]) {
+      expect(isEngineRequest({ type: "lockHosts", hosts })).toBe(false);
+    }
+  });
+});

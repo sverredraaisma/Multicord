@@ -54,6 +54,15 @@ export function bridgeFetch(bridge: EngineBridge): typeof fetch {
   };
 }
 
+/**
+ * Locks the engine to these hosts from now on (e.g. its instance's API, events
+ * and file hosts, once discovered). The shell only ever narrows a lock, so
+ * code that later runs in the engine cannot reach anywhere else.
+ */
+export async function lockHosts(bridge: EngineBridge, hosts: string[]): Promise<void> {
+  await bridge.request({ type: "lockHosts", hosts });
+}
+
 /** Lets the user pick files through the shell; each is read through its handle. */
 export async function pickFiles(bridge: EngineBridge): Promise<FileSource[]> {
   const picked = (await bridge.request({ type: "pickFiles" })) as PickedFile[];

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { bridgeFetch, bridgeSecrets, engineInfo, pickFiles, serveAdapter, type ServedAdapter } from "../../src/engine/runtime";
+import { bridgeFetch, bridgeSecrets, engineInfo, lockHosts, pickFiles, serveAdapter, type ServedAdapter } from "../../src/engine/runtime";
 import { createEngineBridge, type EngineBridge, type EngineIpc } from "../../src/preload/engine";
 import type { AccountRef, DirectConversation, HomeBadge, IncomingCall, PlatformNotification, RailServer } from "../../src/shared/adapter";
 import { BaseAdapter } from "../../src/shared/baseAdapter";
@@ -64,6 +64,15 @@ describe("engineInfo and bridgeSecrets", () => {
     await expect(secrets.save("k", "v")).resolves.toBeUndefined();
     await expect(secrets.delete("k")).resolves.toBeUndefined();
     expect(bridge.request.mock.calls).toEqual([[{ type: "secretLoad", key: "k" }], [{ type: "secretSave", key: "k", value: "v" }], [{ type: "secretDelete", key: "k" }]]);
+  });
+});
+
+describe("lockHosts", () => {
+  it("asks the shell to narrow the engine's hosts", async () => {
+    const { bridge } = fakeBridge();
+    bridge.request.mockResolvedValue(["a.example"]);
+    await expect(lockHosts(bridge, ["a.example"])).resolves.toBeUndefined();
+    expect(bridge.request).toHaveBeenCalledWith({ type: "lockHosts", hosts: ["a.example"] });
   });
 });
 
