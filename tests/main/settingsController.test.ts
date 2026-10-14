@@ -82,6 +82,7 @@ describe("settings state", () => {
       ["stoat", false],
       ["spacebar", false],
       ["nerimity", false],
+      ["mumble", false],
       ["web", false],
     ]);
     expect(state).toMatchObject({ settings: DEFAULT_SETTINGS, restartNeeded: false, secretsPersistent: true, launchAtLoginSupported: true, version: "1.2.3" });

@@ -5,7 +5,7 @@ import { stoatNativeModule } from "./stoat";
 import { telegramModule } from "./telegram";
 import type { ModuleRule } from "../platforms";
 import type { PlatformModule } from "./types";
-import { matrixModule, nerimityModule, spacebarModule, stoatModule, webModule } from "./web";
+import { matrixModule, mumbleModule, nerimityModule, spacebarModule, stoatModule, webModule } from "./web";
 
 /**
  * The platform modules this build ships. A new platform is a new module here;
@@ -22,6 +22,7 @@ export const MODULES: readonly PlatformModule[] = [
   stoatModule,
   spacebarModule,
   nerimityModule,
+  mumbleModule,
   webModule,
 ];
 

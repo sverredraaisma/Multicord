@@ -6,7 +6,7 @@ import { configurableModules, findModule, MODULES } from "../../src/main/modules
 
 describe("module registry", () => {
   it("ships Discord, Fluxer and generic web modules", () => {
-    expect(MODULES.map((m) => m.manifest.id)).toEqual(["discord", "fluxer", "telegram", "matrix-native", "matrix", "stoat-native", "stoat", "spacebar", "nerimity", "web"]);
+    expect(MODULES.map((m) => m.manifest.id)).toEqual(["discord", "fluxer", "telegram", "matrix-native", "matrix", "stoat-native", "stoat", "spacebar", "nerimity", "mumble", "web"]);
     expect(findModule("fluxer")!.manifest.label).toBe("Fluxer");
     expect(findModule("irc")).toBeUndefined();
     expect(configurableModules()).toEqual([
@@ -19,6 +19,7 @@ describe("module registry", () => {
       { id: "stoat", defaultUrl: "https://stoat.chat/app", fixedUrl: undefined },
       { id: "spacebar", defaultUrl: "https://app.spacebar.chat", fixedUrl: undefined },
       { id: "nerimity", defaultUrl: "https://nerimity.com/app", fixedUrl: undefined },
+      { id: "mumble", defaultUrl: undefined, fixedUrl: undefined },
       { id: "web", defaultUrl: undefined, fixedUrl: undefined },
     ]);
   });
