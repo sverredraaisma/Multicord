@@ -110,6 +110,18 @@ describe("settings state", () => {
     await bare.handle({ type: "installUpdate" });
   });
 
+  it("copies the diagnostics report", async () => {
+    const copyText = vi.fn();
+    const { settings } = controller({ discord: { health: () => [{ name: "Bridge", ok: false }] } }, { copyText, os: "linux 6.8" });
+    await settings.handle({ type: "copyReport" });
+    expect(copyText.mock.calls[0]![0]).toContain("OS: linux 6.8");
+    expect(copyText.mock.calls[0]![0]).toContain("- [FAILED] Bridge");
+    await controller().settings.handle({ type: "copyReport" }); // nowhere to copy to
+    const noOs = vi.fn();
+    await controller({}, { copyText: noOs }).settings.handle({ type: "copyReport" });
+    expect(noOs.mock.calls[0]![0]).toContain("OS: unknown");
+  });
+
   it("reports shortcuts another app holds", () => {
     expect(controller({}, { shortcutErrors: () => ["toggleMute"] }).settings.state().shortcutErrors).toEqual(["toggleMute"]);
     expect(controller({}, { shortcutErrors: () => [] }).settings.state()).not.toHaveProperty("shortcutErrors");

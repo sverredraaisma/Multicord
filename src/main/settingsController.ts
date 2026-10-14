@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { PlatformAdapter } from "../shared/adapter";
-import type { ModuleInfo, ServiceInfo, SettingsAction, SettingsViewState, ShortcutAction, UpdateStatus } from "../shared/settings";
+import { diagnosticsReport, type ModuleInfo, type ServiceInfo, type SettingsAction, type SettingsViewState, type ShortcutAction, type UpdateStatus } from "../shared/settings";
 import { configurableModules } from "./modules/index";
 import type { PlatformModule } from "./modules/types";
 import { loadPlatforms } from "./platforms";
@@ -35,6 +35,10 @@ export interface SettingsDeps {
   forgetSecrets(id: string): void;
   restart(): void;
   publish(state: SettingsViewState): void;
+  /** Puts text on the clipboard (the diagnostics report). */
+  copyText?(text: string): void;
+  /** The OS, for the diagnostics report, e.g. "win32 10.0.26200". */
+  os?: string;
 }
 
 /**
@@ -195,6 +199,9 @@ export class SettingsController {
         return;
       case "restart":
         this.deps.restart();
+        return;
+      case "copyReport":
+        this.deps.copyText?.(diagnosticsReport(this.state(), this.deps.os ?? "unknown"));
         return;
       case "checkUpdates":
         return this.deps.updates?.check();

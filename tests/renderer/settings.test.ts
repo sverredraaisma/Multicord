@@ -534,6 +534,14 @@ describe("diagnostics tab", () => {
     mount(viewState({ services: [service({ health: [] })] }));
     expect(q(".diagnostics").textContent).toBe("No running service reports checks.");
   });
+
+  it("copies the report on request", () => {
+    mount(viewState());
+    const copy = [...root.querySelectorAll("button")].find((b) => b.textContent === "Copy report")!;
+    copy.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "copyReport" });
+    expect(copy.textContent).toBe("Copied");
+  });
 });
 
 describe("voice tab", () => {

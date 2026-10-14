@@ -157,7 +157,7 @@ Coverage is enforced at **95%** for lines, statements, functions and branches (`
 
 ## Known limitations / next steps
 - Rich Presence game detection goes by process name only, so names several games share are skipped. The WebSocket transport some browser-based apps use is not offered.
-- Guild selectors (`dom.ts`) and store names (`storeBridge.ts`) follow Discord's current client. Settings > Diagnostics checks them against the running client (each hook, and what breaks if it fails). The running app rechecks every minute: once startup has settled, a check that fails (after working, or at all while signed in) brings one notification pointing there. AI-assisted repair proposals, as the study suggests, are not built. Guilds could later move to store reads too.
+- Guild selectors (`dom.ts`) and store names (`storeBridge.ts`) follow Discord's current client. Settings > Diagnostics checks them against the running client (each hook, and what breaks if it fails). The running app rechecks every minute: once startup has settled, a check that fails (after working, or at all while signed in) brings one notification pointing there. For repairs, "Copy report" puts the checks, with what each breaks and the versions, on the clipboard, for an issue or an AI assistant to propose a fix. Multicord itself calls no AI service. Guilds could later move to store reads too.
 - Rich Presence (arRPC) is not started.
 - Linux screen-share sound goes through venmic, which is only installed on Linux. It is wired and unit-tested but has not been run on a Linux desktop yet.
 - Fluxer (native) does not support:

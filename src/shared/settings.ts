@@ -337,6 +337,26 @@ export interface SettingsViewState {
   error?: string;
 }
 
+/**
+ * A plain-text repair report from Settings > Diagnostics: versions and every
+ * service's checks, failing ones with what they break. It holds no
+ * messages, tokens or addresses beyond the services' public ones, so it can
+ * go into an issue or to an AI assistant to propose a fix (the study's
+ * "AI-assisted repair proposals").
+ */
+export function diagnosticsReport(state: Pick<SettingsViewState, "version" | "services">, os: string): string {
+  const lines = ["Multicord diagnostics", `Version: ${state.version}`, `OS: ${os}`, ""];
+  for (const service of state.services) {
+    if (!service.health?.length) continue;
+    const failed = service.health.filter((c) => !c.ok);
+    lines.push(`## ${service.moduleName} (${failed.length === 0 ? "all working" : `${failed.length} not working`})`);
+    for (const check of service.health) lines.push(`- [${check.ok ? "ok" : "FAILED"}] ${check.name}${!check.ok && check.detail ? ` — affects: ${check.detail}` : ""}`);
+    lines.push("");
+  }
+  if (lines.length === 4) lines.push("No running service reports checks.");
+  return lines.join("\n").trimEnd();
+}
+
 export type SettingsAction =
   | { type: "update"; patch: SettingsPatch }
   | { type: "setEnabled"; id: string; enabled: boolean }
@@ -347,7 +367,8 @@ export type SettingsAction =
   | { type: "openService"; id: string }
   | { type: "restart" }
   | { type: "checkUpdates" }
-  | { type: "installUpdate" };
+  | { type: "installUpdate" }
+  | { type: "copyReport" };
 
 const SERVICE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const isServiceId = (value: unknown): value is string => typeof value === "string" && SERVICE_ID.test(value);
@@ -369,6 +390,7 @@ export function isSettingsAction(value: unknown): value is SettingsAction {
     case "openService":
       return isServiceId(value.id);
     case "restart":
+    case "copyReport":
     case "checkUpdates":
     case "installUpdate":
       return true;

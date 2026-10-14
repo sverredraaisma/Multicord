@@ -151,6 +151,7 @@ export class Tray extends EventEmitter {
 export const Menu = { buildFromTemplate: (template: unknown[]) => ({ template }) };
 export const nativeImage = { createFromPath: (path: string) => ({ path }) };
 export const protocol = { registerSchemesAsPrivileged: vi.fn() };
+export const clipboard = { writeText: vi.fn() };
 export const globalShortcut = {
   callbacks: new Map<string, () => void>(),
   taken: new Set<string>(),

@@ -78,6 +78,7 @@ describe("settings actions", () => {
       { type: "openService", id: "fluxer" },
       { type: "restart" },
       { type: "checkUpdates" },
+      { type: "copyReport" },
       { type: "installUpdate" },
     ]) {
       expect(isSettingsAction(action)).toBe(true);
@@ -193,5 +194,45 @@ describe("per-service settings", () => {
     expect(next.services).not.toHaveProperty("extra");
     const capped = parseSettings({ services: Object.fromEntries(Array.from({ length: MAX_SERVICE_SETTINGS + 5 }, (_, i) => [`s${i}`, { notifications: false }])) });
     expect(Object.keys(capped.services)).toHaveLength(MAX_SERVICE_SETTINGS);
+  });
+});
+
+describe("diagnosticsReport", () => {
+  it("lists versions and every service's checks, failures with what they break", async () => {
+    const { diagnosticsReport } = await import("../../src/shared/settings");
+    const service = (moduleName: string, health?: { name: string; ok: boolean; detail?: string }[]) =>
+      ({ id: moduleName.toLowerCase(), name: moduleName, url: "", module: "", moduleName, label: "", color: "", enabled: true, builtIn: true, health }) as never;
+    expect(
+      diagnosticsReport(
+        {
+          version: "1.2.3",
+          services: [
+            service("Discord", [
+              { name: "Server list", ok: false, detail: "Rail" },
+              { name: "Bridge", ok: true },
+              { name: "Calls", ok: false },
+            ]),
+            service("Fluxer", [{ name: "Engine running", ok: true }]),
+            service("Web"),
+          ],
+        },
+        "win32 10.0",
+      ),
+    ).toBe(
+      [
+        "Multicord diagnostics",
+        "Version: 1.2.3",
+        "OS: win32 10.0",
+        "",
+        "## Discord (2 not working)",
+        "- [FAILED] Server list — affects: Rail",
+        "- [ok] Bridge",
+        "- [FAILED] Calls",
+        "",
+        "## Fluxer (all working)",
+        "- [ok] Engine running",
+      ].join("\n"),
+    );
+    expect(diagnosticsReport({ version: "1", services: [] }, "linux")).toContain("No running service reports checks.");
   });
 });

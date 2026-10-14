@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import {
   app,
   BaseWindow,
+  clipboard,
   desktopCapturer,
   globalShortcut,
   ipcMain,
@@ -484,6 +485,8 @@ export async function createShell(
       views.get(id)?.webContents.reload();
     },
     forgetSecrets: (id) => credentials.deletePrefix(`${id}:`),
+    copyText: (text) => clipboard.writeText(text),
+    os: `${platform} ${os.release()}`,
     restart: () => {
       quitting = true;
       app.relaunch();

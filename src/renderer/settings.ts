@@ -452,9 +452,17 @@ export class SettingsPage {
 
     // Diagnostics
     const diagnostics = el(doc, "div", "diagnostics");
+    const copyReport = el(doc, "button", "secondary", "Copy report");
+    copyReport.type = "button";
+    copyReport.addEventListener("click", () => {
+      this.api.act({ type: "copyReport" });
+      copyReport.textContent = "Copied";
+    });
     sections.get("diagnostics")!.append(
       el(doc, "p", "section-intro", "How Multicord's hooks into each service are doing. A failed check usually means the service changed its app; it shows what stops working."),
       diagnostics,
+      el(doc, "p", "hint", "The report lists these checks with versions and nothing private, for an issue or an AI assistant to propose a fix."),
+      copyReport,
     );
 
     // About
