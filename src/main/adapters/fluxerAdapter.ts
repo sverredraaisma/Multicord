@@ -97,6 +97,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private status: string | undefined;
   private error: string | undefined;
   private mfaTicket: string | undefined;
+  private mfaCodes: "totp" | "backup" = "totp";
   private selection: Selection = { kind: "home" };
   private selectedChannelId: string | undefined;
   private readonly lastChannel = new Map<string, string>();
@@ -300,8 +301,12 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       this.openSession(result.token);
       return;
     }
-    if (!result.totp) throw new Error("This account needs a security key, which Multicord does not support yet.");
+    // Security keys are bound to Fluxer's own web origin, so they cannot work here; backup codes go through the code endpoint.
+    if (!result.totp && !result.backupCodes) {
+      throw new Error("This account only accepts a security key, which only works in Fluxer's own apps.");
+    }
     this.mfaTicket = result.ticket;
+    this.mfaCodes = result.totp ? "totp" : "backup";
     this.screen = "mfa";
   }
 
@@ -817,7 +822,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       case "login":
         return { screen: "login", platform, identity: this.instance?.identity ?? "email", busy: this.busy, status: this.status, error: this.error };
       case "mfa":
-        return { screen: "mfa", platform, busy: this.busy, error: this.error };
+        return { screen: "mfa", platform, codes: this.mfaCodes, busy: this.busy, error: this.error };
       case "connecting":
         return { screen: "connecting", platform, status: this.connection === "reconnecting" ? "Reconnecting…" : "Connecting…" };
       case "chat": {

@@ -97,7 +97,8 @@ export interface NativeChannelView {
 
 export type NativeViewState =
   | { screen: "login"; platform: string; identity: "email" | "username"; busy: boolean; status?: string; error?: string }
-  | { screen: "mfa"; platform: string; busy: boolean; error?: string }
+  /** codes: "totp" accepts authenticator or backup codes; "backup" only backup codes. */
+  | { screen: "mfa"; platform: string; codes: "totp" | "backup"; busy: boolean; error?: string }
   | { screen: "connecting"; platform: string; status: string }
   | {
       screen: "chat";

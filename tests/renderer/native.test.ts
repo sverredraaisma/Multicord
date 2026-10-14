@@ -84,16 +84,22 @@ describe("login and MFA screens", () => {
   });
 
   it("submits and cancels two-factor codes", () => {
-    view.update({ screen: "mfa", platform: "Fluxer", busy: false });
+    view.update({ screen: "mfa", platform: "Fluxer", codes: "totp", busy: false });
+    expect(root.querySelector("label")!.textContent).toBe("Authentication or backup code");
     const code = root.querySelector<HTMLInputElement>('input[name="code"]')!;
     code.value = " 123456 ";
     root.querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
     expect(act).toHaveBeenCalledWith({ type: "mfa", code: "123456" });
-    view.update({ screen: "mfa", platform: "Fluxer", busy: true, error: "Invalid code" });
+    view.update({ screen: "mfa", platform: "Fluxer", codes: "totp", busy: true, error: "Invalid code" });
     expect(root.querySelector<HTMLButtonElement>("button.primary")!.disabled).toBe(true);
     expect(root.querySelector(".error")!.textContent).toBe("Invalid code");
     root.querySelector<HTMLButtonElement>("button.link")!.click();
     expect(act).toHaveBeenCalledWith({ type: "cancelMfa" });
+  });
+
+  it("asks for a backup code when that is the only code option", () => {
+    view.update({ screen: "mfa", platform: "Fluxer", codes: "backup", busy: false });
+    expect(root.querySelector("label")!.textContent).toBe("Backup code");
   });
 
   it("shows connection progress", () => {

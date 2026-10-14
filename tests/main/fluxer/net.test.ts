@@ -160,13 +160,13 @@ describe("FluxerRest", () => {
 
   it("handles MFA tickets and TOTP", async () => {
     const { client, calls } = rest(
-      { status: 200, body: { mfa: true, ticket: "t1", totp: true, webauthn: false } },
+      { status: 200, body: { mfa: true, ticket: "t1", totp: true, webauthn: false, backup_codes: true } },
       { status: 200, body: { mfa: true, ticket: "t2", totp: false } },
       { status: 200, body: { token: "flx_mfa" } },
       { status: 200, body: { nothing: true } },
     );
-    expect(await client.login("email", "a", "b")).toEqual({ mfa: true, ticket: "t1", totp: true });
-    expect(await client.login("email", "a", "b")).toEqual({ mfa: true, ticket: "t2", totp: false });
+    expect(await client.login("email", "a", "b")).toEqual({ mfa: true, ticket: "t1", totp: true, backupCodes: true });
+    expect(await client.login("email", "a", "b")).toEqual({ mfa: true, ticket: "t2", totp: false, backupCodes: false });
     expect(await client.loginTotp("123456", "t1")).toEqual({ token: "flx_mfa", user: undefined });
     expect(calls[2]!.url).toBe("https://api.example/v1/auth/login/mfa/totp");
     expect(JSON.parse(String(calls[2]!.init.body))).toEqual({ code: "123456", ticket: "t1" });

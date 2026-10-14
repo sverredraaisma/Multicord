@@ -31,7 +31,9 @@ export interface UploadedAttachment {
   content_type: string;
 }
 
-export type LoginResult = { token: string; user?: FluxerUser } | { mfa: true; ticket: string; totp: boolean };
+export type LoginResult =
+  | { token: string; user?: FluxerUser }
+  | { mfa: true; ticket: string; totp: boolean; backupCodes: boolean };
 
 export interface RestOptions {
   fetch: typeof fetch;
@@ -225,6 +227,8 @@ function captchaChallenge(error: unknown): AltchaChallenge | undefined {
 function toLoginResult(data: unknown): LoginResult {
   const record = isRecord(data) ? data : {};
   if (typeof record.token === "string" && record.token !== "") return { token: record.token, user: parseUser(record.user) };
-  if (record.mfa === true && typeof record.ticket === "string") return { mfa: true, ticket: record.ticket, totp: record.totp !== false };
+  if (record.mfa === true && typeof record.ticket === "string") {
+    return { mfa: true, ticket: record.ticket, totp: record.totp !== false, backupCodes: record.backup_codes === true };
+  }
   throw new FluxerApiError(200, "UNEXPECTED_RESPONSE", "Unexpected login response", data);
 }

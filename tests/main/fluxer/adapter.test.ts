@@ -194,7 +194,7 @@ describe("FluxerAdapter session", () => {
     await adapter.start();
     await adapter.handleAction({ type: "mfa", code: "123456" }); // no ticket yet: ignored
     await adapter.handleAction({ type: "login", identity: "a@b.c", password: "pw" });
-    expect(last()).toEqual({ screen: "mfa", platform: "Fluxer", busy: false, error: undefined });
+    expect(last()).toEqual({ screen: "mfa", platform: "Fluxer", codes: "totp", busy: false, error: undefined });
 
     await adapter.handleAction({ type: "mfa", code: "000000" });
     expect(last()).toMatchObject({ screen: "mfa", error: "Invalid code" });
@@ -204,6 +204,15 @@ describe("FluxerAdapter session", () => {
     await adapter.handleAction({ type: "login", identity: "a@b.c", password: "pw" });
     await adapter.handleAction({ type: "mfa", code: "123456" });
     expect(secrets.get("fluxer:fluxer.app:token")).toBe("flx_mfa");
+  });
+
+  it("offers backup codes to accounts protected only by a security key", async () => {
+    const { adapter, last } = setup({
+      routes: [(url) => (url.endsWith("/auth/login") ? { status: 200, body: { mfa: true, ticket: "t", totp: false, backup_codes: true } } : undefined)],
+    });
+    await adapter.start();
+    await adapter.handleAction({ type: "login", identity: "a@b.c", password: "pw" });
+    expect(last()).toMatchObject({ screen: "mfa", codes: "backup" });
   });
 
   it("explains accounts that need a security key", async () => {

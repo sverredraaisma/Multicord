@@ -151,7 +151,7 @@ export class NativeView {
         code.required = true;
         code.autocomplete = "one-time-code";
         code.inputMode = "numeric";
-        const label = el(doc, "label", undefined, "Authentication or backup code");
+        const label = el(doc, "label", undefined, state.codes === "backup" ? "Backup code" : "Authentication or backup code");
         label.append(code);
         const submit = el(doc, "button", "primary", "Verify");
         submit.type = "submit";
