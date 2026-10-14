@@ -2,10 +2,10 @@
 // @vitest-environment-options {"url": "https://discord.com/channels/@me"}
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discordNotificationRelay } from "../../src/preload/discord/notificationRelay";
-import { discordScreenAudio } from "../../src/preload/discord/screenAudio";
+import { screenAudioPatch } from "../../src/shared/screenAudio";
 import { discordActivityBridge } from "../../src/preload/discord/activityBridge";
 import { startDiscordPreload, type PreloadIpc } from "../../src/preload/discord/index";
-import { ACTIVITY_EVENT, IPC, NOTIFY_CLICK_EVENT, NOTIFY_EVENT } from "../../src/shared/ipc";
+import { ACTIVITY_EVENT, IPC, NOTIFY_CLICK_EVENT, NOTIFY_EVENT, SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../../src/shared/ipc";
 
 type W = Record<string, unknown> & { Notification: any };
 const w = window as unknown as W;
@@ -117,7 +117,9 @@ describe("relay through the preload", () => {
     const run = vi.fn();
     startDiscordPreload(ipc, document, window, run);
     expect(run).toHaveBeenCalledWith(discordNotificationRelay, [NOTIFY_EVENT, NOTIFY_CLICK_EVENT, 200]);
-    expect(run).toHaveBeenCalledWith(discordScreenAudio, []);
+    expect(run).toHaveBeenCalledWith(screenAudioPatch, [VIRTUAL_MIC, SCREEN_AUDIO_END_EVENT]);
+    document.dispatchEvent(new CustomEvent(SCREEN_AUDIO_END_EVENT));
+    expect(ipc.send).toHaveBeenCalledWith(IPC.screenAudioEnd, null);
     const fire = (detail: unknown) => document.dispatchEvent(new CustomEvent(NOTIFY_EVENT, { detail }));
     fire("{broken");
     fire(JSON.stringify({ id: "x", title: "A", body: "" }));

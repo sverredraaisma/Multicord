@@ -114,7 +114,12 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
   An entry with a built-in id (`discord`, `fluxer`) only renames it or turns it off. Any entry can have `"enabled": false`.
 
 - Tray with minimize-to-tray, single instance, saved window state, and mention counts in the title, badge and taskbar flash.
-- Screen share through our own picker, with system audio on Windows, and on macOS 13 and later (Electron captures it through ScreenCaptureKit, or Apple's CoreAudio tap from 14.2; untested on a Mac so far). Multicord's own sound (the call itself) is left out of it (Chromium's `restrictOwnAudio`, set for Discord in its page and for Fluxer calls), so others don't hear themselves.
+- Screen share through our own picker, with system audio:
+  - on Windows;
+  - on macOS 13 and later, where Electron captures it through ScreenCaptureKit, or Apple's CoreAudio tap from 14.2 (untested on a Mac so far);
+  - on Linux with PipeWire, through venmic, the helper Vesktop uses: the speakers' sound, minus Multicord's own, goes to a virtual microphone that the sharing page adds to the share.
+
+  Multicord's own sound (the call itself) is left out of it (Chromium's `restrictOwnAudio`, set for Discord in its page and for Fluxer calls), so others don't hear themselves.
 - Permission allowlist; same-origin popups stay in the app and other links open in the browser.
 
 ## Layout
@@ -154,7 +159,7 @@ Coverage is enforced at **95%** for lines, statements, functions and branches (`
 - Rich Presence game detection goes by process name only, so names several games share are skipped. The WebSocket transport some browser-based apps use is not offered.
 - Guild selectors (`dom.ts`) and store names (`storeBridge.ts`) follow Discord's current client. Settings > Diagnostics checks them against the running client (each hook, and what breaks if it fails). The running app rechecks every minute: once startup has settled, a check that fails (after working, or at all while signed in) brings one notification pointing there. AI-assisted repair proposals, as the study suggests, are not built. Guilds could later move to store reads too.
 - Rich Presence (arRPC) is not started.
-- Linux screen share audio needs a PipeWire helper (venmic), which is not built in.
+- Linux screen-share sound goes through venmic, which is only installed on Linux. It is wired and unit-tested but has not been run on a Linux desktop yet.
 - Fluxer (native) does not support:
   - **Security keys (WebAuthn):** they are bound to Fluxer's own web origin, and Multicord won't impersonate it. Accounts protected only by a security key can sign in with a backup code.
   - **End-to-end encrypted voice channels:** Fluxer's scheme is undocumented, so Multicord refuses them rather than joining unencrypted.

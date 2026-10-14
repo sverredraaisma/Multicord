@@ -1,3 +1,5 @@
+import { screenAudioPatch } from "../shared/screenAudio";
+import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { NativeMessage, NativeViewState } from "../shared/native";
 import { MAX_MESSAGE_LENGTH } from "../shared/native";
@@ -462,6 +464,9 @@ export function startNative(
   api.onVoiceSettings((settings) => view.setVoiceSettings(settings));
   // Beside the unified Messages list, the conversation list here would repeat it.
   api.onCompact((compact) => doc.body.classList.toggle("compact", compact));
+  // Screen shares here get system sound the same way Discord's do.
+  screenAudioPatch(VIRTUAL_MIC, SCREEN_AUDIO_END_EVENT);
+  doc.addEventListener(SCREEN_AUDIO_END_EVENT, () => api.screenAudioEnded());
   api.onVoiceCommand((command) => view.voiceCommand(command));
   doc.addEventListener("keydown", (event) => {
     if (!event.repeat) view.pushToTalk(event.code, true);

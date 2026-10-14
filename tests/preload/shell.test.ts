@@ -108,7 +108,8 @@ describe("messages", () => {
 
   it("tells native views when they sit beside the Messages list", () => {
     const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
-    const api = createNativeApi({ send: vi.fn(), on: (c, l) => void listeners.set(c, l) });
+    const ipc = { send: vi.fn(), on: (c: string, l: (e: unknown, p: unknown) => void) => void listeners.set(c, l) };
+    const api = createNativeApi(ipc);
     const onCompact = vi.fn();
     api.onCompact(onCompact);
     listeners.get(IPC.viewCompact)!(null, true);
@@ -120,5 +121,7 @@ describe("messages", () => {
     listeners.get(SETTINGS_IPC.voiceCommand)!(null, "explode");
     listeners.get(SETTINGS_IPC.voiceCommand)!(null, "talkStart");
     expect(onVoiceCommand.mock.calls).toEqual([["toggleMute"], ["talkStart"]]);
+    api.screenAudioEnded();
+    expect(ipc.send).toHaveBeenCalledWith(IPC.screenAudioEnd, null);
   });
 });

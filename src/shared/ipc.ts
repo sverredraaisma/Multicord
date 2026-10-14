@@ -3,6 +3,8 @@ import type { ActivityUpdate } from "./adapter";
 // renderer into the main process is validated before use.
 
 export const IPC = {
+  /** Platform view -> main: a screen share using venmic's virtual microphone ended. */
+  screenAudioEnd: "view:screen-audio-end",
   discordState: "discord:state",
   discordNavigate: "discord:navigate",
   /** Discord view -> main: a notification Discord's page wanted to show. */
@@ -46,6 +48,11 @@ export function isDiscordPage(url: string | undefined): boolean {
     return false;
   }
 }
+
+/** venmic's virtual microphone, which carries system sound on Linux. */
+export const VIRTUAL_MIC = "vencord-screen-share";
+/** DOM event: the page's screen share with system sound ended. */
+export const SCREEN_AUDIO_END_EVENT = "multicord:screen-audio-end";
 
 /** DOM event carrying a Rich Presence update from the isolated preload to the page. */
 export const ACTIVITY_EVENT = "multicord:activity";

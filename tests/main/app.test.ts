@@ -1376,3 +1376,16 @@ describe("health watch", () => {
     expect(electron.Notification.instances.at(-1)!.options).toMatchObject({ title: "Part of gone stopped working" });
   });
 });
+
+describe("Linux screen-share sound", () => {
+  it("stops venmic when a platform view's share ends, and only then", async () => {
+    const { railView, discordView } = await shellWith();
+    const { SystemAudio } = await import("../../src/main/systemAudio");
+    const stop = vi.spyOn(SystemAudio.prototype, "stop");
+    ipcMain.emit(IPC.screenAudioEnd, { sender: railView.webContents });
+    expect(stop).not.toHaveBeenCalled();
+    ipcMain.emit(IPC.screenAudioEnd, { sender: discordView.webContents });
+    expect(stop).toHaveBeenCalledTimes(1);
+    stop.mockRestore();
+  });
+});

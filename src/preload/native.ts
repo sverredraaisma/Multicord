@@ -7,6 +7,8 @@ import type { PreloadIpc } from "./discord/index";
 export interface NativeApi {
   onState(cb: (state: NativeViewState) => void): void;
   act(action: NativeAction): void;
+  /** A screen share with system sound (Linux, venmic) ended. */
+  screenAudioEnded(): void;
   /** The user's devices and audio processing for calls. */
   onVoiceSettings(cb: (settings: VoiceSettings) => void): void;
   /** Whether the view sits beside the unified Messages list, which replaces its sidebar. */
@@ -18,6 +20,7 @@ export interface NativeApi {
 export function createNativeApi(ipc: PreloadIpc): NativeApi {
   return {
     onState: (cb) => ipc.on(NATIVE_IPC.state, (_event, state) => cb(state as NativeViewState)),
+    screenAudioEnded: () => ipc.send(IPC.screenAudioEnd, null),
     act: (action) => ipc.send(NATIVE_IPC.action, action),
     onVoiceSettings: (cb) => ipc.on(SETTINGS_IPC.voice, (_event, settings) => cb(settings as VoiceSettings)),
     onCompact: (cb) => ipc.on(IPC.viewCompact, (_event, compact) => cb(compact === true)),

@@ -266,6 +266,7 @@ describe("helpers", () => {
       onVoiceSettings: (cb) => (pushVoice = cb),
       onCompact: (cb) => (pushCompact = cb),
       onVoiceCommand: (cb) => (voiceCommand = cb),
+      screenAudioEnded: vi.fn(),
     };
     startNative(document, api);
     expect(api.act).toHaveBeenCalledWith({ type: "ready" });
@@ -278,6 +279,8 @@ describe("helpers", () => {
     expect(document.body.classList.contains("compact")).toBe(true);
     pushCompact(false);
     expect(document.body.classList.contains("compact")).toBe(false);
+    document.dispatchEvent(new CustomEvent("multicord:screen-audio-end"));
+    expect(api.screenAudioEnded).toHaveBeenCalled();
 
     // Voice shortcuts and push to talk reach the call in progress.
     const live = { channelId: "7", channelName: "Lounge", guildName: "G", url: "wss://x", token: "t", mute: false, deaf: false, video: false, stream: false };

@@ -46,6 +46,7 @@ import { createDisplayMediaHandler } from "./screenShare";
 import { SettingsController } from "./settingsController";
 import { SettingsStore } from "./settingsStore";
 import { HealthWatch } from "./healthWatch";
+import { loadVenmic, SystemAudio } from "./systemAudio";
 import { GlobalPushToTalk, loadKeyHook } from "./pushToTalk";
 import { createRichPresence } from "./richPresence";
 import { createGameDetector, DETECTED_SOURCE } from "./gameDetection";
@@ -259,6 +260,12 @@ export async function createShell(
     messagesView?.setVisible(mode === "messages");
   };
 
+  // Linux screen-share sound: venmic, leaving out every process of ours.
+  const systemAudio = new SystemAudio(loadVenmic, () => app.getAppMetrics().map((m) => m.pid));
+  ipcMain.on(IPC.screenAudioEnd, (event) => {
+    if ([...views.values()].some((view) => view.webContents === event.sender)) systemAudio.stop();
+  });
+
   /** Screen share goes through our picker, as the web clients have none of their own here. */
   const handleScreenShare = (ses: Session): void =>
     ses.setDisplayMediaRequestHandler(
@@ -267,6 +274,7 @@ export async function createShell(
         pick: (request) => showPicker(window, paths.dist, request),
         platform,
         osRelease: os.release(),
+        systemAudio: platform === "linux" ? systemAudio : undefined,
       }),
     );
 

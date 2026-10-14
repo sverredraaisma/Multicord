@@ -38,6 +38,25 @@ describe("createDisplayMediaHandler", () => {
     expect(callback).toHaveBeenCalledWith({ video: sources[1], audio: "loopback" });
   });
 
+  it("on Linux, shares system sound through venmic, which the page picks up", async () => {
+    const systemAudio = { available: vi.fn(() => true), start: vi.fn(() => true) };
+    const pick = vi.fn(async () => ({ id: "screen:0", audio: true }) as never);
+    const callback = vi.fn();
+    await createDisplayMediaHandler({ getSources: async () => sources, pick, platform: "linux", systemAudio })({}, callback);
+    expect(pick).toHaveBeenCalledWith(expect.objectContaining({ audioSupported: true }));
+    expect(systemAudio.start).toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledWith({ video: sources[0] });
+    // No sound asked for: venmic stays off.
+    systemAudio.start.mockClear();
+    pick.mockResolvedValueOnce({ id: "screen:0", audio: false } as never);
+    await createDisplayMediaHandler({ getSources: async () => sources, pick, platform: "linux", systemAudio })({}, callback);
+    expect(systemAudio.start).not.toHaveBeenCalled();
+    // Without venmic, Linux has no screen-share sound.
+    systemAudio.available.mockReturnValue(false);
+    await createDisplayMediaHandler({ getSources: async () => sources, pick, platform: "linux", systemAudio })({}, callback);
+    expect(pick).toHaveBeenLastCalledWith(expect.objectContaining({ audioSupported: false }));
+  });
+
   it("omits audio when not requested or unsupported", async () => {
     const callback = vi.fn();
     await handler({ id: "screen:0", audio: false }).run({}, callback);

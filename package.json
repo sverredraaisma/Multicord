@@ -92,5 +92,8 @@
       "enableEmbeddedAsarIntegrityValidation": true,
       "onlyLoadAppFromAsar": true
     }
+  },
+  "optionalDependencies": {
+    "@vencord/venmic": "7.2.3"
   }
 }
