@@ -43,6 +43,7 @@ import { PlatformRegistry } from "./registry";
 import { createDisplayMediaHandler } from "./screenShare";
 import { SettingsController } from "./settingsController";
 import { SettingsStore } from "./settingsStore";
+import { createRichPresence } from "./richPresence";
 import { GlobalShortcuts, inputModifiers } from "./shortcuts";
 import { listProcesses, StreamerWatch } from "./streamer";
 import { Updater } from "./updater";
@@ -509,6 +510,18 @@ export async function createShell(
       view.webContents.sendInputEvent({ type: "keyUp", keyCode: keys.keyCode, modifiers });
     }
   };
+  // Rich Presence: local apps' activities go to every module that can show them.
+  const richPresence = createRichPresence(platform, (update) => {
+    for (const adapter of adapters.values()) adapter.setActivity?.(update);
+  });
+  const applyRichPresence = (on: boolean): void => {
+    if (!on) return richPresence.stop();
+    void richPresence.start().then((listening) => {
+      if (!listening) console.warn("[rich presence] every discord-ipc path is taken; not listening");
+    });
+  };
+  applyRichPresence(general().richPresence);
+
   const shortcuts = new GlobalShortcuts(globalShortcut, runShortcut);
   let shortcutErrors = shortcuts.apply(settingsStore.get().shortcuts);
   updater.setAutomatic(general().autoUpdate);
@@ -517,6 +530,7 @@ export async function createShell(
     if (patch.shortcuts) shortcutErrors = shortcuts.apply(next.shortcuts);
     if (patch.general?.autoUpdate !== undefined) updater.setAutomatic(next.general.autoUpdate);
     if (patch.general?.openLinks !== undefined) registerLinks(next.general.openLinks);
+    if (patch.general?.richPresence !== undefined) applyRichPresence(next.general.richPresence);
     if (patch.general?.railGrouping !== undefined) registry.setGrouping(next.general.railGrouping);
     if (patch.general?.streamerMode !== undefined) {
       if (next.general.streamerMode === "auto") streamer.start();

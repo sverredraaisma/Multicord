@@ -27,6 +27,7 @@ export const discordModule: PlatformModule = {
       (target) => view.webContents.send(IPC.discordNavigate, target),
       def.id,
       (id) => view.webContents.send(IPC.discordNotificationClick, id),
+      (update) => view.webContents.send(IPC.discordActivity, update),
     );
     ipcMain.on(IPC.discordState, (event, state) => {
       if (event.sender === view.webContents && isDiscordState(state)) adapter.update(state);

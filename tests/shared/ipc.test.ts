@@ -256,6 +256,22 @@ describe("channel targets", () => {
 
 describe("relayed notifications", () => {
   it("checks id, title and body", async () => {
+    const { isActivityUpdate } = await import("../../src/shared/ipc");
+    const activity = { application_id: "42", type: 0, flags: 0 };
+    expect(isActivityUpdate({ source: "rpc-1", activity })).toBe(true);
+    expect(isActivityUpdate({ source: "rpc-1", pid: 9, activity: null })).toBe(true);
+    for (const bad of [
+      null,
+      "x",
+      { source: "x", activity: null },
+      { source: 1, activity: null },
+      { source: "rpc-1", pid: -1, activity: null },
+      { source: "rpc-1", activity: "x" },
+      { source: "rpc-1", activity: { application_id: "abc" } },
+      { source: "rpc-1", activity: { ...activity, details: "y".repeat(9000) } },
+    ]) {
+      expect(isActivityUpdate(bad)).toBe(false);
+    }
     const { isRelayedNotification } = await import("../../src/shared/ipc");
     expect(isRelayedNotification({ id: "1", title: "A", body: "" })).toBe(true);
     for (const bad of [null, "x", { id: "a", title: "A", body: "" }, { id: "1", title: 1, body: "" }, { id: "1", title: "A".repeat(201), body: "" }, { id: "1", title: "A", body: "b".repeat(2001) }, { id: "1", title: "A" }]) {

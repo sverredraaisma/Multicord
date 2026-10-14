@@ -1,4 +1,4 @@
-import type { DirectConversation, HealthCheck, HomeBadge, RailServer } from "../../shared/adapter";
+import type { ActivityUpdate, DirectConversation, HealthCheck, HomeBadge, RailServer } from "../../shared/adapter";
 import {
   isSnowflake,
   type DiscordGuild,
@@ -56,6 +56,8 @@ export class DiscordAdapter extends BaseAdapter {
     id = "discord",
     /** Runs Discord's own click handler for a relayed notification. */
     private readonly clickNotification: (id: string) => void = () => {},
+    /** Hands a Rich Presence update to Discord's page. */
+    private readonly sendActivity: (update: ActivityUpdate) => void = () => {},
   ) {
     super(id, { platform: id, instance: "discord.com", accountId: "default" });
   }
@@ -190,6 +192,10 @@ export class DiscordAdapter extends BaseAdapter {
   }
 
   /** A notification Discord's page wanted to show; the shell shows it instead. */
+  setActivity(update: ActivityUpdate): void {
+    this.sendActivity(update);
+  }
+
   relayNotification(notification: RelayedNotification): void {
     this.notifications.emit({ title: notification.title, body: notification.body, target: `${NOTIFICATION_PREFIX}${notification.id}` });
   }

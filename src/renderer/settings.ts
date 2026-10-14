@@ -237,6 +237,7 @@ export class SettingsPage {
     streamingNote: HTMLElement;
     links: { row: HTMLElement; input: HTMLInputElement; label: HTMLElement };
     autoUpdate: HTMLInputElement;
+    richPresence: HTMLInputElement;
     keys: Record<ShortcutAction | "pushToTalk", { set(value: string | null, problem?: string): void }>;
     updateStatus: HTMLElement;
     checkUpdates: HTMLButtonElement;
@@ -457,7 +458,13 @@ export class SettingsPage {
     const autoUpdate = switchRow(doc, "Update automatically", "Download new versions in the background and install them when Multicord restarts.", (on) =>
       this.update({ general: { autoUpdate: on } }),
     );
-    general.append(grouping.row, links.row, autoUpdate.row, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
+    const richPresence = switchRow(
+      doc,
+      "Rich Presence",
+      "Lets games and apps show what you are doing on Discord, as the desktop app does. Any program on this computer can then set that status.",
+      (on) => this.update({ general: { richPresence: on } }),
+    );
+    general.append(grouping.row, links.row, autoUpdate.row, richPresence.row, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
     const launchHint = el(doc, "p", "hint", "Starting with your computer is not available on this system.");
     launchHint.hidden = true;
     const secretsNote = el(doc, "p", "notice", "This system has no secure storage for passwords, so you will need to sign in to Fluxer again after each restart.");
@@ -511,6 +518,7 @@ export class SettingsPage {
       streamingNote,
       links: { ...links, label: links.row.querySelector<HTMLElement>(".switch-label")! },
       autoUpdate: autoUpdate.input,
+      richPresence: richPresence.input,
       keys,
       updateStatus,
       checkUpdates,
@@ -572,6 +580,7 @@ export class SettingsPage {
     parts.links.label.textContent = `Open ${schemes.map((scheme) => `${scheme}://`).join(", ")} links in Multicord`;
     parts.links.input.checked = general.openLinks;
     parts.autoUpdate.checked = general.autoUpdate;
+    parts.richPresence.checked = general.richPresence;
     const taken = new Set(state.shortcutErrors ?? []);
     for (const action of ["toggleMute", "toggleDeafen", "showApp"] as const) {
       parts.keys[action].set(state.settings.shortcuts[action], taken.has(action) ? "Another app already uses this shortcut." : undefined);

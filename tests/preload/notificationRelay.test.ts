@@ -2,8 +2,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discordNotificationRelay } from "../../src/preload/discord/notificationRelay";
 import { discordScreenAudio } from "../../src/preload/discord/screenAudio";
+import { discordActivityBridge } from "../../src/preload/discord/activityBridge";
 import { startDiscordPreload, type PreloadIpc } from "../../src/preload/discord/index";
-import { IPC, NOTIFY_CLICK_EVENT, NOTIFY_EVENT } from "../../src/shared/ipc";
+import { ACTIVITY_EVENT, IPC, NOTIFY_CLICK_EVENT, NOTIFY_EVENT } from "../../src/shared/ipc";
 
 type W = Record<string, unknown> & { Notification: any };
 const w = window as unknown as W;
@@ -130,5 +131,56 @@ describe("relay through the preload", () => {
     ipc.emit(IPC.discordNotificationClick, "<script>");
     ipc.emit(IPC.discordNotificationClick, 3);
     expect(clicks).toEqual(["3"]);
+  });
+
+  it("passes checked Rich Presence updates to the page", () => {
+    const ipc = fakeIpc();
+    const run = vi.fn();
+    startDiscordPreload(ipc, document, window, run);
+    expect(run).toHaveBeenCalledWith(discordActivityBridge, [ACTIVITY_EVENT]);
+    const seen: unknown[] = [];
+    document.addEventListener(ACTIVITY_EVENT, (e) => seen.push(JSON.parse((e as CustomEvent).detail)));
+    const update = { source: "rpc-2", pid: 7, activity: { application_id: "42", type: 0, flags: 0, name: "Game" } };
+    ipc.emit(IPC.discordActivity, update);
+    ipc.emit(IPC.discordActivity, { source: "evil", activity: null });
+    expect(seen).toEqual([update]);
+  });
+});
+
+describe("discordActivityBridge", () => {
+  afterEach(() => {
+    delete (window as unknown as Record<string, unknown>).__multicordActivity;
+    delete (window as unknown as Record<string, unknown>).webpackChunkdiscord_app;
+  });
+
+  const fire = (detail: unknown) => document.dispatchEvent(new CustomEvent("test:activity", { detail }));
+
+  it("dispatches activities through Discord's own dispatcher", () => {
+    const dispatch = vi.fn();
+    const dispatcher = { dispatch, subscribe: () => {}, _actionHandlers: {} };
+    const chunks: unknown[] & { push(...items: unknown[]): number } = [] as never;
+    chunks.push = (chunk: any) => {
+      chunk[2]({ c: { a: { exports: null }, b: { exports: { other: { dispatch() {} } } }, c: { exports: { Z: dispatcher } } } });
+      return Array.prototype.push.call(chunks, chunk);
+    };
+    (window as any).webpackChunkdiscord_app = chunks;
+    const serialized = new Function(`return (${discordActivityBridge.toString()})`)() as typeof discordActivityBridge;
+    serialized("test:activity");
+    serialized("test:activity"); // only once
+    fire("{broken");
+    fire(JSON.stringify({ source: "rpc-1", pid: 3, activity: { name: "Game" } }));
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(dispatch).toHaveBeenCalledWith({ type: "LOCAL_ACTIVITY_UPDATE", socketId: "rpc-1", pid: 3, activity: { name: "Game" } });
+    dispatch.mockImplementation(() => {
+      throw new Error("rejected");
+    });
+    expect(() => fire(JSON.stringify({ source: "rpc-1", activity: null }))).not.toThrow();
+  });
+
+  it("does nothing until Discord's modules are there", () => {
+    discordActivityBridge("test:activity");
+    fire(JSON.stringify({ source: "rpc-1", activity: null }));
+    (window as any).webpackChunkdiscord_app = { push: (chunk: any) => chunk[2]({}) };
+    fire(JSON.stringify({ source: "rpc-1", activity: null }));
   });
 });

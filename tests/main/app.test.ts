@@ -15,6 +15,22 @@ const updater = vi.hoisted(() => ({
   },
 }));
 vi.mock("electron-updater", () => ({ autoUpdater: updater }));
+// Rich Presence must not open the real discord-ipc pipes in tests.
+const rpc = vi.hoisted(() => ({
+  onActivity: undefined as undefined | ((update: unknown) => void),
+  listening: true,
+  start: undefined as unknown as ReturnType<typeof import("vitest").vi.fn>,
+  stop: undefined as unknown as ReturnType<typeof import("vitest").vi.fn>,
+}));
+vi.mock("../../src/main/richPresence", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../src/main/richPresence")>()),
+  createRichPresence: (_platform: string, onActivity: (update: unknown) => void) => {
+    rpc.onActivity = onActivity;
+    rpc.start = vi.fn(async () => rpc.listening);
+    rpc.stop = vi.fn();
+    return { start: rpc.start, stop: rpc.stop };
+  },
+}));
 // Streamer mode must not run the OS's process list in tests.
 const processList = vi.hoisted(() => ({ names: [] as string[] }));
 vi.mock("../../src/main/streamer", async (importOriginal) => ({
@@ -1191,5 +1207,29 @@ describe("global shortcuts", () => {
     startApp(DIST);
     app.emit("will-quit");
     expect(electron.globalShortcut.unregisterAll).toHaveBeenCalled();
+  });
+});
+
+describe("Rich Presence", () => {
+  it("listens only while turned on and hands activities to Discord", async () => {
+    const { handle, discordView } = await shellWith();
+    expect(rpc.start).not.toHaveBeenCalled();
+    handle.settingsStore.update({ general: { richPresence: true } });
+    expect(rpc.start).toHaveBeenCalled();
+    const update = { source: "rpc-1", activity: null };
+    rpc.onActivity!(update);
+    expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordActivity, update);
+    handle.settingsStore.update({ general: { richPresence: false } });
+    expect(rpc.stop).toHaveBeenCalled();
+  });
+
+  it("warns when every discord-ipc path is taken", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    rpc.listening = false;
+    fs.writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ general: { richPresence: true } }));
+    await shellWith();
+    await flush();
+    expect(warn).toHaveBeenCalledWith("[rich presence] every discord-ipc path is taken; not listening");
+    rpc.listening = true;
   });
 });

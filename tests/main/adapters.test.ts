@@ -259,5 +259,11 @@ describe("relayed Discord notifications", () => {
     expect(click).toHaveBeenCalledWith("4");
     expect(navigate).not.toHaveBeenCalled();
     await new DiscordAdapter(navigate).openConversation("notification:5"); // default handler: nothing to do
+
+    const sendActivity = vi.fn();
+    const update = { source: "rpc-1", activity: null };
+    new DiscordAdapter(navigate, "discord", click, sendActivity).setActivity(update);
+    expect(sendActivity).toHaveBeenCalledWith(update);
+    new DiscordAdapter(navigate).setActivity(update); // default: nowhere to show it
   });
 });

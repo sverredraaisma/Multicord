@@ -56,6 +56,8 @@ export interface GeneralSettings {
   openLinks: boolean;
   /** Check for, download and install updates by itself. */
   autoUpdate: boolean;
+  /** Show games' and apps' Rich Presence on Discord, through a local Discord IPC server. */
+  richPresence: boolean;
 }
 
 /** Where updating stands; development runs cannot update. */
@@ -105,7 +107,7 @@ export interface AppSettings {
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto", openLinks: false, autoUpdate: true },
+  general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto", openLinks: false, autoUpdate: true, richPresence: false },
   voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, enhancedNoiseSuppression: false },
   // Off by default: global shortcuts take keys away from every other app.
   shortcuts: { toggleMute: null, toggleDeafen: null, showApp: null },
@@ -146,6 +148,7 @@ const GENERAL_CHECKS: { [K in keyof GeneralSettings]: (value: unknown) => value 
   streamerMode: (v): v is GeneralSettings["streamerMode"] => v === "auto" || v === "on" || v === "off",
   openLinks: (v): v is boolean => typeof v === "boolean",
   autoUpdate: (v): v is boolean => typeof v === "boolean",
+  richPresence: (v): v is boolean => typeof v === "boolean",
 };
 const GENERAL_KEYS = Object.keys(GENERAL_CHECKS) as (keyof GeneralSettings)[];
 const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl", "enhancedNoiseSuppression"] as const;

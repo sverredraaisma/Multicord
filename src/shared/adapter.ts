@@ -57,6 +57,29 @@ export interface PlatformNotification {
   inView?: boolean;
 }
 
+/** A Rich Presence activity, in the shape Discord's client takes ("Playing …"). */
+export interface Activity {
+  application_id: string;
+  name?: string;
+  /** 0 playing, 2 listening, 3 watching, 5 competing. */
+  type: number;
+  flags: number;
+  details?: string;
+  state?: string;
+  timestamps?: { start?: number; end?: number };
+  assets?: { large_image?: string; large_text?: string; small_image?: string; small_text?: string };
+  party?: { size: [number, number] };
+  buttons?: string[];
+  metadata?: { button_urls: string[] };
+}
+
+/** One local app's activity changed: null clears it. `source` names the app's connection. */
+export interface ActivityUpdate {
+  source: string;
+  pid?: number;
+  activity: Activity | null;
+}
+
 /** One integration point and whether it works, e.g. "Discord's server list was found". */
 export interface HealthCheck {
   name: string;
@@ -114,6 +137,8 @@ export interface PlatformAdapter {
   openLink?(url: string): Promise<boolean>;
   /** Whether the platform's integration points still work, for the diagnostics page. */
   health?(): HealthCheck[];
+  /** Shows a local app's Rich Presence activity on the account. */
+  setActivity?(update: ActivityUpdate): void;
   onAccountChanged?(cb: (account: AccountStatus) => void): () => void;
   signOut?(): Promise<void>;
 }

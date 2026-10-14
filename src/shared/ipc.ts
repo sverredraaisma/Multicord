@@ -1,3 +1,4 @@
+import type { ActivityUpdate } from "./adapter";
 // IPC channel names and payload validators. Every payload that crosses from a
 // renderer into the main process is validated before use.
 
@@ -8,6 +9,8 @@ export const IPC = {
   discordNotification: "discord:notification",
   /** Main -> Discord view: the user clicked that notification. */
   discordNotificationClick: "discord:notification-click",
+  /** Main -> Discord view: a local app's Rich Presence activity (ActivityUpdate). */
+  discordActivity: "discord:activity",
   railState: "shell:rail",
   railOpen: "shell:open",
   railReady: "shell:ready",
@@ -33,6 +36,20 @@ export const BRIDGE_EVENT = "multicord:stores";
 /** DOM events between the main-world notification relay and the preload. */
 export const NOTIFY_EVENT = "multicord:notification";
 export const NOTIFY_CLICK_EVENT = "multicord:notification-click";
+/** DOM event carrying a Rich Presence update from the isolated preload to the page. */
+export const ACTIVITY_EVENT = "multicord:activity";
+const MAX_ACTIVITY_JSON = 8192;
+
+/** A Rich Presence update as main sends it: checked already, re-checked in shape and size. */
+export function isActivityUpdate(value: unknown): value is ActivityUpdate {
+  if (typeof value !== "object" || value === null) return false;
+  const { source, pid, activity } = value as ActivityUpdate;
+  if (typeof source !== "string" || !/^rpc-\d{1,9}$/.test(source)) return false;
+  if (pid !== undefined && !(Number.isInteger(pid) && pid > 0)) return false;
+  if (activity === null) return true;
+  if (typeof activity !== "object" || typeof activity.application_id !== "string" || !/^\d{1,20}$/.test(activity.application_id)) return false;
+  return JSON.stringify(value).length <= MAX_ACTIVITY_JSON;
+}
 
 /** A notification from Discord's page, relayed to the shell. */
 export interface RelayedNotification {

@@ -1,6 +1,8 @@
 import {
+  ACTIVITY_EVENT,
   BRIDGE_EVENT,
   IPC,
+  isActivityUpdate,
   isBridgePayload,
   isDiscordTarget,
   isRelayedNotification,
@@ -10,6 +12,7 @@ import {
   type DiscordState,
 } from "../../shared/ipc";
 import { COMPACT_CLASS, injectStyle, navigate, readState } from "./dom";
+import { discordActivityBridge } from "./activityBridge";
 import { discordNotificationRelay } from "./notificationRelay";
 import { discordScreenAudio } from "./screenAudio";
 import { discordStoreBridge } from "./storeBridge";
@@ -87,6 +90,10 @@ export function startDiscordPreload(
   });
   runInMainWorld?.(discordNotificationRelay, [NOTIFY_EVENT, NOTIFY_CLICK_EVENT, MAX_RELAYED]);
   runInMainWorld?.(discordScreenAudio, []);
+  ipc.on(IPC.discordActivity, (_event, update) => {
+    if (isActivityUpdate(update)) doc.dispatchEvent(new CustomEvent(ACTIVITY_EVENT, { detail: JSON.stringify(update) }));
+  });
+  runInMainWorld?.(discordActivityBridge, [ACTIVITY_EVENT]);
 
   const attach = (): void => {
     injectStyle(doc);
