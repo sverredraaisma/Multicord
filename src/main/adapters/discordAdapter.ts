@@ -1,9 +1,20 @@
 import type { DirectConversation, HealthCheck, HomeBadge, RailServer } from "../../shared/adapter";
-import { isSnowflake, type DiscordGuild, type DiscordHealth, type DiscordState, type DiscordTarget, type DiscordUser, type TitleBadge } from "../../shared/ipc";
+import {
+  isSnowflake,
+  type DiscordGuild,
+  type DiscordHealth,
+  type DiscordState,
+  type DiscordTarget,
+  type DiscordUser,
+  type RelayedNotification,
+  type TitleBadge,
+} from "../../shared/ipc";
 import type { AccountStatus } from "../../shared/settings";
 import { BaseAdapter } from "../../shared/baseAdapter";
 
 export const FOLDER_PREFIX = "folder:";
+/** Notification targets: clicking one runs Discord's handler for that notification. */
+export const NOTIFICATION_PREFIX = "notification:";
 
 /**
  * Where a discord:// link (as the official client registers it) points:
@@ -43,6 +54,8 @@ export class DiscordAdapter extends BaseAdapter {
   constructor(
     private readonly navigate: (target: DiscordTarget) => void,
     id = "discord",
+    /** Runs Discord's own click handler for a relayed notification. */
+    private readonly clickNotification: (id: string) => void = () => {},
   ) {
     super(id, { platform: id, instance: "discord.com", accountId: "default" });
   }
@@ -176,7 +189,13 @@ export class DiscordAdapter extends BaseAdapter {
     this.navigate(key);
   }
 
+  /** A notification Discord's page wanted to show; the shell shows it instead. */
+  relayNotification(notification: RelayedNotification): void {
+    this.notifications.emit({ title: notification.title, body: notification.body, target: `${NOTIFICATION_PREFIX}${notification.id}` });
+  }
+
   async openConversation(key: string): Promise<void> {
+    if (key.startsWith(NOTIFICATION_PREFIX)) return this.clickNotification(key.slice(NOTIFICATION_PREFIX.length));
     if (!isSnowflake(key)) throw new Error(`Not a Discord channel id: ${key}`);
     this.navigate(`dm:${key}`);
   }

@@ -1141,3 +1141,21 @@ describe("updates", () => {
     expect(handle.settings.state().update).toEqual({ state: "unavailable" });
   });
 });
+
+describe("Discord notifications", () => {
+  it("shows them through the shell, honouring streamer mode, and clicks run Discord's handler", async () => {
+    const { handle, discordView, railView } = await shellWith();
+    ipcMain.emit(IPC.discordNotification, senderEvent(railView), { id: "1", title: "Ana", body: "hi" });
+    ipcMain.emit(IPC.discordNotification, senderEvent(discordView), { id: "x", title: "Ana", body: "hi" });
+    expect(electron.Notification.instances).toHaveLength(0);
+    ipcMain.emit(IPC.discordNotification, senderEvent(discordView), { id: "1", title: "Ana", body: "hi" });
+    const note = electron.Notification.instances[0]!;
+    expect(note.options).toEqual({ title: "Ana", body: "hi" });
+    note.emit("click");
+    await flush();
+    expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordNotificationClick, "1");
+    handle.settingsStore.update({ general: { streamerMode: "on" } });
+    ipcMain.emit(IPC.discordNotification, senderEvent(discordView), { id: "2", title: "Ana", body: "secret" });
+    expect(electron.Notification.instances[1]!.options).toEqual({ title: "New message", body: "On Discord" });
+  });
+});

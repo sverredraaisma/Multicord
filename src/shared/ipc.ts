@@ -4,6 +4,10 @@
 export const IPC = {
   discordState: "discord:state",
   discordNavigate: "discord:navigate",
+  /** Discord view -> main: a notification Discord's page wanted to show. */
+  discordNotification: "discord:notification",
+  /** Main -> Discord view: the user clicked that notification. */
+  discordNotificationClick: "discord:notification-click",
   railState: "shell:rail",
   railOpen: "shell:open",
   railReady: "shell:ready",
@@ -26,6 +30,29 @@ export const IPC = {
 
 /** DOM event the main-world store bridge uses to hand store data to the preload. */
 export const BRIDGE_EVENT = "multicord:stores";
+/** DOM events between the main-world notification relay and the preload. */
+export const NOTIFY_EVENT = "multicord:notification";
+export const NOTIFY_CLICK_EVENT = "multicord:notification-click";
+
+/** A notification from Discord's page, relayed to the shell. */
+export interface RelayedNotification {
+  id: string;
+  title: string;
+  body: string;
+}
+
+export function isRelayedNotification(value: unknown): value is RelayedNotification {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as RelayedNotification).id === "string" &&
+    /^\d{1,10}$/.test((value as RelayedNotification).id) &&
+    typeof (value as RelayedNotification).title === "string" &&
+    (value as RelayedNotification).title.length <= 200 &&
+    typeof (value as RelayedNotification).body === "string" &&
+    (value as RelayedNotification).body.length <= 2000
+  );
+}
 
 export interface DiscordGuild {
   id: string;

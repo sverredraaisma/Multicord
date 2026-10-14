@@ -1,5 +1,5 @@
 import { ipcMain } from "electron";
-import { IPC, isDiscordState } from "../../shared/ipc";
+import { IPC, isDiscordState, isRelayedNotification } from "../../shared/ipc";
 import { DiscordAdapter } from "../adapters/discordAdapter";
 import { DISCORD } from "../platforms";
 import type { PlatformModule } from "./types";
@@ -18,9 +18,16 @@ export const discordModule: PlatformModule = {
     protocols: ["discord"],
   },
   load({ def, view, enableScreenShare }) {
-    const adapter = new DiscordAdapter((target) => view.webContents.send(IPC.discordNavigate, target), def.id);
+    const adapter = new DiscordAdapter(
+      (target) => view.webContents.send(IPC.discordNavigate, target),
+      def.id,
+      (id) => view.webContents.send(IPC.discordNotificationClick, id),
+    );
     ipcMain.on(IPC.discordState, (event, state) => {
       if (event.sender === view.webContents && isDiscordState(state)) adapter.update(state);
+    });
+    ipcMain.on(IPC.discordNotification, (event, notification) => {
+      if (event.sender === view.webContents && isRelayedNotification(notification)) adapter.relayNotification(notification);
     });
     enableScreenShare();
     return { adapter, start: () => void view.webContents.loadURL(def.url) };

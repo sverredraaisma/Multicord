@@ -1,5 +1,16 @@
-import { BRIDGE_EVENT, IPC, isBridgePayload, isDiscordTarget, type BridgePayload, type DiscordState } from "../../shared/ipc";
+import {
+  BRIDGE_EVENT,
+  IPC,
+  isBridgePayload,
+  isDiscordTarget,
+  isRelayedNotification,
+  NOTIFY_CLICK_EVENT,
+  NOTIFY_EVENT,
+  type BridgePayload,
+  type DiscordState,
+} from "../../shared/ipc";
 import { COMPACT_CLASS, injectStyle, navigate, readState } from "./dom";
+import { discordNotificationRelay } from "./notificationRelay";
 import { discordStoreBridge } from "./storeBridge";
 
 export interface PreloadIpc {
@@ -13,6 +24,8 @@ export type MainWorldRunner = (func: (...args: never[]) => void, args: unknown[]
 export const PUBLISH_DELAY_MS = 250;
 export const BRIDGE_RETRY_MS = 1000;
 export const BRIDGE_MAX_ATTEMPTS = 120;
+/** Relayed notifications kept for their click handlers. */
+export const MAX_RELAYED = 200;
 
 /**
  * Wires the Discord view: hides the guild bar, starts the main-world store
@@ -56,6 +69,22 @@ export function startDiscordPreload(
     schedule();
   });
   runInMainWorld?.(discordStoreBridge, [BRIDGE_EVENT, BRIDGE_RETRY_MS, BRIDGE_MAX_ATTEMPTS]);
+
+  // Discord's notifications go to the shell; a click on ours runs Discord's own handler.
+  doc.addEventListener(NOTIFY_EVENT, (event) => {
+    const detail = (event as CustomEvent<unknown>).detail;
+    let parsed: unknown;
+    try {
+      parsed = typeof detail === "string" ? JSON.parse(detail) : undefined;
+    } catch {
+      return;
+    }
+    if (isRelayedNotification(parsed)) ipc.send(IPC.discordNotification, parsed);
+  });
+  ipc.on(IPC.discordNotificationClick, (_event, id) => {
+    if (typeof id === "string" && /^\d{1,10}$/.test(id)) doc.dispatchEvent(new CustomEvent(NOTIFY_CLICK_EVENT, { detail: id }));
+  });
+  runInMainWorld?.(discordNotificationRelay, [NOTIFY_EVENT, NOTIFY_CLICK_EVENT, MAX_RELAYED]);
 
   const attach = (): void => {
     injectStyle(doc);

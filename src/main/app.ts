@@ -584,7 +584,7 @@ export async function createShell(
     window.hide();
   });
 
-  // Native adapters' notifications; Discord's own page shows its notifications itself.
+  // Every platform's notifications, Discord's relayed from its page, go through here.
   // Shown notifications stay referenced so their click handlers survive GC.
   const shownNotifications = new Set<Notification>();
   const notify = (id: string, n: PlatformNotification, urgent = false): void => {

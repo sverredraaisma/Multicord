@@ -253,3 +253,13 @@ describe("channel targets", () => {
     for (const bad of ["channel:1", "channel:1/x", "channel:1/2/3", "channel:/2", "channel:"]) expect(isDiscordTarget(bad)).toBe(false);
   });
 });
+
+describe("relayed notifications", () => {
+  it("checks id, title and body", async () => {
+    const { isRelayedNotification } = await import("../../src/shared/ipc");
+    expect(isRelayedNotification({ id: "1", title: "A", body: "" })).toBe(true);
+    for (const bad of [null, "x", { id: "a", title: "A", body: "" }, { id: "1", title: 1, body: "" }, { id: "1", title: "A".repeat(201), body: "" }, { id: "1", title: "A", body: "b".repeat(2001) }, { id: "1", title: "A" }]) {
+      expect(isRelayedNotification(bad)).toBe(false);
+    }
+  });
+});

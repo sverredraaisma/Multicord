@@ -245,3 +245,19 @@ describe("discord:// links", () => {
     expect(navigate).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("relayed Discord notifications", () => {
+  it("shows Discord's notifications through the shell and clicks them back", async () => {
+    const navigate = vi.fn();
+    const click = vi.fn();
+    const adapter = new DiscordAdapter(navigate, "discord", click);
+    const notes = vi.fn();
+    adapter.onNotification(notes);
+    adapter.relayNotification({ id: "4", title: "Ana", body: "hi" });
+    expect(notes).toHaveBeenCalledWith({ title: "Ana", body: "hi", target: "notification:4" });
+    await adapter.openConversation("notification:4");
+    expect(click).toHaveBeenCalledWith("4");
+    expect(navigate).not.toHaveBeenCalled();
+    await new DiscordAdapter(navigate).openConversation("notification:5"); // default handler: nothing to do
+  });
+});
