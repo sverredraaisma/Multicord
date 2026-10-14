@@ -686,7 +686,8 @@ export async function createShell(
     if (!notificationsOn(id) || !Notification.isSupported()) return;
     const name = platforms.find((p) => p.id === id)?.name ?? id;
     // While streaming, a notification may say that something happened, not who said what.
-    const shown = streaming() ? { title: urgent ? "Incoming call" : "New message", body: urgent ? `Someone is calling you on ${name}` : `On ${name}` } : { title: n.title, body: n.body };
+    // Every notification names its service, so one service cannot pass for another.
+    const shown = streaming() ? { title: urgent ? "Incoming call" : "New message", body: urgent ? `Someone is calling you on ${name}` : `On ${name}` } : { title: `${n.title} · ${name}`, body: n.body };
     const note = new Notification(urgent ? { ...shown, urgency: "critical", timeoutType: "never" } : shown);
     shownNotifications.add(note);
     note.on("close", () => shownNotifications.delete(note));

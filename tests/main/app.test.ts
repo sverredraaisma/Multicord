@@ -516,7 +516,7 @@ describe("notifications", () => {
     const { handle, window, emit, open } = await withNotifier();
     emit({ railKey: "dm:900" });
     const note = electron.Notification.instances[0]!;
-    expect(note.options).toEqual({ title: "Ana", body: "hi" });
+    expect(note.options).toEqual({ title: "Ana · Fluxer", body: "hi" });
     expect(note.show).toHaveBeenCalled();
     note.emit("click");
     await flush();
@@ -1011,7 +1011,7 @@ describe("incoming calls", () => {
     ring(discordView, [{ channelId: "7", from: "Ana" }]);
     expect(window.flashFrame).toHaveBeenCalledWith(true);
     const note = electron.Notification.instances[0]!;
-    expect(note.options).toEqual({ title: "Incoming call", body: "Ana is calling you on Discord", urgency: "critical", timeoutType: "never" });
+    expect(note.options).toEqual({ title: "Incoming call · Discord", body: "Ana is calling you on Discord", urgency: "critical", timeoutType: "never" });
     note.emit("click");
     await flush();
     expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordNavigate, "dm:7");
@@ -1246,7 +1246,7 @@ describe("Discord notifications", () => {
     expect(electron.Notification.instances).toHaveLength(0);
     ipcMain.emit(IPC.discordNotification, senderEvent(discordView), { id: "1", title: "Ana", body: "hi" });
     const note = electron.Notification.instances[0]!;
-    expect(note.options).toEqual({ title: "Ana", body: "hi" });
+    expect(note.options).toEqual({ title: "Ana · Discord", body: "hi" });
     note.emit("click");
     await flush();
     expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordNotificationClick, "1");
