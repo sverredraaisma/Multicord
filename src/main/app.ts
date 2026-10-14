@@ -4,7 +4,6 @@ import {
   app,
   BaseWindow,
   desktopCapturer,
-  dialog,
   ipcMain,
   Menu,
   nativeImage,
@@ -19,22 +18,19 @@ import {
 } from "electron";
 import {
   IPC,
-  isDiscordState,
   isPickerChoice,
   isRailKey,
+  isRailOrder,
   isTooltipRequest,
   type PickerChoice,
   type PickerRequest,
 } from "../shared/ipc";
 import type { PlatformAdapter } from "../shared/adapter";
-import { isNativeAction, NATIVE_IPC } from "../shared/native";
-import { DiscordAdapter } from "./adapters/discordAdapter";
-import { FluxerAdapter } from "./adapters/fluxerAdapter";
-import { GenericWebAdapter } from "./adapters/genericWebAdapter";
-import { CredentialStore, type SecretBox } from "./credentials";
-import { uploadSource } from "./files";
-import type { GatewaySocket, SocketFactory } from "./fluxer/gateway";
+import { CredentialStore } from "./credentials";
+import type { GatewaySocket } from "./fluxer/gateway";
 import { computeLayout, tooltipBounds } from "./layout";
+import { configurableModules, findModule, MODULES } from "./modules/index";
+import type { PlatformModule, ShellServices } from "./modules/types";
 import { loadPlatforms } from "./platforms";
 import { PlatformRegistry } from "./registry";
 import { createDisplayMediaHandler } from "./screenShare";
@@ -49,6 +45,14 @@ export interface ShellPaths {
   dist: string;
   /** Where platforms.json and window-state.json live. */
   userData: string;
+}
+
+function parseJson(text: string | undefined): unknown {
+  try {
+    return text === undefined ? undefined : JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 function readOptional(file: string): string | undefined {
@@ -104,13 +108,6 @@ export interface ShellHandle {
   layout(): void;
 }
 
-/** Network and secret-store access for native adapters; replaceable in tests. */
-export interface ShellServices {
-  fetch: typeof fetch;
-  createSocket: SocketFactory;
-  secrets: SecretBox;
-}
-
 const defaultServices = (): ShellServices => ({
   fetch: globalThis.fetch,
   createSocket: (url) => new WebSocket(url) as unknown as GatewaySocket,
@@ -121,8 +118,12 @@ export async function createShell(
   paths: ShellPaths,
   platform: NodeJS.Platform = process.platform,
   services: ShellServices = defaultServices(),
+  modules: readonly PlatformModule[] = MODULES,
 ): Promise<ShellHandle> {
-  const { platforms, errors } = loadPlatforms(() => readOptional(path.join(paths.userData, "platforms.json")));
+  const { platforms, errors } = loadPlatforms(
+    () => readOptional(path.join(paths.userData, "platforms.json")),
+    configurableModules(modules),
+  );
   for (const error of errors) console.warn(`[platforms] ${error}`);
 
   const stateFile = path.join(paths.userData, "window-state.json");
@@ -144,6 +145,10 @@ export async function createShell(
   window.contentView.addChildView(railView);
 
   const registry = new PlatformRegistry();
+  // The server order is the app's own, across platforms; restore it before platforms register.
+  const orderFile = path.join(paths.userData, "rail-order.json");
+  const savedOrder = parseJson(readOptional(orderFile));
+  if (isRailOrder(savedOrder)) registry.setOrder(savedOrder);
   const views = new Map<string, WebContentsView>();
   const adapters = new Map<string, PlatformAdapter>();
   const credentials = new CredentialStore(path.join(paths.userData, "credentials.json"), services.secrets);
@@ -172,9 +177,14 @@ export async function createShell(
     );
 
   for (const def of platforms) {
+    const module = findModule(def.module, modules);
+    if (!module) {
+      console.warn(`[platforms] ${def.id}: unknown module "${def.module}"`);
+      continue;
+    }
     const ses = session.fromPartition(def.partition);
     configureSession(ses);
-    const preload = { discord: "preload-discord.js", fluxer: "preload-native.js", web: undefined }[def.kind];
+    const { preload } = module.manifest;
     const view = secureView(preload && path.join(paths.dist, preload), def.partition);
     view.webContents.setWindowOpenHandler(({ url }) => {
       const decision = decideWindowOpen(url, def.url);
@@ -184,52 +194,20 @@ export async function createShell(
     views.set(def.id, view);
     window.contentView.addChildView(view);
 
-    if (def.kind === "discord") {
-      const adapter = new DiscordAdapter((target) => view.webContents.send(IPC.discordNavigate, target));
-      ipcMain.on(IPC.discordState, (event, state) => {
-        if (event.sender === view.webContents && isDiscordState(state)) adapter.update(state);
-      });
-      handleScreenShare(ses);
-      adapters.set(def.id, adapter);
-      await registry.add(adapter, def.name);
-      void view.webContents.loadURL(def.url);
-    } else if (def.kind === "fluxer") {
-      const adapter = new FluxerAdapter({
-        def,
-        fetch: services.fetch,
-        createSocket: services.createSocket,
-        secrets: credentials,
-        render: (state) => view.webContents.send(NATIVE_IPC.state, state),
-        platform,
-        files: {
-          pick: async () => {
-            const result = await dialog.showOpenDialog(window, { title: "Attach files", properties: ["openFile", "multiSelections"] });
-            return result.canceled ? [] : result.filePaths;
-          },
-          open: uploadSource,
-        },
-      });
-      ipcMain.on(NATIVE_IPC.action, (event, action) => {
-        if (event.sender !== view.webContents || !isNativeAction(action)) return;
-        adapter.handleAction(action).catch((error: Error) => console.warn(`[${def.id}] ${error.message}`));
-      });
-      // Our own page: links in messages open in the browser, never in the app.
-      view.webContents.on("will-navigate", (event, url) => {
-        event.preventDefault();
-        if (decideWindowOpen(url, "file:///") === "external") void shell.openExternal(url);
-      });
-      handleScreenShare(ses); // for Fluxer voice
-      adapters.set(def.id, adapter);
-      await registry.add(adapter, def.name);
-      void view.webContents.loadFile(path.join(paths.dist, "native.html"));
-      void adapter.start();
-    } else {
-      const adapter = new GenericWebAdapter(def);
-      view.webContents.on("page-title-updated", (_event, title) => adapter.updateTitle(title));
-      adapters.set(def.id, adapter);
-      await registry.add(adapter, def.name);
-      void view.webContents.loadURL(def.url);
-    }
+    const { adapter, start } = module.load({
+      def,
+      view,
+      session: ses,
+      window,
+      dist: paths.dist,
+      platform,
+      services,
+      secrets: credentials,
+      enableScreenShare: () => handleScreenShare(ses),
+    });
+    adapters.set(def.id, adapter);
+    await registry.add(adapter, def.name, { label: module.manifest.label, color: module.manifest.color });
+    start();
   }
 
   // Added after the platform views so it draws on top of them.
@@ -261,6 +239,12 @@ export async function createShell(
   };
   registry.onChange(publish);
 
+  ipcMain.on(IPC.railReorder, (event, keys) => {
+    if (event.sender !== railView.webContents || !isRailOrder(keys)) return;
+    registry.setOrder(keys);
+    fs.mkdirSync(paths.userData, { recursive: true });
+    fs.writeFileSync(orderFile, JSON.stringify(registry.getOrder()));
+  });
   ipcMain.on(IPC.railReady, (event) => {
     if (event.sender === railView.webContents) publish();
   });

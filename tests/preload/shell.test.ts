@@ -37,3 +37,11 @@ describe("createShellApi", () => {
     ]);
   });
 });
+
+describe("reorder", () => {
+  it("sends the new server order", () => {
+    const ipc = { send: vi.fn(), on: vi.fn() };
+    createShellApi(ipc).reorder(["a:1", "b:2"]);
+    expect(ipc.send).toHaveBeenCalledWith(IPC.railReorder, ["a:1", "b:2"]);
+  });
+});

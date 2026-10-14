@@ -12,7 +12,7 @@ async function setup() {
     name: "Element",
     url: "https://app.element.io",
     partition: "persist:element",
-    kind: "web",
+    module: "web",
   });
   const registry = new PlatformRegistry();
   await registry.add(discord, "Discord");
@@ -212,5 +212,57 @@ describe("openNotification", () => {
     expect(await registry.openNotification("discord", { title: "t", body: "b", target: "78" })).toBe("discord");
     expect(registry.state().activeKey).toBe("discord:dm:77");
     expect(await registry.openNotification("nope", { title: "t", body: "b", target: "1" })).toBeUndefined();
+  });
+});
+
+describe("app-owned order and module labels", () => {
+  async function twoPlatforms() {
+    const registry = new PlatformRegistry();
+    const discord = new DiscordAdapter(vi.fn());
+    const element = new GenericWebAdapter({ id: "element", name: "Element", url: "https://app.element.io", partition: "persist:element", module: "web" });
+    await registry.add(discord, "Discord", { label: "Discord", color: "#5865f2" });
+    await registry.add(element, "Element", { label: "Web", color: "#80848e" });
+    discord.update({
+      guilds: [
+        { id: "1", name: "One", unread: false, mentions: 0 },
+        { id: "2", name: "Two", unread: false, mentions: 0, folderId: "9" },
+        { id: "3", name: "Three", unread: false, mentions: 0 },
+      ],
+      folders: [{ id: "9", name: "F", expanded: true, unread: false, mentions: 0, iconUrls: [], index: 1 }],
+      badge: { unread: false, mentions: 0 },
+    });
+    return { registry };
+  }
+
+  it("tags every entry with its module", async () => {
+    const { registry } = await twoPlatforms();
+    const entries = registry.state().entries;
+    expect(entries.find((e) => e.key === "discord:home")!.module).toEqual({ label: "Discord", color: "#5865f2" });
+    expect(entries.find((e) => e.key === "element:app")!.module).toEqual({ label: "Web", color: "#80848e" });
+  });
+
+  it("orders servers and groups across platforms, keeping homes first and folders whole", async () => {
+    const { registry } = await twoPlatforms();
+    const keys = () => registry.state().entries.map((e) => e.key);
+    expect(keys()).toEqual(["discord:home", "discord:1", "discord:folder:9", "discord:2", "discord:3", "element:app"]);
+
+    const changed = vi.fn();
+    registry.onChange(changed);
+    registry.setOrder(["element:app", "discord:3", "discord:folder:9", "element:app"]);
+    expect(changed).toHaveBeenCalled();
+    // Ordered units first, unknown ones after in platform order; the folder keeps its member.
+    expect(keys()).toEqual(["discord:home", "element:app", "discord:3", "discord:folder:9", "discord:2", "discord:1"]);
+    expect(registry.getOrder()).toEqual(["element:app", "discord:3", "discord:folder:9"]);
+
+    // A partial order moves only what it names; keys of absent servers are remembered.
+    registry.setOrder(["discord:1", "gone:5"]);
+    expect(registry.getOrder()).toEqual(["discord:1", "gone:5", "element:app", "discord:3", "discord:folder:9"]);
+    expect(keys().slice(1, 3)).toEqual(["discord:1", "element:app"]);
+  });
+
+  it("caps the stored order", () => {
+    const registry = new PlatformRegistry();
+    registry.setOrder(Array.from({ length: 6000 }, (_, i) => `p:${i}`));
+    expect(registry.getOrder()).toHaveLength(5000);
   });
 });

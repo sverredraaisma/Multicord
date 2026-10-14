@@ -9,7 +9,7 @@ const element: PlatformDef = {
   name: "Element",
   url: "https://app.element.io",
   partition: "persist:element",
-  kind: "web",
+  module: "web",
 };
 
 describe("Emitter", () => {

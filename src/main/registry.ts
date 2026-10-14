@@ -1,5 +1,5 @@
 import type { DirectConversation, PlatformAdapter, PlatformNotification, RailServer } from "../shared/adapter";
-import type { RailEntry, RailState } from "../shared/ipc";
+import { MAX_RAIL_ORDER, type RailEntry, type RailModule, type RailState } from "../shared/ipc";
 import { Emitter } from "./adapters/emitter";
 
 export const HOME_KEY = "home";
@@ -10,6 +10,7 @@ export const MAX_DM_BUBBLES = 10;
 interface Registered {
   adapter: PlatformAdapter;
   name: string;
+  module?: RailModule;
   servers: RailEntry[];
   directs: DirectConversation[];
 }
@@ -71,9 +72,11 @@ export class PlatformRegistry {
   private readonly platforms = new Map<string, Registered>();
   private readonly changed = new Emitter<RailState>();
   private activeKey: string | null = null;
+  /** The user's order of top-level servers and groups, across platforms. */
+  private order: string[] = [];
 
-  async add(adapter: PlatformAdapter, name: string): Promise<void> {
-    const registered: Registered = { adapter, name, servers: [], directs: [] };
+  async add(adapter: PlatformAdapter, name: string, module?: RailModule): Promise<void> {
+    const registered: Registered = { adapter, name, module, servers: [], directs: [] };
     this.platforms.set(adapter.platform, registered);
     const applyServers = (servers: RailServer[]): void => {
       registered.servers = flattenServers(adapter.platform, servers);
@@ -93,25 +96,47 @@ export class PlatformRegistry {
     return this.changed.on(cb);
   }
 
+  getOrder(): string[] {
+    return [...this.order];
+  }
+
+  /**
+   * Sets the user's server order. Keys of servers that are gone are kept, so
+   * a server that comes back (e.g. after signing in again) keeps its place.
+   */
+  setOrder(keys: string[]): void {
+    const unique = [...new Set(keys)];
+    const listed = new Set(unique);
+    this.order = [...unique, ...this.order.filter((k) => !listed.has(k))].slice(0, MAX_RAIL_ORDER);
+    this.emit();
+  }
+
+  /**
+   * The rail: each platform's home and DM bubbles first, then every
+   * platform's top-level servers and groups in one list, in the user's order;
+   * servers the order does not know yet follow in platform order.
+   */
   state(): RailState {
     const entries: RailEntry[] = [];
-    for (const { adapter, name, servers, directs } of this.platforms.values()) {
+    const units: RailEntry[][] = [];
+    const tag = (entry: RailEntry, module: RailModule | undefined): RailEntry => (module ? { ...entry, module } : entry);
+    for (const { adapter, name, module, servers, directs } of this.platforms.values()) {
       if (adapter.openHome) {
         const unreadDms = directs.filter((d) => d.unread).sort((a, b) => b.lastActivity - a.lastActivity);
         const shown = unreadDms.slice(0, MAX_DM_BUBBLES);
         const hidden = unreadDms.slice(MAX_DM_BUBBLES);
         const badge = adapter.homeBadge?.() ?? { unread: false, mentions: 0 };
         const hiddenMentions = hidden.reduce((sum, d) => sum + d.mentions, 0);
-        entries.push({
+        entries.push(tag({
           key: railKey(adapter.platform, HOME_KEY),
           platform: adapter.platform,
           kind: "home",
           name: `${name} direct messages`,
           unread: badge.unread || hidden.length > 0,
           mentions: badge.mentions + hiddenMentions,
-        });
+        }, module));
         for (const dm of shown) {
-          entries.push({
+          entries.push(tag({
             key: railKey(adapter.platform, DM_PREFIX + dm.key),
             platform: adapter.platform,
             kind: "dm",
@@ -119,11 +144,19 @@ export class PlatformRegistry {
             iconUrl: dm.avatarUrl,
             unread: dm.unread,
             mentions: dm.mentions,
-          });
+          }, module));
         }
       }
-      entries.push(...servers);
+      for (const entry of servers) {
+        if (entry.parentKey) units.at(-1)!.push(tag(entry, module));
+        else units.push([tag(entry, module)]);
+      }
     }
+    const rank = new Map(this.order.map((key, index) => [key, index]));
+    const position = (unit: RailEntry[], natural: number) => rank.get(unit[0]!.key) ?? this.order.length + natural;
+    const ranked = units.map((unit, natural) => ({ unit, at: position(unit, natural) }));
+    ranked.sort((a, b) => a.at - b.at);
+    for (const { unit } of ranked) entries.push(...unit);
     return { entries, activeKey: this.activeKey };
   }
 

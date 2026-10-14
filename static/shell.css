@@ -157,3 +157,34 @@ html:has(.tooltip-body), .tooltip-body { background: transparent; overflow: hidd
 }
 .rail-folder-open > .rail-folder { background: transparent; }
 .rail-folder-open > .rail-folder:hover { background: color-mix(in srgb, var(--folder-color) 20%, transparent); }
+
+/* Module labels: which platform module a rail entry comes from. */
+.module-label {
+  --module-color: #80848e;
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  max-width: 52px;
+  padding: 0 4px;
+  overflow: hidden;
+  border: 2px solid var(--bg);
+  border-radius: 6px;
+  background: var(--module-color);
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 11px;
+  letter-spacing: 0.02em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.rail-folder-open .rail-item:not(.rail-folder) .module-label { display: none; } /* the folder already says it */
+
+/* Drag-and-drop reordering */
+[data-unit] { cursor: grab; }
+.dragging { opacity: 0.4; }
+.drop-before { box-shadow: 0 -4px 0 -1px var(--text); }
+.drop-after { box-shadow: 0 4px 0 -1px var(--text); }

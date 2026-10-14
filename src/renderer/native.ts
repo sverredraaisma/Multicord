@@ -1,7 +1,7 @@
 import type { NativeApi } from "../preload/native";
 import type { NativeMessage, NativeSidebarItem, NativeViewState, NativeVoiceSession } from "../shared/native";
 import { MAX_MESSAGE_LENGTH } from "../shared/native";
-import { initials } from "./rail";
+import { initials } from "./components/dom";
 import { VoiceCall } from "./voice";
 
 type ChatState = Extract<NativeViewState, { screen: "chat" }>;

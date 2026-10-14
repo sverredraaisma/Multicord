@@ -15,6 +15,7 @@ import {
   isHttpsUrl,
   isPickerChoice,
   isRailKey,
+  isRailOrder,
   isSnowflake,
   isTitleBadge,
   parseTitleBadge,
@@ -215,5 +216,15 @@ describe("folder validators", () => {
     expect(isDiscordTarget("folder:123")).toBe(true);
     expect(isDiscordTarget("folder:abc")).toBe(false);
     expect(isDiscordTarget(42)).toBe(false);
+  });
+});
+
+describe("rail order validation", () => {
+  it("accepts lists of rail keys within the cap", () => {
+    expect(isRailOrder(["discord:1", "fluxer:folder:2"])).toBe(true);
+    expect(isRailOrder([])).toBe(true);
+    expect(isRailOrder(["", "x"])).toBe(false);
+    expect(isRailOrder("discord:1")).toBe(false);
+    expect(isRailOrder(Array(5001).fill("a:1"))).toBe(false);
   });
 });

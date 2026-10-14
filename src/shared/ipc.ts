@@ -8,6 +8,7 @@ export const IPC = {
   railOpen: "shell:open",
   railReady: "shell:ready",
   railTooltip: "shell:tooltip",
+  railReorder: "shell:reorder",
   tooltipShow: "tooltip:show",
   pickerSources: "picker:sources",
   pickerChoose: "picker:choose",
@@ -105,6 +106,13 @@ export interface RailEntry {
   previewIconUrls?: string[];
   /** Set on servers shown inside an expanded group. */
   parentKey?: string;
+  /** The platform module this entry comes from, for the rail's label. */
+  module?: RailModule;
+}
+
+export interface RailModule {
+  label: string;
+  color: string;
 }
 
 export interface RailState {
@@ -279,6 +287,13 @@ export function isTooltipRequest(value: unknown): value is TooltipRequest | null
 
 export function isRailKey(value: unknown): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= 200;
+}
+
+export const MAX_RAIL_ORDER = 5000;
+
+/** A user-chosen order of top-level rail keys. */
+export function isRailOrder(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= MAX_RAIL_ORDER && value.every(isRailKey);
 }
 
 export function isPickerChoice(value: unknown): value is PickerChoice | null {

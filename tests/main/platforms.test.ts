@@ -13,7 +13,7 @@ describe("parsePlatforms", () => {
         name: "Element",
         url: "https://app.element.io",
         partition: "persist:element",
-        kind: "web",
+        module: "web",
         iconUrl: "https://example.com/e.png",
       },
     ]);
@@ -64,19 +64,19 @@ describe("loadPlatforms", () => {
   });
 });
 
-describe("native platform kinds", () => {
-  it("accepts self-hosted Fluxer instances and rejects unknown kinds and built-in ids", () => {
+describe("platform modules", () => {
+  it("accepts self-hosted Fluxer instances and rejects unknown modules and built-in ids", () => {
     const { platforms, errors } = parsePlatforms([
       { id: "my-fluxer", name: "My Fluxer", url: "https://chat.example.org", kind: "fluxer" },
-      { id: "el", name: "Element", url: "https://app.element.io", kind: "web" },
+      { id: "el", name: "Element", url: "https://app.element.io", module: "web" },
       { id: "x", name: "X", url: "https://x.example", kind: "matrix" },
       { id: "fluxer", name: "Clash", url: "https://y.example" },
     ]);
-    expect(platforms.map((p) => [p.id, p.kind, p.partition])).toEqual([
+    expect(platforms.map((p) => [p.id, p.module, p.partition])).toEqual([
       ["my-fluxer", "fluxer", "persist:my-fluxer"],
       ["el", "web", "persist:el"],
     ]);
-    expect(errors).toEqual(['entry 2: kind must be "web" or "fluxer"', 'entry 3: duplicate id "fluxer"']);
+    expect(errors).toEqual(['entry 2: module must be one of "web", "fluxer"', 'entry 3: duplicate id "fluxer"']);
   });
 });
 
@@ -96,5 +96,21 @@ describe("turning built-in platforms off", () => {
 
   it("treats enabled: true on a built-in id as a duplicate", () => {
     expect(parsePlatforms([{ id: "fluxer", enabled: true }]).errors).toEqual(['entry 0: duplicate id "fluxer"']);
+  });
+});
+
+describe("module selection", () => {
+  it("only allows the modules the shell offers, accepting the old kind field", () => {
+    const { platforms, errors } = parsePlatforms(
+      [
+        { id: "a", name: "A", url: "https://a.example", module: "matrix" },
+        { id: "b", name: "B", url: "https://b.example", kind: "fluxer" },
+        { id: "c", name: "C", url: "https://c.example", module: 5 },
+      ],
+      ["web", "matrix"],
+    );
+    expect(platforms.map((p) => [p.id, p.module])).toEqual([["a", "matrix"]]);
+    expect(errors).toEqual(['entry 1: module must be one of "web", "matrix"', 'entry 2: module must be one of "web", "matrix"']);
+    expect(loadPlatforms(() => JSON.stringify([{ id: "a", name: "A", url: "https://a.example", module: "matrix" }]), ["matrix"]).platforms.at(-1)!.module).toBe("matrix");
   });
 });

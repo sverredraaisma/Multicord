@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ShellApi } from "../../src/preload/shell";
-import { attachTooltips, initials, renderRail, startRail } from "../../src/renderer/rail";
+import { attachReordering, attachTooltips, initials, moveKey, renderRail, startRail } from "../../src/renderer/rail";
 import type { RailState } from "../../src/shared/ipc";
 
 const state: RailState = {
@@ -43,7 +43,6 @@ describe("renderRail", () => {
       "discord:home",
       "|",
       "discord:1",
-      "|",
       "element:app",
     ]);
     expect(items[1]!.hasAttribute("title")).toBe(false);
@@ -244,5 +243,118 @@ describe("folders", () => {
   it("leaves an expanded folder without a colour untinted", () => {
     const root = render([entry({ key: "discord:folder:50", kind: "group", name: "Games", expanded: true })]);
     expect(root.querySelector<HTMLElement>(".rail-folder-open")!.style.getPropertyValue("--folder-color")).toBe("");
+  });
+});
+
+describe("modules and ordering", () => {
+  const discord = { label: "Discord", color: "#5865f2" };
+  const fluxer = { label: "Fluxer", color: "#4f8cf7" };
+  const ordered: RailState = {
+    activeKey: null,
+    entries: [
+      { key: "discord:home", platform: "discord", kind: "home", name: "Discord DMs", unread: false, mentions: 0, module: discord },
+      { key: "fluxer:home", platform: "fluxer", kind: "home", name: "Fluxer DMs", unread: false, mentions: 0, module: fluxer },
+      { key: "fluxer:dm:9", platform: "fluxer", kind: "dm", name: "Ana", unread: true, mentions: 1, module: fluxer },
+      { key: "fluxer:5", platform: "fluxer", kind: "server", name: "Alpha", unread: false, mentions: 0, module: fluxer },
+      { key: "discord:folder:7", platform: "discord", kind: "group", name: "Games", expanded: true, unread: false, mentions: 0, module: discord },
+      { key: "discord:8", platform: "discord", kind: "server", name: "Beta", parentKey: "discord:folder:7", unread: false, mentions: 0, module: discord },
+      { key: "discord:1", platform: "discord", kind: "server", name: "Gamma", unread: false, mentions: 0 },
+    ],
+  };
+
+  it("labels each entry with its module and names it in the tooltip", () => {
+    const root = document.getElementById("rail")!;
+    renderRail(root, ordered, vi.fn());
+    const alpha = root.querySelector<HTMLElement>('[data-key="fluxer:5"]')!;
+    const label = alpha.querySelector<HTMLElement>(".module-label")!;
+    expect(label.textContent).toBe("Fluxer");
+    expect(label.style.getPropertyValue("--module-color")).toBe("#4f8cf7");
+    expect(alpha.dataset.tooltip).toBe("Alpha · Fluxer");
+    expect(root.querySelector<HTMLElement>('[data-key="discord:1"]')!.dataset.tooltip).toBe("Gamma");
+    expect(root.querySelector('[data-key="discord:1"] .module-label')).toBeNull();
+
+    const tooltip = vi.fn();
+    attachTooltips(root, tooltip);
+    alpha.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(tooltip).toHaveBeenCalledWith({ text: "Alpha · Fluxer", y: expect.any(Number) });
+  });
+
+  it("separates personal blocks per platform but not servers", () => {
+    const root = document.getElementById("rail")!;
+    renderRail(root, ordered, vi.fn());
+    const layout = [...root.children].map((c) => (c.tagName === "HR" ? "|" : ((c as HTMLElement).dataset.key ?? (c as HTMLElement).dataset.group)));
+    expect(layout).toEqual(["discord:home", "|", "fluxer:home", "fluxer:dm:9", "|", "fluxer:5", "discord:folder:7", "discord:1"]);
+  });
+
+  it("makes top-level servers and groups draggable units, not DMs or folder members", () => {
+    const root = document.getElementById("rail")!;
+    renderRail(root, ordered, vi.fn());
+    const units = [...root.querySelectorAll<HTMLElement>("[data-unit]")];
+    expect(units.map((u) => u.dataset.unit)).toEqual(["fluxer:5", "discord:folder:7", "discord:1"]);
+    expect(units.every((u) => u.draggable)).toBe(true);
+    expect(units[1]!.classList.contains("rail-folder-open")).toBe(true);
+  });
+
+  it("computes moves", () => {
+    expect(moveKey(["a", "b", "c"], "a", "c", true)).toEqual(["b", "c", "a"]);
+    expect(moveKey(["a", "b", "c"], "c", "a", false)).toEqual(["c", "a", "b"]);
+    expect(moveKey(["a", "b"], "a", "a", true)).toEqual(["a", "b"]);
+    expect(moveKey(["a", "b"], "a", "zzz", true)).toEqual(["a", "b"]);
+  });
+
+  it("reorders by drag and drop", () => {
+    const root = document.getElementById("rail")!;
+    renderRail(root, ordered, vi.fn());
+    const reorder = vi.fn();
+    attachReordering(root, reorder);
+    const unit = (key: string) => root.querySelector<HTMLElement>(`[data-unit="${key}"]`)!;
+    for (const u of root.querySelectorAll<HTMLElement>("[data-unit]")) {
+      u.getBoundingClientRect = () => ({ top: 0, height: 48 }) as DOMRect;
+    }
+    const drag = (type: string, target: Element, clientY = 0) => {
+      const event = new Event(type, { bubbles: true, cancelable: true }) as DragEvent;
+      Object.defineProperty(event, "clientY", { value: clientY });
+      target.dispatchEvent(event);
+      return event;
+    };
+
+    // Dragging over something before a drag started, or over a DM, does nothing.
+    expect(drag("dragover", unit("discord:1")).defaultPrevented).toBe(false);
+    drag("dragstart", root.querySelector('[data-key="fluxer:dm:9"]')!);
+
+    drag("dragstart", unit("fluxer:5"));
+    expect(unit("fluxer:5").classList.contains("dragging")).toBe(true);
+    expect(drag("dragover", unit("fluxer:5")).defaultPrevented).toBe(false); // onto itself
+    const over = drag("dragover", unit("discord:1"), 40);
+    expect(over.defaultPrevented).toBe(true);
+    expect(unit("discord:1").classList.contains("drop-after")).toBe(true);
+    drag("dragover", root.querySelector('[data-key="discord:8"]')!, 5); // a member: targets its whole folder
+    expect(unit("discord:folder:7").classList.contains("drop-before")).toBe(true);
+    expect(unit("discord:1").classList.contains("drop-after")).toBe(false);
+
+    drag("drop", unit("discord:1"), 40);
+    expect(reorder).toHaveBeenCalledWith(["discord:folder:7", "discord:1", "fluxer:5"]);
+    drag("dragend", unit("fluxer:5"));
+    expect(root.querySelector(".dragging, .drop-before, .drop-after")).toBeNull();
+    drag("drop", unit("discord:1")); // no drag in progress
+    expect(reorder).toHaveBeenCalledOnce();
+  });
+
+  it("sends reorders through the shell API", () => {
+    const api = {
+      onRail: (cb: (s: RailState) => void) => cb(ordered),
+      open: vi.fn(),
+      ready: vi.fn(),
+      tooltip: vi.fn(),
+      reorder: vi.fn(),
+    } as unknown as ShellApi;
+    startRail(document, api);
+    const root = document.getElementById("rail")!;
+    const start = new Event("dragstart", { bubbles: true });
+    root.querySelector('[data-unit="discord:1"]')!.dispatchEvent(start);
+    const drop = new Event("drop", { bubbles: true, cancelable: true }) as DragEvent;
+    Object.defineProperty(drop, "clientY", { value: -10 });
+    root.querySelector('[data-unit="fluxer:5"]')!.dispatchEvent(drop);
+    expect(api.reorder).toHaveBeenCalledWith(["discord:1", "fluxer:5", "discord:folder:7"]);
   });
 });

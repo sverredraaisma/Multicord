@@ -9,6 +9,8 @@ import * as electron from "../mocks/electron";
 import { APP_NAME, createShell, startApp } from "../../src/main/app";
 import { IPC } from "../../src/shared/ipc";
 import { NATIVE_IPC } from "../../src/shared/native";
+import { GenericWebAdapter } from "../../src/main/adapters/genericWebAdapter";
+import type { PlatformModule } from "../../src/main/modules/types";
 
 const { BaseWindow, WebContentsView, Tray, app, ipcMain, session, desktopCapturer, shell } = electron;
 
@@ -467,6 +469,59 @@ describe("notifications", () => {
     electron.Notification.instances[0]!.emit("click");
     await flush();
     expect(warn).toHaveBeenCalledWith("[fluxer] could not open notification: gone");
+  });
+});
+
+describe("server order and modules", () => {
+  it("restores, applies and saves the app-owned server order", async () => {
+    fs.writeFileSync(path.join(userData, "rail-order.json"), JSON.stringify(["fluxer:folder:1", "discord:9"]));
+    const { handle, railView, discordView } = await shellWith();
+    expect(handle.registry.getOrder()).toEqual(["fluxer:folder:1", "discord:9"]);
+
+    ipcMain.emit(IPC.railReorder, senderEvent(discordView), ["x:1"]);
+    ipcMain.emit(IPC.railReorder, senderEvent(railView), "not a list");
+    expect(handle.registry.getOrder()).toEqual(["fluxer:folder:1", "discord:9"]);
+
+    ipcMain.emit(IPC.railReorder, senderEvent(railView), ["discord:9", "discord:3"]);
+    expect(JSON.parse(fs.readFileSync(path.join(userData, "rail-order.json"), "utf8"))).toEqual([
+      "discord:9",
+      "discord:3",
+      "fluxer:folder:1",
+    ]);
+  });
+
+  it("ignores a corrupt order file", async () => {
+    fs.writeFileSync(path.join(userData, "rail-order.json"), "{nope");
+    const { handle } = await shellWith();
+    expect(handle.registry.getOrder()).toEqual([]);
+    fs.writeFileSync(path.join(userData, "rail-order.json"), JSON.stringify({ not: "a list" }));
+    electron.resetElectron();
+    expect((await shellWith()).handle.registry.getOrder()).toEqual([]);
+  });
+
+  it("labels rail entries with their module", async () => {
+    const { handle } = await shellWith();
+    const entries = handle.registry.state().entries;
+    expect(entries.find((e) => e.key === "discord:home")!.module).toEqual({ label: "Discord", color: "#5865f2" });
+    expect(entries.find((e) => e.key === "fluxer:home")!.module).toEqual({ label: "Fluxer", color: "#4f8cf7" });
+  });
+
+  it("loads platforms through the given modules and skips unknown ones", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const started = vi.fn();
+    const custom: PlatformModule = {
+      manifest: { id: "custom", name: "Custom", label: "Custom", color: "#123456", configurable: true },
+      load: ({ def }) => ({ adapter: new GenericWebAdapter(def), start: started }),
+    };
+    fs.writeFileSync(
+      path.join(userData, "platforms.json"),
+      JSON.stringify([{ id: "mine", name: "Mine", url: "https://mine.example", module: "custom" }]),
+    );
+    const handle = await createShell({ dist: DIST, userData }, "win32", undefined, [custom]);
+    expect([...handle.adapters.keys()]).toEqual(["mine"]);
+    expect(started).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(`[platforms] discord: unknown module "discord"`);
+    expect(warn).toHaveBeenCalledWith(`[platforms] fluxer: unknown module "fluxer"`);
   });
 });
 

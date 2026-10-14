@@ -1,90 +1,26 @@
 import type { RailEntry, RailState } from "../shared/ipc";
 import type { ShellApi } from "../preload/shell";
+import { el, setColor } from "./components/dom";
+import { serverIcon } from "./components/serverIcon";
 
-export function initials(name: string): string {
-  const words = name.trim().split(/\s+/).filter(Boolean);
-  return words.slice(0, 3).map((w) => [...w][0]!.toUpperCase()).join("") || "?";
-}
-
-const SVG_NS = "http://www.w3.org/2000/svg";
-
-/** Discord-style folder glyph, drawn in the folder's colour. */
-function folderGlyph(doc: Document): SVGSVGElement {
-  const svg = doc.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("class", "folder-glyph");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  const path = doc.createElementNS(SVG_NS, "path");
-  path.setAttribute("d", "M20 7H12L10 5H4C2.9 5 2 5.9 2 7V17C2 18.1 2.9 19 4 19H20C21.1 19 22 18.1 22 17V9C22 7.9 21.1 7 20 7Z");
-  svg.append(path);
-  return svg;
-}
-
-/** A collapsed group previews up to four member icons in a 2x2 grid. */
-function groupFace(doc: Document, entry: RailEntry): Element {
-  const previews = entry.previewIconUrls ?? [];
-  if (entry.expanded || previews.length === 0) return folderGlyph(doc);
-  const grid = doc.createElement("span");
-  grid.className = "folder-grid";
-  for (const url of previews.slice(0, 4)) {
-    const img = doc.createElement("img");
-    img.src = url;
-    img.alt = "";
-    grid.append(img);
-  }
-  return grid;
-}
-
-function renderEntry(doc: Document, entry: RailEntry, active: boolean, onOpen: (key: string) => void): HTMLElement {
-  const button = doc.createElement("button");
-  button.className = "rail-item";
-  button.dataset.key = entry.key;
-  button.dataset.kind = entry.kind;
-  // No title attribute: the shell's tooltip overlay shows the name instead.
-  button.setAttribute("aria-label", entry.name);
-  button.classList.toggle("active", active);
-  button.classList.toggle("unread", entry.unread);
-
-  if (entry.kind === "group") {
-    button.classList.add("rail-folder");
-    button.setAttribute("aria-expanded", String(entry.expanded === true));
-    if (entry.color) button.style.setProperty("--folder-color", entry.color);
-    button.append(groupFace(doc, entry));
-  } else if (entry.iconUrl) {
-    const img = doc.createElement("img");
-    img.src = entry.iconUrl;
-    img.alt = "";
-    button.append(img);
-  } else {
-    const label = doc.createElement("span");
-    label.className = "initials";
-    label.textContent = entry.kind === "home" ? "DM" : initials(entry.name);
-    button.append(label);
-  }
-
-  if (entry.mentions > 0) {
-    const badge = doc.createElement("span");
-    badge.className = "badge";
-    badge.textContent = entry.mentions > 99 ? "99+" : String(entry.mentions);
-    button.append(badge);
-  }
-
-  button.addEventListener("click", () => onOpen(entry.key));
-  return button;
-}
+export { initials } from "./components/dom";
 
 const isPersonal = (entry: RailEntry): boolean => entry.kind === "home" || entry.kind === "dm";
 
+/**
+ * Separators split each platform's home and DM bubbles, and those from the
+ * servers. Servers themselves are one list in the user's order, whatever
+ * their platform; their module labels tell them apart.
+ */
 function needsSeparator(previous: RailEntry | undefined, entry: RailEntry): boolean {
-  if (!previous) return false;
-  return previous.platform !== entry.platform || (isPersonal(previous) && !isPersonal(entry));
+  if (!previous || !isPersonal(previous)) return false;
+  return !isPersonal(entry) || previous.platform !== entry.platform;
 }
 
 /**
- * Renders the unified rail. Separators mark each change of platform and the
- * step from a platform's home and DM bubbles to its servers. An expanded
- * group wraps its folder button and members in one tinted container, so
- * grouped servers read as a folder rather than as loose servers.
+ * Renders the unified rail. An expanded group wraps its folder button and
+ * members in one tinted container. Top-level servers and groups are marked
+ * as draggable units for reordering.
  */
 export function renderRail(root: HTMLElement, state: RailState, onOpen: (key: string) => void): void {
   const doc = root.ownerDocument;
@@ -92,30 +28,84 @@ export function renderRail(root: HTMLElement, state: RailState, onOpen: (key: st
   let previous: RailEntry | undefined;
   let openGroup: HTMLElement | undefined;
   for (const entry of state.entries) {
-    const element = renderEntry(doc, entry, entry.key === state.activeKey, onOpen);
+    const element = serverIcon(doc, entry, { active: entry.key === state.activeKey, onOpen });
     if (entry.parentKey && openGroup?.dataset.group === entry.parentKey) {
       openGroup.append(element);
       continue;
     }
     openGroup = undefined;
-    if (needsSeparator(previous, entry)) {
-      const separator = doc.createElement("hr");
-      separator.className = "rail-separator";
-      children.push(separator);
-    }
+    if (needsSeparator(previous, entry)) children.push(el(doc, "hr", "rail-separator"));
     previous = entry;
+    let unit: HTMLElement = element;
     if (entry.kind === "group" && entry.expanded) {
-      openGroup = doc.createElement("div");
-      openGroup.className = "rail-folder-open";
+      openGroup = el(doc, "div", "rail-folder-open");
       openGroup.dataset.group = entry.key;
-      if (entry.color) openGroup.style.setProperty("--folder-color", entry.color);
+      setColor(openGroup, "--folder-color", entry.color);
       openGroup.append(element);
-      children.push(openGroup);
-    } else {
-      children.push(element);
+      unit = openGroup;
     }
+    if (!isPersonal(entry)) {
+      unit.dataset.unit = entry.key;
+      unit.draggable = true;
+    }
+    children.push(unit);
   }
   root.replaceChildren(...children);
+}
+
+/** The order after moving `dragged` before or after `target`. */
+export function moveKey(keys: string[], dragged: string, target: string, after: boolean): string[] {
+  if (dragged === target) return keys;
+  const rest = keys.filter((k) => k !== dragged);
+  const at = rest.indexOf(target);
+  if (at < 0) return keys;
+  rest.splice(after ? at + 1 : at, 0, dragged);
+  return rest;
+}
+
+/**
+ * Drag-and-drop reordering of top-level servers and groups. Dropping on the
+ * upper half of a unit places the dragged one before it, the lower half after.
+ */
+export function attachReordering(root: HTMLElement, reorder: (keys: string[]) => void): void {
+  let dragged: string | undefined;
+  const clearMarks = () => {
+    for (const marked of root.querySelectorAll(".drop-before, .drop-after")) marked.classList.remove("drop-before", "drop-after");
+  };
+  const targetOf = (event: DragEvent): { unit: HTMLElement; after: boolean } | undefined => {
+    const unit = (event.target as Element).closest<HTMLElement>("[data-unit]");
+    if (!unit || !dragged || unit.dataset.unit === dragged) return undefined;
+    const rect = unit.getBoundingClientRect();
+    return { unit, after: event.clientY > rect.top + rect.height / 2 };
+  };
+
+  root.addEventListener("dragstart", (event) => {
+    const unit = (event.target as Element).closest<HTMLElement>("[data-unit]");
+    if (!unit) return;
+    dragged = unit.dataset.unit;
+    unit.classList.add("dragging");
+    event.dataTransfer?.setData("text/plain", dragged!);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  });
+  root.addEventListener("dragover", (event) => {
+    const target = targetOf(event);
+    if (!target) return;
+    event.preventDefault();
+    clearMarks();
+    target.unit.classList.add(target.after ? "drop-after" : "drop-before");
+  });
+  root.addEventListener("drop", (event) => {
+    const target = targetOf(event);
+    if (!target) return;
+    event.preventDefault();
+    const keys = [...root.querySelectorAll<HTMLElement>(":scope > [data-unit]")].map((u) => u.dataset.unit!);
+    reorder(moveKey(keys, dragged!, target.unit.dataset.unit!, target.after));
+  });
+  root.addEventListener("dragend", () => {
+    root.querySelector(".dragging")?.classList.remove("dragging");
+    clearMarks();
+    dragged = undefined;
+  });
 }
 
 /**
@@ -130,20 +120,22 @@ export function attachTooltips(root: HTMLElement, tooltip: ShellApi["tooltip"]):
     tooltip(null);
   };
   root.addEventListener("mouseover", (event) => {
-    const item = (event.target as Element).closest(".rail-item");
+    const item = (event.target as Element).closest<HTMLElement>(".rail-item");
     if (item === current) return;
     if (!item) return hide();
     current = item;
     const rect = item.getBoundingClientRect();
-    tooltip({ text: item.getAttribute("aria-label") ?? "", y: rect.top + rect.height / 2 });
+    tooltip({ text: item.dataset.tooltip ?? item.getAttribute("aria-label") ?? "", y: rect.top + rect.height / 2 });
   });
   root.addEventListener("mouseleave", hide);
   root.addEventListener("scroll", hide);
+  root.addEventListener("dragstart", hide);
 }
 
 export function startRail(doc: Document, api: ShellApi): void {
   const root = doc.getElementById("rail")!;
   attachTooltips(root, (request) => api.tooltip(request));
+  attachReordering(root, (keys) => api.reorder(keys));
   api.onRail((state) => renderRail(root, state, (key) => api.open(key)));
   api.ready();
 }
