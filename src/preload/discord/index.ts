@@ -11,6 +11,7 @@ import {
 } from "../../shared/ipc";
 import { COMPACT_CLASS, injectStyle, navigate, readState } from "./dom";
 import { discordNotificationRelay } from "./notificationRelay";
+import { discordScreenAudio } from "./screenAudio";
 import { discordStoreBridge } from "./storeBridge";
 
 export interface PreloadIpc {
@@ -85,6 +86,7 @@ export function startDiscordPreload(
     if (typeof id === "string" && /^\d{1,10}$/.test(id)) doc.dispatchEvent(new CustomEvent(NOTIFY_CLICK_EVENT, { detail: id }));
   });
   runInMainWorld?.(discordNotificationRelay, [NOTIFY_EVENT, NOTIFY_CLICK_EVENT, MAX_RELAYED]);
+  runInMainWorld?.(discordScreenAudio, []);
 
   const attach = (): void => {
     injectStyle(doc);

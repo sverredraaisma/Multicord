@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { discordNotificationRelay } from "../../src/preload/discord/notificationRelay";
+import { discordScreenAudio } from "../../src/preload/discord/screenAudio";
 import { startDiscordPreload, type PreloadIpc } from "../../src/preload/discord/index";
 import { IPC, NOTIFY_CLICK_EVENT, NOTIFY_EVENT } from "../../src/shared/ipc";
 
@@ -114,6 +115,7 @@ describe("relay through the preload", () => {
     const run = vi.fn();
     startDiscordPreload(ipc, document, window, run);
     expect(run).toHaveBeenCalledWith(discordNotificationRelay, [NOTIFY_EVENT, NOTIFY_CLICK_EVENT, 200]);
+    expect(run).toHaveBeenCalledWith(discordScreenAudio, []);
     const fire = (detail: unknown) => document.dispatchEvent(new CustomEvent(NOTIFY_EVENT, { detail }));
     fire("{broken");
     fire(JSON.stringify({ id: "x", title: "A", body: "" }));

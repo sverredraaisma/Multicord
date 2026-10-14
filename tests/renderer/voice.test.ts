@@ -66,7 +66,9 @@ describe("VoiceCall", () => {
     await call.sync(session({ video: true, stream: true }));
     expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenLastCalledWith(true);
     expect(room.localParticipant.setCameraEnabled).toHaveBeenCalledWith(true);
-    expect(room.localParticipant.setScreenShareEnabled).toHaveBeenCalledWith(true, { audio: true });
+    expect(room.localParticipant.setScreenShareEnabled).toHaveBeenCalledWith(true, {
+      audio: { restrictOwnAudio: true, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+    });
     expect(speakers.querySelector<HTMLAudioElement>("audio")!.muted).toBe(false);
 
     // Audio arriving while deafened starts muted.

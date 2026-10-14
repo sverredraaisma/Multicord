@@ -26,6 +26,13 @@ export function resolveDevice(devices: readonly DeviceInfo[], kind: MediaDeviceK
 
 const listDevices = async (): Promise<DeviceInfo[]> => (await globalThis.navigator?.mediaDevices?.enumerateDevices?.()) ?? [];
 
+/**
+ * Screen-share audio: Multicord's own sound (the call itself) is left out, so
+ * others don't hear themselves; voice processing is off, as it would mangle
+ * music and games.
+ */
+const SHARED_AUDIO = { restrictOwnAudio: true, echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+
 type Flags = Pick<NativeVoiceSession, "mute" | "deaf" | "video" | "stream">;
 
 const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
@@ -148,7 +155,7 @@ export class VoiceCall {
       if (micOn) await this.syncDenoise(room);
     }
     if (flags.video !== this.applied.video) await room.localParticipant.setCameraEnabled(flags.video);
-    if (flags.stream !== this.applied.stream) await room.localParticipant.setScreenShareEnabled(flags.stream, { audio: true });
+    if (flags.stream !== this.applied.stream) await room.localParticipant.setScreenShareEnabled(flags.stream, { audio: SHARED_AUDIO });
     // Deafened: keep receiving, but play nothing.
     for (const audio of this.speakers.querySelectorAll("audio")) audio.muted = flags.deaf;
     this.applied = { ...flags };

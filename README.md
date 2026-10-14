@@ -80,7 +80,7 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
   An entry with a built-in id (`discord`, `fluxer`) only renames it or turns it off. Any entry can have `"enabled": false`.
 
 - Tray with minimize-to-tray, single instance, saved window state, and mention counts in the title, badge and taskbar flash.
-- Screen share through our own picker, with loopback system audio on Windows.
+- Screen share through our own picker, with loopback system audio on Windows. Multicord's own sound (the call itself) is left out of it (Chromium's `restrictOwnAudio`, set for Discord in its page and for Fluxer calls), so others don't hear themselves.
 - Permission allowlist; same-origin popups stay in the app and other links open in the browser.
 
 ## Layout
