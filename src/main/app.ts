@@ -746,12 +746,22 @@ export function findAppLink(argv: readonly string[]): string | undefined {
 }
 
 /** Lifecycle: single instance, tray-resident window, quit only from the tray or OS. */
+/**
+ * Chromium features to turn on for this OS: on Linux, global shortcuts go
+ * through the desktop portal, the only way they work under Wayland.
+ */
+export function chromiumFeatures(platform: NodeJS.Platform): string[] {
+  return platform === "linux" ? ["GlobalShortcutsPortal"] : [];
+}
+
 export function startApp(dist: string): void {
   if (!app.requestSingleInstanceLock()) {
     app.quit();
     return;
   }
   app.setName(APP_NAME);
+  const features = chromiumFeatures(process.platform);
+  if (features.length > 0) app.commandLine.appendSwitch("enable-features", features.join(","));
   // Engine pages get a standard, secure origin of their own; this must happen before the app is ready.
   protocol.registerSchemesAsPrivileged([{ scheme: ENGINE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 

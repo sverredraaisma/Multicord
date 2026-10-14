@@ -181,6 +181,7 @@ export const ipcMain = new FakeIpcMain();
 
 class FakeApp extends EventEmitter {
   requestSingleInstanceLock = vi.fn(() => true);
+  commandLine = { appendSwitch: vi.fn() };
   quit = vi.fn();
   setName = vi.fn();
   setBadgeCount = vi.fn();

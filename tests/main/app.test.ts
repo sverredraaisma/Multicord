@@ -67,7 +67,7 @@ vi.mock("../../src/main/streamer", async (importOriginal) => ({
 }));
 
 import * as electron from "../mocks/electron";
-import { APP_NAME, createShell, findAppLink, startApp } from "../../src/main/app";
+import { APP_NAME, chromiumFeatures, createShell, findAppLink, startApp } from "../../src/main/app";
 import { IPC } from "../../src/shared/ipc";
 import { NATIVE_IPC } from "../../src/shared/native";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
@@ -579,6 +579,13 @@ describe("server order and modules", () => {
     expect(started).toHaveBeenCalledOnce();
     expect(warn).toHaveBeenCalledWith(`[platforms] discord: unknown module "discord"`);
     expect(warn).toHaveBeenCalledWith(`[platforms] fluxer: unknown module "fluxer"`);
+  });
+});
+
+describe("chromiumFeatures", () => {
+  it("routes global shortcuts through the portal on Linux (Wayland)", () => {
+    expect(chromiumFeatures("linux")).toEqual(["GlobalShortcutsPortal"]);
+    expect(chromiumFeatures("win32")).toEqual([]);
   });
 });
 
