@@ -32,6 +32,7 @@ import { ENGINE_SCHEME } from "../shared/engine";
 import { isSettingsAction, SETTINGS_IPC, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import { EngineHub } from "./engineHost";
+import { installHardening } from "./hardening";
 import { computeLayout, splitContent, tooltipBounds } from "./layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
 import type { PlatformModule, ShellServices } from "./modules/types";
@@ -566,6 +567,7 @@ export function startApp(dist: string): void {
   app.on("before-quit", () => handle?.setQuitting());
 
   void app.whenReady().then(async () => {
+    installHardening();
     handle = await createShell({ dist, userData: app.getPath("userData") });
   });
 }

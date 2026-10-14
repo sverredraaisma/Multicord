@@ -112,6 +112,7 @@ export class FakeSession {
 const sessions = new Map<string, FakeSession>();
 
 export const session = {
+  defaultSession: new FakeSession("default"),
   fromPartition: (partition: string): FakeSession => {
     let ses = sessions.get(partition);
     if (!ses) {
@@ -185,6 +186,7 @@ export function resetElectron(): void {
   Notification.instances = [];
   Notification.isSupported.mockImplementation(() => true);
   sessions.clear();
+  session.defaultSession = new FakeSession("default");
   ipcMain.removeAllListeners();
   ipcMain.handlers.clear();
   app.removeAllListeners();
