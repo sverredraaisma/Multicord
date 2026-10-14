@@ -453,3 +453,55 @@ describe("attachments", () => {
     expect(root.querySelector(".uploading")!.textContent).toBe("Sending…");
   });
 });
+
+describe("threads and forums", () => {
+  const forum = (posts: NonNullable<Chat["channel"]>["posts"]) =>
+    chat({
+      sidebar: [
+        { id: "5", name: "general", kind: "text", unread: false, mentions: 0, active: false },
+        { id: "6", name: "side chat", kind: "thread", unread: false, mentions: 0, active: false },
+        { id: "7", name: "ideas", kind: "forum", unread: true, mentions: 0, active: true },
+      ],
+      channel: { id: "7", name: "ideas", messages: [], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, posts },
+    });
+
+  it("marks threads and forums in the sidebar", () => {
+    view.update(forum([]));
+    expect([...root.querySelectorAll(".channel .name")].map((n) => n.textContent)).toEqual(["# general", "↳ side chat", "☰ ideas"]);
+    expect(root.querySelector(".channel.thread")).not.toBeNull();
+  });
+
+  it("lists posts, opens them and disables the composer", () => {
+    view.update(
+      forum([
+        { id: "40", name: "Dark mode", messageCount: 4, unread: true, mentions: 2 },
+        { id: "41", name: "Emoji", messageCount: 1, unread: false, mentions: 0 },
+        { id: "42", name: "Fresh", unread: false, mentions: 0 },
+      ]),
+    );
+    const posts = root.querySelectorAll<HTMLButtonElement>("button.post");
+    expect([...posts].map((p) => p.textContent)).toEqual(["Dark mode4 replies2", "Emoji1 reply", "Fresh"]);
+    expect(posts[0]!.classList.contains("unread")).toBe(true);
+    posts[1]!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "select", channelId: "41" });
+    expect(root.querySelector<HTMLTextAreaElement>(".composer")!.disabled).toBe(true);
+  });
+
+  it("creates posts from a form that keeps its text across updates", () => {
+    view.update(forum([]));
+    expect(root.querySelector(".messages .empty")!.textContent).toBe("No open posts yet.");
+    const title = root.querySelector<HTMLInputElement>('.post-form input[name="title"]')!;
+    const body = root.querySelector<HTMLTextAreaElement>('.post-form textarea[name="body"]')!;
+    title.value = " Idea ";
+    view.update(forum([]));
+    expect(root.querySelector<HTMLInputElement>('.post-form input[name="title"]')).toBe(title);
+
+    const form = root.querySelector("form.post-form")!;
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(act).not.toHaveBeenCalled(); // no body yet
+    body.value = "first";
+    form.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(act).toHaveBeenCalledWith({ type: "createPost", name: "Idea", content: "first" });
+    expect(title.value).toBe("");
+  });
+});

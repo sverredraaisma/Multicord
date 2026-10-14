@@ -1,7 +1,9 @@
 import { Emitter } from "../adapters/emitter";
 import {
   ChannelType,
+  FORUM_TYPES,
   TEXT_CHANNEL_TYPES,
+  THREAD_TYPES,
   compareIds,
   isId,
   isRecord,
@@ -86,12 +88,18 @@ export class FluxerState {
         break;
       case "CHANNEL_CREATE":
       case "CHANNEL_UPDATE":
+      case "THREAD_CREATE":
+      case "THREAD_UPDATE":
         this.addChannel(parseChannel(data));
+        break;
+      case "THREAD_LIST_SYNC":
+        for (const t of list(d.threads)) this.addChannel(parseChannel(t, isId(d.guild_id) ? d.guild_id : undefined));
         break;
       case "CHANNEL_UPDATE_BULK":
         for (const c of list(d.channels)) this.addChannel(parseChannel(c, isId(d.guild_id) ? d.guild_id : undefined));
         break;
       case "CHANNEL_DELETE":
+      case "THREAD_DELETE":
         if (isId(d.id)) {
           this.channels.delete(d.id);
           this.messages.delete(d.id);
@@ -229,9 +237,15 @@ export class FluxerState {
     return this.readStates.get(channelId)?.mentionCount ?? 0;
   }
 
-  /** A guild's channels in sidebar order: uncategorised first, then each category with its children. */
+  /**
+   * A guild's channels in sidebar order: uncategorised first, then each
+   * category with its children, each channel followed by its open threads.
+   * Forum posts are not listed here; see forumPosts().
+   */
   guildChannels(guildId: string): FluxerChannel[] {
-    const all = [...this.channels.values()].filter((c) => c.guildId === guildId);
+    const inGuild = [...this.channels.values()].filter((c) => c.guildId === guildId);
+    const threads = inGuild.filter((c) => THREAD_TYPES.has(c.type) && !c.archived);
+    const all = inGuild.filter((c) => !THREAD_TYPES.has(c.type));
     const byPosition = (a: FluxerChannel, b: FluxerChannel) => a.position - b.position || compareIds(a.id, b.id);
     const categories = all.filter((c) => c.type === ChannelType.GuildCategory).sort(byPosition);
     const categoryIds = new Set(categories.map((c) => c.id));
@@ -239,15 +253,31 @@ export class FluxerState {
       all
         .filter((c) => c.type !== ChannelType.GuildCategory && (parent ? c.parentId === parent : !c.parentId || !categoryIds.has(c.parentId)))
         .sort(byPosition);
-    return [...childrenOf(), ...categories.flatMap((cat) => [cat, ...childrenOf(cat.id)])];
+    const withThreads = (channels: FluxerChannel[]) =>
+      channels.flatMap((c) =>
+        FORUM_TYPES.has(c.type) ? [c] : [c, ...threads.filter((t) => t.parentId === c.id).sort(byPosition)],
+      );
+    return [...withThreads(childrenOf()), ...categories.flatMap((cat) => [cat, ...withThreads(childrenOf(cat.id))])];
+  }
+
+  /** A forum's open posts, most recently active first. */
+  forumPosts(forumId: string): FluxerChannel[] {
+    return [...this.channels.values()]
+      .filter((c) => c.parentId === forumId && THREAD_TYPES.has(c.type) && !c.archived)
+      .sort((a, b) => compareIds(b.lastMessageId ?? b.id, a.lastMessageId ?? a.id));
+  }
+
+  /** Every channel of a guild, threads and forum posts included. */
+  private allGuildChannels(guildId: string): FluxerChannel[] {
+    return [...this.channels.values()].filter((c) => c.guildId === guildId);
   }
 
   guildUnread(guildId: string): boolean {
-    return this.guildChannels(guildId).some((c) => this.isUnread(c));
+    return this.allGuildChannels(guildId).some((c) => this.isUnread(c));
   }
 
   guildMentions(guildId: string): number {
-    return this.guildChannels(guildId).reduce((sum, c) => sum + this.mentions(c.id), 0);
+    return this.allGuildChannels(guildId).reduce((sum, c) => sum + this.mentions(c.id), 0);
   }
 
   /** DMs and group DMs, most recent first. */
@@ -302,7 +332,15 @@ export class FluxerState {
     const guild = parseGuild(value);
     if (!guild) return;
     this.guilds.set(guild.id, guild);
-    for (const c of list((value as Record<string, unknown>).channels)) this.addChannel(parseChannel(c, guild.id));
+    const record = value as Record<string, unknown>;
+    // GUILD_CREATE and GUILD_SYNC carry complete channel and thread lists: replace what we had.
+    const replaceChannels = Array.isArray(record.channels);
+    const replaceThreads = Array.isArray(record.threads);
+    for (const c of [...this.channels.values()]) {
+      if (c.guildId !== guild.id) continue;
+      if (THREAD_TYPES.has(c.type) ? replaceThreads : replaceChannels) this.channels.delete(c.id);
+    }
+    for (const c of [...list(record.channels), ...list(record.threads)]) this.addChannel(parseChannel(c, guild.id));
   }
 
   private removeGuild(guildId: string): void {
@@ -313,6 +351,12 @@ export class FluxerState {
         this.messages.delete(channel.id);
       }
     }
+  }
+
+  /** Adds or replaces a channel, e.g. a forum post we just created. */
+  upsertChannel(channel: FluxerChannel): void {
+    this.addChannel(channel);
+    this.changed.emit();
   }
 
   private addChannel(channel: FluxerChannel | undefined): void {

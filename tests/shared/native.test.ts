@@ -76,3 +76,12 @@ describe("message action validation", () => {
     expect(isNativeAction({ type: "react", messageId: "5", emoji: "👍" })).toBe(false);
   });
 });
+
+describe("forum post validation", () => {
+  it("requires a title and a first message", () => {
+    expect(isNativeAction({ type: "createPost", name: "Idea", content: "body" })).toBe(true);
+    expect(isNativeAction({ type: "createPost", name: " ", content: "body" })).toBe(false);
+    expect(isNativeAction({ type: "createPost", name: "x".repeat(101), content: "body" })).toBe(false);
+    expect(isNativeAction({ type: "createPost", name: "Idea", content: "" })).toBe(false);
+  });
+});

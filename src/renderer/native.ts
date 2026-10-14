@@ -5,6 +5,14 @@ import { initials } from "./rail";
 
 type ChatState = Extract<NativeViewState, { screen: "chat" }>;
 
+const CHANNEL_PREFIX: Record<NativeSidebarItem["kind"], string> = {
+  category: "",
+  text: "# ",
+  thread: "↳ ",
+  forum: "☰ ",
+  dm: "",
+};
+
 /** Reactions offered on a message without opening a full emoji picker. */
 export const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 type LoginState = Extract<NativeViewState, { screen: "login" }>;
@@ -279,7 +287,8 @@ export class NativeView {
     button.classList.toggle("active", item.active);
     button.classList.toggle("unread", item.unread);
     if (item.kind === "dm") button.append(avatar(doc, item.iconUrl, item.name));
-    button.append(el(doc, "span", "name", item.kind === "text" ? `# ${item.name}` : item.name));
+    button.classList.add(item.kind);
+    button.append(el(doc, "span", "name", `${CHANNEL_PREFIX[item.kind]}${item.name}`));
     if (item.mentions > 0) button.append(el(doc, "span", "badge", item.mentions > 99 ? "99+" : String(item.mentions)));
     button.addEventListener("click", () => this.api.act({ type: "select", channelId: item.id }));
     li.append(button);
@@ -328,6 +337,55 @@ export class NativeView {
     if (message.reactions.length > 0 || this.pickerFor === message.id) body.append(this.reactionRow(message));
     li.append(avatar(doc, message.avatarUrl, message.author), body, this.messageActions(message));
     return li;
+  }
+
+  /** A forum: the new-post form (kept across renders), then its posts. */
+  private forumItems(posts: NonNullable<NonNullable<ChatState["channel"]>["posts"]>): HTMLElement[] {
+    const doc = this.doc;
+    this.parts.postForm ??= this.createPostForm();
+    const formRow = el(doc, "li", "post-form-row");
+    formRow.append(this.parts.postForm);
+    const rows = posts.map((post) => {
+      const li = el(doc, "li");
+      const button = el(doc, "button", "post");
+      button.classList.toggle("unread", post.unread);
+      button.append(el(doc, "span", "name", post.name));
+      if (post.messageCount !== undefined) {
+        button.append(el(doc, "span", "count", `${post.messageCount} ${post.messageCount === 1 ? "reply" : "replies"}`));
+      }
+      if (post.mentions > 0) button.append(el(doc, "span", "badge", String(post.mentions)));
+      button.addEventListener("click", () => this.api.act({ type: "select", channelId: post.id }));
+      li.append(button);
+      return li;
+    });
+    if (rows.length === 0) rows.push(el(doc, "li", "empty", "No open posts yet."));
+    return [formRow, ...rows];
+  }
+
+  private createPostForm(): HTMLElement {
+    const doc = this.doc;
+    const form = el(doc, "form", "post-form");
+    const title = el(doc, "input");
+    title.name = "title";
+    title.placeholder = "Post title";
+    title.maxLength = 100;
+    title.required = true;
+    const body = el(doc, "textarea");
+    body.name = "body";
+    body.placeholder = "Write the first message";
+    body.maxLength = MAX_MESSAGE_LENGTH;
+    body.required = true;
+    const submit = el(doc, "button", "primary", "New post");
+    submit.type = "submit";
+    form.append(title, body, submit);
+    form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      if (title.value.trim() === "" || body.value.trim() === "") return;
+      this.api.act({ type: "createPost", name: title.value.trim(), content: body.value });
+      title.value = "";
+      body.value = "";
+    });
+    return form;
   }
 
   /** Files queued for the next message, each removable, plus upload progress. */
@@ -431,6 +489,8 @@ export class NativeView {
     header!.textContent = channel ? channel.name : "Select a conversation";
     this.parts.typing!.textContent = typingText(channel?.typing ?? []);
     this.renderPending(channel);
+    // Forums take posts through their own form, not the composer.
+    if (channel?.posts) (composer as HTMLTextAreaElement).disabled = true;
     (composer as HTMLTextAreaElement).placeholder = channel ? `Message ${channel.name}` : "";
 
     const scroller = messages!;
@@ -446,6 +506,7 @@ export class NativeView {
     } else if (channel?.loading) {
       items.push(el(this.doc, "li", "older-row", "Loading…"));
     }
+    if (channel?.posts) items.push(...this.forumItems(channel.posts));
     items.push(...(channel?.messages ?? []).map((m) => this.messageItem(m)));
     scroller.replaceChildren(...items);
 

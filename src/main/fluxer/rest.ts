@@ -1,5 +1,5 @@
 import { captchaToken, isAltchaChallenge, solveAltcha, type AltchaChallenge } from "./captcha";
-import { isRecord, parseMessage, parseUser, type FluxerMessage, type FluxerUser } from "./types";
+import { isRecord, parseChannel, parseMessage, parseUser, type FluxerChannel, type FluxerMessage, type FluxerUser } from "./types";
 
 /** Error from the Fluxer API, carrying its error code (e.g. CAPTCHA_REQUIRED). */
 export class FluxerApiError extends Error {
@@ -68,6 +68,8 @@ export class FluxerRest {
         const response = await this.options.fetch(`${this.base}${path}`, {
           method,
           headers: {
+            // Without this capability, thread and forum routes answer 404.
+            "X-Fluxer-Features": "channel_threads",
             ...(this.token ? { Authorization: this.token } : {}),
             ...(body === undefined ? {} : { "Content-Type": "application/json" }),
             ...headers,
@@ -183,6 +185,11 @@ export class FluxerRest {
     const body = new Uint8Array(data); // an ArrayBuffer-backed copy, as fetch bodies require
     const response = await this.options.fetch(url, { method: "PUT", headers: { "Content-Type": contentType }, body });
     if (!response.ok) throw new FluxerApiError(response.status, `HTTP_${response.status}`, `Upload failed (HTTP ${response.status})`, undefined);
+  }
+
+  /** Starts a forum post: a thread whose first message is `content`. */
+  async createPost(forumId: string, name: string, content: string): Promise<FluxerChannel | undefined> {
+    return parseChannel(await this.request("POST", `/channels/${forumId}/threads`, { name, message: { content } }));
   }
 
   async typing(channelId: string): Promise<void> {

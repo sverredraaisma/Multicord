@@ -815,3 +815,77 @@ describe("FluxerAdapter attachments", () => {
     expect(ctx.calls.some((c) => c.init.method === "POST" && c.url.endsWith("/messages"))).toBe(false);
   });
 });
+
+describe("FluxerAdapter threads and forums", () => {
+  async function withForum(routes: Handler[] = []) {
+    const ctx = setup({ token: "flx", routes });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    ctx.adapter.state.apply("GUILD_CREATE", {
+      id: "100",
+      properties: { name: "Alpha" },
+      channels: [
+        { id: "113", type: 0, name: "lobby", position: 0, last_message_id: "300" },
+        { id: "120", type: 15, name: "ideas", position: 1 },
+      ],
+      threads: [
+        { id: "130", type: 11, name: "side chat", parent_id: "113", last_message_id: "301" },
+        { id: "140", type: 11, name: "Dark mode", parent_id: "120", last_message_id: "900", message_count: 4 },
+      ],
+    });
+    ctx.adapter.state.apply("MESSAGE_ACK", { channel_id: "140", message_id: "800", mention_count: 2 });
+    await ctx.adapter.openServer("100");
+    return ctx;
+  }
+
+  it("shows threads and forums in the sidebar, with forum unread from its posts", async () => {
+    const { chat } = await withForum();
+    expect(chat().sidebar.map((i) => [i.kind, i.name])).toEqual([
+      ["text", "lobby"],
+      ["thread", "side chat"],
+      ["forum", "ideas"],
+    ]);
+    expect(chat().sidebar[2]).toMatchObject({ unread: true, mentions: 2 });
+  });
+
+  it("opens a forum as a list of posts without fetching messages", async () => {
+    const { adapter, chat, calls } = await withForum();
+    await adapter.handleAction({ type: "select", channelId: "120" });
+    expect(chat().channel).toMatchObject({
+      id: "120",
+      name: "ideas",
+      messages: [],
+      posts: [{ id: "140", name: "Dark mode", messageCount: 4, unread: true, mentions: 2 }],
+    });
+    expect(calls.some((c) => c.url.includes("/channels/120/messages"))).toBe(false);
+
+    await adapter.handleAction({ type: "select", channelId: "140" });
+    expect(chat().channel).toMatchObject({ id: "140", name: "Dark mode", posts: undefined });
+  });
+
+  it("creates forum posts and opens them", async () => {
+    const { adapter, chat, calls } = await withForum([
+      (url, init) =>
+        init.method === "POST" && url.endsWith("/channels/120/threads") ? { status: 201, body: { id: "150", type: 11, name: "New idea" } } : undefined,
+    ]);
+    await adapter.handleAction({ type: "createPost", name: "New idea", content: "hi" }); // not in a forum: ignored
+    expect(calls.some((c) => c.url.endsWith("/threads"))).toBe(false);
+    await adapter.handleAction({ type: "select", channelId: "120" });
+    await adapter.handleAction({ type: "createPost", name: " New idea ", content: "first" });
+    const post = calls.find((c) => c.url.endsWith("/channels/120/threads"))!;
+    expect(JSON.parse(String(post.init.body))).toEqual({ name: "New idea", message: { content: "first" } });
+    expect(chat().channel!.id).toBe("150");
+    expect(adapter.state.channels.get("150")).toMatchObject({ guildId: "100", parentId: "120" });
+  });
+
+  it("reports failed posts and ignores empty responses", async () => {
+    let reply: { status: number; body?: unknown } = { status: 403, body: { code: "MISSING_PERMISSIONS", message: "No" } };
+    const { adapter, chat } = await withForum([(url) => (url.endsWith("/channels/120/threads") ? reply : undefined)]);
+    await adapter.handleAction({ type: "select", channelId: "120" });
+    await adapter.handleAction({ type: "createPost", name: "x", content: "y" });
+    expect(chat().error).toBe("Post not created: No");
+    reply = { status: 201, body: {} };
+    await adapter.handleAction({ type: "createPost", name: "x", content: "y" });
+    expect(chat().channel!.id).toBe("120");
+  });
+});

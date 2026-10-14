@@ -9,14 +9,29 @@ export const ChannelType = {
   GroupDm: 3,
   GuildCategory: 4,
   GuildAnnouncement: 5,
+  AnnouncementThread: 10,
+  PublicThread: 11,
+  PrivateThread: 12,
+  GuildForum: 15,
+  GuildMedia: 16,
 } as const;
 
-/** Channels whose messages we show; voice, forum and thread types are out of scope for now. */
+export const THREAD_TYPES: ReadonlySet<number> = new Set([
+  ChannelType.AnnouncementThread,
+  ChannelType.PublicThread,
+  ChannelType.PrivateThread,
+]);
+
+/** Forum and media channels hold posts (threads) instead of messages. */
+export const FORUM_TYPES: ReadonlySet<number> = new Set([ChannelType.GuildForum, ChannelType.GuildMedia]);
+
+/** Channels whose messages we show, threads and forum posts included. */
 export const TEXT_CHANNEL_TYPES: ReadonlySet<number> = new Set([
   ChannelType.GuildText,
   ChannelType.GuildAnnouncement,
   ChannelType.Dm,
   ChannelType.GroupDm,
+  ...THREAD_TYPES,
 ]);
 
 export interface FluxerUser {
@@ -42,6 +57,9 @@ export interface FluxerChannel {
   lastMessageId?: string;
   recipients: FluxerUser[];
   icon?: string;
+  /** Threads only. */
+  archived?: boolean;
+  messageCount?: number;
 }
 
 export interface FluxerAttachment {
@@ -156,6 +174,8 @@ export function parseChannel(value: unknown, guildId?: string): FluxerChannel | 
     lastMessageId: isId(value.last_message_id) ? value.last_message_id : undefined,
     recipients: list(value.recipients).flatMap((r) => parseUser(r) ?? []),
     icon: str(value.icon),
+    archived: isRecord(value.thread_metadata) ? value.thread_metadata.archived === true : undefined,
+    messageCount: typeof value.message_count === "number" ? value.message_count : undefined,
   };
 }
 

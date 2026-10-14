@@ -21,6 +21,8 @@ export interface GatewayHandlers {
 
 const Op = { Dispatch: 0, Heartbeat: 1, Identify: 2, Resume: 6, Reconnect: 7, InvalidSession: 9, Hello: 10, HeartbeatAck: 11 };
 const AUTH_FAILED = 4004;
+/** Identify flag: deliver threads, forum and media channels and their events. */
+const CHANNEL_THREADS = 1 << 2;
 /** Close codes where reconnecting cannot help. */
 const FATAL = new Set([4010, 4011, 4012]);
 const MAX_BACKOFF_MS = 30_000;
@@ -146,6 +148,7 @@ export class FluxerGateway {
     this.send(Op.Identify, {
       token: this.token,
       properties: { os: this.platform, browser: "Multicord", device: "Multicord" },
+      flags: CHANNEL_THREADS,
     });
   }
 

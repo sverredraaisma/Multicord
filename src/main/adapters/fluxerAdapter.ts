@@ -7,7 +7,9 @@ import { FluxerRest, type LoginResult, type RestOptions, type UploadSource } fro
 import { FluxerState, TYPING_MS } from "../fluxer/state";
 import {
   ChannelType,
+  FORUM_TYPES,
   MessageType,
+  THREAD_TYPES,
   TEXT_CHANNEL_TYPES,
   displayName,
   emojiKey,
@@ -138,6 +140,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.sendTyping();
       case "attach":
         return this.attach();
+      case "createPost":
+        return this.createPost(action.name, action.content);
       case "removeAttachment":
         this.pending.get(this.selectedChannelId ?? "")?.splice(action.index, 1);
         return this.render();
@@ -326,11 +330,13 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
 
   private async selectChannel(channelId: string): Promise<void> {
     const channel = this.state.channels.get(channelId);
-    if (!channel || !TEXT_CHANNEL_TYPES.has(channel.type)) return;
+    const forum = channel !== undefined && FORUM_TYPES.has(channel.type);
+    if (!channel || (!forum && !TEXT_CHANNEL_TYPES.has(channel.type))) return;
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.guildId ?? "home", channelId);
     this.error = undefined;
     this.render();
+    if (forum) return; // A forum lists its posts; it has no messages of its own.
     if (!this.state.messages.has(channelId)) await this.fetchHistory(channelId, undefined);
     this.ackSoon(channelId);
   }
@@ -376,6 +382,18 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     });
     this.uploading.delete(channelId);
     this.render();
+  }
+
+  /** Starts a post in the open forum and opens it. */
+  private async createPost(name: string, content: string): Promise<void> {
+    const forum = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
+    if (!forum || !FORUM_TYPES.has(forum.type) || !this.rest) return;
+    await this.attempt("Post not created", async () => {
+      const post = await this.rest!.createPost(forum.id, name.trim(), content);
+      if (!post) return;
+      this.state.upsertChannel({ ...post, guildId: post.guildId ?? forum.guildId, parentId: post.parentId ?? forum.id });
+      await this.selectChannel(post.id);
+    });
   }
 
   /** Adds files from the OS picker to the open channel's next message. */
@@ -609,10 +627,21 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       active: channel.id === this.selectedChannelId,
     });
     if (this.selection.kind === "home") return this.state.privateChannels().map((c) => item(c, "dm"));
+    const kindOf = (c: FluxerChannel): NativeSidebarItem["kind"] =>
+      c.type === ChannelType.GuildCategory ? "category" : FORUM_TYPES.has(c.type) ? "forum" : THREAD_TYPES.has(c.type) ? "thread" : "text";
     return this.state
       .guildChannels(this.selection.guildId)
-      .filter((c) => c.type === ChannelType.GuildCategory || TEXT_CHANNEL_TYPES.has(c.type))
-      .map((c) => item(c, c.type === ChannelType.GuildCategory ? "category" : "text"));
+      .filter((c) => c.type === ChannelType.GuildCategory || FORUM_TYPES.has(c.type) || TEXT_CHANNEL_TYPES.has(c.type))
+      .map((c) => {
+        const entry = item(c, kindOf(c));
+        // A forum is unread when any of its posts is.
+        if (entry.kind === "forum") {
+          const posts = this.state.forumPosts(c.id);
+          entry.unread = posts.some((p) => this.state.isUnread(p));
+          entry.mentions = posts.reduce((sum, p) => sum + this.state.mentions(p.id), 0);
+        }
+        return entry;
+      });
   }
 
   viewState(): NativeViewState {
@@ -643,6 +672,15 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                 typing: this.state.typingIn(channel.id).map((u) => displayName(u)),
                 pending: (this.pending.get(channel.id) ?? []).map((f) => ({ name: f.filename, size: f.size })),
                 uploading: this.uploading.has(channel.id),
+                posts: FORUM_TYPES.has(channel.type)
+                  ? this.state.forumPosts(channel.id).map((p) => ({
+                      id: p.id,
+                      name: p.name ?? p.id,
+                      messageCount: p.messageCount,
+                      unread: this.state.isUnread(p),
+                      mentions: this.state.mentions(p.id),
+                    }))
+                  : undefined,
               }
             : null,
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),

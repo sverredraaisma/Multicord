@@ -223,3 +223,39 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
   font-size: 12px;
 }
 .pending-file .size, .uploading { color: var(--muted); }
+
+/* Threads and forums */
+.channel.thread { padding-left: 20px; font-size: 13px; }
+.post-form-row { margin-bottom: 16px; }
+.post-form { display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 8px; background: var(--panel); }
+.post-form input, .post-form textarea {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+}
+.post-form textarea { min-height: 60px; resize: vertical; }
+.post-form .primary { align-self: flex-end; }
+.post {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.post:hover { color: var(--text); }
+.post.unread { color: var(--text); font-weight: 600; }
+.post .name { flex: 1; }
+.post .count { font-size: 12px; }
+.post .badge { position: static; border: 0; }
+.messages .empty { color: var(--muted); }

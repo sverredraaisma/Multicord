@@ -9,7 +9,7 @@ export const NATIVE_IPC = {
 export interface NativeSidebarItem {
   id: string;
   name: string;
-  kind: "category" | "text" | "dm";
+  kind: "category" | "text" | "thread" | "forum" | "dm";
   iconUrl?: string;
   unread: boolean;
   mentions: number;
@@ -49,6 +49,14 @@ export interface NativeMessage {
   attachments: NativeAttachment[];
 }
 
+export interface NativeForumPost {
+  id: string;
+  name: string;
+  messageCount?: number;
+  unread: boolean;
+  mentions: number;
+}
+
 export interface NativeChannelView {
   id: string;
   name: string;
@@ -60,6 +68,8 @@ export interface NativeChannelView {
   /** Files picked for the next message. */
   pending: { name: string; size: number }[];
   uploading: boolean;
+  /** Set for forum channels, which list posts instead of messages. */
+  posts?: NativeForumPost[];
 }
 
 export type NativeViewState =
@@ -89,6 +99,7 @@ export type NativeAction =
   | { type: "loadOlder" }
   | { type: "typing" }
   | { type: "attach" }
+  | { type: "createPost"; name: string; content: string }
   | { type: "removeAttachment"; index: number }
   | { type: "logout" };
 
@@ -121,6 +132,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
     case "send":
       // Empty text is allowed: a message may be attachments only.
       return text(v.content, 0, MAX_MESSAGE_LENGTH) && (v.replyTo === undefined || id(v.replyTo));
+    case "createPost":
+      return text(v.name, 1, 100) && (v.name as string).trim() !== "" && content(v.content);
     case "removeAttachment":
       return typeof v.index === "number" && Number.isInteger(v.index) && v.index >= 0 && v.index < MAX_ATTACHMENTS;
     case "edit":

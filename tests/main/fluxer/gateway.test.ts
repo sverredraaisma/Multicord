@@ -67,7 +67,7 @@ describe("FluxerGateway", () => {
     hello();
     expect(sockets[0]!.sent[0]).toEqual({
       op: 2,
-      d: { token: "flx_token", properties: { os: "linux", browser: "Multicord", device: "Multicord" } },
+      d: { token: "flx_token", properties: { os: "linux", browser: "Multicord", device: "Multicord" }, flags: 4 },
     });
   });
 

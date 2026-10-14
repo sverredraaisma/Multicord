@@ -89,10 +89,10 @@ describe("FluxerRest", () => {
     expect(calls[0]!.url).toBe("https://api.example/v1/x");
     expect(calls[0]!.init).toMatchObject({
       method: "POST",
-      headers: { Authorization: "flx_secret", "Content-Type": "application/json" },
+      headers: { "X-Fluxer-Features": "channel_threads", Authorization: "flx_secret", "Content-Type": "application/json" },
       body: '{"a":1}',
     });
-    expect(calls[1]!.init.headers).toEqual({ Authorization: "flx_secret" });
+    expect(calls[1]!.init.headers).toEqual({ "X-Fluxer-Features": "channel_threads", Authorization: "flx_secret" });
     expect(sleep).toHaveBeenCalledWith(100);
   });
 
