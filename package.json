@@ -17,6 +17,7 @@
   "devDependencies": {
     "@types/node": "^26.6.5",
     "@vitest/coverage-v8": "^5.0.4",
+    "altcha-lib": "^2.6.0",
     "electron": "^44.7.2",
     "esbuild": "^0.28.2",
     "happy-dom": "^21.0.1",
