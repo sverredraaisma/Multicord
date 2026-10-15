@@ -21,6 +21,7 @@ const h = vi.hoisted(() => {
     "SendMessageRecordVideoAction", "SendMessageUploadVideoAction", "SendMessageRecordAudioAction", "SendMessageUploadAudioAction", "SendMessageUploadDocumentAction",
     "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
     "InputFile", "InputFileBig", "InputMediaUploadedPhoto", "InputMediaUploadedDocument",
+    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
@@ -30,10 +31,17 @@ const h = vi.hoisted(() => {
       GetFullChat: class extends Base {},
       SendReaction: class extends Base {},
       SetTyping: class extends Base {},
+      ReadDiscussion: class extends Base {},
       GetAvailableReactions: class extends Base {},
       AvailableReactions: class extends Base {},
     },
-    channels: { GetFullChannel: class extends Base {}, GetParticipants: class extends Base {}, ChannelParticipants: class extends Base {} },
+    channels: {
+      GetFullChannel: class extends Base {},
+      GetParticipants: class extends Base {},
+      ChannelParticipants: class extends Base {},
+      GetForumTopics: class extends Base {},
+      CreateForumTopic: class extends Base {},
+    },
     users: { GetFullUser: class extends Base {} },
     upload: { SaveFilePart: class extends Base {}, SaveBigFilePart: class extends Base {} },
   };
@@ -94,7 +102,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, mediaBanned, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, toMessage, typingOf } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, toMessage, typingOf } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -937,6 +945,132 @@ describe("sending files", () => {
       file.read.mockResolvedValue(new Uint8Array(50));
       await expect(api.sendFile("7", file, { text: "", entities: [] })).rejects.toThrow("a.txt changed while it was sent");
       expect(client.sendFile).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("forum topics", () => {
+  const header = (props: Record<string, unknown>) => make(Api.MessageReplyHeader, props);
+  const inForum = (replyTo: unknown) => toMessage(make(Api.Message, { id: 30, date: 1, message: "x", replyTo }), "-1005");
+
+  it("knows forums, and those where only admins start topics", () => {
+    expect(forumOf(make(Api.Channel, { megagroup: true, forum: true }))).toEqual({ forum: true, noTopics: false });
+    expect(forumOf(make(Api.Channel, { megagroup: true, forum: true, defaultBannedRights: { manageTopics: true } }))).toEqual({ forum: true, noTopics: true });
+    expect(forumOf(make(Api.Channel, { megagroup: true, forum: true, creator: true, defaultBannedRights: { manageTopics: true } }))).toEqual({ forum: true, noTopics: false });
+    expect(forumOf(make(Api.Channel, { megagroup: true }))).toEqual({ forum: false, noTopics: false });
+    expect(forumOf(make(Api.Channel, { forum: true }))).toEqual({ forum: false, noTopics: false });
+    expect(forumOf(make(Api.Chat))).toEqual({ forum: false, noTopics: false });
+  });
+
+  it("places messages in their topic, and answers only where they answer one", () => {
+    // In a topic: pointing at its first message, no answer.
+    expect(inForum(header({ forumTopic: true, replyToMsgId: 10 }))).toMatchObject({ topicId: 10 });
+    expect(inForum(header({ forumTopic: true, replyToMsgId: 10 }))).not.toHaveProperty("replyToId");
+    // An answer within a topic.
+    expect(inForum(header({ forumTopic: true, replyToMsgId: 12, replyToTopId: 10 }))).toMatchObject({ topicId: 10, replyToId: 12 });
+    // General has no topic id.
+    expect(inForum(header({ forumTopic: true, replyToMsgId: 1 }))).not.toHaveProperty("topicId");
+    expect(inForum(undefined)).not.toHaveProperty("topicId");
+    expect(inForum(header({ replyToMsgId: 3 }))).toMatchObject({ replyToId: 3 });
+  });
+
+  it("lists topics with their counts and last activity, leaving out deleted ones", () => {
+    const topics = [
+      make(Api.ForumTopic, { id: 1, title: "General", unreadCount: 2, unreadMentionsCount: 1, topMessage: 40, date: 5, pinned: true }),
+      make(Api.ForumTopic, { id: 10, title: "", unreadCount: -1, topMessage: 99, date: 7 }),
+      make(Api.ForumTopic, { id: 11, title: "x".repeat(200), topMessage: 41, date: 8 }),
+      make(Api.ForumTopicDeleted, { id: 12 }),
+      make(Api.ForumTopic, { id: 0, title: "zero" }),
+      make(Api.ForumTopic, { id: 1.5, title: "half" }),
+    ];
+    const messages = [make(Api.Message, { id: 40, date: 400 }), make(Api.MessageService, { id: 41, date: 410 }), {}];
+    expect(topicsOf(topics, messages)).toEqual([
+      { id: 1, title: "General", unreadCount: 2, unreadMentions: 1, date: 400, pinned: true },
+      { id: 10, title: "Topic", unreadCount: 0, unreadMentions: 0, date: 7 },
+      { id: 11, title: "x".repeat(128), unreadCount: 0, unreadMentions: 0, date: 410 },
+    ]);
+  });
+
+  it("sends into topics: plain into General, as a reply to the topic's first message elsewhere", () => {
+    expect(topicReply(undefined, undefined)).toEqual({});
+    expect(topicReply(5, undefined)).toEqual({ replyTo: 5 });
+    expect(topicReply(undefined, 1)).toEqual({});
+    expect(topicReply(5, 1)).toEqual({ replyTo: 5 });
+    expect(topicReply(undefined, 10)).toEqual({ replyTo: 10 });
+    expect(topicReply(12, 10)).toEqual({ replyTo: 12, topMsgId: 10 });
+  });
+
+  it("reads which topic someone types in", () => {
+    const typing = make(Api.SendMessageTypingAction);
+    const from = make(Api.PeerUser, { userId: 8n });
+    expect(typingOf(make(Api.UpdateChannelUserTyping, { channelId: 5n, fromId: from, action: typing, topMsgId: 10 }))).toEqual({ type: "typing", chatId: "-1005", userId: "8", active: true, topicId: 10 });
+    expect(typingOf(make(Api.UpdateChannelUserTyping, { channelId: 5n, fromId: from, action: typing, topMsgId: 1 }))).toEqual({ type: "typing", chatId: "-1005", userId: "8", active: true });
+  });
+
+  describe("through the client", () => {
+    let client: InstanceType<typeof h.FakeClient>;
+    let api: ReturnType<typeof createGramApi>;
+    beforeEach(() => {
+      api = createGramApi({ apiId: 1, apiHash: "h" }, "", { os: "linux", appVersion: "1" });
+      client = h.FakeClient.instances.at(-1)!;
+    });
+
+    it("marks forums in the dialog list", async () => {
+      client.getDialogs.mockResolvedValue([
+        { dialog: {}, id: -1005n, unreadCount: 0, unreadMentionsCount: 0, date: 1, entity: make(Api.Channel, { title: "Club", megagroup: true, forum: true, defaultBannedRights: { manageTopics: true } }) },
+      ]);
+      await expect(api.dialogs(5)).resolves.toEqual([expect.objectContaining({ chatId: "-1005", forum: true, noTopics: true })]);
+    });
+
+    it("lists a forum's topics", async () => {
+      client.invoke.mockResolvedValue({ topics: [make(Api.ForumTopic, { id: 1, title: "General", topMessage: 3, date: 2 }), make(Api.ForumTopic, { id: 9, title: "B", date: 1 })], messages: [] });
+      await expect(api.topics("-1005", 1)).resolves.toEqual([{ id: 1, title: "General", unreadCount: 0, unreadMentions: 0, date: 2 }]);
+      const request = client.invoke.mock.calls[0]![0] as Record<string, unknown>;
+      expect(request).toBeInstanceOf(Api.channels.GetForumTopics);
+      expect(request).toMatchObject({ channel: -1005n, offsetDate: 0, offsetId: 0, offsetTopic: 0, limit: 1 });
+    });
+
+    it("starts a topic and finds its id in Telegram's answer", async () => {
+      const created = make(Api.MessageService, { id: 77, action: make(Api.MessageActionTopicCreate) });
+      client.invoke.mockResolvedValue(make(Api.Updates, { updates: [make(Api.UpdateNewChannelMessage, { message: make(Api.MessageService, { id: 5 }) }), {}, make(Api.UpdateNewChannelMessage, { message: created })] }));
+      await expect(api.createTopic("-1005", "New")).resolves.toBe(77);
+      const request = client.invoke.mock.calls[0]![0] as Record<string, unknown>;
+      expect(request).toBeInstanceOf(Api.channels.CreateForumTopic);
+      expect(request).toMatchObject({ channel: -1005n, title: "New", randomId: 8000n });
+      client.invoke.mockResolvedValue(make(Api.UpdatesCombined, { updates: [make(Api.UpdateNewMessage, { message: created })] }));
+      await expect(api.createTopic("-1005", "New")).resolves.toBe(77);
+      client.invoke.mockResolvedValue({});
+      await expect(api.createTopic("-1005", "New")).rejects.toThrow("Telegram did not say which topic it started");
+    });
+
+    it("reads a topic's history, and sends, uploads and types into it", async () => {
+      client.getMessages.mockResolvedValue([]);
+      await api.history("-1005", 50, 20, 10);
+      expect(client.getMessages).toHaveBeenCalledWith(-1005n, { limit: 20, offsetId: 50, replyTo: 10 });
+      client.sendMessage.mockResolvedValue(make(Api.Message, { id: 1, date: 1, message: "a" }));
+      await api.send("-1005", { text: "a", entities: [] }, 12, 10);
+      expect(client.sendMessage).toHaveBeenCalledWith(-1005n, { message: "a", replyTo: 12, topMsgId: 10, formattingEntities: [] });
+      client.invoke.mockResolvedValue(true);
+      client.sendFile.mockResolvedValue(make(Api.Message, { id: 2, date: 1, message: "" }));
+      await api.sendFile("-1005", { filename: "a.txt", size: 1, contentType: "text/plain", read: async () => new Uint8Array(1) }, { text: "", entities: [] }, undefined, 10);
+      expect(client.sendFile.mock.calls[0]![1]).toMatchObject({ replyTo: 10 });
+      client.invoke.mockClear();
+      await api.typing("-1005", true, 10);
+      await api.typing("-1005", true, 1);
+      const [inTopic, inGeneral] = client.invoke.mock.calls.map((c) => c[0] as { topMsgId?: number });
+      expect(inTopic!.topMsgId).toBe(10);
+      expect(inGeneral).not.toHaveProperty("topMsgId");
+    });
+
+    it("reads a topic as the discussion under its first message, with its mentions", async () => {
+      client.invoke.mockResolvedValue(true);
+      await api.markRead("-1005", 40, 10);
+      expect(client.markAsRead).not.toHaveBeenCalled();
+      const [read, mentions] = client.invoke.mock.calls.map((c) => c[0] as Record<string, unknown>);
+      expect(read).toBeInstanceOf(Api.messages.ReadDiscussion);
+      expect(read).toMatchObject({ peer: { input: -1005n }, msgId: 10, readMaxId: 40 });
+      expect(mentions).toBeInstanceOf(Api.messages.ReadMentions);
+      expect(mentions).toMatchObject({ topMsgId: 10 });
     });
   });
 });

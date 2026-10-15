@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgText, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
-import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
+import type { TelegramApi, TelegramCredentials, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import { MAX_ATTACHMENTS, type NativeAction, type NativeViewState } from "../../../src/shared/native";
 import type { FileSource } from "../../../src/engine/runtime";
@@ -44,7 +44,9 @@ class FakeTelegramApi implements TelegramApi {
   react = vi.fn(async (_chatId: string, _id: number, _emoji: string[]) => {});
   allowedReactions = vi.fn(async (_chatId: string): Promise<TgAllowedReactions> => ({ kind: "all" }));
   reactionList = vi.fn(async (): Promise<string[]> => ["👍", "❤", "🔥", "😁"]);
-  typing = vi.fn(async (_chatId: string, _active: boolean) => {});
+  typing = vi.fn(async (_chatId: string, _active: boolean, _topicId?: number) => {});
+  topics = vi.fn(async (_chatId: string, _limit: number): Promise<TgTopic[]> => []);
+  createTopic = vi.fn(async (_chatId: string, _title: string) => 77);
   userName = vi.fn(async (_userId: string): Promise<string | undefined> => undefined);
   download = vi.fn(async (_chatId: string, _id: number, _thumbnail: boolean): Promise<Uint8Array | undefined> => new Uint8Array([104, 105]));
   onUpdate = vi.fn((cb: (update: TgUpdate) => void) => void (this.listener = cb));
@@ -572,7 +574,7 @@ describe("chat view", () => {
     expect(ctx.api.history).toHaveBeenCalledTimes(1);
     resolve([msg("1", 3), msg("1", 1), msg("1", 2)]);
     await Promise.all([first, second]);
-    expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE);
+    expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE, undefined);
     expect(ctx.chat().channel).toMatchObject({ loading: false, hasOlder: false });
     expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
@@ -626,7 +628,7 @@ describe("chat view", () => {
 
     ctx.api.history.mockResolvedValueOnce([msg("1", 1), msg("1", 2), msg("1", 51)]);
     await ctx.act({ type: "loadOlder" });
-    expect(ctx.api.history).toHaveBeenLastCalledWith("1", 51, PAGE_SIZE);
+    expect(ctx.api.history).toHaveBeenLastCalledWith("1", 51, PAGE_SIZE, undefined);
     expect(ctx.messageIds().slice(0, 3)).toEqual(["1", "2", "51"]);
     expect(ctx.messageIds()).toHaveLength(PAGE_SIZE + 2);
     expect(ctx.chat().channel!.hasOlder).toBe(false);
@@ -660,7 +662,7 @@ describe("sending", () => {
   it("sends the message and appends the result", async () => {
     const ctx = await open();
     await ctx.act({ type: "send", content: "hello" });
-    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "hello", entities: [] }, undefined);
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "hello", entities: [] }, undefined, undefined);
     expect(ctx.messageIds().at(-1)).toBe("200");
     expect(ctx.chat().channel!.messages.at(-1)).toMatchObject({ author: "Me", mine: true, canEdit: true, canDelete: true, source: "hello" });
     expect(ctx.notifications).toEqual([]);
@@ -669,7 +671,7 @@ describe("sending", () => {
   it("passes the reply id as a number", async () => {
     const ctx = await open();
     await ctx.act({ type: "send", content: "re", replyTo: "2" });
-    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "re", entities: [] }, 2);
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "re", entities: [] }, 2, undefined);
   });
 
   it("ignores empty messages and a missing selection", async () => {
@@ -688,7 +690,7 @@ describe("sending", () => {
   it("sends markdown as Telegram formatting, and shows it back the same", async () => {
     const ctx = await open();
     await ctx.act({ type: "send", content: "**bold** and a\\*b" });
-    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "bold and a*b", entities: [{ type: "bold", offset: 0, length: 4 }] }, undefined);
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "bold and a*b", entities: [{ type: "bold", offset: 0, length: 4 }] }, undefined, undefined);
     expect(ctx.chat().channel!.messages.at(-1)).toMatchObject({ content: "**bold** and a\\*b", source: "**bold** and a\\*b" });
     await ctx.act({ type: "edit", messageId: "200", content: "_now_ italic" });
     expect(ctx.api.edit).toHaveBeenCalledWith("1", 200, { text: "now italic", entities: [{ type: "italic", offset: 0, length: 3 }] });
@@ -883,7 +885,7 @@ describe("updates", () => {
     expect(ctx.notifications[0]).toMatchObject({ inView: true });
     expect(ctx.rows()[0]).toMatchObject({ unread: false, mentions: 0 });
     // Read on the server too, though there was no unread count to clear.
-    expect(ctx.api.markRead).toHaveBeenCalledWith("1", 3);
+    expect(ctx.api.markRead).toHaveBeenCalledWith("1", 3, undefined);
     ctx.api.markRead.mockRejectedValueOnce(new Error("offline"));
     ctx.api.emit({ type: "message", message: msg("1", 4) });
     await flush(); // a failed read receipt is not an error worth showing
@@ -1176,7 +1178,7 @@ describe("groups and channels", () => {
   it("opens a group from the view and from the shell, by its chat id", async () => {
     const ctx = await signedIn({ dialogs: rooms() });
     await ctx.act({ type: "select", channelId: viewId(GROUP) });
-    expect(ctx.api.history).toHaveBeenCalledWith(GROUP, undefined, PAGE_SIZE);
+    expect(ctx.api.history).toHaveBeenCalledWith(GROUP, undefined, PAGE_SIZE, undefined);
     expect(ctx.chat().channel).toMatchObject({ id: viewId(GROUP), name: "Family", can: { reply: true } });
     expect(ctx.chat().channel).not.toHaveProperty("locked");
     await ctx.adapter.openConversation(SUPER);
@@ -1761,12 +1763,12 @@ describe("typing", () => {
     expect(ctx.chat().channel!.can.typing).toBe(true);
     await ctx.act({ type: "typing" });
     await ctx.act({ type: "typing" });
-    expect(ctx.api.typing.mock.calls).toEqual([["1", true]]);
+    expect(ctx.api.typing.mock.calls).toEqual([["1", true, undefined]]);
     vi.advanceTimersByTime(TYPING_REPEAT_MS);
     await ctx.act({ type: "typing" });
     expect(ctx.api.typing).toHaveBeenCalledTimes(2);
     await ctx.act({ type: "send", content: "hi" });
-    expect(ctx.api.typing).toHaveBeenLastCalledWith("1", false);
+    expect(ctx.api.typing).toHaveBeenLastCalledWith("1", false, undefined);
     // Sent without typing first, or once the notice ran out: nothing to stop.
     await ctx.act({ type: "send", content: "again" });
     await ctx.act({ type: "typing" });
@@ -1786,7 +1788,7 @@ describe("typing", () => {
     await ctx.act({ type: "select", channelId: viewId("-6") });
     await ctx.act({ type: "typing" });
     expect(ctx.chat().channel!.can.typing).toBe(false);
-    expect(ctx.api.typing.mock.calls).toEqual([["1", true], ["-5", true], ["-5", false]]);
+    expect(ctx.api.typing.mock.calls).toEqual([["1", true, undefined], ["-5", true, undefined], ["-5", false, undefined]]);
   });
 
   it("ignores a failing typing notice", async () => {
@@ -1991,8 +1993,8 @@ describe("sending files", () => {
     await ctx.act({ type: "attach" });
     const long = "x".repeat(CAPTION_LIMIT + 1);
     await ctx.act({ type: "send", content: long, replyTo: "2" });
-    expect(ctx.api.sendFile).toHaveBeenLastCalledWith("1", expect.anything(), { text: "", entities: [] }, 2);
-    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: long, entities: [] }, undefined);
+    expect(ctx.api.sendFile).toHaveBeenLastCalledWith("1", expect.anything(), { text: "", entities: [] }, 2, undefined);
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: long, entities: [] }, undefined, undefined);
   });
 
   it("gives Premium users longer captions", async () => {
@@ -2005,7 +2007,7 @@ describe("sending files", () => {
     await ctx.act({ type: "attach" });
     const long = "x".repeat(CAPTION_LIMIT + 1);
     await ctx.act({ type: "send", content: long });
-    expect(ctx.api.sendFile).toHaveBeenCalledWith("1", expect.anything(), { text: long, entities: [] }, undefined);
+    expect(ctx.api.sendFile).toHaveBeenCalledWith("1", expect.anything(), { text: long, entities: [] }, undefined, undefined);
     expect(ctx.api.send).not.toHaveBeenCalled();
   });
 
@@ -2037,5 +2039,246 @@ describe("sending files", () => {
     expect(ctx.api.sendFile).toHaveBeenCalledTimes(1);
     await ctx.adapter.openConversation("1");
     expect(ctx.chat().channel).toMatchObject({ uploading: false, pending: [] });
+  });
+});
+
+describe("forum topics", () => {
+  const FORUM = "-1005";
+  const forum = (extra: Partial<TgDialog> = {}) => [dlg(FORUM, { kind: "group", title: "Club", forum: true, members: true, unreadCount: 5, unreadMentions: 2, ...extra }), dlg("1")];
+  const topic = (id: number, extra: Partial<TgTopic> = {}): TgTopic => ({ id, title: `T${id}`, unreadCount: 0, unreadMentions: 0, date: id, ...extra });
+  const open = async (extra: Partial<TgDialog> = {}) => {
+    const ctx = await signedIn({ dialogs: forum(extra) });
+    ctx.api.topics.mockResolvedValue([topic(1, { title: "General", date: 5 }), topic(10, { unreadCount: 3, unreadMentions: 1, date: 50 }), topic(20, { pinned: true, date: 1 })]);
+    await ctx.act({ type: "select", channelId: viewId(FORUM) });
+    return ctx;
+  };
+  const threads = (ctx: Awaited<ReturnType<typeof open>>) => ctx.rows().filter((r) => r.kind === "thread");
+  const openTopic = async (ctx: Awaited<ReturnType<typeof open>>, name: string) => {
+    await ctx.act({ type: "select", channelId: threads(ctx).find((t) => t.name === name)!.id });
+    await flush();
+  };
+
+  it("lists a forum's topics, pinned first then most recently active, as posts and under the forum", async () => {
+    const ctx = await open();
+    expect(ctx.api.topics).toHaveBeenCalledWith(FORUM, TOPIC_LIMIT);
+    expect(ctx.api.history).not.toHaveBeenCalled();
+    const channel = ctx.chat().channel!;
+    expect(channel.posts!.map((p) => [p.name, p.unread, p.mentions])).toEqual([["T20", false, 0], ["T10", true, 1], ["General", false, 0]]);
+    expect(channel.can).toEqual({ reply: false, react: false, attach: false, typing: false, members: true });
+    expect(threads(ctx).map((t) => t.name)).toEqual(["T20", "T10", "General"]);
+    expect(channel.posts!.map((p) => p.id)).toEqual(threads(ctx).map((t) => t.id));
+    // Topic ids sit between users' and groups' ids.
+    for (const t of threads(ctx)) expect(BigInt(t.id) > 9n * 10n ** 18n && BigInt(t.id) < 10n ** 19n).toBe(true);
+    expect(ctx.rows().find((r) => r.id === viewId(FORUM))!.active).toBe(true);
+    // Other chats do not show their topics.
+    await ctx.adapter.openConversation("1");
+    expect(threads(ctx)).toEqual([]);
+  });
+
+  it("shows the list loading, and says when it could not be loaded", async () => {
+    const ctx = await signedIn({ dialogs: forum() });
+    let fail!: () => void;
+    ctx.api.topics.mockImplementationOnce(() => new Promise((_, reject) => (fail = () => reject(tgError("CHANNEL_PRIVATE")))));
+    const opening = ctx.act({ type: "select", channelId: viewId(FORUM) });
+    expect(ctx.chat().channel).toMatchObject({ loading: true, posts: [] });
+    // Opened again meanwhile: asked once.
+    await ctx.act({ type: "select", channelId: viewId(FORUM) });
+    fail();
+    await opening;
+    expect(ctx.api.topics).toHaveBeenCalledTimes(1);
+    expect(ctx.chat()).toMatchObject({ error: "Could not load topics: CHANNEL_PRIVATE" });
+    expect(ctx.chat().channel!.loading).toBe(false);
+  });
+
+  it("opens a topic: its messages, read with its counts taken off the forum's", async () => {
+    const ctx = await open();
+    ctx.adapter.setVisible(true);
+    ctx.api.history.mockResolvedValue([msg(FORUM, 11, { topicId: 10 }), msg(FORUM, 12, { topicId: 10 })]);
+    await openTopic(ctx, "T10");
+    expect(ctx.api.history).toHaveBeenCalledWith(FORUM, undefined, PAGE_SIZE, 10);
+    const channel = ctx.chat().channel!;
+    expect(channel.name).toBe("Club › T10");
+    expect(channel.posts).toBeUndefined();
+    expect(channel.id).toBe(threads(ctx).find((t) => t.name === "T10")!.id);
+    expect(channel.can).toMatchObject({ reply: true, attach: true, typing: true });
+    expect(ctx.messageIds()).toEqual(["11", "12"]);
+    expect(ctx.api.markRead).toHaveBeenCalledWith(FORUM, 12, 10);
+    expect(threads(ctx).find((t) => t.name === "T10")).toMatchObject({ active: true, unread: false, mentions: 0 });
+    expect(ctx.rows().find((r) => r.id === viewId(FORUM))).toMatchObject({ active: false, unread: true, mentions: 1 });
+    // Read already: not again.
+    ctx.adapter.setVisible(true);
+    await flush();
+    expect(ctx.api.markRead).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a topic Telegram would not mark read", async () => {
+    const ctx = await open();
+    ctx.adapter.setVisible(true);
+    ctx.api.markRead.mockRejectedValue(new Error("x"));
+    await openTopic(ctx, "T10");
+    expect(ctx.chat().error).toBeUndefined();
+  });
+
+  it("reads nothing in the topic list, nor a topic without messages", async () => {
+    const ctx = await open();
+    ctx.adapter.setVisible(true);
+    ctx.api.history.mockResolvedValue([]);
+    await openTopic(ctx, "T10");
+    await ctx.act({ type: "loadOlder" });
+    expect(ctx.api.markRead).not.toHaveBeenCalled();
+  });
+
+  it("sends into the open topic, with files and typing there too", async () => {
+    const ctx = await open();
+    await openTopic(ctx, "T10");
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing).toHaveBeenCalledWith(FORUM, true, 10);
+    await ctx.act({ type: "send", content: "hi", replyTo: "11" });
+    expect(ctx.api.send).toHaveBeenCalledWith(FORUM, { text: "hi", entities: [] }, 11, 10);
+    expect(ctx.api.typing).toHaveBeenLastCalledWith(FORUM, false, 10);
+    ctx.picked.push({ filename: "a.png", size: 3, contentType: "image/png", read: async () => new Uint8Array(3) });
+    await ctx.act({ type: "attach" });
+    expect(ctx.chat().channel!.pending).toHaveLength(1);
+    await ctx.act({ type: "send", content: "" });
+    expect(ctx.api.sendFile).toHaveBeenCalledWith(FORUM, expect.anything(), { text: "", entities: [] }, undefined, 10);
+  });
+
+  it("takes no messages, files or typing in the topic list", async () => {
+    const ctx = await open();
+    await ctx.act({ type: "send", content: "hi" });
+    await ctx.act({ type: "typing" });
+    await ctx.act({ type: "attach" });
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    expect(ctx.api.typing).not.toHaveBeenCalled();
+    expect(ctx.picker.pick).not.toHaveBeenCalled();
+  });
+
+  it("files live messages under their topic, counting them unread there unless open", async () => {
+    const ctx = await open();
+    ctx.adapter.setVisible(true);
+    await openTopic(ctx, "T10");
+    ctx.api.emit({ type: "message", message: msg(FORUM, 200, { topicId: 10 }) });
+    expect(ctx.messageIds()).toContain("200");
+    expect(ctx.api.markRead).toHaveBeenLastCalledWith(FORUM, 200, 10);
+    ctx.api.emit({ type: "message", message: msg(FORUM, 201, { topicId: 20, mentioned: true, date: 999 }) });
+    ctx.api.emit({ type: "message", message: msg(FORUM, 202) });
+    expect(ctx.messageIds()).not.toContain("201");
+    // General moved up with its new message.
+    expect(threads(ctx).map((t) => [t.name, t.unread, t.mentions])).toEqual([["T20", true, 1], ["General", true, 0], ["T10", false, 0]]);
+    // A topic not listed yet counts for the forum only.
+    ctx.api.emit({ type: "message", message: msg(FORUM, 203, { topicId: 99 }) });
+    expect(ctx.rows().find((r) => r.id === viewId(FORUM))!.mentions).toBe(2);
+    // General's messages are read as General.
+    await openTopic(ctx, "General");
+    expect(ctx.api.history).toHaveBeenLastCalledWith(FORUM, undefined, PAGE_SIZE, 1);
+    ctx.api.emit({ type: "message", message: msg(FORUM, 204) });
+    expect(ctx.api.markRead).toHaveBeenLastCalledWith(FORUM, 204, 1);
+  });
+
+  it("keeps topics apart for typing, edits, reactions, deletions and media", async () => {
+    const ctx = await open();
+    ctx.api.history.mockResolvedValue([msg(FORUM, 11, { topicId: 10, file: { kind: "image", name: "p", size: 2 } })]);
+    await openTopic(ctx, "T10");
+    ctx.api.emit({ type: "typing", chatId: FORUM, userId: "21", active: true, topicId: 20 });
+    ctx.api.emit({ type: "typing", chatId: FORUM, userId: "23", active: true });
+    expect(ctx.chat().channel!.typing).toEqual([]);
+    ctx.api.emit({ type: "typing", chatId: FORUM, userId: "22", active: true, topicId: 10 });
+    expect(ctx.chat().channel!.typing).toEqual(["Someone"]);
+    await ctx.act({ type: "loadMedia", key: `tg:${FORUM}:11` });
+    expect(ctx.api.download).toHaveBeenCalledWith(FORUM, 11, false);
+    ctx.api.emit({ type: "edit", message: msg(FORUM, 11, { topicId: 10, text: "changed" }) });
+    expect(ctx.chat().channel!.messages[0]!.content).toBe("changed");
+    ctx.api.emit({ type: "reactions", chatId: FORUM, id: 11, reactions: [{ emoji: "👍", count: 1, chosen: false }], own: true });
+    expect(ctx.chat().channel!.messages[0]!.reactions).toHaveLength(1);
+    await ctx.act({ type: "react", messageId: "11", emoji: "👍", add: true });
+    expect(ctx.api.react).toHaveBeenCalledWith(FORUM, 11, ["👍"]);
+    ctx.api.emit({ type: "delete", chatId: FORUM, ids: [11] });
+    expect(ctx.messageIds()).toEqual([]);
+  });
+
+  it("starts a topic with its first message and opens it", async () => {
+    const ctx = await open();
+    ctx.api.send.mockResolvedValueOnce(msg(FORUM, 78, { out: true, text: "first", topicId: 77, date: 2000 }));
+    ctx.api.history.mockResolvedValue([msg(FORUM, 78, { out: true, text: "first", topicId: 77 })]);
+    await ctx.act({ type: "createPost", name: " New ", content: "**first**" });
+    expect(ctx.api.createTopic).toHaveBeenCalledWith(FORUM, "New");
+    expect(ctx.api.send).toHaveBeenCalledWith(FORUM, { text: "first", entities: [{ type: "bold", offset: 0, length: 5 }] }, undefined, 77);
+    expect(ctx.chat().channel!.name).toBe("Club › New");
+    expect(ctx.messageIds()).toEqual(["78"]);
+    expect(threads(ctx)[0]).toMatchObject({ name: "T20" });
+    expect(threads(ctx)[1]).toMatchObject({ name: "New", active: true });
+    expect(ctx.api.history).not.toHaveBeenCalled();
+  });
+
+  it("starts no topic where only admins may, outside the list, or without text, and reports a refusal", async () => {
+    const locked = await open({ noTopics: true });
+    await locked.act({ type: "createPost", name: "x", content: "y" });
+    expect(locked.chat().error).toBe("Only the group's admins start topics here.");
+    const none = await signedIn({ dialogs: forum() });
+    await none.act({ type: "createPost", name: "x", content: "y" });
+    expect(none.api.createTopic).not.toHaveBeenCalled();
+    const ctx = await open();
+    await ctx.act({ type: "createPost", name: "x", content: "> " });
+    await openTopic(ctx, "T10");
+    await ctx.act({ type: "createPost", name: "x", content: "y" });
+    await ctx.adapter.openConversation("1");
+    await ctx.act({ type: "createPost", name: "x", content: "y" });
+    expect(ctx.api.createTopic).not.toHaveBeenCalled();
+    await ctx.act({ type: "select", channelId: viewId(FORUM) });
+    ctx.api.createTopic.mockRejectedValue(tgError("CHAT_ADMIN_REQUIRED"));
+    await ctx.act({ type: "createPost", name: "x", content: "y" });
+    expect(ctx.chat().error).toBe("Topic not started: CHAT_ADMIN_REQUIRED");
+  });
+
+  it("starts a topic in a forum whose list could not be loaded", async () => {
+    const ctx = await signedIn({ dialogs: forum() });
+    ctx.api.topics.mockRejectedValue(new Error("down"));
+    await ctx.act({ type: "select", channelId: viewId(FORUM) });
+    await ctx.act({ type: "createPost", name: "Fresh", content: "x" });
+    expect(threads(ctx).map((t) => t.name)).toEqual(["Fresh"]);
+  });
+
+  it("lists a topic only once, should Telegram list it before it is opened", async () => {
+    const ctx = await open();
+    ctx.api.createTopic.mockResolvedValue(10);
+    await ctx.act({ type: "createPost", name: "Again", content: "x" });
+    expect(threads(ctx).filter((t) => t.name === "T10")).toHaveLength(1);
+  });
+
+  it("opens a topic from elsewhere without listing the forum again, and ignores unknown ids", async () => {
+    const ctx = await signedIn({ dialogs: forum() });
+    ctx.api.topics.mockResolvedValue([topic(10)]);
+    await ctx.act({ type: "select", channelId: viewId(FORUM) });
+    const id = threads(ctx)[0]!.id;
+    await ctx.adapter.openConversation("1");
+    await ctx.act({ type: "select", channelId: id });
+    await flush();
+    expect(ctx.api.topics).toHaveBeenCalledTimes(1);
+    expect(ctx.chat().channel!.name).toBe("Club › T10");
+    // Unknown ids name no chat.
+    await ctx.act({ type: "select", channelId: String(9n * 10n ** 18n + 999n) });
+    expect(ctx.chat().channel!.name).toBe("Club › T10");
+  });
+
+  it("forgets topics on sign-out, and drops a list that arrives after it", async () => {
+    const ctx = await signedIn({ dialogs: forum() });
+    let answer!: (topics: TgTopic[]) => void;
+    ctx.api.topics.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    const opening = ctx.act({ type: "select", channelId: viewId(FORUM) });
+    await ctx.act({ type: "logout" });
+    answer([topic(10)]);
+    await opening;
+    await ctx.answer("phone", { phone: "+31612345678" });
+    await ctx.answer("code", { code: "1" });
+    await flush();
+    let fail!: () => void;
+    ctx.api.topics.mockImplementationOnce(() => new Promise((_, reject) => (fail = () => reject(new Error("x")))));
+    const again = ctx.act({ type: "select", channelId: viewId(FORUM) });
+    expect(threads(ctx)).toEqual([]);
+    ctx.api.isAuthorized = false;
+    await ctx.act({ type: "logout" });
+    fail();
+    await again;
+    expect(ctx.last().screen).not.toBe("chat");
   });
 });

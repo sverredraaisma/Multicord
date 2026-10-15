@@ -13,6 +13,7 @@ import { generateRandomBytes, readBigIntFromBuffer, returnBigInt } from "telegra
 import { computeCheck } from "telegram/Password";
 import { StringSession } from "telegram/sessions/StringSession";
 import {
+  GENERAL_TOPIC,
   isChannelPeer,
   reactionEmoji,
   telegramError,
@@ -30,6 +31,7 @@ import {
   type TgReaction,
   type TgSignIn,
   type TgText,
+  type TgTopic,
   type TgUpdate,
   type TgUser,
 } from "./api";
@@ -158,6 +160,31 @@ export function mediaBanned(entity: unknown): boolean {
   if (!(entity instanceof Api.Chat || entity instanceof Api.Channel) || entity.creator === true || entity.adminRights !== undefined) return false;
   const rights = [entity.defaultBannedRights, entity instanceof Api.Channel ? entity.bannedRights : undefined];
   return rights.some((r) => r?.sendMedia === true);
+}
+
+/** Whether a dialog's entity is a forum group, and whether only its admins start topics there. */
+export function forumOf(entity: unknown): { forum: boolean; noTopics: boolean } {
+  if (!(entity instanceof Api.Channel) || entity.megagroup !== true || entity.forum !== true) return { forum: false, noTopics: false };
+  const admin = entity.creator === true || entity.adminRights !== undefined;
+  return { forum: true, noTopics: !admin && entity.defaultBannedRights?.manageTopics === true };
+}
+
+/** A forum's topics as listed: deleted ones and malformed ids left out, titles cut short, last activity from their newest message. */
+export function topicsOf(topics: readonly unknown[], messages: readonly unknown[]): TgTopic[] {
+  const dates = new Map<number, number>();
+  for (const m of messages) if (m instanceof Api.Message || m instanceof Api.MessageService) dates.set(m.id, m.date);
+  return topics.flatMap((t): TgTopic[] => {
+    if (!(t instanceof Api.ForumTopic) || !Number.isInteger(t.id) || t.id <= 0) return [];
+    const topic: TgTopic = { id: t.id, title: (t.title || "Topic").slice(0, 128), unreadCount: tally(t.unreadCount), unreadMentions: tally(t.unreadMentionsCount), date: dates.get(t.topMessage) ?? t.date };
+    if (t.pinned) topic.pinned = true;
+    return [topic];
+  });
+}
+
+/** Where a message goes in a forum: into a topic (General takes plain messages), as a reply within it where it answers one. */
+export function topicReply(replyTo: number | undefined, topicId: number | undefined): { replyTo?: number; topMsgId?: number } {
+  if (topicId === undefined || topicId === GENERAL_TOPIC) return replyTo === undefined ? {} : { replyTo };
+  return replyTo === undefined ? { replyTo: topicId } : { replyTo, topMsgId: topicId };
 }
 
 /** How recently a user was online, as their status says. */
@@ -298,8 +325,11 @@ export function typingOf(update: unknown): Extract<TgUpdate, { type: "typing" }>
   else return undefined;
   if (!/^-?\d{1,18}$/.test(chatId) || !userId || !/^\d{1,18}$/.test(userId)) return undefined;
   const { action } = update;
-  if (action instanceof Api.SendMessageCancelAction) return { type: "typing", chatId, userId, active: false };
-  return TYPING_ACTIONS.some((cls) => action instanceof cls) ? { type: "typing", chatId, userId, active: true } : undefined;
+  const active = action instanceof Api.SendMessageCancelAction ? false : TYPING_ACTIONS.some((cls) => action instanceof cls) ? true : undefined;
+  if (active === undefined) return undefined;
+  // In a forum, which topic; none is General.
+  const topic = update instanceof Api.UpdateChannelUserTyping ? update.topMsgId : undefined;
+  return Number.isInteger(topic) && topic! > GENERAL_TOPIC ? { type: "typing", chatId, userId, active, topicId: topic } : { type: "typing", chatId, userId, active };
 }
 
 /** Text and its formatting, as GramJS sends them. */
@@ -376,7 +406,11 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
   if (reactions.length > 0) out.reactions = reactions;
   const file = mediaFile(message.media);
   if (file) out.file = file;
-  const reply = message.replyTo instanceof Api.MessageReplyHeader ? message.replyTo.replyToMsgId : undefined;
+  const header = message.replyTo instanceof Api.MessageReplyHeader ? message.replyTo : undefined;
+  // In a forum topic every message points at the topic's first; only one that also names a top id answers another.
+  const topic = header?.forumTopic === true ? (header.replyToTopId ?? header.replyToMsgId) : undefined;
+  if (topic && topic !== GENERAL_TOPIC) out.topicId = topic;
+  const reply = header?.forumTopic === true && header.replyToTopId === undefined ? undefined : header?.replyToMsgId;
   if (reply) out.replyToId = reply;
   return out;
 }
@@ -437,6 +471,9 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         if (chat.members) dialog.members = true;
         if (chat.left) dialog.left = true;
         if (mediaBanned(d.entity)) dialog.noMedia = true;
+        const forum = forumOf(d.entity);
+        if (forum.forum) dialog.forum = true;
+        if (forum.noTopics) dialog.noTopics = true;
         const settings = d.dialog.notifySettings;
         // A Unix time; "muted for ever" is the largest 32-bit one.
         const mutedUntil = settings instanceof Api.PeerNotifySettings ? settings.muteUntil : undefined;
@@ -445,19 +482,28 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         return [dialog];
       });
     },
-    history: async (chatId, beforeId, limit) => {
-      const page = await client.getMessages(peer(chatId), { limit, offsetId: beforeId ?? 0 });
+    history: async (chatId, beforeId, limit, topicId) => {
+      // A topic's messages are the replies to its first one.
+      const page = await client.getMessages(peer(chatId), { limit, offsetId: beforeId ?? 0, ...(topicId === undefined ? {} : { replyTo: topicId }) });
       return page.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId)).reverse();
     },
-    send: async (chatId, text, replyTo) => toMessage(await client.sendMessage(peer(chatId), { message: text.text, replyTo, ...outgoing(text) }), chatId),
-    sendFile: async (chatId, file, caption, replyTo) => {
+    send: async (chatId, text, replyTo, topicId) =>
+      toMessage(await client.sendMessage(peer(chatId), { message: text.text, ...topicReply(replyTo, topicId), ...outgoing(text) }), chatId),
+    sendFile: async (chatId, file, caption, replyTo, topicId) => {
       const name = fileName(file.filename);
       const media = uploadMedia(await uploadFile(client, file, name), file, name);
-      return toMessage(await client.sendFile(peer(chatId), { file: media, caption: caption.text, replyTo, ...outgoing(caption) }), chatId);
+      return toMessage(await client.sendFile(peer(chatId), { file: media, caption: caption.text, ...topicReply(replyTo, topicId), ...outgoing(caption) }), chatId);
     },
     edit: async (chatId, id, text) => toMessage(await client.editMessage(peer(chatId), { message: id, text: text.text, ...outgoing(text) }), chatId),
     remove: async (chatId, ids) => void (await client.deleteMessages(peer(chatId), ids, { revoke: true })),
-    markRead: async (chatId, maxId) => {
+    markRead: async (chatId, maxId, topicId) => {
+      if (topicId !== undefined) {
+        // A topic is read as the discussion under its first message, mentions in it with it.
+        const input = await client.getInputEntity(peer(chatId));
+        await client.invoke(new Api.messages.ReadDiscussion({ peer: input, msgId: topicId, readMaxId: maxId }));
+        await client.invoke(new Api.messages.ReadMentions({ peer: input, topMsgId: topicId }));
+        return;
+      }
       await client.markAsRead(peer(chatId), maxId);
       // Reading a group also reads the mentions in it, as Telegram's apps do once they are seen.
       if (chatId.startsWith("-")) await client.invoke(new Api.messages.ReadMentions({ peer: await client.getInputEntity(peer(chatId)) }));
@@ -522,9 +568,23 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       if (!(list instanceof Api.messages.AvailableReactions)) return [];
       return list.reactions.filter((r) => r.inactive !== true && (r.premium !== true || me.premium === true)).flatMap((r) => emojiOf(new Api.ReactionEmoji({ emoticon: r.reaction })) ?? []);
     },
-    typing: async (chatId, active) => {
+    typing: async (chatId, active, topicId) => {
       const action = active ? new Api.SendMessageTypingAction() : new Api.SendMessageCancelAction();
-      await client.invoke(new Api.messages.SetTyping({ peer: peer(chatId), action }));
+      const topic = topicId !== undefined && topicId !== GENERAL_TOPIC ? { topMsgId: topicId } : {};
+      await client.invoke(new Api.messages.SetTyping({ peer: peer(chatId), action, ...topic }));
+    },
+    topics: async (chatId, limit) => {
+      const found = await client.invoke(new Api.channels.GetForumTopics({ channel: peer(chatId), offsetDate: 0, offsetId: 0, offsetTopic: 0, limit }));
+      return topicsOf(found.topics, found.messages).slice(0, limit);
+    },
+    createTopic: async (chatId, title) => {
+      const updates = await client.invoke(new Api.channels.CreateForumTopic({ channel: peer(chatId), title, randomId: readBigIntFromBuffer(generateRandomBytes(8), true, true) }));
+      const list = updates instanceof Api.Updates || updates instanceof Api.UpdatesCombined ? updates.updates : [];
+      for (const update of list) {
+        const message = update instanceof Api.UpdateNewChannelMessage || update instanceof Api.UpdateNewMessage ? update.message : undefined;
+        if (message instanceof Api.MessageService && message.action instanceof Api.MessageActionTopicCreate) return message.id;
+      }
+      throw new Error("Telegram did not say which topic it started");
     },
     userName: async (userId) => {
       const user = await client.getEntity(new Api.PeerUser({ userId: returnBigInt(userId) }));

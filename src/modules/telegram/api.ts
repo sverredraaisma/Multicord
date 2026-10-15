@@ -64,6 +64,8 @@ export interface TgMessage {
   date: number;
   edited: boolean;
   replyToId?: number;
+  /** In a forum group, the topic it was posted in (its first message's id); absent for the General topic. */
+  topicId?: number;
   /** Reactions with emoji, and how many gave each; others (custom emoji, paid) are left out. */
   reactions?: TgReaction[];
 }
@@ -97,12 +99,32 @@ export interface TgDialog {
   readOnly?: boolean;
   /** Its members may be listed, as far as the dialog tells: groups the user is in, channels they administer. */
   members?: boolean;
+  /** A supergroup whose messages are in topics. */
+  forum?: boolean;
+  /** A forum where only admins start topics. */
+  noTopics?: boolean;
   /** The user may write here, but not send photos, videos or files. */
   noMedia?: boolean;
   /** The user left it, or was removed: they can only read what is left. */
   left?: boolean;
   lastMessage?: TgMessage;
   date: number;
+}
+
+/** The topic every forum has, holding the messages posted in none other. */
+export const GENERAL_TOPIC = 1;
+
+/** A forum group's topic. */
+export interface TgTopic {
+  /** The id of its first message. */
+  id: number;
+  title: string;
+  unreadCount: number;
+  unreadMentions: number;
+  /** When it was last active (Unix seconds). */
+  date: number;
+  /** Pinned to the top of the list. */
+  pinned?: boolean;
 }
 
 /** How recently a user was online, as far as their privacy settings tell: "recently" is all many of them show. */
@@ -148,7 +170,7 @@ export type TgUpdate =
   | { type: "edit"; message: TgMessage }
   | { type: "delete"; chatId?: string; ids: number[] }
   /** Someone is typing (or sending something) in a chat, or stopped. */
-  | { type: "typing"; chatId: string; userId: string; active: boolean }
+  | { type: "typing"; chatId: string; userId: string; active: boolean; topicId?: number }
   /** A message's reactions now; `chosen` is only known when `own` is set (Telegram leaves it out of some updates). */
   | { type: "reactions"; chatId: string; id: number; reactions: TgReaction[]; own: boolean };
 
@@ -160,14 +182,20 @@ export interface TelegramApi {
   checkPassword(password: string): Promise<void>;
   me(): Promise<TgUser>;
   dialogs(limit: number): Promise<TgDialog[]>;
-  /** Messages before `beforeId` (or the newest), oldest first. */
-  history(chatId: string, beforeId: number | undefined, limit: number): Promise<TgMessage[]>;
-  send(chatId: string, text: TgText, replyTo?: number): Promise<TgMessage>;
+  /** Messages before `beforeId` (or the newest), oldest first; in a forum, of one topic. */
+  history(chatId: string, beforeId: number | undefined, limit: number, topicId?: number): Promise<TgMessage[]>;
+  /** Sends text, in a forum into a topic. */
+  send(chatId: string, text: TgText, replyTo?: number, topicId?: number): Promise<TgMessage>;
   /** Uploads a picked file and sends it, with a caption. */
-  sendFile(chatId: string, file: FileSource, caption: TgText, replyTo?: number): Promise<TgMessage>;
+  sendFile(chatId: string, file: FileSource, caption: TgText, replyTo?: number, topicId?: number): Promise<TgMessage>;
   edit(chatId: string, id: number, text: TgText): Promise<TgMessage>;
   remove(chatId: string, ids: number[]): Promise<void>;
-  markRead(chatId: string, maxId: number): Promise<void>;
+  /** Marks a chat, or one topic of a forum, read up to a message, with its mentions. */
+  markRead(chatId: string, maxId: number, topicId?: number): Promise<void>;
+  /** A forum's topics, most recently active first. */
+  topics(chatId: string, limit: number): Promise<TgTopic[]>;
+  /** Starts a topic in a forum; its id. */
+  createTopic(chatId: string, title: string): Promise<number>;
   /** A small profile picture as a data: URL. */
   avatar(chatId: string): Promise<string | undefined>;
   /**
@@ -185,7 +213,7 @@ export interface TelegramApi {
   /** The emoji Telegram offers as reactions to this user, where a chat takes all. */
   reactionList(): Promise<string[]>;
   /** Tells the chat the user is typing, or stopped. */
-  typing(chatId: string, active: boolean): Promise<void>;
+  typing(chatId: string, active: boolean, topicId?: number): Promise<void>;
   /** A user's name, where Telegram has told it this session. */
   userName(userId: string): Promise<string | undefined>;
   /** A message's media (or its thumbnail), as bytes; undefined when there is none. */

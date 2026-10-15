@@ -2,11 +2,11 @@ import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
-import type { NativeAction, NativeAttachment, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeChannelView, NativeForumPost, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY } from "../../shared/engine";
 import { MAX_ATTACHMENTS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
-import { isChannelPeer, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgReaction, type TgUpdate, type TgUser } from "./api";
+import { GENERAL_TOPIC, isChannelPeer, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgReaction, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /** Chats listed: one-to-one chats, groups and channels together, most recent first. */
 export const DIALOG_LIMIT = 200;
@@ -28,6 +28,8 @@ export const MAX_UPLOAD_BYTES = MAX_HTTP_BODY;
 /** Longest caption, Telegram's default (Premium allows 4096); longer text goes in a message of its own after the files. */
 export const CAPTION_LIMIT = 1024;
 const PREMIUM_CAPTION_LIMIT = 4096;
+/** Topics listed per forum, most recently active first. */
+export const TOPIC_LIMIT = 50;
 /** Members fetched per page, and at most for one chat: big groups list their first ones and count the rest. */
 export const MEMBER_PAGE = 50;
 export const MEMBER_LIMIT = 200;
@@ -123,6 +125,21 @@ export function chatIdOfView(id: string): string {
   return value >= GROUP_VIEW_BASE ? `-${value - GROUP_VIEW_BASE}` : id;
 }
 
+/**
+ * Forum topics show in the view under ids of their own: this base plus a
+ * number counted up per sign-in, below the groups' ids and above any user's.
+ */
+const TOPIC_VIEW_BASE = 9n * 10n ** 18n;
+
+/** A conversation's key: a chat, or one topic of a forum. */
+export const conversation = (chatId: string, topic?: number): string => (topic === undefined ? chatId : `${chatId}#${topic}`);
+
+/** The chat and topic a conversation key names. */
+function parseConversation(key: string): [string, number | undefined] {
+  const at = key.indexOf("#");
+  return at < 0 ? [key, undefined] : [key.slice(0, at), Number(key.slice(at + 1))];
+}
+
 /** The view's sections, in order. */
 const SECTIONS: [TgChatKind, string][] = [
   ["user", "Direct messages"],
@@ -171,6 +188,14 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   /** Messages' text as markdown; a message edited is a new object, so it is worked out again. */
   private readonly markdownOf = new WeakMap<TgMessage, string>();
   private selected: string | undefined;
+  /** In a selected forum, the open topic; none shows the forum's topic list. */
+  private topic: number | undefined;
+  /** Forums' topics, once listed; forums being listed. */
+  private readonly topics = new Map<string, TgTopic[]>();
+  private readonly topicsLoading = new Set<string>();
+  /** Topics' ids in the view, both ways. */
+  private readonly topicViewIds = new Map<string, string>();
+  private readonly topicsByView = new Map<string, { chatId: string; topic: number }>();
   /** The view's member panel is open: the selected chat's members are fetched and shown. */
   private membersOpen = false;
   private readonly memberLists = new Map<string, MemberList>();
@@ -184,17 +209,17 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   /** The emoji Telegram offers as reactions to this user, once asked. */
   private reactionList: string[] | undefined;
   private reactionListAsked = false;
-  /** Who is typing where: chat, then user, then until when (ms). */
+  /** Who is typing where: conversation, then user, then until when (ms). */
   private readonly typing = new Map<string, Map<string, number>>();
   private typingTimer: ReturnType<typeof setTimeout> | undefined;
-  /** The user's own typing notice: in which chat, and when it was last sent. */
-  private ownTyping: { chatId: string; sent: number } | undefined;
+  /** The user's own typing notice: in which conversation, and when it was last sent. */
+  private ownTyping: { key: string; sent: number } | undefined;
   /** Names of people typing, as Telegram told them; and those asked for. */
   private readonly names = new Map<string, string>();
-  /** Files picked for each chat's next message, and the chats whose files are being sent. */
+  private readonly namesAsked = new Set<string>();
+  /** Files picked for each conversation's next message, and the conversations whose files are being sent. */
   private readonly pending = new Map<string, FileSource[]>();
   private readonly uploading = new Set<string>();
-  private readonly namesAsked = new Set<string>();
   /** The profile card the view asked for last. */
   private profile: NativeProfile | undefined;
   private visible = false;
@@ -315,7 +340,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
 
   setVisible(visible: boolean): void {
     this.visible = visible;
-    if (visible && this.selected) void this.markRead(this.selected);
+    if (visible && this.selected) void this.markRead(conversation(this.selected, this.topic));
   }
 
   accountStatus(): AccountStatus {
@@ -351,8 +376,13 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.namesAsked.clear();
     this.pending.clear();
     this.uploading.clear();
+    this.topics.clear();
+    this.topicsLoading.clear();
+    this.topicViewIds.clear();
+    this.topicsByView.clear();
     this.session++;
     this.selected = undefined;
+    this.topic = undefined;
     this.directsChanged.emit([]);
     // A fresh client for the next sign-in, starting at the phone step.
     if (this.credentials) return this.open("");
@@ -373,8 +403,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
           this.render();
         }
         return;
-      case "select":
-        return this.select(chatIdOfView(action.channelId));
+      case "select": {
+        const topic = this.topicsByView.get(action.channelId);
+        return topic ? this.select(topic.chatId, topic.topic) : this.select(chatIdOfView(action.channelId));
+      }
+      case "createPost":
+        return this.createTopic(action.name, action.content);
       case "send":
         return this.send(action.content, action.replyTo);
       case "edit":
@@ -398,12 +432,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       case "attach":
         return this.attach();
       case "removeAttachment":
-        if (this.selected && !this.uploading.has(this.selected)) this.pending.get(this.selected)?.splice(action.index, 1);
+        if (this.selected && !this.uploading.has(this.current()!)) this.pending.get(this.current()!)?.splice(action.index, 1);
         return this.render();
       case "logout":
         return this.signOut();
       default:
-        // Forums and voice are not offered for Telegram.
+        // Voice is not offered for Telegram.
         return;
     }
   }
@@ -563,48 +597,136 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     return { unread, mentions: dialog.unreadMentions };
   }
 
-  private async select(chatId: string): Promise<void> {
-    if (!this.dialog(chatId)) return;
+  /** The open conversation's key: the selected chat, or the open topic of a selected forum. */
+  private current(): string | undefined {
+    return this.selected === undefined ? undefined : conversation(this.selected, this.topic);
+  }
+
+  /** The conversation a message belongs to: its chat, or in a forum its topic. */
+  private conversationOf(message: TgMessage): string {
+    return this.dialog(message.chatId)?.forum ? conversation(message.chatId, message.topicId ?? GENERAL_TOPIC) : message.chatId;
+  }
+
+  /** A chat's loaded messages, in all its conversations. */
+  private loaded(chatId: string): TgMessage[][] {
+    return [...this.messages].filter(([key]) => parseConversation(key)[0] === chatId).map(([, list]) => list);
+  }
+
+  /** Opens a chat, or in a forum its topic list (no topic) or a topic. */
+  private async select(chatId: string, topic?: number): Promise<void> {
+    const dialog = this.dialog(chatId);
+    if (!dialog || (topic !== undefined && !dialog.forum)) return;
     this.selected = chatId;
+    this.topic = topic;
     this.render();
     if (this.membersOpen && !this.memberLists.has(chatId)) void this.fetchMembers(chatId);
     void this.fetchAllowedReactions(chatId);
-    if (!this.messages.has(chatId)) await this.fetchHistory(chatId, undefined);
-    if (this.visible) await this.markRead(chatId);
+    // A forum shows its topic list; topics are opened from it, so it is listed by then.
+    if (dialog.forum && topic === undefined) return this.fetchTopics(chatId);
+    const key = conversation(chatId, topic);
+    if (!this.messages.has(key)) await this.fetchHistory(key, undefined);
+    if (this.visible) await this.markRead(key);
   }
 
-  private async fetchHistory(chatId: string, beforeId: number | undefined): Promise<void> {
-    if (this.loading.has(chatId)) return;
-    this.loading.add(chatId);
+  /** Lists a forum's topics afresh: up to TOPIC_LIMIT, most recently active first. */
+  private async fetchTopics(chatId: string): Promise<void> {
+    if (this.topicsLoading.has(chatId)) return;
+    this.topicsLoading.add(chatId);
+    this.render();
+    const session = this.session;
+    try {
+      const topics = await this.api!.topics(chatId, TOPIC_LIMIT);
+      if (session !== this.session) return;
+      this.topics.set(chatId, topics.slice(0, TOPIC_LIMIT));
+    } catch (error) {
+      if (session !== this.session) return;
+      this.error = `Could not load topics: ${friendly(error)}`;
+    }
+    this.topicsLoading.delete(chatId);
+    this.render();
+  }
+
+  /** A topic's id in the view, given out once per sign-in. */
+  private topicViewId(chatId: string, topic: number): string {
+    const key = conversation(chatId, topic);
+    let id = this.topicViewIds.get(key);
+    if (!id) {
+      id = String(TOPIC_VIEW_BASE + BigInt(this.topicViewIds.size + 1));
+      this.topicViewIds.set(key, id);
+      this.topicsByView.set(id, { chatId, topic });
+    }
+    return id;
+  }
+
+  private async fetchHistory(key: string, beforeId: number | undefined): Promise<void> {
+    if (this.loading.has(key)) return;
+    const [chatId, topic] = parseConversation(key);
+    this.loading.add(key);
     this.render();
     try {
-      const page = await this.api!.history(chatId, beforeId, PAGE_SIZE);
-      this.hasOlder.set(chatId, page.length === PAGE_SIZE);
-      const known = this.messages.get(chatId) ?? [];
+      const page = await this.api!.history(chatId, beforeId, PAGE_SIZE, topic);
+      this.hasOlder.set(key, page.length === PAGE_SIZE);
+      const known = this.messages.get(key) ?? [];
       const ids = new Set(known.map((m) => m.id));
       const fresh = page.filter((m) => !ids.has(m.id));
-      this.messages.set(chatId, beforeId === undefined ? [...known, ...fresh].sort((a, b) => a.id - b.id) : [...fresh, ...known]);
+      this.messages.set(key, beforeId === undefined ? [...known, ...fresh].sort((a, b) => a.id - b.id) : [...fresh, ...known]);
     } catch (error) {
       this.error = `Could not load messages: ${friendly(error)}`;
     }
-    this.loading.delete(chatId);
+    this.loading.delete(key);
     this.render();
   }
 
   private async loadOlder(): Promise<void> {
-    const chatId = this.selected;
-    const oldest = chatId ? this.messages.get(chatId)?.[0] : undefined;
-    if (chatId && oldest && this.hasOlder.get(chatId)) await this.fetchHistory(chatId, oldest.id);
+    const key = this.current();
+    const oldest = key ? this.messages.get(key)?.[0] : undefined;
+    if (key && oldest && this.hasOlder.get(key)) await this.fetchHistory(key, oldest.id);
   }
 
-  private async markRead(chatId: string): Promise<void> {
+  /** Marks a conversation read: a chat, or one topic of a forum (whose unread counts the chat's include). */
+  private async markRead(key: string): Promise<void> {
+    const [chatId, topic] = parseConversation(key);
     const dialog = this.dialog(chatId);
-    const last = this.messages.get(chatId)?.at(-1) ?? dialog?.lastMessage;
-    if (!dialog || !last || (dialog.unreadCount === 0 && dialog.unreadMentions === 0)) return;
+    if (!dialog) return;
+    if (dialog.forum) {
+      const found = topic === undefined ? undefined : this.topics.get(chatId)?.find((t) => t.id === topic);
+      const last = this.messages.get(key)?.at(-1);
+      if (!found || !last || (found.unreadCount === 0 && found.unreadMentions === 0)) return;
+      dialog.unreadCount = Math.max(0, dialog.unreadCount - found.unreadCount);
+      dialog.unreadMentions = Math.max(0, dialog.unreadMentions - found.unreadMentions);
+      found.unreadCount = 0;
+      found.unreadMentions = 0;
+      this.publish();
+      await this.api?.markRead(chatId, last.id, topic).catch(() => undefined);
+      return;
+    }
+    const last = this.messages.get(key)?.at(-1) ?? dialog.lastMessage;
+    if (!last || (dialog.unreadCount === 0 && dialog.unreadMentions === 0)) return;
     dialog.unreadCount = 0;
     dialog.unreadMentions = 0;
     this.publish();
     await this.api?.markRead(chatId, last.id).catch(() => undefined);
+  }
+
+  /** Starts a topic in the open forum with its first message, and opens it. */
+  private async createTopic(title: string, content: string): Promise<void> {
+    const chatId = this.selected;
+    const dialog = chatId ? this.dialog(chatId) : undefined;
+    const text = fromMarkdown(content);
+    if (!chatId || !dialog?.forum || this.topic !== undefined || !this.api || text.text.trim() === "") return;
+    if (dialog.noTopics || dialog.readOnly) {
+      this.error = "Only the group's admins start topics here.";
+      return this.render();
+    }
+    await this.attempt("Topic not started", async () => {
+      const topic = await this.api!.createTopic(chatId, title.trim());
+      const sent = await this.api!.send(chatId, text, undefined, topic);
+      // Listed at once; Telegram's own list follows when the forum is opened again.
+      const topics = this.topics.get(chatId) ?? [];
+      if (!topics.some((t) => t.id === topic)) this.topics.set(chatId, [{ id: topic, title: title.trim(), unreadCount: 0, unreadMentions: 0, date: sent.date }, ...topics].slice(0, TOPIC_LIMIT));
+      this.messages.set(conversation(chatId, topic), [sent]);
+      await this.select(chatId, topic);
+    });
   }
 
   private async attempt(what: string, task: () => Promise<void>): Promise<void> {
@@ -625,15 +747,19 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
    */
   private async send(content: string, replyTo?: string): Promise<void> {
     const chatId = this.selected;
+    const key = this.current();
+    const dialog = chatId ? this.dialog(chatId) : undefined;
+    const topic = this.topic;
     const text = fromMarkdown(content);
-    const files = chatId ? (this.pending.get(chatId) ?? []) : [];
+    const files = key ? (this.pending.get(key) ?? []) : [];
     const hasText = text.text.trim() !== "";
-    if (!chatId || !this.api || this.dialog(chatId)?.readOnly || this.uploading.has(chatId) || (!hasText && files.length === 0)) return;
-    this.stopTyping(chatId);
+    // A forum takes messages in its topics only.
+    if (!chatId || !key || !dialog || !this.api || dialog.readOnly || (dialog.forum && topic === undefined) || this.uploading.has(key) || (!hasText && files.length === 0)) return;
+    this.stopTyping(key);
     const reply = replyTo ? Number(replyTo) : undefined;
     const uploading = files.length > 0;
     if (uploading) {
-      this.uploading.add(chatId);
+      this.uploading.add(key);
       this.render();
     }
     const session = this.session;
@@ -642,35 +768,35 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       let first = true;
       while (files.length > 0) {
         const caption = files.length === 1 && captioned ? text : { text: "", entities: [] };
-        const sent = await this.api!.sendFile(chatId, files[0]!, caption, first ? reply : undefined);
+        const sent = await this.api!.sendFile(chatId, files[0]!, caption, first ? reply : undefined, topic);
         // Signed out meanwhile: the rest stays unsent.
         if (session !== this.session) return;
         files.shift();
         first = false;
         this.onUpdate({ type: "message", message: sent });
       }
-      if (hasText && !captioned) this.onUpdate({ type: "message", message: await this.api!.send(chatId, text, first ? reply : undefined) });
+      if (hasText && !captioned) this.onUpdate({ type: "message", message: await this.api!.send(chatId, text, first ? reply : undefined, topic) });
     });
     if (!uploading || session !== this.session) return;
-    this.uploading.delete(chatId);
-    if (files.length === 0) this.pending.delete(chatId);
+    this.uploading.delete(key);
+    if (files.length === 0) this.pending.delete(key);
     this.render();
   }
 
   /** Where the user may send files: a chat they may write in that does not bar media, with a file picker at hand. */
   private canAttach(dialog: TgDialog): boolean {
-    return this.deps.files !== undefined && dialog.readOnly !== true && dialog.noMedia !== true;
+    return this.deps.files !== undefined && dialog.readOnly !== true && dialog.noMedia !== true && !(dialog.forum && this.topic === undefined);
   }
 
   /** Adds files from the OS picker to the open chat's next message, leaving out any that cannot be sent. */
   private async attach(): Promise<void> {
-    const chatId = this.selected;
-    const dialog = chatId ? this.dialog(chatId) : undefined;
-    if (!chatId || !dialog || !this.canAttach(dialog) || this.uploading.has(chatId)) return;
+    const key = this.current();
+    const dialog = this.selected ? this.dialog(this.selected) : undefined;
+    if (!key || !dialog || !this.canAttach(dialog) || this.uploading.has(key)) return;
     await this.attempt("Could not attach", async () => {
       // Picked first: the shell lets the engine open the picker only right after the user asked.
       const picked = await this.deps.files!.pick();
-      const list = this.pending.get(chatId) ?? [];
+      const list = this.pending.get(key) ?? [];
       for (const file of picked) {
         const name = file.filename.slice(0, 100) || "A file";
         if (list.length >= MAX_ATTACHMENTS) {
@@ -681,7 +807,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         else if (file.size <= 0) this.error = `${name} is empty.`;
         else list.push(file);
       }
-      if (list.length > 0) this.pending.set(chatId, list);
+      if (list.length > 0) this.pending.set(key, list);
       this.render();
     });
   }
@@ -712,21 +838,26 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         const dialog = this.dialog(message.chatId);
         // A chat we do not list yet (someone new, a group we were added to): refresh the list.
         if (!dialog) return this.refreshSoon();
-        const cached = this.messages.get(message.chatId);
+        const key = this.conversationOf(message);
+        const cached = this.messages.get(key);
         if (cached && !cached.some((m) => m.id === message.id)) cached.push(message);
         // Whoever sent it is done typing, as Telegram's apps show it.
-        if (message.senderId) this.typing.get(message.chatId)?.delete(message.senderId);
+        if (message.senderId) this.typing.get(key)?.delete(message.senderId);
+        const topic = dialog.forum ? this.topics.get(message.chatId)?.find((t) => t.id === (message.topicId ?? GENERAL_TOPIC)) : undefined;
+        if (topic) topic.date = Math.max(topic.date, message.date);
         if (message.id >= (dialog.lastMessage?.id ?? 0)) {
           dialog.lastMessage = message;
           dialog.date = message.date;
         }
-        const inView = this.visible && this.selected === message.chatId;
+        const inView = this.visible && this.current() === key;
         if (!message.out) {
           // In view: read at once, on the server too (there is no unread count to clear here).
-          if (inView) void this.api?.markRead(message.chatId, message.id).catch(() => undefined);
+          if (inView) void this.api?.markRead(message.chatId, message.id, dialog.forum ? (message.topicId ?? GENERAL_TOPIC) : undefined).catch(() => undefined);
           else {
             dialog.unreadCount++;
             if (message.mentioned && dialog.kind !== "user") dialog.unreadMentions++;
+            if (topic) topic.unreadCount++;
+            if (topic && message.mentioned) topic.unreadMentions++;
           }
           // A muted chat stays quiet, except for a group message that mentions or answers the user, as in Telegram.
           if (!this.muted(dialog) || (message.mentioned && dialog.kind === "group")) {
@@ -746,7 +877,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       }
       case "edit": {
         const { message } = update;
-        const cached = this.messages.get(message.chatId);
+        const cached = this.messages.get(this.conversationOf(message));
         const index = cached?.findIndex((m) => m.id === message.id) ?? -1;
         if (index >= 0) cached![index] = message;
         const dialog = this.dialog(message.chatId);
@@ -754,9 +885,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.publish();
       }
       case "typing":
-        return this.onTyping(update.chatId, update.userId, update.active);
+        return this.onTyping(update.chatId, update.userId, update.active, update.topicId);
       case "reactions": {
-        const cached = this.messages.get(update.chatId);
+        const cached = this.loaded(update.chatId).find((list) => list.some((m) => m.id === update.id));
         const index = cached?.findIndex((m) => m.id === update.id) ?? -1;
         if (index < 0) return;
         const before = cached![index]!;
@@ -770,7 +901,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         // there. Supergroups and channels number their own messages, and name the chat.
         const ids = new Set(update.ids);
         const hit = (chatId: string) => (update.chatId ? update.chatId === chatId : !isChannelPeer(chatId));
-        for (const [chatId, cached] of this.messages) if (hit(chatId)) this.messages.set(chatId, cached.filter((m) => !ids.has(m.id)));
+        for (const [key, cached] of this.messages) if (hit(parseConversation(key)[0])) this.messages.set(key, cached.filter((m) => !ids.has(m.id)));
         for (const dialog of this.dialogs) if (hit(dialog.chatId) && dialog.lastMessage && ids.has(dialog.lastMessage.id)) dialog.lastMessage = undefined;
         return this.publish();
       }
@@ -781,35 +912,38 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
 
   /** Tells the open chat the user is typing: at most once every TYPING_REPEAT_MS, as Telegram's apps repeat it. */
   private sendTyping(): void {
-    const chatId = this.selected;
-    const dialog = chatId ? this.dialog(chatId) : undefined;
-    if (!chatId || !dialog || dialog.readOnly || !this.api) return;
+    const key = this.current();
+    const dialog = this.selected ? this.dialog(this.selected) : undefined;
+    if (!key || !dialog || dialog.readOnly || (dialog.forum && this.topic === undefined) || !this.api) return;
     const now = Date.now();
-    if (this.ownTyping?.chatId === chatId && now - this.ownTyping.sent < TYPING_REPEAT_MS) return;
-    this.ownTyping = { chatId, sent: now };
+    if (this.ownTyping?.key === key && now - this.ownTyping.sent < TYPING_REPEAT_MS) return;
+    this.ownTyping = { key, sent: now };
     // Best effort: a lost notice changes nothing shown.
-    void this.api.typing(chatId, true).catch(() => undefined);
+    void this.api.typing(dialog.chatId, true, this.topic).catch(() => undefined);
   }
 
-  /** Ends the user's typing notice in a chat on sending, if it still shows. */
-  private stopTyping(chatId: string): void {
+  /** Ends the user's typing notice in a conversation on sending, if it still shows. */
+  private stopTyping(key: string): void {
     const own = this.ownTyping;
-    if (own?.chatId !== chatId) return;
+    if (own?.key !== key) return;
     this.ownTyping = undefined;
-    if (Date.now() - own.sent < TYPING_SHOWN_MS) void this.api?.typing(chatId, false).catch(() => undefined);
+    const [chatId, topic] = parseConversation(key);
+    if (Date.now() - own.sent < TYPING_SHOWN_MS) void this.api?.typing(chatId, false, topic).catch(() => undefined);
   }
 
-  /** Someone started or stopped typing in a listed chat; the user's own typing elsewhere is not shown. */
-  private onTyping(chatId: string, userId: string, active: boolean): void {
-    if (!this.dialog(chatId) || userId === this.me?.id) return;
-    const people = this.typing.get(chatId) ?? new Map<string, number>();
+  /** Someone started or stopped typing in a listed chat (in a forum, a topic); the user's own typing elsewhere is not shown. */
+  private onTyping(chatId: string, userId: string, active: boolean, topic: number | undefined): void {
+    const dialog = this.dialog(chatId);
+    if (!dialog || userId === this.me?.id) return;
+    const key = dialog.forum ? conversation(chatId, topic ?? GENERAL_TOPIC) : chatId;
+    const people = this.typing.get(key) ?? new Map<string, number>();
     people.delete(userId);
     if (active && people.size < MAX_TYPING) people.set(userId, Date.now() + TYPING_SHOWN_MS);
-    if (people.size > 0) this.typing.set(chatId, people);
-    else this.typing.delete(chatId);
+    if (people.size > 0) this.typing.set(key, people);
+    else this.typing.delete(key);
     if (active) void this.askName(chatId, userId);
     this.scheduleTyping();
-    if (chatId === this.selected) this.render();
+    if (key === this.current()) this.render();
   }
 
   /** Re-renders when the next typing notice runs out. */
@@ -820,26 +954,26 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (!Number.isFinite(next)) return;
     this.typingTimer = setTimeout(() => {
       const now = Date.now();
-      for (const [chatId, people] of this.typing) {
+      for (const [key, people] of this.typing) {
         for (const [userId, until] of people) if (until <= now) people.delete(userId);
-        if (people.size === 0) this.typing.delete(chatId);
+        if (people.size === 0) this.typing.delete(key);
       }
       this.scheduleTyping();
       this.render();
     }, Math.max(0, next - Date.now()));
   }
 
-  /** Who is typing in a chat, by name: a one-to-one chat's own title, or what is known of a group's members. */
+  /** Who is typing in the open conversation, by name: a one-to-one chat's own title, or what is known of a group's members. */
   private typingNames(dialog: TgDialog): string[] {
     const now = Date.now();
-    return [...(this.typing.get(dialog.chatId) ?? [])].filter(([, until]) => until > now).map(([userId]) => (dialog.kind === "user" ? dialog.title : (this.knownName(dialog.chatId, userId) ?? "Someone")));
+    return [...(this.typing.get(this.current()!) ?? [])].filter(([, until]) => until > now).map(([userId]) => (dialog.kind === "user" ? dialog.title : (this.knownName(dialog.chatId, userId) ?? "Someone")));
   }
 
   /** A user's name from what the chat shows: its members, their messages, or what Telegram told. */
   private knownName(chatId: string, userId: string): string | undefined {
     return (
       this.memberLists.get(chatId)?.members.find((m) => m.id === userId)?.name ??
-      this.messages.get(chatId)?.findLast((m) => m.senderId === userId && m.sender)?.sender ??
+      this.loaded(chatId).flat().findLast((m) => m.senderId === userId && m.sender)?.sender ??
       this.names.get(userId)
     );
   }
@@ -904,7 +1038,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private async react(messageId: string, key: string, add: boolean): Promise<void> {
     const chatId = this.selected;
     const dialog = chatId ? this.dialog(chatId) : undefined;
-    const message = chatId ? this.messages.get(chatId)?.find((m) => m.id === Number(messageId)) : undefined;
+    const message = chatId ? this.messages.get(this.current()!)?.find((m) => m.id === Number(messageId)) : undefined;
     if (!chatId || !dialog || !message || !this.api || !this.canReact(dialog)) return;
     const emoji = reactionEmoji(key);
     const own = (message.reactions ?? []).filter((r) => r.chosen).map((r) => r.emoji);
@@ -1097,7 +1231,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private toNative(message: TgMessage, dialog: TgDialog): NativeMessage {
-    const replied = message.replyToId ? this.messages.get(message.chatId)?.find((m) => m.id === message.replyToId) : undefined;
+    const replied = message.replyToId ? this.messages.get(this.conversationOf(message))?.find((m) => m.id === message.replyToId) : undefined;
     const markdown = this.markdown(message);
     const native: NativeMessage = {
       id: String(message.id),
@@ -1147,7 +1281,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const match = /^tg:(-?\d{1,20}):(\d{1,12})$/.exec(key);
     if (!match || !this.api || this.media.has(key) || this.mediaLoading.has(key)) return;
     const [, chatId, id] = match;
-    const message = this.messages.get(chatId!)?.find((m) => m.id === Number(id));
+    const message = this.loaded(chatId!).flat().find((m) => m.id === Number(id));
     if (!message?.file) return;
     this.mediaLoading.add(key);
     try {
@@ -1173,6 +1307,49 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     }
   }
 
+  /** A forum's topics as listed: pinned ones first, then the most recently active. */
+  private topicList(chatId: string): TgTopic[] {
+    return [...(this.topics.get(chatId) ?? [])].sort((a, b) => Number(b.pinned === true) - Number(a.pinned === true) || b.date - a.date);
+  }
+
+  /** The open conversation: a chat, a forum's topic list, or one of its topics. */
+  private channelView(dialog: TgDialog): NativeChannelView {
+    const locked = dialog.readOnly ? (dialog.kind === "channel" ? "Only the channel's admins post here." : "You cannot send messages in this group.") : undefined;
+    const members = this.memberView(dialog);
+    const shared = { ...(locked ? { locked } : {}), ...(members ? { members } : {}) };
+    if (dialog.forum && this.topic === undefined) {
+      // The topic list: new topics come from its own form, messages only within topics.
+      const posts = this.topicList(dialog.chatId).map((t): NativeForumPost => ({ id: this.topicViewId(dialog.chatId, t.id), name: t.title, unread: t.unreadCount > 0, mentions: t.unreadMentions }));
+      return {
+        id: viewId(dialog.chatId),
+        name: dialog.title,
+        messages: [],
+        loading: this.topicsLoading.has(dialog.chatId),
+        hasOlder: false,
+        typing: [],
+        pending: [],
+        uploading: false,
+        posts,
+        ...shared,
+        can: { reply: false, react: false, attach: false, typing: false, members: this.canListMembers(dialog) },
+      };
+    }
+    const key = this.current()!;
+    const topic = this.topic === undefined ? undefined : this.topics.get(dialog.chatId)?.find((t) => t.id === this.topic);
+    return {
+      id: this.topic === undefined ? viewId(dialog.chatId) : this.topicViewId(dialog.chatId, this.topic),
+      name: topic ? `${dialog.title} › ${topic.title}` : dialog.title,
+      messages: (this.messages.get(key) ?? []).map((m) => this.toNative(m, dialog)),
+      loading: this.loading.has(key),
+      hasOlder: this.hasOlder.get(key) ?? false,
+      typing: this.typingNames(dialog),
+      pending: (this.pending.get(key) ?? []).map((f) => ({ name: f.filename, size: f.size })),
+      uploading: this.uploading.has(key),
+      ...shared,
+      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog) },
+    };
+  }
+
   private viewState(): NativeViewState {
     const platform = this.deps.def.name;
     if (this.step === "connecting") return { screen: "connecting", platform, status: this.status ?? "Connecting…" };
@@ -1184,37 +1361,27 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       sidebar.push({ id: `section-${kind}`, name: heading, kind: "category", unread: false, mentions: 0, active: false });
       for (const d of dialogs) {
         // Every chat shows its picture, so all are "dm" rows.
-        const item: NativeSidebarItem = { id: viewId(d.chatId), name: d.title, kind: "dm", ...this.badge(d), active: d.chatId === this.selected };
+        const selected = d.chatId === this.selected;
+        const item: NativeSidebarItem = { id: viewId(d.chatId), name: d.title, kind: "dm", ...this.badge(d), active: selected && this.topic === undefined };
         const avatar = this.avatars.get(d.chatId);
         if (avatar) item.iconUrl = avatar;
         sidebar.push(item);
+        // An open forum lists its topics under it.
+        if (d.forum && selected) {
+          for (const t of this.topicList(d.chatId)) {
+            sidebar.push({ id: this.topicViewId(d.chatId, t.id), name: t.title, kind: "thread", unread: t.unreadCount > 0, mentions: t.unreadMentions, active: t.id === this.topic });
+          }
+        }
       }
     }
     const dialog = this.selected ? this.dialog(this.selected) : undefined;
-    const locked = dialog?.readOnly ? (dialog.kind === "channel" ? "Only the channel's admins post here." : "You cannot send messages in this group.") : undefined;
-    const members = dialog ? this.memberView(dialog) : undefined;
     return {
       screen: "chat",
       platform,
       title: "Chats",
       me: this.me?.name ?? "",
       sidebar,
-      channel: dialog
-        ? {
-            id: viewId(dialog.chatId),
-            name: dialog.title,
-            messages: (this.messages.get(dialog.chatId) ?? []).map((m) => this.toNative(m, dialog)),
-            loading: this.loading.has(dialog.chatId),
-            hasOlder: this.hasOlder.get(dialog.chatId) ?? false,
-            typing: this.typingNames(dialog),
-            pending: (this.pending.get(dialog.chatId) ?? []).map((f) => ({ name: f.filename, size: f.size })),
-            uploading: this.uploading.has(dialog.chatId),
-            ...(locked ? { locked } : {}),
-            // Reactions, files and typing notices are not offered here yet.
-            can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog) },
-            ...(members ? { members } : {}),
-          }
-        : null,
+      channel: dialog ? this.channelView(dialog) : null,
       voice: null,
       ...(this.profile ? { profile: this.profile } : {}),
       error: this.error,
