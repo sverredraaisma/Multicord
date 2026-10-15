@@ -269,7 +269,7 @@ describe("settings modules declare", () => {
     });
     const services = settings.state().services;
     const mx = services.find((s) => s.id === "mx")!;
-    expect(mx.settings!.map((f) => f.key)).toEqual(["slidingSync", "forgetCallServices"]);
+    expect(mx.settings!.map((f) => f.key)).toEqual(["readReceipts", "slidingSync", "forgetCallServices"]);
     // Typing indicators are the shell's setting, offered for modules that send them.
     expect(mx.sendsTyping).toBe(true);
     expect(services.find((s) => s.id === "discord")).not.toHaveProperty("sendsTyping");

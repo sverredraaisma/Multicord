@@ -32,6 +32,13 @@ export const matrixNativeModule: PlatformModule = {
     settings: [
       {
         kind: "toggle",
+        key: "readReceipts",
+        label: "Send read receipts",
+        hint: "Others in a room see how far you have read. Off, Multicord sends private receipts instead: your unread counts still clear on your other devices, but nobody else sees them.",
+        default: true,
+      },
+      {
+        kind: "toggle",
         key: "slidingSync",
         label: "Fast sync (sliding sync)",
         hint: "Starts faster by loading the most recent rooms first, when your homeserver offers sliding sync (MSC4186); otherwise Multicord uses classic sync. Turn it off to always use classic sync.",

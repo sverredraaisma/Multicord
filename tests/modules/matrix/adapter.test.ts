@@ -668,9 +668,9 @@ describe("syncing", () => {
     // Shown here: read, and a read marker goes to the server.
     ctx.adapter.setVisible(true);
     await ctx.open("Bo");
-    expect(ctx.api.markRead).toHaveBeenCalledWith(SESSION, "!dm:x.org", "$d3");
+    expect(ctx.api.markRead).toHaveBeenCalledWith(SESSION, "!dm:x.org", "$d3", false);
     await ctx.live(counted({ joined: [room("!dm:x.org", { timeline: [msg("d4", BO, "seen at once", 4000)] })] }));
-    expect(ctx.api.markRead).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", "$d4");
+    expect(ctx.api.markRead).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", "$d4", false);
     expect(ctx.item("Bo")).toMatchObject({ unread: false, mentions: 0 });
     // Our own receipt coming back changes nothing.
     await ctx.live(counted({ joined: [room("!dm:x.org", { read: { id: "$d4", ts: 4100 } })] }));
@@ -1774,7 +1774,7 @@ describe("read state", () => {
     const ctx = await signedIn();
     ctx.adapter.setVisible(true);
     await ctx.open("Bo");
-    expect(ctx.api.markRead).toHaveBeenCalledWith(SESSION, "!dm:x.org", "$d2");
+    expect(ctx.api.markRead).toHaveBeenCalledWith(SESSION, "!dm:x.org", "$d2", false);
     expect(ctx.item("Bo")).toMatchObject({ unread: false, mentions: 0 });
     expect(ctx.directs.at(-1)![0]).toMatchObject({ unread: false, mentions: 0 });
     // The server's count from before the receipt: cleared again, no second receipt.
@@ -1782,7 +1782,26 @@ describe("read state", () => {
     expect(ctx.api.markRead).toHaveBeenCalledTimes(1);
     expect(ctx.item("Bo").unread).toBe(false);
     await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [msg("d5", BO, "new", 5000)], unread: { notifications: 1, highlights: 0 } })] }));
-    expect(ctx.api.markRead).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", "$d5");
+    expect(ctx.api.markRead).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", "$d5", false);
+  });
+
+  it("sends private read receipts while Settings turns read receipts off", async () => {
+    const off = setup({ session: SESSION_JSON }, false, { settings: { [SETTING.readReceipts]: false } });
+    off.api.push(initialSync());
+    await off.adapter.start();
+    await flush();
+    off.adapter.setVisible(true);
+    await off.open("Bo");
+    expect(off.api.markRead).toHaveBeenCalledWith(SESSION, "!dm:x.org", "$d2", true);
+
+    const ctx = await signedIn();
+    ctx.adapter.setVisible(true);
+    ctx.adapter.applySettings({ [SETTING.readReceipts]: false });
+    await ctx.open("Bo");
+    expect(ctx.api.markRead).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", "$d2", true);
+    ctx.adapter.applySettings({});
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [msg("d5", BO, "new", 5000)], unread: { notifications: 1, highlights: 0 } })] }));
+    expect(ctx.api.markRead).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", "$d5", false);
   });
 
   it("marks the open room read when the view becomes visible", async () => {
@@ -1791,7 +1810,7 @@ describe("read state", () => {
     expect(ctx.api.markRead).not.toHaveBeenCalled();
     ctx.adapter.setVisible(false);
     ctx.adapter.setVisible(true);
-    expect(ctx.api.markRead).toHaveBeenCalledWith(SESSION, "!lounge:x.org", "$l1");
+    expect(ctx.api.markRead).toHaveBeenCalledWith(SESSION, "!lounge:x.org", "$l1", false);
     expect(ctx.adapter.homeBadge()).toEqual({ unread: false, mentions: 0 });
   });
 

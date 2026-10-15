@@ -196,7 +196,7 @@ export interface MatrixAdapterDeps {
 }
 
 /** The keys of the settings each Matrix service gets: the manifest's, and the shell's typing choice (sendsTyping). */
-export const SETTING = { typing: TYPING_SETTING, slidingSync: "slidingSync", forgetCallServices: "forgetCallServices" } as const;
+export const SETTING = { typing: TYPING_SETTING, readReceipts: "readReceipts", slidingSync: "slidingSync", forgetCallServices: "forgetCallServices" } as const;
 
 /** The distinct hosts of these URLs, skipping any that are missing. */
 export function hostsOf(...urls: (string | undefined)[]): string[] {
@@ -588,6 +588,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private rtc: RtcHosts = { foci: [], sfu: [] };
   /** Settings: others see while we type. */
   private typingNotices: boolean;
+  /** Settings: others see how far we read; off, receipts are private (m.read.private). */
+  private readReceipts: boolean;
   /** Settings: sync with sliding sync (MSC4186) when the homeserver has it; else always classic /sync. */
   private slidingSync: boolean;
   /** The hosts the engine locked itself to (and so its view); undefined while it is not locked. */
@@ -638,6 +640,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.delay = deps.delay ?? defaultDelay;
     this.log = deps.log ?? ((message) => console.warn(`[matrix] ${message}`));
     this.typingNotices = deps.settings?.[SETTING.typing] !== false;
+    this.readReceipts = deps.settings?.[SETTING.readReceipts] !== false;
     this.slidingSync = deps.settings?.[SETTING.slidingSync] !== false;
   }
 
@@ -645,6 +648,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   applySettings(values: ServiceSettingValues): void {
     this.typingNotices = values[SETTING.typing] !== false;
+    // From the next receipt on; one already public stays so.
+    this.readReceipts = values[SETTING.readReceipts] !== false;
     // Takes effect with the next sync, which starts over in the other kind.
     this.slidingSync = values[SETTING.slidingSync] !== false;
     // Turned off while typing: end the notice now rather than letting it run out.
@@ -2250,7 +2255,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (!last || room.lastRead === last.id) return;
     room.lastRead = last.id;
     room.readTs = last.ts;
-    void this.deps.api.markRead(this.session!, room.id, last.id).catch(() => undefined);
+    void this.deps.api.markRead(this.session!, room.id, last.id, !this.readReceipts).catch(() => undefined);
   }
 
   /** Mutes or unmutes a room with a push rule of its own, as Element does, and follows it here at once. */

@@ -287,6 +287,8 @@ describe("writing", () => {
     const read = callOf(fetchFn, 1);
     expect(read.url.pathname).toBe("/_matrix/client/v3/rooms/!r%3Ax.org/read_markers");
     expect(read.body).toEqual({ "m.fully_read": "$e", "m.read": "$e" });
+    await client.markRead(SESSION, "!r:x.org", "$f", true);
+    expect(callOf(fetchFn, 2).body).toEqual({ "m.fully_read": "$f", "m.read.private": "$f" });
   });
 });
 

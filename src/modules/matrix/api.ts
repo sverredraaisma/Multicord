@@ -490,7 +490,8 @@ export interface MatrixApi {
   redact(session: MxSession, roomId: string, eventId: string): Promise<void>;
   /** Says we are typing in a room, for `timeoutMs` unless renewed, or that we stopped. */
   typing(session: MxSession, roomId: string, typing: boolean, timeoutMs: number): Promise<void>;
-  markRead(session: MxSession, roomId: string, eventId: string): Promise<void>;
+  /** Moves our read marker and receipt to an event; a private receipt (m.read.private) clears unread counts without telling others. */
+  markRead(session: MxSession, roomId: string, eventId: string, privately?: boolean): Promise<void>;
   /** A small thumbnail of an mxc:// image as a data: URL. */
   thumbnail(session: MxSession, mxc: string): Promise<string | undefined>;
   /** An mxc:// file, through authenticated media; undefined when it is larger than `maxBytes`. */

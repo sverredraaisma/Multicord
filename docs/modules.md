@@ -110,7 +110,7 @@ The values are stored in `settings.json` under the service (`services[id].option
 - The adapter's `settingsStatus()` says what Settings shows with each field: `{ [key]: { text?, disabled? } }`, e.g. what is remembered, or `disabled` when an action has nothing to do. `serveAdapter` sends it when it changes (after each `sync()` and each Settings command). Texts are capped at 500 characters, and Settings shows only declared keys. Never put secrets in it.
 - A `load()` module reads its values from `ModuleHost.settings()`; changes reach its adapter's `applySettings()`.
 
-Matrix (`slidingSync`, `forgetCallServices`) and Telegram (`forgetApiId`) show how. Settings the shell itself offers per service (notifications, the limit for media that loads by itself, typing indicators) are not fields: they follow from the manifest (`holdsMedia`, `sendsTyping`).
+Matrix (`readReceipts`, `slidingSync`, `forgetCallServices`) and Telegram (`forgetApiId`) show how. Settings the shell itself offers per service (notifications, the limit for media that loads by itself, typing indicators) are not fields: they follow from the manifest (`holdsMedia`, `sendsTyping`).
 
 ### The engine side
 

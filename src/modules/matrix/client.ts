@@ -362,8 +362,8 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
       await authed(session, `${room(roomId)}/typing/${encodeURIComponent(session.userId)}`, { method: "PUT", body });
     },
 
-    async markRead(session, roomId, id) {
-      await authed(session, `${room(roomId)}/read_markers`, { method: "POST", body: { "m.fully_read": id, "m.read": id } });
+    async markRead(session, roomId, id, privately = false) {
+      await authed(session, `${room(roomId)}/read_markers`, { method: "POST", body: { "m.fully_read": id, [privately ? "m.read.private" : "m.read"]: id } });
     },
 
     async thumbnail(session, mxc) {
