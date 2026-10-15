@@ -20,6 +20,8 @@ export interface StoatInstance {
   ws: string;
   /** Autumn file server, for avatars, icons and uploads; absent when the instance has none. */
   autumn?: string;
+  /** January, the instance's proxy for pictures in link previews; absent when the instance has none. */
+  january?: string;
 }
 
 export type LoginResult =
@@ -80,12 +82,13 @@ export async function discoverInstance(origin: string, fetchFn: typeof fetch): P
   if (!ws) throw new Error("This does not look like a Stoat instance");
   const features = isRecord(config.features) ? config.features : {};
   const autumn = isRecord(features.autumn) && features.autumn.enabled !== false ? https(features.autumn.url, "https:") : undefined;
-  return { api, ws, autumn };
+  const january = isRecord(features.january) && features.january.enabled !== false ? https(features.january.url, "https:") : undefined;
+  return { api, ws, autumn, january };
 }
 
-/** The hosts an instance uses: its API, events WebSocket and file server. */
+/** The hosts an instance uses: its API, events WebSocket, file server and picture proxy. */
 export function instanceHosts(instance: StoatInstance): string[] {
-  const urls = [instance.api, instance.ws, ...(instance.autumn ? [instance.autumn] : [])];
+  const urls = [instance.api, instance.ws, ...(instance.autumn ? [instance.autumn] : []), ...(instance.january ? [instance.january] : [])];
   return [...new Set(urls.map((url) => new URL(url).hostname.toLowerCase()))];
 }
 

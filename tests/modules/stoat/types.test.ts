@@ -9,6 +9,7 @@ import {
   parseChannel,
   parseEmoji,
   parseFile,
+  parseEmbed,
   parseMessage,
   parseNotifySettings,
   withChannelLevel,
@@ -134,11 +135,35 @@ describe("Stoat parsers", () => {
         { emoji: "👍", userIds: [ME_ID, ANA_ID] },
         { emoji: ulid(50), userIds: [ANA_ID] },
       ],
+      embeds: [],
     });
     const plain = parseMessage({ _id: ulid(10), channel: ulid(5), author: ANA_ID, user: { _id: ME_ID, username: "me" }, flags: -1, masquerade: "x" })!;
     expect(plain).toMatchObject({ author: undefined, content: "", edited: false, flags: 0, masquerade: undefined, reactions: [] });
     expect(parseMessage({ _id: ulid(10), channel: ulid(5) })).toBeUndefined();
     expect(parseMessage("x")).toBeUndefined();
+  });
+
+  it("parses link previews: websites, linked pictures and text embeds", () => {
+    expect(
+      parseEmbed({
+        type: "Website",
+        url: "https://site/a",
+        site_name: "Site",
+        title: "Title",
+        description: "Words",
+        colour: "#AA0000",
+        image: { url: "https://site/i.png", width: 80, height: 60, size: "Preview" },
+        special: { type: "YouTube" },
+      }),
+    ).toEqual({ url: "https://site/a", site: "Site", title: "Title", description: "Words", color: "#AA0000", image: { url: "https://site/i.png", width: 80, height: 60, thumbnail: true } });
+    expect(parseEmbed({ type: "Website", title: "Big", colour: "red", image: { url: "https://site/i.png", size: "Large" } })).toEqual({ title: "Big", image: { url: "https://site/i.png", width: undefined, height: undefined, thumbnail: false } });
+    expect(parseEmbed({ type: "Image", url: "https://site/p.gif", width: 10, height: 0 })).toEqual({ image: { url: "https://site/p.gif", width: 10, height: undefined, thumbnail: false } });
+    expect(parseEmbed({ type: "Text", title: "Bot", url: "http://plain", media: image })).toEqual({ title: "Bot", media: expect.objectContaining({ id: "f1" }) });
+    expect(parseEmbed({ type: "Text", description: "d", media: { ...image, metadata: { type: "File" }, content_type: "x/y" } })).toEqual({ description: "d" });
+    for (const nothing of [null, { type: "Image", url: "http://x" }, { type: "Video", url: "https://v" }, { type: "None" }, { type: "Website", url: "https://bare", image: "x" }]) {
+      expect(parseEmbed(nothing)).toBeUndefined();
+    }
+    expect(parseMessage({ _id: ulid(10), channel: ulid(5), author: ANA_ID, embeds: [{ type: "None" }, { type: "Text", title: "t" }] })!.embeds).toEqual([{ title: "t" }]);
   });
 
   it("turns system messages into text with mentions", () => {

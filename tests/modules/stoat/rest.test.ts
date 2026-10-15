@@ -51,6 +51,13 @@ describe("discoverInstance", () => {
     expect((await discoverInstance("https://chat.example", none.fetch)).autumn).toBeUndefined();
   });
 
+  it("reads the picture proxy where the instance has one", async () => {
+    const on = fakeFetch({ status: 200, body: { ws: "wss://chat.example/ws", features: { january: { enabled: true, url: "https://proxy.example/" } } } });
+    expect((await discoverInstance("https://chat.example", on.fetch)).january).toBe("https://proxy.example");
+    const off = fakeFetch({ status: 200, body: { ws: "wss://chat.example/ws", features: { january: { enabled: false, url: "https://proxy.example" } } } });
+    expect((await discoverInstance("https://chat.example", off.fetch)).january).toBeUndefined();
+  });
+
   it("rejects what is not a Stoat instance", async () => {
     await expect(discoverInstance("https://x.example", fakeFetch({ status: 404 }).fetch)).rejects.toThrow("Instance discovery failed (HTTP 404)");
     await expect(discoverInstance("https://x.example", fakeFetch({ status: 200, raw: "<html>" }).fetch)).rejects.toThrow("This does not look like a Stoat instance");

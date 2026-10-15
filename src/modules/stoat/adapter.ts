@@ -1,5 +1,5 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
-import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeMessage, type NativeSidebarItem, type NativeUnread, type NativeViewState } from "../../shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeMessage, type NativeSidebarItem, type NativeUnread, type NativeViewState } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
 import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
@@ -7,7 +7,7 @@ import { BaseAdapter } from "../../shared/baseAdapter";
 import { StoatEvents, type EventsStatus, type SocketFactory } from "./events";
 import { discoverInstance, instanceHosts, StoatRest, type LoginResult, type RestOptions, type StoatInstance } from "./rest";
 import { StoatState, TYPING_MS } from "./state";
-import { ChannelType, TEXT_CHANNEL_TYPES, compareIds, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatFile, type StoatMessage } from "./types";
+import { ChannelType, TEXT_CHANNEL_TYPES, compareIds, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatEmbed, type StoatFile, type StoatMessage } from "./types";
 
 const PAGE_SIZE = 50;
 const PUBLISH_DELAY_MS = 100;
@@ -731,7 +731,18 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         size: a.size,
         mime: a.contentType,
       })),
+      ...(message.embeds.length > 0 ? { embeds: message.embeds.map((e) => this.viewEmbed(e)) } : {}),
     };
+  }
+
+  /** A link preview; a site's picture only through the instance's proxy, so showing it does not reach the site. */
+  private viewEmbed(embed: StoatEmbed): NativeEmbed {
+    const { media, image, ...text } = embed;
+    const view: NativeEmbed = text;
+    const january = this.instance?.january;
+    if (media) view.image = { url: this.fileUrl(media), width: media.width, height: media.height };
+    else if (image && january) view.image = { url: `${january}/proxy?url=${encodeURIComponent(image.url)}`, width: image.width, height: image.height, thumbnail: image.thumbnail };
+    return view;
   }
 
   private sidebar(): NativeSidebarItem[] {

@@ -99,6 +99,23 @@ export interface StoatMessage {
   attachments: StoatFile[];
   replies: string[];
   reactions: StoatReaction[];
+  embeds: StoatEmbed[];
+}
+
+/**
+ * A link preview the instance made (a Website, Image or Text embed). Its
+ * picture is the linked site's own address, which is shown only through
+ * the instance's proxy (January); a Text embed's picture is an uploaded file.
+ */
+export interface StoatEmbed {
+  url?: string;
+  site?: string;
+  title?: string;
+  description?: string;
+  /** "#rrggbb"; other CSS colours are left out. */
+  color?: string;
+  image?: { url: string; width?: number; height?: number; thumbnail: boolean };
+  media?: StoatFile;
 }
 
 export interface StoatUnread {
@@ -243,7 +260,39 @@ export function parseMessage(value: unknown): StoatMessage | undefined {
     attachments: list(value.attachments).flatMap((a) => parseFile(a) ?? []),
     replies: ids(value.replies),
     reactions: parseReactions(value.reactions),
+    embeds: list(value.embeds).slice(0, 10).flatMap((e) => parseEmbed(e) ?? []),
   };
+}
+
+const httpsLink = (value: unknown): string | undefined => (typeof value === "string" && /^https:\/\/\S{1,2040}$/.test(value) ? value : undefined);
+const pixels = (n: unknown): number | undefined => (typeof n === "number" && Number.isInteger(n) && n > 0 && n < 100_000 ? n : undefined);
+
+/** A Website, Image or Text embed as a link preview; videos, "None" and previews without anything to show are left out. */
+export function parseEmbed(value: unknown): StoatEmbed | undefined {
+  if (!isRecord(value)) return undefined;
+  const embed: StoatEmbed = {};
+  if (value.type === "Image") {
+    const url = httpsLink(value.url);
+    if (!url) return undefined;
+    embed.image = { url, width: pixels(value.width), height: pixels(value.height), thumbnail: false };
+    return embed;
+  }
+  if (value.type !== "Website" && value.type !== "Text") return undefined;
+  const url = httpsLink(value.url);
+  if (url) embed.url = url;
+  const site = str(value.site_name);
+  if (site) embed.site = site;
+  const title = str(value.title, 256);
+  if (title) embed.title = title;
+  const description = str(value.description, 1000);
+  if (description) embed.description = description;
+  if (typeof value.colour === "string" && /^#[0-9a-f]{6}$/i.test(value.colour)) embed.color = value.colour;
+  const image = isRecord(value.image) ? value.image : {};
+  const imageUrl = httpsLink(image.url);
+  if (imageUrl) embed.image = { url: imageUrl, width: pixels(image.width), height: pixels(image.height), thumbnail: image.size === "Preview" };
+  const media = parseFile(value.media);
+  if (media?.kind === "image") embed.media = media;
+  return embed.title || embed.description || embed.image || embed.media ? embed : undefined;
 }
 
 /** reactions: emoji (Unicode or custom id) -> user ids. */

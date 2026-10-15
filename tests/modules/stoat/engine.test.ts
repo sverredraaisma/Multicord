@@ -93,5 +93,6 @@ describe("Stoat host lock", () => {
   it("names each host once", async () => {
     const { instanceHosts } = await import("../../../src/modules/stoat/rest");
     expect(instanceHosts({ api: "https://chat.example/api", ws: "wss://chat.example/ws" })).toEqual(["chat.example"]);
+    expect(instanceHosts({ api: "https://chat.example/api", ws: "wss://chat.example/ws", january: "https://proxy.example" })).toEqual(["chat.example", "proxy.example"]);
   });
 });

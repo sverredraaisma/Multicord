@@ -553,6 +553,28 @@ describe("StoatAdapter messages", () => {
     expect(chat().channel!.messages[4]!.author).toBe("Ana B");
   });
 
+  it("shows link previews, sites' pictures only through the instance's proxy", async () => {
+    const embeds = [
+      { type: "Website", url: "https://site/a", title: "Site page", image: { url: "https://site/i.png?a=1&b", size: "Preview" } },
+      { type: "Text", title: "Bot", media: { _id: "f9", tag: "attachments", filename: "p.png", content_type: "image/png", metadata: { type: "Image", width: 4, height: 3 } } },
+    ];
+    const history = (url: string): Reply | undefined => (url.includes("/messages?") ? { status: 200, body: { messages: [message(460, GENERAL, { embeds }), message(459, GENERAL)], users: [ANA] } } : undefined);
+    const proxied = setup({ token: "saved", routes: [(url) => (url === "https://stoat.test/api/" ? { status: 200, body: { ...CONFIG, features: { ...CONFIG.features, january: { enabled: true, url: "https://proxy.test" } } } } : undefined), history] });
+    await proxied.online();
+    await proxied.adapter.openConversation(GENERAL);
+    const [plain, rich] = proxied.chat().channel!.messages;
+    expect(plain!.embeds).toBeUndefined();
+    expect(rich!.embeds).toEqual([
+      { url: "https://site/a", title: "Site page", image: { url: "https://proxy.test/proxy?url=https%3A%2F%2Fsite%2Fi.png%3Fa%3D1%26b", width: undefined, height: undefined, thumbnail: true } },
+      { title: "Bot", image: { url: "https://cdn.test/attachments/f9", width: 4, height: 3 } },
+    ]);
+    // Without a proxy, a site's picture is left out rather than loaded from the site.
+    const direct = setup({ token: "saved", routes: [history] });
+    await direct.online();
+    await direct.adapter.openConversation(GENERAL);
+    expect(direct.chat().channel!.messages[1]!.embeds![0]).toEqual({ url: "https://site/a", title: "Site page" });
+  });
+
   it("sends messages with an idempotency key and adds them at once", async () => {
     const { adapter, chat, online, requests } = setup({ token: "saved" });
     await online();
