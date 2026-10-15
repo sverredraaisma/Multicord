@@ -11,6 +11,7 @@ import {
   type NativeMemberList,
   type NativeMessage,
   type NativeMessageList,
+  type NativeSearchResults,
   type NativeProfile,
   type NativeSidebarItem,
   type NativeUnread,
@@ -142,6 +143,9 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
   private healthTimer: ReturnType<typeof setInterval> | undefined;
   /** The open channel's pinned messages, while its pins panel is open. */
   private pins: { channelId: string; list: NativeMessageList } | undefined;
+  /** The open channel's search results, until the search ends; and a count that drops answers to earlier searches. */
+  private search: { channelId: string; results: NativeSearchResults } | undefined;
+  private searchCount = 0;
 
   constructor(private readonly deps: SpacebarAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -223,6 +227,8 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
         return this.showPins(action.open);
       case "pin":
         return this.pin(action.messageId, action.pin);
+      case "search":
+        return this.searchMessages(action.query);
       case "logout":
         return this.logout();
       default:
@@ -445,6 +451,7 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
     this.members = undefined;
     this.profile = undefined;
     this.pins = undefined;
+    this.search = undefined;
     this.pending.clear();
     this.selection = { kind: "home" };
     this.selectedChannelId = undefined;
@@ -466,6 +473,7 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
       this.unreadAt = this.state.isUnread(channel) ? { channelId, after: this.state.readStates.get(channelId)?.lastMessageId } : undefined;
       this.profile = undefined;
       this.pins = undefined;
+      this.search = undefined;
     }
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.guildId ?? "home", channelId);
@@ -611,6 +619,32 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
     }
     if (this.pins?.channelId !== channelId) return;
     this.pins = { channelId, list };
+    this.render();
+  }
+
+  /**
+   * Searches the open guild channel on the instance, or ends the search
+   * with an empty query. DMs are not offered: Spacebar's channel search
+   * route does not find a DM's messages.
+   */
+  private async searchMessages(query: string): Promise<void> {
+    const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
+    const count = ++this.searchCount;
+    const trimmed = query.trim();
+    const guildId = channel?.guildId;
+    this.search = guildId && trimmed !== "" ? { channelId: channel.id, results: { query: trimmed, messages: [], loading: true } } : undefined;
+    this.render();
+    if (!this.search || !guildId) return;
+    const channelId = this.search.channelId;
+    let results: NativeSearchResults;
+    try {
+      const found = await this.rest!.search(guildId, channelId, trimmed);
+      results = { query: trimmed, messages: found.map((m) => this.listedMessage(m)), loading: false };
+    } catch (error) {
+      results = { query: trimmed, messages: [], loading: false, error: `Search failed: ${messageOf(error)}` };
+    }
+    if (count !== this.searchCount || this.search?.channelId !== channelId) return;
+    this.search = { channelId, results };
     this.render();
   }
 
@@ -1007,7 +1041,8 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt.after) } : {}),
                 ...(members ? { members } : {}),
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
-                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true },
+                ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
+                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true, search: channel.guildId !== undefined },
               }
             : null,
           voice: null,

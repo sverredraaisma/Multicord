@@ -29,6 +29,8 @@ const MAX_RETRIES = 2;
 export const PAGE_SIZE = 50;
 /** Members per page of a guild's member list. */
 export const MEMBER_PAGE = 100;
+/** Search results asked for at once. */
+export const SEARCH_PAGE = 25;
 const READ_CHUNK = 1 << 20;
 /** The code an error gets when the instance asks for a captcha. */
 export const CAPTCHA_REQUIRED = "CAPTCHA_REQUIRED";
@@ -182,6 +184,17 @@ export class SpacebarRest {
   /** A channel's pinned messages, newest pin first (GET /channels/{id}/pins, which lists them all at once). */
   async pins(channelId: string): Promise<SpacebarMessage[]> {
     return list(await this.request("GET", `/channels/${channelId}/pins`)).flatMap((m) => parseMessage(m) ?? []);
+  }
+
+  /**
+   * Searches one guild channel's messages for text (the first SEARCH_PAGE,
+   * newest first), through the guild's search route; Spacebar answers with
+   * each hit wrapped in a list of its own, as Discord does.
+   */
+  async search(guildId: string, channelId: string, query: string): Promise<SpacebarMessage[]> {
+    const params = new URLSearchParams({ channel_id: channelId, content: query, limit: String(SEARCH_PAGE) });
+    const data = await this.request("GET", `/guilds/${guildId}/messages/search?${params}`);
+    return list(isRecord(data) ? data.messages : undefined).flatMap((hit) => parseMessage(list(hit)[0]) ?? []);
   }
 
   async pin(channelId: string, messageId: string, pin: boolean): Promise<void> {

@@ -616,12 +616,51 @@ describe("SpacebarAdapter messages", () => {
     expect(fetched()).toBe(before + 4);
   });
 
+  it("searches a server channel on the instance, dropping answers to earlier searches", async () => {
+    let answer: Reply = { status: 200, body: { messages: [[message("460", "111", { content: "hi there" })], [{ bad: true }], "x", []], total_results: 1 } };
+    const ctx = await opened({ routes: [(url) => (url.startsWith(`${API}/guilds/100/messages/search?`) ? answer : undefined)] });
+    expect(ctx.channel().can.search).toBe(true);
+    await ctx.adapter.handleAction({ type: "search", query: "  hi there " });
+    expect(ctx.calls.at(-1)!.url).toBe(`${API}/guilds/100/messages/search?channel_id=111&content=hi+there&limit=25`);
+    expect(ctx.channel().search).toEqual({
+      query: "hi there",
+      messages: [{ id: "460", author: "Ana", avatarUrl: "https://cdn.sb/avatars/2/abc123.png?size=64", content: "hi there", timestamp: "2026-10-14T12:00:00Z" }],
+      loading: false,
+    });
+    answer = { status: 403, body: { message: "Missing Access" } };
+    await ctx.adapter.handleAction({ type: "search", query: "x" });
+    expect(ctx.channel().search).toEqual({ query: "x", messages: [], loading: false, error: "Search failed: Missing Access" });
+    answer = { status: 200, body: null };
+    await ctx.adapter.handleAction({ type: "search", query: "y" });
+    expect(ctx.channel().search).toMatchObject({ query: "y", messages: [], loading: false });
+    // An earlier search answering late, or an ended one, changes nothing.
+    const early = ctx.adapter.handleAction({ type: "search", query: "a" });
+    await ctx.adapter.handleAction({ type: "search", query: "b" });
+    await early;
+    expect(ctx.channel().search!.query).toBe("b");
+    const ended = ctx.adapter.handleAction({ type: "search", query: "c" });
+    await ctx.adapter.handleAction({ type: "search", query: " " });
+    await ended;
+    expect(ctx.channel()).not.toHaveProperty("search");
+    // Another channel ends it; DMs are not searched.
+    await ctx.adapter.handleAction({ type: "search", query: "z" });
+    await ctx.adapter.handleAction({ type: "select", channelId: "113" });
+    expect(ctx.channel()).not.toHaveProperty("search");
+    await ctx.adapter.openConversation("900");
+    expect(ctx.channel().can.search).toBe(false);
+    const calls = ctx.calls.length;
+    await ctx.adapter.handleAction({ type: "search", query: "z" });
+    expect(ctx.calls.length).toBe(calls);
+    expect(ctx.channel()).not.toHaveProperty("search");
+  });
+
   it("shows when pinning is refused, and pins nothing without a channel", async () => {
     const ctx = setup({ token: "saved", routes: [(url) => (url.includes("/pins/") ? { status: 403, body: { message: "Missing Permissions" } } : undefined)] });
     await ctx.online();
     await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
     await ctx.adapter.handleAction({ type: "pins", open: true });
-    expect(ctx.calls.some((c) => c.url.includes("/pins"))).toBe(false);
+    await ctx.adapter.handleAction({ type: "search", query: "x" });
+    expect(ctx.calls.some((c) => c.url.includes("/pins") || c.url.includes("/search"))).toBe(false);
     await ctx.adapter.openConversation("111");
     await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
     expect(ctx.last()).toMatchObject({ error: "Message not pinned: Missing Permissions" });
