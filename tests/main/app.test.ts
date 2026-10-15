@@ -290,6 +290,22 @@ describe("createShell", () => {
     expect(handle.registry.state().entries.find((e) => e.key === "element:app")).toMatchObject({ mentions: 2 });
   });
 
+  it("checks web apps' services on their own host through a cookie-less session, not on private addresses", async () => {
+    const { handle } = await shellWith([
+      { id: "st", name: "Stoat", url: "https://stoat.chat/app", module: "stoat" },
+      { id: "home", name: "Home Stoat", url: "https://chat.lan/app", module: "stoat" },
+      { id: "element", name: "Element", url: "https://app.element.io", module: "matrix" },
+    ]);
+    await flush();
+    const ses = session.fromPartition("service-check-st");
+    expect(ses.fetch).toHaveBeenCalledWith("https://stoat.chat/api/", expect.objectContaining({ credentials: "omit" }));
+    expect(handle.adapters.get("st")!.health!()).toEqual([{ name: "Stoat's API answers", ok: true }]);
+    // A self-hosted service on the local network, and Element, whose homeserver is not known: nothing is asked.
+    expect(session.fromPartition("service-check-home").fetch).not.toHaveBeenCalled();
+    expect(handle.adapters.get("home")!.health!()).toEqual([]);
+    expect(session.fromPartition("service-check-element").fetch).not.toHaveBeenCalled();
+  });
+
   it("keeps same-origin popups and opens other links externally", async () => {
     const { discordView } = await shellWith();
     const open = discordView.webContents.windowOpenHandler!;

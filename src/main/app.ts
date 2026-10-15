@@ -39,7 +39,8 @@ import { isSettingsAction, mediaAutoLoadLimit, serviceSettings, serviceSettingVa
 import { CredentialStore } from "./credentials";
 import { EngineHub, engineStoragePartition } from "./engineHost";
 import { downloadMedia, FavouritesStore } from "./favourites";
-import { checkUrl, createAddressGuard } from "./netPolicy";
+import { checkUrl, createAddressGuard, isPrivateHost } from "./netPolicy";
+import { createServiceReach } from "./serviceReach";
 import { filterShellRequests, installHardening } from "./hardening";
 import { computeLayout, splitContent, tooltipBounds } from "./layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
@@ -387,6 +388,7 @@ export async function createShell(
     // A reloaded page starts out full width; tell it whether it sits beside the Messages list.
     view.webContents.on("did-finish-load", () => view.webContents.send(IPC.viewCompact, mode === "messages"));
 
+    const host = new URL(def.url).hostname;
     const { adapter, start } = module.load
       ? module.load({
           def,
@@ -398,6 +400,8 @@ export async function createShell(
           secrets: credentials.scope(def.id),
           enableScreenShare: () => handleScreenShare(ses),
           settings: () => settingValues(module.manifest, def.id),
+          // Checks of the service go through a session of their own, in memory: never the page's cookies.
+          ...(isPrivateHost(host) ? {} : { reach: createServiceReach(() => session.fromPartition(`service-check-${def.id}`), host) }),
         })
       : startEngineModule(module.manifest, def, view, ses);
     adapters.set(def.id, adapter);

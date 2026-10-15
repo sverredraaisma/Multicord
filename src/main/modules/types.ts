@@ -93,6 +93,14 @@ export interface ModuleHost {
   enableScreenShare(): void;
   /** This instance's values for the manifest's settings now; changes reach the adapter's applySettings(). */
   settings(): ServiceSettingValues;
+  /**
+   * Asks an https address on this instance's own host whether the service
+   * answers (the HTTP status; a rejection when it could not be reached),
+   * through the shell's own cookie-less session, to public addresses only
+   * (main/serviceReach.ts). Absent where the instance is on a local or
+   * private address.
+   */
+  reach?(url: string): Promise<number>;
 }
 
 export interface LoadedPlatform {

@@ -30,6 +30,8 @@ A third form exists: a manifest with a `load()` function that wires its own view
 
 `webClientModule` makes the module `configurable`: users add instances in Settings, or in `platforms.json` as `{"id": "...", "name": "...", "url": "...", "module": "example"}`. The page runs with no preload in its own `persist:<instance id>` partition, sandboxed and context-isolated (`secureView` in `src/main/app.ts`). Same-origin popups stay in the app; other links open in the browser.
 
+Where the service has an address that should answer, give it as `check: { name: "Example's API answers", path: "/api/" }`. The shell then asks that path on the configured address's own host when the service starts and every five minutes, and Settings > Diagnostics shows whether it answered (any status below 500 counts). The request goes through a session of the shell's own, in memory, so none of the page's cookies or storage go with it: https only, every redirect on the same host and at a public address, 10 seconds at most (`src/main/serviceReach.ts`). Instances at a local or private address are not checked. Leave `check` out where the service is not known from the address (Element, whose homeserver is chosen inside it).
+
 ## A native engine module
 
 The template in `src/modules/_template` is a complete, minimal module: sign-in, one conversation, sending. Its tests are in `tests/modules/_template`. It is never registered, so it never ships, but it is type-checked and tested with everything else. Copy it to start.

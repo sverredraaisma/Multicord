@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DiscordAdapter } from "../../src/main/adapters/discordAdapter";
 import { Emitter } from "../../src/shared/emitter";
-import { APP_KEY, GenericWebAdapter } from "../../src/main/adapters/genericWebAdapter";
+import { APP_KEY, GenericWebAdapter, SERVICE_CHECK_INTERVAL_MS } from "../../src/main/adapters/genericWebAdapter";
 import type { PlatformDef } from "../../src/main/platforms";
 
 const element: PlatformDef = {
@@ -192,6 +192,40 @@ describe("GenericWebAdapter", () => {
     const adapter = new GenericWebAdapter(element);
     await expect(adapter.openServer(APP_KEY)).resolves.toBeUndefined();
     await expect(adapter.openConversation("x")).rejects.toThrow("Element conversations are not supported");
+  });
+
+  it("checks its service now and every five minutes, where the module has a check", async () => {
+    vi.useFakeTimers();
+    try {
+      const reach = vi.fn(async (_url: string) => 404);
+      const adapter = new GenericWebAdapter(element, { name: "API answers", url: "https://app.element.io/api/", breaks: "It may not load.", reach });
+      expect(adapter.health()).toEqual([]);
+      adapter.startChecks();
+      adapter.startChecks();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(reach).toHaveBeenCalledTimes(1);
+      expect(reach).toHaveBeenCalledWith("https://app.element.io/api/");
+      // Any answer short of a server error: the service is there.
+      expect(adapter.health()).toEqual([{ name: "API answers", ok: true }]);
+      reach.mockResolvedValueOnce(503);
+      await vi.advanceTimersByTimeAsync(SERVICE_CHECK_INTERVAL_MS);
+      expect(adapter.health()).toEqual([{ name: "API answers", ok: false, detail: "It answered HTTP 503. It may not load." }]);
+      reach.mockRejectedValueOnce(new Error("timed out"));
+      await vi.advanceTimersByTimeAsync(SERVICE_CHECK_INTERVAL_MS);
+      expect(adapter.health()).toEqual([{ name: "API answers", ok: false, detail: "It could not be reached (timed out). It may not load." }]);
+      reach.mockRejectedValueOnce("offline");
+      await vi.advanceTimersByTimeAsync(SERVICE_CHECK_INTERVAL_MS);
+      expect(adapter.health()[0]!.detail).toBe("It could not be reached (offline). It may not load.");
+      await adapter.disconnect();
+      await vi.advanceTimersByTimeAsync(SERVICE_CHECK_INTERVAL_MS * 2);
+      expect(reach).toHaveBeenCalledTimes(4);
+      // Without a check, nothing is asked.
+      const plain = new GenericWebAdapter(element);
+      plain.startChecks();
+      expect(plain.health()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
