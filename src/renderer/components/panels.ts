@@ -1,6 +1,7 @@
-import { MAX_MESSAGE_LENGTH, type NativeForumPost, type NativeVoiceSession } from "../../shared/native";
+import { MAX_MESSAGE_LENGTH, type NativeForumPost, type NativeListedMessage, type NativeMessageList, type NativeVoiceSession } from "../../shared/native";
+import { avatar } from "./avatar";
 import { countBadge, el } from "./dom";
-import { formatSize } from "./format";
+import { formatSize, formatTime } from "./format";
 
 type VoiceFlags = Pick<NativeVoiceSession, "mute" | "deaf" | "video" | "stream">;
 
@@ -104,4 +105,37 @@ export function replyBar(doc: Document, author: string, onCancel: () => void): H
   const cancel = el(doc, "button", "link", "Cancel");
   cancel.addEventListener("click", onCancel);
   return [el(doc, "span", undefined, `Replying to ${author}`), cancel];
+}
+
+/**
+ * The side panel's list of messages (pinned ones, search results): each a
+ * button with the author's picture, name, time and text, which brings the
+ * message into sight. A note, loading and errors around it, and `empty`
+ * when there is nothing. The list is bounded by messageList().
+ */
+export function listedMessages(doc: Document, list: NativeMessageList, onOpen: (message: NativeListedMessage) => void, empty: string): HTMLElement[] {
+  const parts: HTMLElement[] = [];
+  if (list.note) parts.push(el(doc, "p", "panel-note", list.note));
+  if (list.error) parts.push(el(doc, "p", "member-error", list.error));
+  if (list.messages.length > 0) {
+    const ul = el(doc, "ul", "listed-messages");
+    for (const message of list.messages) {
+      const li = el(doc, "li");
+      const button = el(doc, "button", "listed-message");
+      button.type = "button";
+      button.dataset.id = message.id;
+      const meta = el(doc, "span", "listed-meta");
+      meta.append(el(doc, "strong", "listed-author", message.author), el(doc, "time", undefined, formatTime(message.timestamp)));
+      const text = el(doc, "span", "listed-text");
+      text.append(meta, el(doc, "span", "listed-content", message.content || "(no text)"));
+      button.append(avatar(doc, message.avatarUrl, message.author), text);
+      button.addEventListener("click", () => onOpen(message));
+      li.append(button);
+      ul.append(li);
+    }
+    parts.push(ul);
+  }
+  if (list.loading) parts.push(el(doc, "p", "member-note", "Loading…"));
+  else if (list.messages.length === 0 && !list.error) parts.push(el(doc, "p", "member-note", empty));
+  return parts;
 }

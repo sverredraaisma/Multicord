@@ -198,6 +198,8 @@ export interface MessageHandlers {
   onMoreReactions?(message: NativeMessage): void;
   onEdit(message: NativeMessage): void;
   onDelete(message: NativeMessage): void;
+  /** Pins or unpins it, where the message says it may be (canPin); without it no message offers pinning. */
+  onPin?(message: NativeMessage, pin: boolean): void;
   /** Opens the author's profile (messages with an authorId); without it the author is plain text. */
   onOpenProfile?(message: NativeMessage): void;
   /** Stars or unstars a GIF, sticker or picture; without it media has no star. */
@@ -215,6 +217,8 @@ export interface MessageOptions extends MarkdownOptions {
   reacting?: boolean;
   /** What the conversation allows (NativeChannelView.can); everything when left out. */
   can?: Pick<NativeChannelCan, "reply" | "react">;
+  /** The message just jumped to (from the pins or search results), marked until the next jump. */
+  highlighted?: boolean;
 }
 
 function messageActions(doc: Document, message: NativeMessage, handlers: MessageHandlers, can: MessageOptions["can"]): HTMLElement {
@@ -228,6 +232,7 @@ function messageActions(doc: Document, message: NativeMessage, handlers: Message
   if (can?.react !== false) action("React", () => handlers.onToggleReactionPicker(message));
   if (message.canEdit) action("Edit", () => handlers.onEdit(message));
   if (message.canDelete) action("Delete", () => handlers.onDelete(message));
+  if (message.canPin === true && handlers.onPin) action(message.pinned === true ? "Unpin" : "Pin", () => handlers.onPin!(message, message.pinned !== true));
   return bar;
 }
 
@@ -239,6 +244,7 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
   const li = el(doc, "li", "message");
   li.dataset.id = message.id;
   li.classList.toggle("mine", message.mine);
+  li.classList.toggle("jump-target", options.highlighted === true);
   const body = el(doc, "div", "body");
   if (message.reply !== undefined) {
     body.append(
@@ -274,6 +280,13 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
     marker.setAttribute("role", "img");
     marker.setAttribute("aria-label", "Mentions you");
     meta.append(marker);
+  }
+  if (message.pinned === true) {
+    const pin = el(doc, "span", "pin-marker", "📌");
+    pin.title = "Pinned";
+    pin.setAttribute("role", "img");
+    pin.setAttribute("aria-label", "Pinned");
+    meta.append(pin);
   }
   if (message.edited) meta.append(el(doc, "span", "edited", "(edited)"));
   body.append(meta);

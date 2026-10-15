@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, memberList, memberProfile, mentionText, NATIVE_IPC, unreadMarker } from "../../src/shared/native";
+import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, memberList, memberProfile, mentionText, messageList, NATIVE_IPC, unreadMarker } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -179,8 +179,8 @@ describe("media requests", () => {
 
 describe("conversation capability flags", () => {
   it("turns a flag on only when it is exactly true", () => {
-    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false };
-    expect(channelCan({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true })).toEqual({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true });
+    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false, pins: false };
+    expect(channelCan({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true })).toEqual({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true });
     expect(channelCan({ reply: true, react: "yes", attach: 1, members: "true", stickers: "yes", extra: true })).toEqual({ ...none, reply: true });
     for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual(none);
   });
@@ -466,5 +466,45 @@ describe("messageEmbeds", () => {
     expect(messageEmbeds([{ title: "x", image: "no" }])).toEqual([{ title: "x" }]);
     const many = Array.from({ length: MAX_EMBEDS + 3 }, (_, i) => ({ title: `t${i}` }));
     expect(messageEmbeds(many)).toHaveLength(MAX_EMBEDS);
+  });
+});
+
+describe("pins", () => {
+  it("validates opening the panel and pinning messages", () => {
+    expect(isNativeAction({ type: "pins", open: true })).toBe(true);
+    expect(isNativeAction({ type: "pins", open: "yes" })).toBe(false);
+    expect(isNativeAction({ type: "pin", messageId: "5", pin: false })).toBe(true);
+    expect(isNativeAction({ type: "pin", messageId: "x", pin: true })).toBe(false);
+    expect(isNativeAction({ type: "pin", messageId: "5" })).toBe(false);
+  });
+
+  it("keeps listed messages with an id, author and time, texts cut short", () => {
+    expect(messageList(undefined)).toBeUndefined();
+    expect(messageList({ messages: "x" })).toEqual({ messages: [], loading: false });
+    const list = messageList({
+      messages: [
+        { id: "5", author: "Ana", content: "c".repeat(400), timestamp: "2026-10-14T12:00:00Z", avatarUrl: "https://a/b.png" },
+        { id: "6", author: "Bo", timestamp: "t", content: 5, avatarUrl: "" },
+        { id: "x", author: "Bad id", timestamp: "t" },
+        { id: "7", author: " ", timestamp: "t" },
+        { id: "8", author: "No time" },
+        { id: "9", author: "Long time", timestamp: "t".repeat(41) },
+        null,
+      ],
+      loading: true,
+      error: "Failed",
+      note: "Some note",
+    })!;
+    expect(list).toEqual({
+      messages: [
+        { id: "5", author: "Ana", content: "c".repeat(300), timestamp: "2026-10-14T12:00:00Z", avatarUrl: "https://a/b.png" },
+        { id: "6", author: "Bo", content: "", timestamp: "t" },
+      ],
+      loading: true,
+      error: "Failed",
+      note: "Some note",
+    });
+    const many = Array.from({ length: MAX_LISTED_MESSAGES + 5 }, (_, i) => ({ id: String(i + 1), author: "A", timestamp: "t" }));
+    expect(messageList({ messages: many })!.messages).toHaveLength(MAX_LISTED_MESSAGES);
   });
 });

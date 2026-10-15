@@ -195,6 +195,59 @@ export interface NativeMessage {
   authorMention?: string;
   /** Link previews the platform made for it, shown as cards; read through messageEmbeds(). */
   embeds?: NativeEmbed[];
+  /** It is pinned in its conversation. */
+  pinned?: boolean;
+  /** The user may pin or unpin it (a `pin` action), as far as the module can tell; the platform has the last word. */
+  canPin?: boolean;
+}
+
+/** A message as a list of them shows it (pinned messages, search results): who, when, and its text. */
+export interface NativeListedMessage {
+  /** The message's id, as in NativeMessage.id: clicking it brings the message into sight where it can be loaded. */
+  id: string;
+  author: string;
+  avatarUrl?: string;
+  /** Its text, with the platform's markdown; a label such as "📷 Photo" for media. */
+  content: string;
+  timestamp: string;
+}
+
+/** Messages listed in the side panel, as far as the module has them. */
+export interface NativeMessageList {
+  messages: NativeListedMessage[];
+  loading: boolean;
+  /** Why the list could not be (fully) loaded. */
+  error?: string;
+  /** Something the user should know about the list, e.g. that encrypted rooms cannot be searched. */
+  note?: string;
+}
+
+export const MAX_LISTED_MESSAGES = 100;
+const MAX_LISTED_TEXT = 300;
+
+/**
+ * A list of messages as the view trusts it: entries with a usable id,
+ * author and time, texts cut short, at most MAX_LISTED_MESSAGES. Undefined
+ * when there is no list.
+ */
+export function messageList(value: unknown): NativeMessageList | undefined {
+  const v = record(value);
+  if (!v) return undefined;
+  const messages: NativeListedMessage[] = [];
+  for (const raw of Array.isArray(v.messages) ? v.messages.slice(0, MAX_LISTED_MESSAGES) : []) {
+    const m = record(raw);
+    const author = shortText(m?.author);
+    if (!m || !id(m.id) || !author || typeof m.timestamp !== "string" || m.timestamp.length > 40) continue;
+    const listed: NativeListedMessage = { id: m.id as string, author, content: typeof m.content === "string" ? m.content.slice(0, MAX_LISTED_TEXT) : "", timestamp: m.timestamp };
+    if (typeof m.avatarUrl === "string" && m.avatarUrl !== "") listed.avatarUrl = m.avatarUrl;
+    messages.push(listed);
+  }
+  const list: NativeMessageList = { messages, loading: v.loading === true };
+  const error = shortText(v.error, 300);
+  if (error) list.error = error;
+  const note = shortText(v.note, 300);
+  if (note) list.note = note;
+  return list;
 }
 
 /**
@@ -314,6 +367,12 @@ export interface NativeChannelView {
    * memberList(), which bounds what it shows.
    */
   members?: NativeMemberList;
+  /**
+   * The conversation's pinned messages, newest pin first, while the pins
+   * panel is open (after a `pins` action with open: true) and `can.pins` is
+   * on. Read by the view through messageList().
+   */
+  pins?: NativeMessageList;
 }
 
 export interface NativeUnread {
@@ -414,9 +473,11 @@ export interface NativeChannelCan {
   stickers?: boolean;
   /** Search the platform's GIFs (searchGifs; the chat state's gifs). */
   gifs?: boolean;
+  /** List the pinned messages (the pins panel: `pins` actions, NativeChannelView.pins); pinning itself is per message (canPin). */
+  pins?: boolean;
 }
 
-export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs"] as const satisfies readonly (keyof NativeChannelCan)[];
+export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins"] as const satisfies readonly (keyof NativeChannelCan)[];
 
 /** A conversation's flags as the view trusts them: each on only when it is exactly `true`. */
 export function channelCan(value: unknown): Required<NativeChannelCan> {
@@ -769,6 +830,10 @@ export type NativeAction =
   | { type: "picker"; open: boolean }
   /** Mutes or unmutes a conversation's notifications on the platform, where its sidebar row says it can (canMute). */
   | { type: "mute"; channelId: string; mute: boolean }
+  /** The pins panel opened or closed: the module lists the open conversation's pinned messages (NativeChannelView.pins) only while it is open. */
+  | { type: "pins"; open: boolean }
+  /** Pins or unpins a message in the open conversation, where it says it may (canPin). */
+  | { type: "pin"; messageId: string; pin: boolean }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -818,6 +883,10 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return id(v.channelId);
     case "mute":
       return id(v.channelId) && typeof v.mute === "boolean";
+    case "pins":
+      return typeof v.open === "boolean";
+    case "pin":
+      return id(v.messageId) && typeof v.pin === "boolean";
     case "voiceState":
       return [v.mute, v.deaf, v.video, v.stream].every((flag) => typeof flag === "boolean");
     case "voiceError":

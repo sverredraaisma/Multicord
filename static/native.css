@@ -466,7 +466,7 @@ a.embed-title:hover { text-decoration: underline; }
 /* Member list */
 .conversation-area { position: relative; display: flex; min-width: 0; min-height: 0; }
 .conversation-area > .conversation { flex: 1; }
-.members-toggle {
+.members-toggle, .pins-toggle {
   display: flex;
   flex: none;
   align-items: center;
@@ -480,9 +480,9 @@ a.embed-title:hover { text-decoration: underline; }
   color: var(--muted);
   cursor: pointer;
 }
-.members-toggle[hidden] { display: none; }
-.members-toggle:hover, .members-toggle[aria-pressed="true"] { color: var(--text); }
-.members-toggle[aria-pressed="true"] { background: var(--border); }
+.members-toggle[hidden], .pins-toggle[hidden] { display: none; }
+.members-toggle:hover, .members-toggle[aria-pressed="true"], .pins-toggle:hover, .pins-toggle[aria-pressed="true"] { color: var(--text); }
+.members-toggle[aria-pressed="true"], .pins-toggle[aria-pressed="true"] { background: var(--border); }
 .members-icon { width: 22px; height: 22px; fill: currentColor; }
 .member-panel { flex: none; width: 240px; padding: 8px; overflow-y: auto; background: var(--panel); }
 .member-panel[hidden] { display: none; }
@@ -509,6 +509,20 @@ button.member:hover, button.member:focus-visible { background: var(--surface); c
 .member-status { font-size: 12px; }
 .member-note, .member-error { margin: 8px; color: var(--muted); font-size: 12px; }
 .member-error { color: var(--danger); }
+/* Pinned messages: a list beside the conversation, each opening the message. */
+.message-panel { position: relative; width: 280px; }
+.message-panel > .member-section { margin-right: 36px; }
+.listed-messages { margin: 0; padding: 0; list-style: none; }
+.listed-message { display: flex; gap: 8px; width: 100%; padding: 6px 8px; border: 0; border-radius: 4px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.listed-message:hover, .listed-message:focus-visible { background: var(--surface); }
+.listed-message .avatar { flex: none; width: 28px; height: 28px; }
+.listed-text { display: flex; flex-direction: column; min-width: 0; }
+.listed-meta { display: flex; gap: 6px; align-items: baseline; color: var(--muted); font-size: 11px; }
+.listed-author { color: var(--text); font-size: 13px; }
+.listed-content { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; font-size: 13px; overflow-wrap: anywhere; }
+.panel-note { margin: 8px; color: var(--muted); font-size: 12px; font-style: italic; }
+.pin-marker { font-size: 12px; }
+.message.jump-target { border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .member-more { margin: 4px 8px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--text); font: inherit; cursor: pointer; }
 .member-more:disabled { cursor: progress; opacity: 0.6; }
 .presence-avatar { position: relative; flex: none; display: inline-flex; }

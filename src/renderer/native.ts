@@ -2,8 +2,8 @@ import { screenAudioPatch } from "../shared/screenAudio";
 import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
-import type { NativeChannelCan, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_MESSAGE_LENGTH, memberList, memberProfile, messageEmbeds, stickerPacks, unreadMarker, type NativeUnread } from "../shared/native";
+import type { NativeChannelCan, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
+import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_MESSAGE_LENGTH, memberList, memberProfile, messageEmbeds, messageList, stickerPacks, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
@@ -14,7 +14,7 @@ import { typingText } from "./components/format";
 import { memberPanel, profileCard, type ProfileCardData } from "./components/members";
 import { matchMentions, mentionCandidates, mentionOptionId, mentionOptions, mentionQuery, type MentionCandidate } from "./components/mentions";
 import { autoLoads, favouriteKind, messageItem, type MessageHandlers } from "./components/message";
-import { forumPosts, pendingFiles, postForm, replyBar, voicePanel } from "./components/panels";
+import { forumPosts, listedMessages, pendingFiles, postForm, replyBar, voicePanel } from "./components/panels";
 import { isOwnReaction } from "./components/reactions";
 import { VoiceCall } from "./voice";
 
@@ -31,6 +31,8 @@ export const MAX_AUTO_LOADS = 3;
 export const AUTO_LOAD_TIMEOUT_MS = 60_000;
 /** Pages of older messages "Jump to unread" loads at most, looking for the first unread one. */
 export const MAX_UNREAD_PAGES = 10;
+/** Pages of older messages a jump to a pinned message or search result loads at most. */
+export const MAX_JUMP_PAGES = 20;
 
 /** What the unread bar and divider say: how many messages are new, where the module knows. */
 export function newMessagesText(count: number | undefined): string {
@@ -82,8 +84,16 @@ export class NativeView {
   private dividerSeen = false;
   /** The user dismissed the unread bar, or read on to the latest messages after the news started: it stays away. */
   private unreadDone = true;
-  /** "Jump to unread" is loading older pages to find the first unread message: how many it asked for, and the first message when it last asked. */
-  private seeking: { pages: number; from: string | undefined } | undefined;
+  /**
+   * Older pages are being loaded to find the first unread message, or a
+   * listed message (`target`) the user jumped to: how many were asked for,
+   * and the first message when the last was asked.
+   */
+  private seeking: { pages: number; from: string | undefined; target?: NativeListedMessage } | undefined;
+  /** The message last jumped to from the side panel, marked until the next jump or another conversation. */
+  private jumpedId: string | undefined;
+  /** Why the last jump did not arrive, shown in the side panel. */
+  private jumpNote: string | undefined;
   /** The mention being typed in the composer, while it has suggestions: where its "@" is, who fits, and the highlighted one. */
   private mention: { start: number; options: MentionCandidate[]; active: number } | undefined;
 
@@ -253,7 +263,15 @@ export class NativeView {
     membersToggle.setAttribute("aria-controls", "member-panel");
     membersToggle.append(icon(doc, "members-icon", ICONS.members));
     membersToggle.addEventListener("click", () => this.api.act({ type: "members", open: membersToggle.getAttribute("aria-pressed") !== "true" }));
-    header.append(heading, membersToggle);
+    // Shows and hides the pinned messages, where the conversation lists them.
+    const pinsToggle = el(doc, "button", "pins-toggle");
+    pinsToggle.type = "button";
+    pinsToggle.title = "Pinned messages";
+    pinsToggle.setAttribute("aria-label", "Pinned messages");
+    pinsToggle.setAttribute("aria-controls", "message-panel");
+    pinsToggle.append(icon(doc, "members-icon", ICONS.pin));
+    pinsToggle.addEventListener("click", () => this.api.act({ type: "pins", open: pinsToggle.getAttribute("aria-pressed") !== "true" }));
+    header.append(heading, pinsToggle, membersToggle);
     const banner = el(doc, "div", "banner");
     // Where the news starts, while it is out of sight: a bar above the messages.
     const unreadBar = el(doc, "div", "unread-bar");
@@ -363,7 +381,11 @@ export class NativeView {
     members.id = "member-panel";
     members.setAttribute("aria-label", "Members");
     members.hidden = true;
-    // The panel sits beside the conversation, or over it where the window is narrow.
+    // Pinned messages, beside the conversation like the members.
+    const messagePanel = el(doc, "aside", "member-panel message-panel");
+    messagePanel.id = "message-panel";
+    messagePanel.hidden = true;
+    // The panels sit beside the conversation, or over it where the window is narrow.
     const area = el(doc, "div", "conversation-area");
     // Someone's profile, opened from a message's author or a member row.
     const profile = el(doc, "section", "profile-card");
@@ -373,7 +395,7 @@ export class NativeView {
     profile.addEventListener("keydown", (event) => {
       if (event.key === "Escape") this.closeProfile();
     });
-    area.append(main, members, profile);
+    area.append(main, messagePanel, members, profile);
 
     const layout = el(doc, "div", "chat");
     layout.append(sidebar, area);
@@ -385,6 +407,8 @@ export class NativeView {
       heading,
       membersToggle,
       members,
+      pinsToggle,
+      messagePanel,
       profile,
       banner,
       unreadBar,
@@ -608,29 +632,51 @@ export class NativeView {
   /** Brings the first unread message into sight, loading older messages until it is there (up to MAX_UNREAD_PAGES). */
   private jumpToUnread(): void {
     const divider = this.unreadDivider;
-    if (divider) return this.showUnread(divider);
+    if (divider) return this.showAt(divider);
     this.seeking = { pages: 0, from: undefined };
-    this.seekUnread();
+    this.seekOlder();
   }
 
-  private showUnread(divider: HTMLElement): void {
+  /** A loaded message's element, by its id. */
+  private messageElement(id: string): HTMLElement | undefined {
+    return [...this.parts.messages!.querySelectorAll<HTMLElement>("li.message")].find((li) => li.dataset.id === id);
+  }
+
+  /** Brings a listed message (a pinned one, a search result) into sight and marks it, loading older messages until it is there (up to MAX_JUMP_PAGES). */
+  private jumpTo(message: NativeListedMessage): void {
+    this.jumpedId = message.id;
+    this.jumpNote = undefined;
+    this.seeking = { pages: 0, from: undefined, target: message };
+    this.rerender();
+  }
+
+  private showAt(element: HTMLElement): void {
     this.seeking = undefined;
-    this.parts.messages!.scrollTop = Math.max(0, divider.offsetTop - 8);
+    this.parts.messages!.scrollTop = Math.max(0, element.offsetTop - 8);
     this.updateJumps();
   }
 
-  /** One more page while seeking the first unread message: asked once the last one has arrived, until there are none older or enough were asked. */
-  private seekUnread(): void {
+  /**
+   * One more page while seeking the first unread message or a listed one:
+   * asked once the last one has arrived, until there are none older, enough
+   * were asked, or messages from before the one sought are loaded without it.
+   */
+  private seekOlder(): void {
     const seeking = this.seeking!;
     const channel = this.lastState?.channel;
-    const first = channel?.messages[0]?.id;
-    if (!channel?.hasOlder || seeking.pages >= MAX_UNREAD_PAGES) {
+    const first = channel?.messages[0];
+    const target = seeking.target;
+    const passed = target !== undefined && first !== undefined && Date.parse(first.timestamp) < Date.parse(target.timestamp);
+    if (!channel?.hasOlder || seeking.pages >= (target ? MAX_JUMP_PAGES : MAX_UNREAD_PAGES) || passed) {
       this.seeking = undefined;
+      if (!target) return;
+      this.jumpNote = "That message could not be loaded here.";
+      this.updateMessagePanel();
       return;
     }
-    if (channel.loading || (seeking.pages > 0 && first === seeking.from)) return;
+    if (channel.loading || (seeking.pages > 0 && first?.id === seeking.from)) return;
     seeking.pages++;
-    seeking.from = first;
+    seeking.from = first?.id;
     this.api.act({ type: "loadOlder" });
   }
 
@@ -767,6 +813,7 @@ export class NativeView {
       const win = this.doc.defaultView;
       if (!win?.confirm || win.confirm("Delete this message?")) this.api.act({ type: "delete", messageId: message.id });
     },
+    onPin: (message, pin) => this.api.act({ type: "pin", messageId: message.id, pin }),
     onOpenProfile: (message) => this.openProfile({ id: message.authorId!, name: message.author, avatarUrl: message.avatarUrl }),
     isFavourite: (file) => this.favourites?.items.some((i) => i.origin === file.url) === true,
     onFavourite: (file, kind) => {
@@ -792,6 +839,7 @@ export class NativeView {
       customEmojiUrl: (id, animated) => this.emojiUrl(id, animated),
       editor: editing ? [editBox, el(this.doc, "p", "edit-hint", "Enter to save, Escape to cancel")] : undefined,
       can: this.can,
+      highlighted: message.id === this.jumpedId,
       reacting: this.pickerFor === message.id,
       reactionPicker:
         this.fullPickerFor === message.id
@@ -827,6 +875,35 @@ export class NativeView {
     );
     if (focusKey === undefined) return;
     [...panel.querySelectorAll<HTMLButtonElement>("button")].find((b) => (b.dataset.id ?? b.className) === focusKey && !b.disabled)?.focus();
+  }
+
+  /** The side panel of messages: the pinned ones, while the module lists them, where it can. */
+  private updateMessagePanel(): void {
+    const doc = this.doc;
+    const toggle = this.parts.pinsToggle as HTMLButtonElement;
+    const panel = this.parts.messagePanel!;
+    const channel = this.lastState?.channel;
+    const pins = channel && this.can.pins ? messageList(channel.pins) : undefined;
+    toggle.hidden = !channel || !this.can.pins;
+    toggle.setAttribute("aria-pressed", String(Boolean(pins)));
+    panel.hidden = !pins;
+    if (!pins) return panel.replaceChildren();
+    // Rebuilt on every update: give focus back to the control that had it.
+    const focused = doc.activeElement;
+    const focusKey = focused instanceof HTMLElement && panel.contains(focused) ? (focused.dataset.id ?? focused.className) : undefined;
+    const close = el(doc, "button", "profile-close", "×");
+    close.type = "button";
+    close.setAttribute("aria-label", "Close");
+    close.addEventListener("click", () => this.api.act({ type: "pins", open: false }));
+    panel.setAttribute("aria-label", "Pinned messages");
+    panel.replaceChildren(
+      close,
+      el(doc, "h3", "member-section", "Pinned messages"),
+      ...(this.jumpNote ? [el(doc, "p", "member-error", this.jumpNote)] : []),
+      ...listedMessages(doc, pins, (message) => this.jumpTo(message), "No pinned messages."),
+    );
+    if (focusKey === undefined) return;
+    [...panel.querySelectorAll<HTMLButtonElement>("button")].find((b) => (b.dataset.id ?? b.className) === focusKey)?.focus();
   }
 
   /** Opens someone's card at once with what the view knows, and asks the module for the rest. */
@@ -869,6 +946,8 @@ export class NativeView {
       this.profileFor = undefined;
       this.closePicker();
       this.closeMention();
+      this.jumpedId = undefined;
+      this.jumpNote = undefined;
     }
     title!.textContent = state.title;
     me!.textContent = state.me;
@@ -885,6 +964,7 @@ export class NativeView {
     const channel = state.channel;
     heading!.textContent = channel ? channel.name : "Select a conversation";
     this.updateMembers();
+    this.updateMessagePanel();
     this.updateProfile();
     this.parts.typing!.textContent = typingText(channel?.typing ?? []);
 
@@ -968,7 +1048,7 @@ export class NativeView {
     const divider = this.unreadDivider;
     if (this.unreadPending && divider) {
       this.unreadPending = false;
-      this.showUnread(divider);
+      this.showAt(divider);
     } else if (switched || atBottom) scroller.scrollTop = scroller.scrollHeight;
     else if (prepended) scroller.scrollTop = scroller.scrollHeight - fromBottom;
     // Loaded without it: it is above, and the bar offers to go there.
@@ -976,8 +1056,9 @@ export class NativeView {
     this.channelId = channel?.id;
     this.firstMessageId = first;
     if (this.seeking) {
-      if (divider) this.showUnread(divider);
-      else this.seekUnread();
+      const found = this.seeking.target ? this.messageElement(this.seeking.target.id) : divider;
+      if (found) this.showAt(found);
+      else this.seekOlder();
     }
     this.updateJumps();
   }

@@ -1345,6 +1345,94 @@ describe("member panel", () => {
   });
 });
 
+describe("pinned messages panel", () => {
+  const WITH_PINS = { ...ALL, pins: true };
+  const pinned = (id: string, timestamp = "2026-10-14T12:00:00Z") => ({ id, author: "Ana", content: `pin ${id}`, timestamp });
+  const state = (can: unknown, pins?: unknown, extra: Partial<NonNullable<Chat["channel"]>> = {}) =>
+    chat({ channel: { ...chat().channel!, can: can as typeof ALL, ...(pins === undefined ? {} : { pins: pins as never }), ...extra } });
+  const toggle = () => root.querySelector<HTMLButtonElement>(".pins-toggle")!;
+  const panel = () => root.querySelector<HTMLElement>("#message-panel")!;
+  const loads = () => act.mock.calls.filter(([a]) => a.type === "loadOlder").length;
+
+  it("is offered only where the conversation lists its pins, and opens and closes through the module", () => {
+    view.update(state(ALL, { messages: [pinned("10")], loading: false }));
+    expect(toggle().hidden).toBe(true);
+    expect(panel().hidden).toBe(true);
+    view.update(state(WITH_PINS));
+    expect(toggle().hidden).toBe(false);
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    toggle().click();
+    expect(act).toHaveBeenLastCalledWith({ type: "pins", open: true });
+    view.update(state(WITH_PINS, { messages: [], loading: false }));
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    expect(panel().hidden).toBe(false);
+    expect(panel().getAttribute("aria-label")).toBe("Pinned messages");
+    expect(panel().textContent).toContain("No pinned messages.");
+    panel().querySelector<HTMLButtonElement>(".profile-close")!.focus();
+    view.update(state(WITH_PINS, { messages: [], loading: true }));
+    expect(document.activeElement).toBe(panel().querySelector(".profile-close"));
+    toggle().click();
+    expect(act).toHaveBeenLastCalledWith({ type: "pins", open: false });
+    panel().querySelector<HTMLButtonElement>(".profile-close")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "pins", open: false });
+    view.update(chat({ channel: null }));
+    expect(toggle().hidden).toBe(true);
+    expect(panel().children).toHaveLength(0);
+  });
+
+  it("pins and unpins from the message menu", () => {
+    view.update(state(WITH_PINS, undefined, { messages: [msg("10", { canPin: true, pinned: true })] }));
+    [...root.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "Unpin")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "pin", messageId: "10", pin: false });
+  });
+
+  it("jumps to a loaded pinned message and marks it, keeping focus in the panel", () => {
+    const list = { messages: [pinned("10")], loading: false };
+    view.update(state(WITH_PINS, list));
+    const button = panel().querySelector<HTMLButtonElement>(".listed-message")!;
+    button.focus();
+    button.click();
+    expect(root.querySelector('li.message[data-id="10"]')!.classList.contains("jump-target")).toBe(true);
+    expect(document.activeElement).toBe(panel().querySelector(".listed-message"));
+    expect(loads()).toBe(0);
+    // Another conversation drops the mark.
+    view.update(chat({ channel: { ...state(WITH_PINS).channel!, id: "3", messages: [msg("10")] } }));
+    expect(root.querySelector(".jump-target")).toBeNull();
+  });
+
+  it("loads older pages to reach a pinned message, and says when it cannot be reached", () => {
+    const list = { messages: [pinned("5", "2026-10-14T11:00:00Z")], loading: false };
+    view.update(state(WITH_PINS, list, { hasOlder: true }));
+    panel().querySelector<HTMLButtonElement>(".listed-message")!.click();
+    expect(loads()).toBe(1);
+    view.update(state(WITH_PINS, list, { hasOlder: true, messages: [msg("8"), msg("10")] }));
+    expect(loads()).toBe(2);
+    view.update(state(WITH_PINS, list, { hasOlder: true, messages: [msg("5"), msg("8"), msg("10")] }));
+    expect(root.querySelector('li.message[data-id="5"]')!.classList.contains("jump-target")).toBe(true);
+    expect(loads()).toBe(2);
+    // Older messages loaded without it: it is gone, and the panel says so.
+    const gone = { messages: [pinned("4", "2026-10-14T12:30:00Z")], loading: false };
+    view.update(state(WITH_PINS, gone, { hasOlder: true }));
+    panel().querySelector<HTMLButtonElement>(".listed-message")!.click();
+    expect(loads()).toBe(2);
+    expect(panel().querySelector(".member-error")!.textContent).toBe("That message could not be loaded here.");
+    // Nothing older at all.
+    view.update(state(WITH_PINS, list, { hasOlder: false }));
+    panel().querySelector<HTMLButtonElement>(".listed-message")!.click();
+    expect(panel().textContent).toContain("could not be loaded");
+  });
+
+  it("gives up after a number of pages", async () => {
+    const { MAX_JUMP_PAGES } = await import("../../src/renderer/native");
+    const list = { messages: [pinned("1", "2000-01-01T00:00:00Z")], loading: false };
+    view.update(state(WITH_PINS, list, { hasOlder: true }));
+    panel().querySelector<HTMLButtonElement>(".listed-message")!.click();
+    for (let page = 0; page < MAX_JUMP_PAGES + 2; page++) view.update(state(WITH_PINS, list, { hasOlder: true, messages: [msg(String(100 - page))] }));
+    expect(loads()).toBe(MAX_JUMP_PAGES);
+    expect(panel().textContent).toContain("could not be loaded");
+  });
+});
+
 describe("profile cards", () => {
   const card = () => root.querySelector<HTMLElement>(".profile-card")!;
   const withAuthor = (extra: Partial<Chat> = {}) => chat({ channel: { ...chat().channel!, messages: [msg("10", { authorId: "7", avatarUrl: "https://x/a.png" })] }, ...extra });

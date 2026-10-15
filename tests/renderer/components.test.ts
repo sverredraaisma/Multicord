@@ -206,6 +206,47 @@ describe("link previews", () => {
   });
 });
 
+describe("pinned messages", () => {
+  const handlers = (): MessageHandlers => ({ onReply: vi.fn(), onToggleReactionPicker: vi.fn(), onReact: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(), onPin: vi.fn() });
+  const base: NativeMessage = { id: "5", author: "Ana", content: "x", timestamp: "", edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] };
+  const buttons = (item: HTMLElement) => [...item.querySelectorAll(".message-actions button")].map((b) => b.textContent);
+
+  it("marks pinned messages and offers pinning where the message may be", () => {
+    const h = handlers();
+    const pinned = messageItem(document, { ...base, pinned: true, canPin: true }, h, { highlighted: true });
+    expect(pinned.querySelector(".pin-marker")!.getAttribute("aria-label")).toBe("Pinned");
+    expect(pinned.classList.contains("jump-target")).toBe(true);
+    [...pinned.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "Unpin")!.click();
+    expect(h.onPin).toHaveBeenCalledWith(expect.objectContaining({ id: "5" }), false);
+    const plain = messageItem(document, { ...base, canPin: true }, h);
+    expect(plain.querySelector(".pin-marker")).toBeNull();
+    expect(plain.classList.contains("jump-target")).toBe(false);
+    [...plain.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "Pin")!.click();
+    expect(h.onPin).toHaveBeenLastCalledWith(expect.objectContaining({ id: "5" }), true);
+    expect(buttons(messageItem(document, base, h))).not.toContain("Pin");
+    expect(buttons(messageItem(document, { ...base, canPin: true }, { ...h, onPin: undefined }))).not.toContain("Pin");
+  });
+
+  it("lists messages that open when clicked, with notes, errors and loading", async () => {
+    const { listedMessages } = await import("../../src/renderer/components/panels");
+    const onOpen = vi.fn();
+    const message = { id: "5", author: "Ana", content: "", timestamp: "2026-10-14T12:00:00Z" };
+    const parts = listedMessages(document, { messages: [message], loading: true, note: "A note", error: "Oops" }, onOpen, "Nothing");
+    const holder = document.createElement("div");
+    holder.append(...parts);
+    expect(holder.querySelector(".panel-note")!.textContent).toBe("A note");
+    expect(holder.querySelector(".member-error")!.textContent).toBe("Oops");
+    expect(holder.querySelector(".listed-content")!.textContent).toBe("(no text)");
+    expect(holder.querySelector(".listed-author")!.textContent).toBe("Ana");
+    expect(holder.textContent).toContain("Loading…");
+    holder.querySelector<HTMLButtonElement>(".listed-message")!.click();
+    expect(onOpen).toHaveBeenCalledWith(message);
+    const empty = listedMessages(document, { messages: [], loading: false }, onOpen, "Nothing");
+    expect(empty.map((p) => p.textContent)).toEqual(["Nothing"]);
+    expect(listedMessages(document, { messages: [], loading: false, error: "Oops" }, onOpen, "Nothing")).toHaveLength(1);
+  });
+});
+
 describe("mention suggestions", () => {
   const base = { content: "", timestamp: "2026-10-14T12:00:00Z", edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] };
 
