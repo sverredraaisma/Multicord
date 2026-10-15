@@ -28,6 +28,7 @@ import { NerimityState, TYPING_MS } from "./state";
 import {
   ChannelType,
   MessageType,
+  NotifyMode,
   TEXT_CHANNEL_TYPES,
   UserStatus,
   displayName,
@@ -257,6 +258,8 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
         return this.pin(action.messageId, action.pin);
       case "search":
         return this.searchMessages(action.query);
+      case "mute":
+        return this.mute(action.channelId, action.mute);
       case "logout":
         return this.logout();
       default:
@@ -704,6 +707,29 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     await this.rest.typing(channelId).catch(() => undefined);
   }
 
+  /**
+   * Whether a channel's own mute may be changed from here: a server's text
+   * channel (Nerimity's notification settings are per server member, so DMs
+   * have none), in a server that is not muted as a whole, since unmuting
+   * hands the channel back to its server's setting.
+   */
+  private canMute(channel: NerimityChannel): boolean {
+    return channel.serverId !== undefined && channel.type === ChannelType.ServerText && this.state.pingModes.get(channel.serverId) !== NotifyMode.Mute;
+  }
+
+  /** Mutes a server channel's pings and sounds, as Nerimity's client does, or hands them back to the server's setting. */
+  private async mute(channelId: string, mute: boolean): Promise<void> {
+    const channel = this.state.channels.get(channelId);
+    if (!channel?.serverId || !this.canMute(channel) || this.state.isMuted(channel) === mute) return;
+    const serverId = channel.serverId;
+    const mode = mute ? NotifyMode.Mute : null;
+    await this.attempt(mute ? "Could not mute" : "Could not unmute", async () => {
+      await this.rest.setChannelNotifications(serverId, channelId, mode);
+      this.state.setPingMode(channelId, mode);
+      this.state.changed.emit();
+    });
+  }
+
   /** Runs a user action, showing a failure in the view's banner. */
   private async attempt(failure: string, action: () => Promise<void>): Promise<void> {
     try {
@@ -729,10 +755,10 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     );
   }
 
-  /** Notifies of DMs, and of server messages that mention the user. */
+  /** Notifies of DMs, and of server messages that mention the user, unless their channel is muted. */
   private notify(message: NerimityMessage): void {
     const channel = this.state.channels.get(message.channelId);
-    if (!channel || (channel.type !== ChannelType.Dm && !this.state.mentionsMe(message))) return;
+    if (!channel || (channel.type !== ChannelType.Dm && !this.state.mentionsMe(message)) || this.state.isMuted(channel)) return;
     const server = channel.serverId ? this.state.servers.get(channel.serverId) : undefined;
     const author = message.author ? this.authorName(message.author, server?.id) : "Someone";
     const text = toPlainLine(this.renderContent(message));
@@ -1005,6 +1031,9 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
       unread: kind !== "category" && this.state.isUnread(channel),
       mentions: kind === "category" ? 0 : this.state.mentions(channel.id),
       active: channel.id === this.selectedChannelId,
+      // Muted in Nerimity (the channel, or its server); the bell changes the channel's own setting where that can.
+      ...(kind === "text" && this.state.isMuted(channel) ? { muted: true } : {}),
+      ...(kind === "text" && this.canMute(channel) ? { canMute: true } : {}),
     });
     if (this.selection.kind === "home") return this.state.dms().map(({ channel }) => item(channel, "dm"));
     return this.state

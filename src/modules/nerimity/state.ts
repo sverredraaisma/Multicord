@@ -2,6 +2,7 @@ import { Emitter } from "../../shared/emitter";
 import {
   ChannelPermission,
   ChannelType,
+  NotifyMode,
   RolePermission,
   TEXT_CHANNEL_TYPES,
   compareIds,
@@ -67,6 +68,8 @@ export class NerimityState {
   readonly latest = new Map<string, NerimityMessage>();
   /** Who is typing where: channel id -> user id -> expiry (epoch ms). */
   readonly typing = new Map<string, Map<string, number>>();
+  /** The user's ping mode (NotifyMode) per server or channel id; null or absent follows the server. */
+  readonly pingModes = new Map<string, number | null>();
 
   readonly changed = new Emitter<void>();
   /** New messages from others, for marking read in the open channel and notifying. */
@@ -75,7 +78,7 @@ export class NerimityState {
   reset(): void {
     this.me = undefined;
     this.serverOrder = [];
-    for (const map of [this.servers, this.channels, this.roles, this.emojis, this.members, this.inbox, this.lastSeen, this.mentionCounts, this.presence, this.users, this.messages, this.latest, this.typing]) map.clear();
+    for (const map of [this.servers, this.channels, this.roles, this.emojis, this.members, this.inbox, this.lastSeen, this.mentionCounts, this.presence, this.users, this.messages, this.latest, this.typing, this.pingModes]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -270,6 +273,11 @@ export class NerimityState {
         if (!this.updateUser(id, updated)) return;
         break;
       }
+      case "user:notification_settings_update":
+        // Changed here or on another device: only the modes it names.
+        if (!isRecord(d.updated) || !("notificationPingMode" in d.updated)) return;
+        if (!this.setPingMode(isId(d.channelId) ? d.channelId : d.serverId, d.updated.notificationPingMode)) return;
+        break;
       case "user:presence_update":
         if (!isId(d.userId) || typeof d.status !== "number") return;
         this.presence.set(d.userId, d.status);
@@ -314,6 +322,19 @@ export class NerimityState {
       this.mentionCounts.set(m.channelId, (this.mentionCounts.get(m.channelId) ?? 0) + count);
     }
     for (const p of list(d.presences)) if (isRecord(p) && isId(p.userId) && typeof p.status === "number") this.presence.set(p.userId, p.status);
+    for (const s of list(d.notificationSettings)) if (isRecord(s)) this.setPingMode(isId(s.channelId) ? s.channelId : s.serverId, s.notificationPingMode);
+  }
+
+  /** Records a server's or channel's ping mode: a NotifyMode, or null to follow the server. Returns whether it was one. */
+  setPingMode(id: unknown, mode: unknown): boolean {
+    if (!isId(id) || !(mode === null || mode === NotifyMode.All || mode === NotifyMode.MentionsOnly || mode === NotifyMode.Mute)) return false;
+    this.pingModes.set(id, mode);
+    return true;
+  }
+
+  /** Whether a channel is muted in Nerimity, as its client works it out: the channel's own ping mode, else its server's. */
+  isMuted(channel: NerimityChannel): boolean {
+    return (this.pingModes.get(channel.id) ?? (channel.serverId ? this.pingModes.get(channel.serverId) : undefined)) === NotifyMode.Mute;
   }
 
   /** A server with its custom emoji; its channels, roles and members where the payload carries them (server:joined). */

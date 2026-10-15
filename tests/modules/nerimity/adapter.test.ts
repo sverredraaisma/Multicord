@@ -491,6 +491,62 @@ describe("NerimityAdapter rail and conversations", () => {
     expect(dismissals()).toHaveLength(2);
   });
 
+  it("shows channels muted in Nerimity as muted, and mutes or unmutes a server channel", async () => {
+    const notificationSettings = [
+      { serverId: "100", channelId: null, notificationPingMode: 0, notificationSoundMode: 0 },
+      { serverId: null, channelId: "113", notificationPingMode: 2, notificationSoundMode: 2 },
+      { serverId: "200", notificationPingMode: 2 },
+      { channelId: "111", notificationPingMode: 7 },
+      "bad",
+    ];
+    let answer: Reply = { status: 200, body: { status: "done" } };
+    const ctx = setup({ token: "saved", routes: [(url) => (url === `${API}/users/notifications` ? answer : undefined)] });
+    const notes = vi.fn();
+    ctx.adapter.onNotification(notes);
+    await ctx.adapter.start();
+    await ctx.goOnline({ ...authenticatedPayload(), notificationSettings });
+    await ctx.adapter.openServer("100");
+    const row = (id: string) => ctx.chat().sidebar.find((i) => i.id === id)!;
+    expect(row("113")).toMatchObject({ muted: true, canMute: true });
+    expect(row("111")).toMatchObject({ canMute: true });
+    expect(row("111")).not.toHaveProperty("muted");
+    expect(ctx.chat().sidebar.filter((i) => i.kind !== "text").some((i) => "muted" in i || "canMute" in i)).toBe(false);
+    // A muted channel does not notify, even of a mention.
+    await ctx.dispatch("message:created", { message: message("1000", "113", { mentions: [{ id: "1" }] }) });
+    expect(notes).not.toHaveBeenCalled();
+    // Muting sets pings and sounds, as Nerimity's client does; unmuting hands them back to the server.
+    await ctx.adapter.handleAction({ type: "mute", channelId: "111", mute: true });
+    expect(ctx.calls.at(-1)!.url).toBe(`${API}/users/notifications`);
+    expect(body(ctx.calls.at(-1)!.init)).toEqual({ serverId: "100", channelId: "111", notificationPingMode: 2, notificationSoundMode: 2 });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(row("111")).toMatchObject({ muted: true, canMute: true });
+    await ctx.adapter.handleAction({ type: "mute", channelId: "113", mute: false });
+    expect(body(ctx.calls.at(-1)!.init)).toEqual({ serverId: "100", channelId: "113", notificationPingMode: null, notificationSoundMode: null });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(row("113")).not.toHaveProperty("muted");
+    // Changes made elsewhere follow; events that set no ping mode change nothing.
+    await ctx.dispatch("user:notification_settings_update", { serverId: "100", channelId: "111", updated: { notificationPingMode: null } });
+    expect(row("111")).not.toHaveProperty("muted");
+    await ctx.dispatch("user:notification_settings_update", { serverId: "100", channelId: "111", updated: { notificationSoundMode: 2 } });
+    await ctx.dispatch("user:notification_settings_update", { serverId: "100", channelId: "111", updated: { notificationPingMode: 9 } });
+    await ctx.dispatch("user:notification_settings_update", { channelId: "111" });
+    expect(row("111")).not.toHaveProperty("muted");
+    // A muted server mutes its channels, and their own bell cannot undo it.
+    await ctx.adapter.openServer("200");
+    expect(row("211")).toMatchObject({ muted: true });
+    expect(row("211")).not.toHaveProperty("canMute");
+    // Nothing to change, DMs, categories, unknown channels and muted servers: nothing is sent.
+    const posts = ctx.calls.filter((c) => c.url === `${API}/users/notifications`).length;
+    for (const [channelId, mute] of [["111", false], ["900", true], ["110", true], ["404", true], ["211", false]] as const) await ctx.adapter.handleAction({ type: "mute", channelId, mute });
+    expect(ctx.calls.filter((c) => c.url === `${API}/users/notifications`)).toHaveLength(posts);
+    answer = { status: 403, body: { message: "You are not a member of this server." } };
+    await ctx.adapter.handleAction({ type: "mute", channelId: "111", mute: true });
+    expect(ctx.last()).toMatchObject({ error: "Could not mute: You are not a member of this server." });
+    await ctx.dispatch("user:notification_settings_update", { serverId: "100", updated: { notificationPingMode: 2 } });
+    await ctx.adapter.openServer("100");
+    expect(ctx.chat().sidebar.filter((i) => i.kind === "text").every((i) => i.muted === true && !("canMute" in i))).toBe(true);
+  });
+
   it("notifies of DMs and mentions, not of other server messages", async () => {
     const { adapter, online, dispatch } = setup({ token: "saved" });
     const notes = vi.fn();

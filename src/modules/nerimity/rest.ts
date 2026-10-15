@@ -168,6 +168,11 @@ export class NerimityRest {
       .reverse();
   }
 
+  /** Sets a server channel's ping and sound modes (POST /users/notifications); null follows the server. */
+  async setChannelNotifications(serverId: string, channelId: string, mode: number | null): Promise<void> {
+    await this.request("POST", "/users/notifications", { serverId, channelId, notificationPingMode: mode, notificationSoundMode: mode });
+  }
+
   /** Pins or unpins a message (POST or DELETE /channels/{id}/messages/pins/{message}). */
   async pin(channelId: string, messageId: string, pin: boolean): Promise<void> {
     await this.request(pin ? "POST" : "DELETE", `/channels/${channelId}/messages/pins/${messageId}`);

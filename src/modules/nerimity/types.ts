@@ -16,6 +16,9 @@ export const RolePermission = { Admin: 1, SendMessage: 2, ManageChannels: 4, Men
 /** Channel permission bits a role is given per channel (CHANNEL_PERMISSIONS). */
 export const ChannelPermission = { Public: 1, SendMessage: 2 } as const;
 
+/** Notification modes, for pings (badges and mentions) and sounds alike; null on a channel follows its server. */
+export const NotifyMode = { All: 0, MentionsOnly: 1, Mute: 2 } as const;
+
 /** Presence: 0 offline, 1 online, 2 looking to play, 3 away, 4 do not disturb. */
 export const UserStatus = { Offline: 0, Online: 1, LookingToPlay: 2, Away: 3, DoNotDisturb: 4 } as const;
 
