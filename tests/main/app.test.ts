@@ -445,6 +445,7 @@ describe("native Fluxer platform", () => {
       name: "Fluxer",
       url: "https://fluxer.app",
       os: "win32",
+      settings: { typing: true },
     });
     expect(engine.webContents.send).toHaveBeenCalledWith(ENGINE_IPC.action, { type: "ready" });
     // Only the view's action came through, not the rail's; held commands (e.g. visibility) follow.
@@ -988,7 +989,7 @@ describe("settings", () => {
     expect(((await info("mx")) as { settings: unknown }).settings).toEqual({ typing: false, slidingSync: false });
     expect(((await info("mx2")) as { settings: unknown }).settings).toEqual({ typing: true, slidingSync: true });
     expect(await info("telegram")).toMatchObject({ settings: {} });
-    expect(await info("fluxer")).not.toHaveProperty("settings");
+    expect(((await info("fluxer")) as { settings: unknown }).settings).toEqual({ typing: true });
 
     // A change reaches only that service's engine.
     engineOf("mx").webContents.send.mockClear();

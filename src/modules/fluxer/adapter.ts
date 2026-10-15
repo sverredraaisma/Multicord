@@ -22,7 +22,7 @@ import {
   type VoiceNoticeFlag,
 } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
-import type { AccountStatus } from "../../shared/settings";
+import { TYPING_SETTING, type AccountStatus, type ServiceSettingValues } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import { solveAltcha } from "./captcha";
 import { discoverInstance, globalExpressions, type FluxerInstance } from "./discovery";
@@ -113,6 +113,8 @@ export interface FluxerAdapterDeps {
   platform?: string;
   /** Lets the user pick files; the engine reads only what was picked. */
   files?: EngineFiles;
+  /** This instance's settings values (TYPING_SETTING); changes come through applySettings(). */
+  settings?: ServiceSettingValues;
 }
 
 type Selection = { kind: "home" } | { kind: "guild"; guildId: string };
@@ -166,6 +168,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
   private typingTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly typingSent = new Map<string, number>();
+  /** Settings' "Send typing indicators" for this service. */
+  private typingIndicators: boolean;
   private readonly pending = new Map<string, FileSource[]>();
   /** Whether a session token is stored, so the account shows as signed in before it connects. */
   private hasToken = false;
@@ -200,6 +204,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
 
   constructor(private readonly deps: FluxerAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
+    this.typingIndicators = deps.settings?.[TYPING_SETTING] !== false;
     this.state.changed.on(() => this.schedulePublish());
     // Typing indicators expire on their own; re-render when they may have.
     this.state.changed.on(() => {
@@ -210,6 +215,11 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       if (message.channelId === this.selectedChannelId) this.ackSoon(message.channelId);
       this.notify(message);
     });
+  }
+
+  /** Settings changed: whether to send typing indicators. Fluxer has no way to end one early; it runs out by itself. */
+  applySettings(values: ServiceSettingValues): void {
+    this.typingIndicators = values[TYPING_SETTING] !== false;
   }
 
   /** The secret store is this instance's own, so two accounts on one Fluxer instance stay apart. */
@@ -1056,7 +1066,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   /** Tells others we are typing; Fluxer shows it for ~10 s, so once per 8 s is enough. */
   private async sendTyping(now: number = Date.now()): Promise<void> {
     const channelId = this.selectedChannelId;
-    if (!channelId || !this.rest || now - (this.typingSent.get(channelId) ?? -Infinity) < TYPING_REPEAT_MS) return;
+    if (!channelId || !this.rest || !this.typingIndicators || now - (this.typingSent.get(channelId) ?? -Infinity) < TYPING_REPEAT_MS) return;
     this.typingSent.set(channelId, now);
     await this.rest.typing(channelId).catch(() => undefined);
   }
@@ -1603,7 +1613,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                   reply: true,
                   react: true,
                   attach: this.deps.files !== undefined,
-                  typing: true,
+                  typing: this.typingIndicators,
                   members: this.memberSource(channel) !== undefined,
                   // Fluxer allows guild stickers in DMs only with global expressions.
                   stickers: channel.guildId !== undefined || this.globalExpressions(),

@@ -35,7 +35,7 @@ function message(id: string, channelId: string, extra: Record<string, unknown> =
   return { id, channel_id: channelId, author: ANA, content: `m${id}`, timestamp: "2026-10-14T12:00:00Z", ...extra };
 }
 
-function setup(options: { token?: string; routes?: Handler[]; files?: FluxerAdapterDeps["files"]; def?: PlatformDef; secrets?: [string, string][] } = {}) {
+function setup(options: { token?: string; routes?: Handler[]; files?: FluxerAdapterDeps["files"]; def?: PlatformDef; secrets?: [string, string][]; settings?: FluxerAdapterDeps["settings"] } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const routes: Handler[] = [...(options.routes ?? [])];
   const fetch = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -72,6 +72,7 @@ function setup(options: { token?: string; routes?: Handler[]; files?: FluxerAdap
     rest: { sleep: async () => {}, solveCaptcha: async () => ({ counter: 1, derivedKey: "00", time: 1 }) },
     platform: "win32",
     files: options.files,
+    settings: options.settings,
   });
   const last = () => renders.at(-1)!;
   const chat = () => {
@@ -924,6 +925,28 @@ describe("FluxerAdapter typing", () => {
     expect(ctx.chat().channel!.typing).toEqual(["Ana"]);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(ctx.chat().channel!.typing).toEqual([]);
+  });
+
+  it("sends no typing while Settings turns it off, still showing others typing", async () => {
+    const ctx = setup({ token: "flx", settings: { typing: false } });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openServer("100");
+    const typingCalls = () => ctx.calls.filter((c) => c.url.endsWith("/typing"));
+    await ctx.adapter.handleAction({ type: "typing" });
+    expect(typingCalls()).toHaveLength(0);
+    expect(ctx.chat().channel!.can.typing).toBe(false);
+    ctx.adapter.state.apply("TYPING_START", { channel_id: "113", user_id: "2" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.chat().channel!.typing).toEqual(["Ana"]);
+
+    ctx.adapter.applySettings({ typing: true });
+    await ctx.adapter.handleAction({ type: "typing" });
+    expect(typingCalls()).toHaveLength(1);
+    ctx.adapter.applySettings({ typing: false });
+    await vi.advanceTimersByTimeAsync(8_000);
+    await ctx.adapter.handleAction({ type: "typing" });
+    expect(typingCalls()).toHaveLength(1);
   });
 });
 

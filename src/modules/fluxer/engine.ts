@@ -24,6 +24,7 @@ export async function startFluxerEngine(
     },
     platform: info.os,
     files: { pick: () => pickFiles(bridge), open: (file) => fileSource(bridge, file) },
+    settings: info.settings,
   });
   served = serveAdapter(bridge, adapter);
   await adapter.start();

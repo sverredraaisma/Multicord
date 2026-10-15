@@ -19,6 +19,7 @@ export const fluxerModule: PlatformModule = {
     engine: "fluxer",
     home: true,
     screenShare: true,
+    sendsTyping: true,
     capabilities: { directMessages: true, messagePreviews: true, voice: true, screenShare: true },
   },
 };
