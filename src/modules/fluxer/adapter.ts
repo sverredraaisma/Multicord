@@ -933,6 +933,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       source: mine && editable ? message.content : undefined,
       canDelete: mine,
       ...(!mine && this.state.mentionsMe(message) ? { mentionsMe: true } : {}),
+      // Who wrote it, and Fluxer's syntax for mentioning them (shown as @name).
+      authorId: message.author.id,
+      authorMention: `<@${message.author.id}>`,
       reply:
         reply === undefined
           ? undefined

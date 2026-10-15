@@ -506,6 +506,8 @@ describe("FluxerAdapter chat", () => {
       canEdit: false,
       canDelete: false,
       source: undefined,
+      authorId: "2",
+      authorMention: "<@2>",
       reply: undefined,
       reactions: [],
       attachments: [
