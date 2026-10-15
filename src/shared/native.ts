@@ -453,8 +453,11 @@ export function customEmojiList(value: unknown, base?: string): PickerEmoji[] {
     const url = isShownUrl(v.url) ? v.url : isHttps(base) && /^[A-Za-z0-9_-]{1,64}$/.test(v.id) ? `${base}/${v.id}.${animated ? "gif" : "webp"}?size=48` : undefined;
     if (!url) continue;
     const text = typeof v.text === "string" && v.text.trim() !== "" && v.text.length <= 200 ? v.text : `<${animated ? "a" : ""}:${name}:${v.id}>`;
-    const key = typeof v.key === "string" && v.key !== "" && v.key.length <= 64 ? v.key : `${name}:${v.id}`;
-    const emoji: PickerEmoji = { id: v.id, name, animated, url, text, key, react: v.react !== false && key.length <= 64 };
+    // A key of the module's own that reactions cannot carry rules reactions out, rather than reacting with another key.
+    const ownKey = typeof v.key === "string" && v.key !== "" && v.key.length <= 64;
+    const key = ownKey ? (v.key as string) : `${name}:${v.id}`;
+    const react = v.react !== false && (v.key === undefined || ownKey) && key.length <= 64;
+    const emoji: PickerEmoji = { id: v.id, name, animated, url, text, key, react };
     const source = shortText(v.source);
     if (source) emoji.source = source;
     list.push(emoji);

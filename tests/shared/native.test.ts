@@ -306,7 +306,7 @@ describe("stickers, emoji and GIFs", () => {
     expect(list).toEqual([
       { id: "55", name: "party", animated: false, url: "https://media.example/emojis/55.webp?size=48", text: "<:party:55>", key: "party:55", react: true, source: "Cats" },
       { id: "56", name: "dance", animated: true, url: "https://cdn.example/56.gif", text: ":dance:", key: "dance", react: false },
-      { id: "58", name: "long", animated: false, url: "https://media.example/emojis/58.webp?size=48", text: "<:long:58>", key: "long:58", react: true },
+      { id: "58", name: "long", animated: false, url: "https://media.example/emojis/58.webp?size=48", text: "<:long:58>", key: "long:58", react: false },
       { id: "59", name: "evil", animated: false, url: "https://media.example/emojis/59.webp?size=48", text: "<:evil:59>", key: "evil:59", react: true },
       { id: "60", name: "spin", animated: true, url: "https://media.example/emojis/60.gif?size=48", text: "<a:spin:60>", key: "spin:60", react: true },
     ]);
