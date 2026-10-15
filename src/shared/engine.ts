@@ -4,7 +4,7 @@
 // messages, every one validated in the main process, so a module can see
 // nothing of the shell or of other modules beyond what is handed to it.
 
-import type { HomeBadge, IncomingCall, PlatformNotification } from "./adapter";
+import type { HealthCheck, HomeBadge, IncomingCall, PlatformNotification } from "./adapter";
 import { isHttpsUrl } from "./ipc";
 import { isServiceSettingStatus, isServiceSettingValues, isSettingKey, type AccountStatus, type ServiceSettingStatus, type ServiceSettingValues } from "./settings";
 
@@ -71,7 +71,9 @@ export type EngineEvent =
   | { type: "account"; account: AccountStatus }
   | { type: "homeBadge"; badge: HomeBadge }
   /** What Settings shows with the module's declared settings; only declared keys are shown. */
-  | { type: "settingsStatus"; status: ServiceSettingStatus };
+  | { type: "settingsStatus"; status: ServiceSettingStatus }
+  /** The module's own checks of its service (e.g. that its servers answer), shown in Settings > Diagnostics after the engine's. */
+  | { type: "health"; checks: HealthCheck[] };
 
 export type EngineCommand =
   | { type: "openHome" }
@@ -133,6 +135,10 @@ export const MAX_DIRECTS = 500;
 export const MAX_KEY = 200;
 export const MAX_TEXT = 200;
 export const MAX_BODY_TEXT = 2000;
+/** Most checks an engine reports of its service, and the longest name and detail of one. */
+export const MAX_HEALTH_CHECKS = 8;
+export const MAX_HEALTH_NAME = 80;
+export const MAX_HEALTH_DETAIL = 300;
 /** Largest data: image URL accepted for icons and avatars. */
 export const MAX_DATA_IMAGE = 200_000;
 export const MAX_SECRET = 16_384;
@@ -228,6 +234,12 @@ export function isEngineEvent(value: unknown): value is EngineEvent {
       return isRecord(value.badge) && typeof value.badge.unread === "boolean" && isCount(value.badge.mentions);
     case "settingsStatus":
       return isServiceSettingStatus(value.status);
+    case "health":
+      return (
+        Array.isArray(value.checks) &&
+        value.checks.length <= MAX_HEALTH_CHECKS &&
+        value.checks.every((c) => isRecord(c) && isText(c.name, MAX_HEALTH_NAME, 1) && typeof c.ok === "boolean" && (c.detail === undefined || isText(c.detail, MAX_HEALTH_DETAIL)))
+      );
     default:
       return false;
   }

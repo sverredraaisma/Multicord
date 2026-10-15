@@ -126,7 +126,14 @@ export function serveAdapter(bridge: EngineBridge, adapter: ServedAdapter, log: 
   let lastAccount = "";
   let lastBadge = "";
   let lastSettings = "{}";
+  let lastHealth = "[]";
   const sync = (): void => {
+    const checks = adapter.health?.();
+    const checksJson = JSON.stringify(checks ?? []);
+    if (checks && checksJson !== lastHealth) {
+      lastHealth = checksJson;
+      bridge.emit({ type: "health", checks });
+    }
     const status = adapter.settingsStatus?.();
     const statusJson = JSON.stringify(status ?? {});
     if (status && statusJson !== lastSettings) {

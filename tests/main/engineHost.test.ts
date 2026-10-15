@@ -105,6 +105,19 @@ describe("EngineAdapter", () => {
     expect(new EngineAdapter("x", "x", capabilities, send, false).openHome).toBeUndefined();
   });
 
+  it("adds the module's own checks of its service after the engine's, while the engine runs", () => {
+    const adapter = new EngineAdapter("demo", "demo.example", capabilities, vi.fn(), false);
+    adapter.handle({ type: "health", checks: [{ name: "API", ok: true, extra: 1 } as never, { name: "Gateway", ok: false, detail: "Down" }] });
+    expect(adapter.health().map((c) => c.name)).toEqual(["Engine running"]);
+    adapter.setEngineHealth({ state: "running", responsive: true, restarts: 0 });
+    expect(adapter.health()).toEqual([
+      { name: "Engine running", ok: true },
+      { name: "Engine responsive", ok: true },
+      { name: "API", ok: true },
+      { name: "Gateway", ok: false, detail: "Down" },
+    ]);
+  });
+
   it("passes Settings values and actions on as commands, and keeps the settings status the engine reports", async () => {
     const send = vi.fn();
     const adapter = new EngineAdapter("demo", "demo.example", capabilities, send, false);

@@ -364,6 +364,19 @@ describe("serveAdapter commands", () => {
     expect(f.bridge.emit).toHaveBeenLastCalledWith({ type: "settingsStatus", status: {} });
   });
 
+  it("reports the adapter's checks of its service when they change", () => {
+    const f = fakeBridge();
+    const adapter = new FakeAdapter() as FakeAdapter & ServedAdapter;
+    let checks = [{ name: "API", ok: true }];
+    adapter.health = () => checks;
+    const { sync } = serveAdapter(f.bridge, adapter);
+    sync();
+    sync();
+    checks = [{ name: "API", ok: false }];
+    sync();
+    expect(f.bridge.emit.mock.calls.filter(([e]) => e.type === "health")).toEqual([[{ type: "health", checks: [{ name: "API", ok: true }] }], [{ type: "health", checks: [{ name: "API", ok: false }] }]]);
+  });
+
   it("ignores Settings commands an adapter has no use for, and reports no status for it", async () => {
     const f = fakeBridge();
     const log = vi.fn();
@@ -373,6 +386,7 @@ describe("serveAdapter commands", () => {
     await flush();
     expect(log).not.toHaveBeenCalled();
     expect(f.bridge.emit.mock.calls.map(([e]) => e.type)).not.toContain("settingsStatus");
+    expect(f.bridge.emit.mock.calls.map(([e]) => e.type)).not.toContain("health");
   });
 
   it("logs to console.warn by default", async () => {

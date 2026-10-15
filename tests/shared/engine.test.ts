@@ -133,6 +133,14 @@ describe("isEngineEvent notification, call, account, homeBadge", () => {
     expect(isEngineEvent({ type: "settingsStatus" })).toBe(false);
   });
 
+  it("validates the module's health checks", () => {
+    expect(isEngineEvent({ type: "health", checks: [] })).toBe(true);
+    expect(isEngineEvent({ type: "health", checks: [{ name: "API", ok: true }, { name: "Gateway", ok: false, detail: "Down" }] })).toBe(true);
+    for (const checks of [undefined, {}, [{ name: "", ok: true }], [{ name: "API", ok: "yes" }], [{ name: "API", ok: true, detail: 5 }], [{ name: "x".repeat(81), ok: true }], [{ name: "API", ok: true, detail: "x".repeat(301) }], Array.from({ length: 9 }, () => ({ name: "API", ok: true })), [null]]) {
+      expect(isEngineEvent({ type: "health", checks })).toBe(false);
+    }
+  });
+
   it("rejects unknown types and non-objects", () => {
     expect(isEngineEvent({ type: "nope" })).toBe(false);
     for (const v of [null, undefined, "servers", 1, []]) expect(isEngineEvent(v)).toBe(false);

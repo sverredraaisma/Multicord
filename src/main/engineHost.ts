@@ -39,6 +39,8 @@ export class EngineAdapter extends BaseAdapter implements PlatformAdapter {
   private engine: EngineHealth = { state: "starting", responsive: true, restarts: 0 };
   private readonly accountChanged = new Emitter<AccountStatus>();
   private settings: ServiceSettingStatus = {};
+  /** The module's own checks of its service, as the engine last reported them. */
+  private serviceChecks: HealthCheck[] = [];
   private readonly settingsChanged = new Emitter<void>();
   readonly openHome?: () => Promise<void>;
 
@@ -75,6 +77,10 @@ export class EngineAdapter extends BaseAdapter implements PlatformAdapter {
       case "settingsStatus":
         this.settings = event.status;
         return this.settingsChanged.emit();
+      case "health":
+        // Only the fields Settings shows.
+        this.serviceChecks = event.checks.map(({ name, ok, detail }) => (detail === undefined ? { name, ok } : { name, ok, detail }));
+        return;
     }
   }
 
@@ -108,7 +114,8 @@ export class EngineAdapter extends BaseAdapter implements PlatformAdapter {
     else if (exits) running.detail = exits.trim();
     if (state !== "running") return [running];
     const busy = { name: "Engine responsive", ok: false, detail: "The engine is busy; messages and notifications are delayed." };
-    return [running, responsive ? { name: busy.name, ok: true } : busy];
+    // The module's checks of its service come after; they are only as fresh as a running engine keeps them.
+    return [running, responsive ? { name: busy.name, ok: true } : busy, ...this.serviceChecks];
   }
 
   private toRail(server: EngineServer): RailServer {
