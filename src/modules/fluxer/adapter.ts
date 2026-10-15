@@ -1,6 +1,7 @@
 import type { DirectConversation, HealthCheck, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
 import {
   MAX_ATTACHMENTS,
+  MAX_LISTED_MESSAGES,
   type NativeAction,
   type NativeAttachment,
   type NativeCustomEmoji,
@@ -65,6 +66,8 @@ const GIF_DEBOUNCE_MS = 300;
 const MEMBER_WINDOW = 100;
 /** How long to wait for a member list before saying it did not come (Fluxer sends none where the user may not see the channel's members). */
 const MEMBER_LIST_TIMEOUT_MS = 15_000;
+/** Pages of 50 pins fetched at most, as the pins panel lists MAX_LISTED_MESSAGES. */
+const PIN_PAGES = 2;
 
 /** Why a peer-to-peer call cannot be joined from here. */
 const P2P_UNSUPPORTED = "This call connects people directly (peer-to-peer), which Multicord does not support.";
@@ -987,7 +990,16 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private async loadPins(channelId: string): Promise<void> {
     let list: NativeMessageList;
     try {
-      list = { messages: (await this.rest!.pins(channelId)).map((m) => this.listedMessage(m)), loading: false };
+      // Fluxer pages pins by pin time, so a page can repeat one pinned at the same moment: each is listed once.
+      const found = new Map<string, FluxerMessage>();
+      let page = await this.rest!.pins(channelId);
+      for (let pages = 1; ; pages++) {
+        for (const m of page.messages) if (!found.has(m.id)) found.set(m.id, m);
+        if (!page.next || pages >= PIN_PAGES) break;
+        page = await this.rest!.pins(channelId, page.next);
+      }
+      list = { messages: [...found.values()].slice(0, MAX_LISTED_MESSAGES).map((m) => this.listedMessage(m)), loading: false };
+      if (page.next) list.note = `Only the latest ${MAX_LISTED_MESSAGES} pins are listed.`;
     } catch (error) {
       list = { messages: [], loading: false, error: `Could not load pinned messages: ${messageOf(error)}` };
     }

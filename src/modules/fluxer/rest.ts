@@ -225,10 +225,19 @@ export class FluxerRest {
   }
 
   /** A channel's pinned messages, newest pin first (the first page of up to 50). */
-  async pins(channelId: string): Promise<FluxerMessage[]> {
-    const data = await this.request("GET", `/channels/${channelId}/messages/pins?limit=50`);
+  /**
+   * One page of a channel's pins, newest pin first; `before` (a pin time)
+   * asks for those pinned before it. `next` is the time to ask with for the
+   * next page while there are more.
+   */
+  async pins(channelId: string, before?: string): Promise<{ messages: FluxerMessage[]; next?: string }> {
+    const query = before ? `&before=${encodeURIComponent(before)}` : "";
+    const data = await this.request("GET", `/channels/${channelId}/messages/pins?limit=50${query}`);
     const items = isRecord(data) && Array.isArray(data.items) ? data.items : [];
-    return items.flatMap((item) => (isRecord(item) ? (parseMessage(item.message) ?? []) : []));
+    const messages = items.flatMap((item) => (isRecord(item) ? (parseMessage(item.message) ?? []) : []));
+    const last = items.at(-1);
+    const next = isRecord(data) && data.has_more === true && isRecord(last) && typeof last.pinned_at === "string" && last.pinned_at.length <= 40 ? last.pinned_at : undefined;
+    return next ? { messages, next } : { messages };
   }
 
   /**

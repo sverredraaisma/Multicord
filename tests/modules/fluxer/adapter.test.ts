@@ -1689,6 +1689,34 @@ describe("FluxerAdapter pins", () => {
     expect(ctx.chat().channel!.pins).toBeUndefined();
   });
 
+  it("pages through the pins by pin time, listing each once, up to what the panel shows", async () => {
+    const item = (id: number) => ({ message: message(String(id), "113", { pinned: true }), pinned_at: `2026-10-${String(10 + (id % 10)).padStart(2, "0")}T00:00:00Z#${id}` });
+    const first = { items: Array.from({ length: 50 }, (_, i) => item(1000 - i)), has_more: true };
+    // The second page repeats the last pin of the first, which shares its time.
+    const second = { items: [item(951), ...Array.from({ length: 50 }, (_, i) => item(900 - i))], has_more: true };
+    let more = true;
+    const ctx = await opened([
+      (url) => {
+        if (!url.includes("/channels/113/messages/pins?limit=50")) return undefined;
+        if (!url.includes("before=")) return { status: 200, body: first };
+        return { status: 200, body: { ...second, has_more: more } };
+      },
+    ]);
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    const pinUrls = () => ctx.calls.filter((c) => c.url.includes("/messages/pins")).map((c) => c.url);
+    expect(pinUrls()[1]).toContain(`&before=${encodeURIComponent(item(951).pinned_at)}`);
+    expect(pinsOf(ctx)!.messages).toHaveLength(100);
+    expect(new Set(pinsOf(ctx)!.messages.map((m) => m.id)).size).toBe(100);
+    expect(pinsOf(ctx)!.note).toBe("Only the latest 100 pins are listed.");
+    // Two pages that hold them all, the second ending the list: no note.
+    more = false;
+    second.items = second.items.slice(0, 30);
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(pinsOf(ctx)!.messages).toHaveLength(79);
+    expect(pinsOf(ctx)).not.toHaveProperty("note");
+    expect(pinUrls()).toHaveLength(4);
+  });
+
   it("says when the pins cannot be loaded, and drops answers for a closed panel", async () => {
     let fail = true;
     let release: () => void = () => {};
