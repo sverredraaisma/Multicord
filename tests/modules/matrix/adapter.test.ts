@@ -35,6 +35,9 @@ import {
   MAX_MEDIA_BYTES,
   MAX_REACTIONS,
   PAGE_SIZE,
+  TYPING_IDLE_MS,
+  TYPING_REPEAT_MS,
+  TYPING_TIMEOUT_MS,
   REQUEST_ENTRY,
   parseSession,
   SYNC_TIMEOUT_MS,
@@ -121,6 +124,7 @@ class FakeMatrixApi implements MatrixApi {
   request = vi.fn(async (_s: MxSession, _method: string, _path: string, _body?: unknown, _query?: Record<string, string>): Promise<Record<string, unknown>> => ({}));
   send = vi.fn(async (_s: MxSession, _room: string, _content: Record<string, unknown>) => `$sent${this.send.mock.calls.length}`);
   redact = vi.fn(async (_s: MxSession, _room: string, _id: string) => {});
+  typing = vi.fn(async (_s: MxSession, _room: string, _typing: boolean, _timeout: number) => {});
   markRead = vi.fn(async (_s: MxSession, _room: string, _id: string) => {});
   thumbnail = vi.fn(async (_s: MxSession, _mxc: string): Promise<string | undefined> => undefined);
   download = vi.fn(async (_s: MxSession, _mxc: string, _max: number): Promise<MxDownload | undefined> => undefined);
@@ -1070,6 +1074,74 @@ describe("reactions", () => {
   });
 });
 
+describe("typing", () => {
+  it("shows who else is typing, by name, as the server last said", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Bo");
+    await ctx.live(sync({ joined: [room("!dm:x.org", { typing: [BO, ME, "@zed:x.org"] })] }));
+    expect(ctx.chat().channel!.typing).toEqual(["Bo", "@zed:x.org"]);
+    // A sync without news of typing changes nothing; an empty list ends it.
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [msg("d3", BO, "there", 3000)] })] }));
+    expect(ctx.chat().channel!.typing).toEqual(["Bo", "@zed:x.org"]);
+    await ctx.live(sync({ joined: [room("!dm:x.org", { typing: [] })] }));
+    expect(ctx.chat().channel!.typing).toEqual([]);
+  });
+
+  it("says it is typing once, renews it while typing goes on and ends it after a pause", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Bo");
+    vi.useFakeTimers();
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing).toHaveBeenCalledWith(SESSION, "!dm:x.org", true, TYPING_TIMEOUT_MS);
+    // Each keystroke pushes the pause back; the notice is renewed only once the repeat time has passed.
+    for (let typed = 0; typed < TYPING_REPEAT_MS; typed += TYPING_IDLE_MS - 1) {
+      vi.advanceTimersByTime(TYPING_IDLE_MS - 1);
+      await ctx.act({ type: "typing" });
+    }
+    expect(ctx.api.typing).toHaveBeenCalledTimes(2);
+    expect(ctx.api.typing).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", true, TYPING_TIMEOUT_MS);
+    // Another keystroke in the same moment as the renewal sends nothing more.
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(TYPING_IDLE_MS);
+    expect(ctx.api.typing).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", false, TYPING_TIMEOUT_MS);
+    expect(ctx.api.typing).toHaveBeenCalledTimes(3);
+  });
+
+  it("ends typing on sending and when typing in another room, and shrugs off failures", async () => {
+    const ctx = await signedIn();
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing).not.toHaveBeenCalled();
+    await ctx.open("Bo");
+    ctx.api.typing.mockRejectedValue(new Error("offline"));
+    await ctx.act({ type: "typing" });
+    await ctx.act({ type: "send", content: "hi" });
+    expect(ctx.api.typing.mock.calls.map((c) => [c[1], c[2]])).toEqual([
+      ["!dm:x.org", true],
+      ["!dm:x.org", false],
+    ]);
+    await ctx.act({ type: "typing" });
+    await ctx.open("Lounge");
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing.mock.calls.slice(2).map((c) => [c[1], c[2]])).toEqual([
+      ["!dm:x.org", true],
+      ["!dm:x.org", false],
+      ["!lounge:x.org", true],
+    ]);
+    expect(ctx.chat().error).toBeUndefined();
+  });
+
+  it("forgets its typing on signing out, without a notice from the ended session", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Bo");
+    vi.useFakeTimers();
+    await ctx.act({ type: "typing" });
+    await ctx.adapter.signOut();
+    vi.advanceTimersByTime(TYPING_IDLE_MS);
+    expect(ctx.api.typing).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("read state", () => {
   it("marks a room read when opened while visible, once per newest event", async () => {
     const ctx = await signedIn();
@@ -1210,7 +1282,7 @@ describe("shell interface", () => {
   it("ignores actions Matrix does not offer", async () => {
     const ctx = await signedIn();
     const renders = ctx.renders.length;
-    for (const action of [{ type: "typing" }, { type: "attach" }] as NativeAction[]) await ctx.act(action);
+    for (const action of [{ type: "attach" }, { type: "removeAttachment", index: 0 }] as NativeAction[]) await ctx.act(action);
     expect(ctx.renders).toHaveLength(renders);
   });
 });

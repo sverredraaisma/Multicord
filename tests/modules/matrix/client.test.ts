@@ -164,6 +164,21 @@ describe("syncing and history", () => {
     expect(JSON.parse(url.searchParams.get("filter")!)).toMatchObject({ lazy_load_members: true });
   });
 
+  it("asks for typing notices but no other ephemeral events", () => {
+    expect(JSON.parse(SYNC_FILTER).room.ephemeral).toEqual({ types: ["m.typing"] });
+  });
+
+  it("says when we type and when we stop", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({}));
+    await client.typing(SESSION, "!r:x.org", true, 30_000);
+    await client.typing(SESSION, "!r:x.org", false, 30_000);
+    const first = callOf(fetchFn);
+    expect(first.url.pathname).toBe(`/_matrix/client/v3/rooms/!r%3Ax.org/typing/${encodeURIComponent(SESSION.userId)}`);
+    expect(first.init.method).toBe("PUT");
+    expect(JSON.parse(first.init.body as string)).toEqual({ typing: true, timeout: 30_000 });
+    expect(JSON.parse(callOf(fetchFn, 1).init.body as string)).toEqual({ typing: false });
+  });
+
   it("asks for reactions in the timeline and in history", async () => {
     expect(JSON.parse(SYNC_FILTER).room.timeline.types).toContain("m.reaction");
     const { client, fetchFn } = fakeFetch(() => json({ chunk: [] }));

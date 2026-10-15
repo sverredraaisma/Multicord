@@ -269,6 +269,16 @@ describe("sync responses", () => {
     expect(plain).toEqual({ roomId: "!plain:x.org", state: { members: {} }, timeline: [], limited: false, unread: { notifications: 0, highlights: 0 } });
   });
 
+  it("reads who is typing from the last m.typing, keeping only user ids, at most 20", () => {
+    const typing = (ephemeral: unknown) => parseSync({ next_batch: "s", rooms: { join: { "!a:x.org": { ephemeral } } } }).joined[0]!.typing;
+    expect(typing({ events: [{ type: "m.typing", content: { user_ids: ["@old:x.org"] } }, { type: "m.receipt", content: {} }, { type: "m.typing", content: { user_ids: ["@bo:x.org", "bo", 3] } }] })).toEqual(["@bo:x.org"]);
+    expect(typing({ events: [{ type: "m.typing", content: { user_ids: Array.from({ length: 30 }, (_, i) => `@u${i}:x.org`) } }] })).toHaveLength(20);
+    expect(typing({ events: [{ type: "m.typing", content: {} }] })).toEqual([]);
+    expect(typing({ events: [{ type: "m.typing", content: "x" }, "junk"] })).toBeUndefined();
+    expect(typing({ events: [] })).toBeUndefined();
+    expect(typing("x")).toBeUndefined();
+  });
+
   it("caps unread counts", () => {
     const sync = parseSync({ next_batch: "s", rooms: { join: { "!a:x": { unread_notifications: { notification_count: 1e12, highlight_count: 1.5 } } } } });
     expect(sync.joined[0]!.unread).toEqual({ notifications: 1_000_000, highlights: 0 });

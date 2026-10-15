@@ -171,6 +171,29 @@ describe("reactions with Element (matrix-js-sdk)", { timeout: 30_000 }, () => {
   });
 });
 
+describe("typing with Element (matrix-js-sdk)", { timeout: 30_000 }, () => {
+  it("shows Element typing, and Element shows Multicord typing until it sends", async () => {
+    const server = new InteropHomeserver();
+    encryptedRoom(server, [BOB, ALICE]);
+    const mc = await multicord(server, ALICE, "MULTI");
+    const bob = await element(server, BOB, "ELEMENT");
+    await mc.open("Secret");
+
+    await bob.sendTyping(ROOM, true, 30_000);
+    await until(() => mc.chat()?.channel?.typing.includes("bob"), "Multicord to show Element typing");
+    await bob.sendTyping(ROOM, false, 30_000);
+    await until(() => mc.chat()?.channel?.typing.length === 0, "Multicord to stop showing Element typing");
+
+    const typing = () => bob.getRoom(ROOM)?.getMember(ALICE)?.typing;
+    await mc.act({ type: "typing" });
+    await until(() => typing() === true, "Element to show Multicord typing");
+    expect(server.typingSent.at(-1)).toEqual({ user: ALICE, body: { typing: true, timeout: 30_000 } });
+    await mc.act({ type: "send", content: "done typing" });
+    await until(() => typing() === false, "Element to stop showing Multicord typing");
+    expect(server.unknown).toEqual([]);
+  });
+});
+
 describe("encrypted attachments with Element (matrix-js-sdk)", { timeout: 30_000 }, () => {
   it("shows a picture Element sends into an encrypted room, and refuses one the server changed", async () => {
     const server = new InteropHomeserver();

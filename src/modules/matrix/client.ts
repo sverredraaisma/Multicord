@@ -36,8 +36,8 @@ const TIMELINE_TYPES = [
   "m.room.member",
 ];
 /**
- * What /sync returns: members only as needed (lazy loading), no presence,
- * typing or receipts, and of the account data only the DM list. To-device
+ * What /sync returns: members only as needed (lazy loading), no presence or
+ * receipts but typing notices, and of the account data only the DM list. To-device
  * messages and device lists come unfiltered, for encryption. The timeline
  * also carries call memberships of both kinds as they change; sticky ones
  * also come in their own section, which no filter narrows.
@@ -48,7 +48,7 @@ export const SYNC_FILTER = JSON.stringify({
   room: {
     state: { lazy_load_members: true },
     timeline: { limit: TIMELINE_LIMIT, types: [...TIMELINE_TYPES, CALL_MEMBER_TYPE, RTC_MEMBER_TYPE], lazy_load_members: true },
-    ephemeral: { not_types: ["*"] },
+    ephemeral: { types: ["m.typing"] },
     account_data: { not_types: ["*"] },
   },
 });
@@ -252,6 +252,11 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
 
     async redact(session, roomId, id) {
       await authed(session, `${room(roomId)}/redact/${encodeURIComponent(id)}/${txnId()}`, { method: "PUT", body: {} });
+    },
+
+    async typing(session, roomId, typing, timeoutMs) {
+      const body = typing ? { typing: true, timeout: timeoutMs } : { typing: false };
+      await authed(session, `${room(roomId)}/typing/${encodeURIComponent(session.userId)}`, { method: "PUT", body });
     },
 
     async markRead(session, roomId, id) {

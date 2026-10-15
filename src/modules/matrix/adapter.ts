@@ -146,6 +146,10 @@ type Reaction = Extract<MxEvent, { kind: "reaction" }>;
 const MAX_STICKY_WAITING = 100;
 /** Reactions kept per room; beyond this the oldest go. */
 export const MAX_REACTIONS = 5000;
+/** How long the server shows us typing unless renewed; renewed this often while typing goes on, and ended after this long idle (as Element does). */
+export const TYPING_TIMEOUT_MS = 30_000;
+export const TYPING_REPEAT_MS = 20_000;
+export const TYPING_IDLE_MS = 10_000;
 
 interface Room {
   id: string;
@@ -167,6 +171,8 @@ interface Room {
   edits: Map<string, Message>;
   /** Reactions by their own event id (redacting that id takes one back), in the order they arrived. */
   reactions: Map<string, { target: string; key: string; sender: string }>;
+  /** Who is typing, as the server last said (it ends typing that is not renewed). */
+  typing: string[];
   prevBatch?: string;
   notifications: number;
   highlights: number;
@@ -379,6 +385,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private callFlags = { mute: false, deaf: false, video: false, stream: false };
   /** A DM whose call is ringing, named in the banner. */
   private ringing: string | undefined;
+  /** Our own typing notice: in which room, when it was last sent, and the timer that ends it. */
+  private ownTyping: { roomId: string; sent: number; stop: ReturnType<typeof setTimeout> } | undefined;
   private readonly delay: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
 
@@ -532,6 +540,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private async forgetSession(): Promise<void> {
     this.hasSession = false;
     this.session = undefined;
+    // The notice ends by itself on the server; the session to end it with is gone.
+    clearTimeout(this.ownTyping?.stop);
+    this.ownTyping = undefined;
     await this.deps.secrets.delete(SESSION_KEY);
     await this.stopCrypto(true);
   }
@@ -670,6 +681,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.remove(action.messageId);
       case "react":
         return this.react(action.messageId, action.emoji, action.add);
+      case "typing":
+        return this.sendTyping();
       case "loadOlder":
         return this.loadOlder();
       case "logout":
@@ -687,7 +700,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       case "loadMedia":
         return this.loadMedia(action.key);
       default:
-        // Uploads, typing and forums are not offered for Matrix.
+        // Uploads and forums are not offered for Matrix.
         return;
     }
   }
@@ -1326,6 +1339,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         events: [],
         edits: new Map(),
         reactions: new Map(),
+        typing: [],
         notifications: 0,
         highlights: 0,
         lastActivity: 0,
@@ -1380,6 +1394,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       // A call joined unencrypted does not carry on once the room turns encrypted.
       if (room.encrypted && this.call?.roomId === room.id && !this.call.encrypted) void this.leaveCall("This room is now end-to-end encrypted. Join the call again to encrypt it too.");
       if (update.heroes) room.heroes = update.heroes;
+      if (update.typing) room.typing = update.typing;
       if (update.unread) {
         room.notifications = update.unread.notifications;
         room.highlights = update.unread.highlights;
@@ -1631,6 +1646,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const room = this.selectedRoom();
     if (!room || text.trim() === "") return;
     const session = this.session!;
+    this.stopTyping();
     await this.attempt("Message not sent", async () => {
       const content: Record<string, unknown> = { msgtype: "m.text", body: text, "m.mentions": {} };
       const replied = replyTo ? this.findEvent(room, replyTo) : undefined;
@@ -1706,6 +1722,37 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       }
       this.render();
     });
+  }
+
+  /**
+   * Tells the open room we are typing. Typing notices are never encrypted,
+   * in Element either. The server shows one for TYPING_TIMEOUT_MS, so it is
+   * renewed while typing goes on, and ended after a pause, on sending, or
+   * on typing in another room.
+   */
+  private sendTyping(): void {
+    const room = this.selectedRoom();
+    if (!room) return;
+    const now = Date.now();
+    const current = this.ownTyping?.roomId === room.id ? this.ownTyping : undefined;
+    if (!current) this.stopTyping();
+    const renew = !current || now - current.sent >= TYPING_REPEAT_MS;
+    if (renew) this.typingNotice(room.id, true);
+    clearTimeout(current?.stop);
+    this.ownTyping = { roomId: room.id, sent: renew ? now : current.sent, stop: setTimeout(() => this.stopTyping(), TYPING_IDLE_MS) };
+  }
+
+  private stopTyping(): void {
+    const typing = this.ownTyping;
+    if (!typing) return;
+    clearTimeout(typing.stop);
+    this.ownTyping = undefined;
+    this.typingNotice(typing.roomId, false);
+  }
+
+  /** Typing notices are best effort: a failed one changes nothing shown. */
+  private typingNotice(roomId: string, typing: boolean): void {
+    void this.deps.api.typing(this.session!, roomId, typing, TYPING_TIMEOUT_MS).catch(() => undefined);
   }
 
   // --- Media --------------------------------------------------------------------------
@@ -2247,7 +2294,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             messages: room.events.map((e) => this.toNative(room, e, locked !== undefined, reactions)),
             loading: this.loading.has(room.id),
             hasOlder: room.prevBatch !== undefined,
-            typing: [],
+            typing: room.typing.filter((user) => user !== userId).map((user) => this.memberName(room, user)),
             pending: [],
             uploading: false,
             ...(locked ? { locked } : {}),

@@ -263,6 +263,8 @@ export interface MxRoomUpdate {
   unread?: { notifications: number; highlights: number };
   /** m.heroes: members the server picked to name an unnamed room. */
   heroes?: string[];
+  /** Who is typing (m.typing), when that changed: always the whole list. */
+  typing?: string[];
 }
 
 export interface MxSync {
@@ -303,6 +305,8 @@ export interface MatrixApi {
   /** Sends a room event (m.room.message unless said otherwise); returns its event id. */
   send(session: MxSession, roomId: string, content: Record<string, unknown>, type?: string): Promise<string>;
   redact(session: MxSession, roomId: string, eventId: string): Promise<void>;
+  /** Says we are typing in a room, for `timeoutMs` unless renewed, or that we stopped. */
+  typing(session: MxSession, roomId: string, typing: boolean, timeoutMs: number): Promise<void>;
   markRead(session: MxSession, roomId: string, eventId: string): Promise<void>;
   /** A small thumbnail of an mxc:// image as a data: URL. */
   thumbnail(session: MxSession, mxc: string): Promise<string | undefined>;

@@ -19,6 +19,8 @@ interface RoomData {
   /** Every event in order, with the server position it was added at. */
   events: { pos: number; event: Json }[];
   state: Map<string, Json>;
+  /** Who is typing, and the position it last changed at. */
+  typing?: { users: string[]; pos: number };
 }
 
 export class InteropHomeserver extends FakeHomeserver {
@@ -36,6 +38,8 @@ export class InteropHomeserver extends FakeHomeserver {
   readonly unknown: string[] = [];
   /** State and room events as sent, for the RTC tests. */
   readonly sent: { user: string; device: string; event: Json }[] = [];
+  /** Typing notices as sent. */
+  readonly typingSent: { user: string; body: Json }[] = [];
 
   /** A device with an access token. */
   register(user: string, device: string): string {
@@ -102,8 +106,9 @@ export class InteropHomeserver extends FakeHomeserver {
       const member = room.state.get(`m.room.member\u0000${user}`);
       if (member?.content.membership !== "join") continue;
       const events = room.events.filter((e) => e.pos > from).map((e) => e.event);
-      if (since && events.length === 0) continue;
-      join[id] = { state: { events: [] }, timeline: { events, limited: false, prev_batch: `p${from}` }, ephemeral: { events: [] }, account_data: { events: [] }, unread_notifications: {} };
+      const typing = room.typing && room.typing.pos > from ? [{ type: "m.typing", content: { user_ids: room.typing.users } }] : [];
+      if (since && events.length === 0 && typing.length === 0) continue;
+      join[id] = { state: { events: [] }, timeline: { events, limited: false, prev_batch: `p${from}` }, ephemeral: { events: typing }, account_data: { events: [] }, unread_notifications: {} };
     }
     const accountData = [...(this.accountPos.get(user) ?? [])].filter(([, at]) => at > from).map(([type]) => ({ type, content: this.accountData.get(user)!.get(type) }));
     return {
@@ -251,7 +256,15 @@ export class InteropHomeserver extends FakeHomeserver {
       for (const event of room.state.values()) if (event.type === "m.room.member" && event.content.membership === "join") joined[event.state_key] = {};
       return { joined };
     }
-    if ((what === "read_markers" || what === "receipt" || what === "typing") && method !== "GET") return {};
+    if (what === "typing" && method === "PUT") {
+      // Typing ends only when told: these tests do not wait for timeouts.
+      const users = (room.typing?.users ?? []).filter((u) => u !== rest[0]);
+      this.bump();
+      room.typing = { users: body.typing === true ? [...users, rest[0]!] : users, pos: this.pos };
+      this.typingSent.push({ user, body });
+      return {};
+    }
+    if ((what === "read_markers" || what === "receipt") && method !== "GET") return {};
     this.unknown.push(`${method} rooms/${what}`);
     throw new MatrixError(404, "M_UNRECOGNIZED", `Not faked: rooms/${what}`);
   }

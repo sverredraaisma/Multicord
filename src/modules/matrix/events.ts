@@ -32,6 +32,8 @@ const MAX_ROOMS = 2000;
 const MAX_EVENTS = 1000;
 const MAX_MENTIONS = 100;
 const MAX_HEROES = 5;
+/** People shown typing in a room at once. */
+const MAX_TYPING = 20;
 const MAX_COUNT = 1_000_000;
 /** Matrix events are at most 64 KiB; a larger one is not passed to the crypto library. */
 export const MAX_EVENT_JSON = 65_536;
@@ -559,6 +561,11 @@ function parseRoom(id: string, raw: Record<string, unknown>): MxRoomUpdate {
   if (isRecord(raw.summary) && Array.isArray(raw.summary["m.heroes"])) {
     update.heroes = list(raw.summary["m.heroes"], MAX_HEROES).flatMap((u) => userId(u) ?? []);
   }
+  // Each m.typing names everyone typing now; the last one counts.
+  const typing = list(isRecord(raw.ephemeral) ? raw.ephemeral.events : undefined, MAX_EVENTS)
+    .filter((e): e is Record<string, unknown> => isRecord(e) && e.type === "m.typing" && isRecord(e.content))
+    .at(-1);
+  if (typing) update.typing = list((typing.content as Record<string, unknown>).user_ids, MAX_TYPING).flatMap((u) => userId(u) ?? []);
   return update;
 }
 
