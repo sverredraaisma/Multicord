@@ -22,7 +22,7 @@ const h = vi.hoisted(() => {
     "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
     "InputFile", "InputFileBig", "InputMediaUploadedPhoto", "InputMediaUploadedDocument",
     "PhotoPathSize", "VideoSize", "StickerSet", "InputStickerSetID", "InputMediaDocument", "InputDocument",
-    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings", "InputFolderPeer", "FolderPeer", "UpdateFolderPeers", "DialogFilter", "DialogFilterChatlist", "DialogFilterDefault", "InputPeerUser", "InputPeerChat", "InputPeerChannel", "InputPeerSelf", "UpdateDialogFilter", "UpdateDialogFilters", "UpdateDialogFilterOrder", "UpdateLoginToken", "InputMessagesFilterEmpty",
+    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings", "InputFolderPeer", "FolderPeer", "UpdateFolderPeers", "DialogFilter", "DialogFilterChatlist", "DialogFilterDefault", "InputPeerUser", "InputPeerChat", "InputPeerChannel", "InputPeerSelf", "UpdateDialogFilter", "UpdateDialogFilters", "UpdateDialogFilterOrder", "UpdateLoginToken", "InputMessagesFilterEmpty", "InputNotifyForumTopic",
   ];
   const Api: Record<string, unknown> = {
     auth: {
@@ -1323,6 +1323,23 @@ describe("forum topics", () => {
       const request = client.invoke.mock.calls[0]![0] as Record<string, unknown>;
       expect(request).toBeInstanceOf(Api.channels.GetForumTopics);
       expect(request).toMatchObject({ channel: -1005n, offsetDate: 0, offsetId: 0, offsetTopic: 0, limit: 1 });
+    });
+
+    it("reads topics' own mutes, and mutes a topic through its notify peer", async () => {
+      const settings = (props: Record<string, unknown>) => make(Api.PeerNotifySettings, props);
+      const topics = [
+        make(Api.ForumTopic, { id: 2, title: "A", date: 1, notifySettings: settings({ muteUntil: 2147483647 }) }),
+        make(Api.ForumTopic, { id: 3, title: "B", date: 1, notifySettings: settings({ muteUntil: 0 }) }),
+        make(Api.ForumTopic, { id: 4, title: "C", date: 1, notifySettings: settings({}) }),
+        make(Api.ForumTopic, { id: 5, title: "D", date: 1, notifySettings: settings({ muteUntil: -5 }) }),
+      ];
+      expect(topicsOf(topics, []).map((t) => t.mutedUntil)).toEqual([2147483647, 0, undefined, 0]);
+      client.invoke.mockResolvedValue({});
+      await api.mute("-1005", 0, 10);
+      const request = client.invoke.mock.calls[0]![0] as { peer: { peer: unknown; topMsgId: number }; settings: { muteUntil: number } };
+      expect(request.peer).toBeInstanceOf(Api.InputNotifyForumTopic);
+      expect(request.peer).toMatchObject({ peer: { input: -1005n }, topMsgId: 10 });
+      expect(request.settings.muteUntil).toBe(0);
     });
 
     it("starts a topic and finds its id in Telegram's answer", async () => {

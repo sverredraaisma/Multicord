@@ -212,6 +212,8 @@ export interface TgTopic {
   readUpTo?: number;
   /** When it was last active (Unix seconds). */
   date: number;
+  /** Its own mute, until when (Unix seconds; 0 for unmuted), where it has one; else it follows its group. */
+  mutedUntil?: number;
   /** Pinned to the top of the list. */
   pinned?: boolean;
 }
@@ -339,8 +341,8 @@ export interface TelegramApi {
   remove(chatId: string, ids: number[]): Promise<void>;
   /** Marks a chat, or one topic of a forum, read up to a message, with its mentions. */
   markRead(chatId: string, maxId: number, topicId?: number): Promise<void>;
-  /** Mutes a chat's notifications until a time (Unix seconds), or unmutes it with 0. */
-  mute(chatId: string, until: number): Promise<void>;
+  /** Mutes a chat's notifications (or one forum topic's) until a time (Unix seconds), or unmutes it with 0. */
+  mute(chatId: string, until: number, topicId?: number): Promise<void>;
   /** Moves a chat into the archive, or out of it. */
   archive(chatId: string, archived: boolean): Promise<void>;
   /** The user's chat folders in their order, with ALL_CHATS where they placed it. */

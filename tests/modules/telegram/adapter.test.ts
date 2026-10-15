@@ -2568,6 +2568,42 @@ describe("forum topics", () => {
     await flush();
   };
 
+  it("mutes and unmutes topics on their own, which otherwise follow their group, and keeps muted topics quiet", async () => {
+    const ctx = await signedIn({ dialogs: forum({ mutedUntil: MUTE_FOREVER }) });
+    ctx.api.topics.mockResolvedValue([topic(1, { title: "General" }), topic(10, { mutedUntil: 0 }), topic(20)]);
+    await ctx.act({ type: "select", channelId: viewId(FORUM) });
+    const row = (name: string) => threads(ctx).find((t) => t.name === name)!;
+    // General follows the muted group; T10 was unmuted on its own.
+    expect([row("General"), row("T10")].map((t) => [t.muted, t.canMute])).toEqual([[true, true], [false, true]]);
+    ctx.api.emit({ type: "message", message: msg(FORUM, 50, { topicId: 10 }) });
+    ctx.api.emit({ type: "message", message: msg(FORUM, 51, { topicId: 20 }) });
+    ctx.api.emit({ type: "message", message: msg(FORUM, 52, { topicId: 20, mentioned: true }) });
+    expect(ctx.notifications.map((n) => n.body)).toEqual(["m50", "m52"]);
+
+    await ctx.act({ type: "mute", channelId: row("T10").id, mute: true });
+    expect(ctx.api.mute).toHaveBeenLastCalledWith(FORUM, MUTE_FOREVER, 10);
+    expect(row("T10").muted).toBe(true);
+    await ctx.act({ type: "mute", channelId: row("General").id, mute: false });
+    expect(ctx.api.mute).toHaveBeenLastCalledWith(FORUM, 0, 1);
+    expect(row("General").muted).toBe(false);
+    // Already so: nothing to do.
+    await ctx.act({ type: "mute", channelId: row("General").id, mute: false });
+    expect(ctx.api.mute).toHaveBeenCalledTimes(2);
+    ctx.api.mute.mockRejectedValueOnce(tgError("TOPIC_ID_INVALID"));
+    await ctx.act({ type: "mute", channelId: row("T20").id, mute: false });
+    expect(ctx.chat().error).toBe("Could not unmute the topic: TOPIC_ID_INVALID");
+    ctx.api.mute.mockRejectedValueOnce(tgError("TOPIC_ID_INVALID"));
+    await ctx.act({ type: "mute", channelId: row("General").id, mute: true });
+    expect(ctx.chat().error).toBe("Could not mute the topic: TOPIC_ID_INVALID");
+    // A topic no longer listed is left alone.
+    const id = row("T20").id;
+    ctx.api.topics.mockResolvedValue([]);
+    await ctx.act({ type: "select", channelId: "1" });
+    await ctx.act({ type: "select", channelId: viewId(FORUM) });
+    await ctx.act({ type: "mute", channelId: id, mute: false });
+    expect(ctx.api.mute).toHaveBeenCalledTimes(4);
+  });
+
   it("lists a topic's pins and searches within it, each panel kept to its topic", async () => {
     const ctx = await open();
     expect(ctx.chat().channel!.can.pins).toBeUndefined();

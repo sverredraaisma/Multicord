@@ -222,6 +222,8 @@ export function topicsOf(topics: readonly unknown[], messages: readonly unknown[
     if (!(t instanceof Api.ForumTopic) || !Number.isInteger(t.id) || t.id <= 0) return [];
     const topic: TgTopic = { id: t.id, title: (t.title || "Topic").slice(0, 128), unreadCount: tally(t.unreadCount), unreadMentions: tally(t.unreadMentionsCount), date: dates.get(t.topMessage) ?? t.date };
     if (t.pinned) topic.pinned = true;
+    const muteUntil = t.notifySettings instanceof Api.PeerNotifySettings ? t.notifySettings.muteUntil : undefined;
+    if (Number.isInteger(muteUntil)) topic.mutedUntil = Math.max(0, muteUntil!);
     if (Number.isInteger(t.readInboxMaxId) && t.readInboxMaxId > 0) topic.readUpTo = t.readInboxMaxId;
     return [topic];
   });
@@ -841,8 +843,9 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       const folderPeer = new Api.InputFolderPeer({ peer: await client.getInputEntity(peer(chatId)), folderId: archived ? ARCHIVE_FOLDER : 0 });
       await client.invoke(new Api.folders.EditPeerFolders({ folderPeers: [folderPeer] }));
     },
-    mute: async (chatId, until) => {
-      const notifyPeer = new Api.InputNotifyPeer({ peer: await client.getInputEntity(peer(chatId)) });
+    mute: async (chatId, until, topicId) => {
+      const input = await client.getInputEntity(peer(chatId));
+      const notifyPeer = topicId === undefined ? new Api.InputNotifyPeer({ peer: input }) : new Api.InputNotifyForumTopic({ peer: input, topMsgId: topicId });
       await client.invoke(new Api.account.UpdateNotifySettings({ peer: notifyPeer, settings: new Api.InputPeerNotifySettings({ muteUntil: until }) }));
     },
     members: async (chatId, offset, limit): Promise<TgMemberPage> => {

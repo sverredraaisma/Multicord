@@ -537,8 +537,10 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.showProfile(action.id);
       case "react":
         return this.react(action.messageId, action.emoji, action.add);
-      case "mute":
-        return this.mute(chatIdOfView(action.channelId), action.mute);
+      case "mute": {
+        const topic = this.topicsByView.get(action.channelId);
+        return topic ? this.muteTopic(topic.chatId, topic.topic, action.mute) : this.mute(chatIdOfView(action.channelId), action.mute);
+      }
       case "folder":
         return this.showFolder(action.id);
       case "archive":
@@ -815,6 +817,11 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   /** The user muted the chat's notifications in Telegram, for now. */
   private muted(dialog: TgDialog): boolean {
     return (dialog.mutedUntil ?? 0) > Date.now() / 1000;
+  }
+
+  /** A forum topic is muted by its own setting, where it has one, else as its group is. */
+  private topicMuted(dialog: TgDialog, topic: TgTopic): boolean {
+    return topic.mutedUntil === undefined ? this.muted(dialog) : topic.mutedUntil > Date.now() / 1000;
   }
 
   /**
@@ -1220,8 +1227,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
             if (topic) topic.unreadCount++;
             if (topic && message.mentioned) topic.unreadMentions++;
           }
-          // A muted chat stays quiet, except for a group message that mentions or answers the user, as in Telegram.
-          if (!this.muted(dialog) || (message.mentioned && dialog.kind === "group")) {
+          // A muted chat (or topic) stays quiet, except for a group message that mentions or answers the user, as in Telegram.
+          if (!(topic ? this.topicMuted(dialog, topic) : this.muted(dialog)) || (message.mentioned && dialog.kind === "group")) {
             const text = messageText(message);
             this.notifications.emit({
               title: dialog.title,
@@ -1423,11 +1430,19 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     return undefined;
   }
 
-  /**
-   * Adds or removes one of the user's reactions. Telegram takes the user's
-   * whole set: one reaction, or three with Premium, the oldest giving way
-   * to a new one as in Telegram's apps.
-   */
+  /** Mutes or unmutes one topic of a forum in Telegram, for good, and follows it here at once; it then no longer follows its group. */
+  private async muteTopic(chatId: string, id: number, mute: boolean): Promise<void> {
+    const dialog = this.dialog(chatId);
+    const topic = this.topics.get(chatId)?.find((t) => t.id === id);
+    if (!dialog || !topic || !this.api || this.topicMuted(dialog, topic) === mute) return;
+    await this.attempt(mute ? "Could not mute the topic" : "Could not unmute the topic", async () => {
+      const until = mute ? MUTE_FOREVER : 0;
+      await this.api!.mute(chatId, until, id);
+      topic.mutedUntil = until;
+      this.render();
+    });
+  }
+
   /** Mutes or unmutes a chat in Telegram, for good (as Telegram's apps do), and follows it here at once. */
   private async mute(chatId: string, mute: boolean): Promise<void> {
     const dialog = this.dialog(chatId);
@@ -1451,6 +1466,11 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
+  /**
+   * Adds or removes one of the user's reactions. Telegram takes the user's
+   * whole set: one reaction, or three with Premium, the oldest giving way
+   * to a new one as in Telegram's apps.
+   */
   private async react(messageId: string, key: string, add: boolean): Promise<void> {
     const chatId = this.selected;
     const dialog = chatId ? this.dialog(chatId) : undefined;
@@ -2052,7 +2072,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (d.chatId !== this.me?.id) item.canArchive = true;
     const rows = [item];
     if (d.forum && selected) {
-      for (const t of this.topicList(d.chatId)) rows.push({ id: this.topicViewId(d.chatId, t.id), name: t.title, kind: "thread", unread: t.unreadCount > 0, mentions: t.unreadMentions, active: t.id === this.topic });
+      for (const t of this.topicList(d.chatId)) rows.push({ id: this.topicViewId(d.chatId, t.id), name: t.title, kind: "thread", unread: t.unreadCount > 0, mentions: t.unreadMentions, active: t.id === this.topic, muted: this.topicMuted(d, t), canMute: true });
     }
     return rows;
   }
