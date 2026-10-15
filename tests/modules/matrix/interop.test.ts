@@ -140,6 +140,37 @@ describe("encrypted messages with Element (matrix-js-sdk)", { timeout: 30_000 },
   });
 });
 
+describe("reactions with Element (matrix-js-sdk)", { timeout: 30_000 }, () => {
+  it("shows Element's reactions, and Element shows Multicord's until it takes them back", async () => {
+    const server = new InteropHomeserver();
+    encryptedRoom(server, [BOB, ALICE]);
+    const mc = await multicord(server, ALICE, "MULTI");
+    const bob = await element(server, BOB, "ELEMENT");
+    const { event_id: target } = await bob.sendTextMessage(ROOM, "react to this");
+    await mc.open("Secret");
+    const message = await until(() => mc.messages().find((m) => m.content === "react to this"), "Multicord to show Element's message");
+
+    // Element sends reactions unencrypted, even here.
+    await bob.sendEvent(ROOM, "m.reaction" as never, { "m.relates_to": { rel_type: "m.annotation", event_id: target, key: "👍" } } as never);
+    expect(server.sent.at(-1)!.event.type).toBe("m.reaction");
+    await until(() => mc.messages().find((m) => m.id === message.id)?.reactions.length, "Multicord to show Element's reaction");
+    expect(mc.messages().find((m) => m.id === message.id)!.reactions).toEqual([{ key: "👍", label: "👍", count: 1, me: false }]);
+
+    const reactions = () =>
+      bob
+        .getRoom(ROOM)
+        ?.relations.getChildEventsForEvent(target, "m.annotation", "m.reaction")
+        ?.getSortedAnnotationsByKey()
+        ?.map(([key, events]) => [key, [...events].filter((e) => !e.isRedacted()).map((e) => e.getSender())] as const);
+    await mc.act({ type: "react", messageId: message.id, emoji: "👍", add: true });
+    expect(await until(() => reactions()?.find(([key, senders]) => key === "👍" && senders.length === 2), "Element to count Multicord's reaction")).toEqual(["👍", [BOB, ALICE]]);
+    await mc.act({ type: "react", messageId: message.id, emoji: "👍", add: false });
+    await until(() => reactions()?.find(([key, senders]) => key === "👍" && senders.length === 1), "Element to drop Multicord's reaction");
+    expect(mc.messages().find((m) => m.id === message.id)!.reactions).toEqual([{ key: "👍", label: "👍", count: 1, me: false }]);
+    expect(server.unknown).toEqual([]);
+  });
+});
+
 describe("encrypted attachments with Element (matrix-js-sdk)", { timeout: 30_000 }, () => {
   it("shows a picture Element sends into an encrypted room, and refuses one the server changed", async () => {
     const server = new InteropHomeserver();

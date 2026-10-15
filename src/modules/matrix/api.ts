@@ -164,10 +164,14 @@ export type MxEvent =
       sessionId?: string;
       /** Set when it is an encrypted edit: the event it replaces (the relation stays unencrypted). */
       replaces?: string;
+      /** Set when it is an encrypted reaction: the event it reacts to (the relation stays unencrypted). */
+      annotates?: string;
       /** Why it could not be decrypted, once that was tried. */
       problem?: string;
     })
   | (MxEventBase & { kind: "redaction"; redacts: string })
+  /** A reaction (m.reaction, an m.annotation relation): `key`, usually an emoji, on the event `target`; taken back by redacting it. */
+  | (MxEventBase & { kind: "reaction"; target: string; key: string })
   /** An event whose content was removed; it is dropped from view. */
   | (MxEventBase & { kind: "redacted" })
   /** A call membership as a sticky m.rtc.member event (MSC4143 with MSC4354); never shown, it changes the room's call. */

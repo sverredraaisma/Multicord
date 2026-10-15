@@ -30,6 +30,8 @@ import {
   parseMxc,
   parsePage,
   parseSync,
+  MAX_REACTION_KEY,
+  reactionKey,
   roomId,
   stripReplyFallback,
   userId,
@@ -152,9 +154,33 @@ describe("timeline events", () => {
     expect(parseEvent(ev({ unsigned: "x" }))).toMatchObject({ kind: "message" });
   });
 
+  it("parses reactions, keeping only keys that can be shown as they are", () => {
+    const reaction = (relates: unknown, extra: Record<string, unknown> = {}) => parseEvent(ev({ type: "m.reaction", content: { "m.relates_to": relates }, ...extra }));
+    expect(reaction({ rel_type: "m.annotation", event_id: "$msg", key: "👍" })).toEqual({ kind: "reaction", id: "$e1", sender: "@ana:x.org", ts: 1000, target: "$msg", key: "👍" });
+    expect(reaction({ rel_type: "m.annotation", event_id: "$msg", key: "k".repeat(MAX_REACTION_KEY) })).toMatchObject({ key: "k".repeat(MAX_REACTION_KEY) });
+    for (const key of ["k".repeat(MAX_REACTION_KEY + 1), "", " 👍", "a‮b", "a\nb", 1, undefined]) {
+      expect(reaction({ rel_type: "m.annotation", event_id: "$msg", key })).toBeUndefined();
+    }
+    expect(reaction({ rel_type: "m.replace", event_id: "$msg", key: "👍" })).toBeUndefined();
+    expect(reaction({ rel_type: "m.annotation", event_id: "msg", key: "👍" })).toBeUndefined();
+    expect(reaction("nope")).toBeUndefined();
+    expect(parseEvent(ev({ type: "m.reaction", content: {} }))).toBeUndefined();
+    // A redacted reaction is a redacted event: whatever it reacted to loses it.
+    expect(reaction({}, { unsigned: { redacted_because: {} } })).toMatchObject({ kind: "redacted", id: "$e1" });
+    expect(reactionKey("🎉")).toBe("🎉");
+    expect(reactionKey("🎉 ")).toBeUndefined();
+  });
+
+  it("knows encrypted reactions by their readable relation", () => {
+    const encrypted = (relates: unknown) => parseEvent(ev({ type: "m.room.encrypted", content: { ciphertext: "…", "m.relates_to": relates } }));
+    expect(encrypted({ rel_type: "m.annotation", event_id: "$msg", key: "👍" })).toMatchObject({ kind: "encrypted", annotates: "$msg" });
+    expect(encrypted({ rel_type: "m.annotation", event_id: "msg" })).not.toHaveProperty("annotates");
+    expect(encrypted({ rel_type: "m.annotation", event_id: "$msg" })).not.toHaveProperty("replaces");
+  });
+
   it("drops state events, unknown types and malformed events", () => {
     expect(parseEvent(ev({ state_key: "" }))).toBeUndefined();
-    expect(parseEvent(ev({ type: "m.reaction" }))).toBeUndefined();
+    expect(parseEvent(ev({ type: "m.poll.start" }))).toBeUndefined();
     expect(parseEvent(ev({ event_id: "e1" }))).toBeUndefined();
     expect(parseEvent(ev({ sender: "ana" }))).toBeUndefined();
     expect(parseEvent(ev({ origin_server_ts: "1" }))).toBeUndefined();

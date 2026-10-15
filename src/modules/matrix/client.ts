@@ -27,6 +27,7 @@ const TIMELINE_TYPES = [
   "m.sticker",
   "m.room.encrypted",
   "m.room.redaction",
+  "m.reaction",
   "m.room.name",
   "m.room.canonical_alias",
   "m.room.avatar",

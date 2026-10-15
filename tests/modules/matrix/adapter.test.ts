@@ -33,6 +33,7 @@ import {
   type MatrixAdapterDeps,
   messageText,
   MAX_MEDIA_BYTES,
+  MAX_REACTIONS,
   PAGE_SIZE,
   REQUEST_ENTRY,
   parseSession,
@@ -936,6 +937,139 @@ describe("sending", () => {
   });
 });
 
+const reaction = (id: string, sender: string, target: string, key: string, ts = 5000): MxEvent => ({ kind: "reaction", id: `$${id}`, sender, ts, target, key });
+
+describe("reactions", () => {
+  it("shows reactions per key, each person once, without notifying or counting as activity", async () => {
+    const ctx = await signedIn();
+    const notified = ctx.notifications.length;
+    const timeline = [reaction("r1", BO, "$d1", "👍"), reaction("r2", ANA, "$d1", "👍"), reaction("r3", ME, "$d1", "🎉"), reaction("r4", BO, "$d1", "👍"), reaction("r5", BO, "$elsewhere", "👍")];
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline })] }));
+    await ctx.open("Bo");
+    expect(ctx.messages()[0]!.reactions).toEqual([
+      { key: "👍", label: "👍", count: 2, me: false },
+      { key: "🎉", label: "🎉", count: 1, me: true },
+    ]);
+    expect(ctx.messages()[1]!.reactions).toEqual([]);
+    expect(ctx.notifications).toHaveLength(notified);
+    expect(ctx.directs.at(-1)![0]!.lastActivity).toBe(2000);
+  });
+
+  it("takes back reactions that are redacted", async () => {
+    const ctx = await signedIn();
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [reaction("r1", BO, "$d1", "👍"), reaction("r2", ANA, "$d1", "😀")] })] }));
+    await ctx.open("Bo");
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [{ kind: "redaction", id: "$x", sender: BO, ts: 6000, redacts: "$r1" }, { kind: "redacted", id: "$r2", sender: ANA, ts: 5000 }] })] }));
+    expect(ctx.messages()[0]!.reactions).toEqual([]);
+  });
+
+  it("adds and takes back its own reaction, unencrypted and once", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Bo");
+    const target = ctx.messages()[0]!.id;
+    await ctx.act({ type: "react", messageId: target, emoji: "❤️", add: true });
+    expect(ctx.api.send).toHaveBeenCalledWith(SESSION, "!dm:x.org", { "m.relates_to": { rel_type: "m.annotation", event_id: "$d1", key: "❤️" } }, "m.reaction");
+    expect(ctx.api.encryption).not.toHaveBeenCalled();
+    expect(ctx.messages()[0]!.reactions).toEqual([{ key: "❤️", label: "❤️", count: 1, me: true }]);
+    // Its sync echo is the same reaction; adding it again sends nothing.
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [reaction("sent1", ME, "$d1", "❤️")] })] }));
+    await ctx.act({ type: "react", messageId: target, emoji: "❤️", add: true });
+    expect(ctx.api.send).toHaveBeenCalledTimes(1);
+    expect(ctx.messages()[0]!.reactions).toEqual([{ key: "❤️", label: "❤️", count: 1, me: true }]);
+    await ctx.act({ type: "react", messageId: target, emoji: "❤️", add: false });
+    expect(ctx.api.redact).toHaveBeenCalledWith(SESSION, "!dm:x.org", "$sent1");
+    expect(ctx.messages()[0]!.reactions).toEqual([]);
+    await ctx.act({ type: "react", messageId: target, emoji: "❤️", add: false });
+    expect(ctx.api.redact).toHaveBeenCalledTimes(1);
+  });
+
+  it("takes back a reaction made on another device, leaving others' alone", async () => {
+    const ctx = await signedIn();
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [reaction("bo", BO, "$d1", "👍"), reaction("mine", ME, "$d1", "👍"), reaction("other", ME, "$d2", "👍")] })] }));
+    await ctx.open("Bo");
+    await ctx.act({ type: "react", messageId: ctx.messages()[0]!.id, emoji: "👍", add: false });
+    expect(ctx.api.redact).toHaveBeenCalledWith(SESSION, "!dm:x.org", "$mine");
+    expect(ctx.messages()[0]!.reactions).toEqual([{ key: "👍", label: "👍", count: 1, me: false }]);
+    expect(ctx.messages()[1]!.reactions).toEqual([{ key: "👍", label: "👍", count: 1, me: true }]);
+  });
+
+  it("reports reactions that fail, keeping what was there", async () => {
+    const ctx = await signedIn();
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [reaction("mine", ME, "$d1", "👍")] })] }));
+    await ctx.open("Bo");
+    const target = ctx.messages()[0]!.id;
+    ctx.api.send.mockRejectedValueOnce(new Error("slow down"));
+    await ctx.act({ type: "react", messageId: target, emoji: "🎉", add: true });
+    expect(ctx.chat().error).toBe("Reaction not sent: slow down");
+    ctx.api.redact.mockRejectedValueOnce(new Error("forbidden"));
+    await ctx.act({ type: "react", messageId: target, emoji: "👍", add: false });
+    expect(ctx.chat().error).toBe("Reaction not removed: forbidden");
+    expect(ctx.messages()[0]!.reactions).toEqual([{ key: "👍", label: "👍", count: 1, me: true }]);
+  });
+
+  it("reacts nowhere without an open room, a readable message, a usable key or encryption it can take part in", async () => {
+    const ctx = await signedIn();
+    await ctx.act({ type: "react", messageId: "1", emoji: "👍", add: true });
+    await ctx.open("Bo");
+    await ctx.act({ type: "react", messageId: "99999", emoji: "👍", add: true });
+    await ctx.act({ type: "react", messageId: ctx.messages()[0]!.id, emoji: " 👍", add: true });
+    await ctx.open("Secret");
+    // An encrypted placeholder, and a readable message in a room without encryption here.
+    await ctx.act({ type: "react", messageId: ctx.messages()[0]!.id, emoji: "👍", add: true });
+    await ctx.act({ type: "react", messageId: ctx.messages()[1]!.id, emoji: "👍", add: true });
+    expect(ctx.api.send).not.toHaveBeenCalled();
+  });
+
+  it("reacts unencrypted in an encrypted room it can encrypt in, as Element does", async () => {
+    const ctx = await withCrypto();
+    await ctx.open("Bo");
+    await ctx.act({ type: "react", messageId: ctx.messages()[0]!.id, emoji: "👍", add: true });
+    expect(ctx.api.send).toHaveBeenCalledWith(SESSION, "!dm:x.org", { "m.relates_to": { rel_type: "m.annotation", event_id: "$c1", key: "👍" } }, "m.reaction");
+    expect(ctx.e2ee.encrypt).not.toHaveBeenCalled();
+  });
+
+  it("hides encrypted reactions it cannot read, and shows those it can once their keys arrive", async () => {
+    const ctx = await withCrypto();
+    ctx.e2ee.clear.set("$c3", reaction("c3", BO, "$c1", "🔥"));
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [encRaw("c3", BO, 5000, { sessionId: "S2" }), encRaw("hidden", BO, 5001, { annotates: "$c1" })] })] }));
+    await ctx.open("Bo");
+    expect(ctx.messages().map((m) => m.id)).toHaveLength(2);
+    expect(ctx.messages()[0]!.reactions).toEqual([{ key: "🔥", label: "🔥", count: 1, me: false }]);
+    // One that decrypts only later takes its placeholder's place as a reaction.
+    ctx.e2ee.clear.set("$c2", reaction("c2", BO, "$c1", "👀"));
+    ctx.e2ee.keys(["S1"]);
+    await flush();
+    expect(ctx.messages()).toHaveLength(1);
+    expect(ctx.messages()[0]!.reactions.map((r) => r.key)).toEqual(["🔥", "👀"]);
+  });
+
+  it("applies reactions from older pages, and forgets them after a gap", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Lounge");
+    ctx.api.messages.mockResolvedValueOnce({
+      events: [msg("old", ANA, "old", 10), reaction("ra", ANA, "$old", "👍", 11), reaction("rb", BO, "$l1", "👋", 12), reaction("rc", BO, "$old", "😢", 13), { kind: "redaction", id: "$x", sender: BO, ts: 14, redacts: "$rc" }, encRaw("hidden", BO, 15, { annotates: "$old" })],
+      state: { members: {} },
+      end: "older",
+    });
+    await ctx.act({ type: "loadOlder" });
+    expect(ctx.messages().map((m) => [m.content, m.reactions.map((r) => r.key)])).toEqual([
+      ["old", ["👍"]],
+      ["welcome", ["👋"]],
+    ]);
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { limited: true, prevBatch: "p-new", timeline: [msg("l1", ANA, "welcome", 500)] })] }));
+    expect(ctx.messages()[0]!.reactions).toEqual([]);
+  });
+
+  it("keeps at most MAX_REACTIONS per room, dropping the oldest", async () => {
+    const ctx = await signedIn();
+    const timeline = Array.from({ length: MAX_REACTIONS + 1 }, (_, i) => reaction(`r${i}`, `@u${i}:x.org`, i === 0 ? "$d2" : "$d1", "👍"));
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline })] }));
+    await ctx.open("Bo");
+    expect(ctx.messages()[0]!.reactions[0]!.count).toBe(MAX_REACTIONS);
+    expect(ctx.messages()[1]!.reactions).toEqual([]);
+  });
+});
+
 describe("read state", () => {
   it("marks a room read when opened while visible, once per newest event", async () => {
     const ctx = await signedIn();
@@ -1076,7 +1210,7 @@ describe("shell interface", () => {
   it("ignores actions Matrix does not offer", async () => {
     const ctx = await signedIn();
     const renders = ctx.renders.length;
-    for (const action of [{ type: "typing" }, { type: "attach" }, { type: "react", messageId: "1", emoji: "👍", add: true }] as NativeAction[]) await ctx.act(action);
+    for (const action of [{ type: "typing" }, { type: "attach" }] as NativeAction[]) await ctx.act(action);
     expect(ctx.renders).toHaveLength(renders);
   });
 });

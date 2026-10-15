@@ -87,6 +87,14 @@ export function stripReplyFallback(body: string): string {
   return lines.slice(start).join("\n");
 }
 
+/** Longest reaction key kept, as long as the view may send one back. */
+export const MAX_REACTION_KEY = 64;
+
+/** A reaction's key (usually an emoji) when it can be shown as it is: no control or reordering characters, nothing to trim. */
+export function reactionKey(value: unknown): string | undefined {
+  return typeof value === "string" && value.length <= MAX_REACTION_KEY && cleanName(value, MAX_REACTION_KEY) === value ? value : undefined;
+}
+
 // --- Media ------------------------------------------------------------------------
 
 const MAX_FILE_NAME = 255;
@@ -216,11 +224,18 @@ export function parseEvent(raw: unknown): MxEvent | undefined {
       const json = JSON.stringify(raw);
       if (json.length <= MAX_EVENT_JSON) event.raw = json;
       if (typeof content.session_id === "string" && content.session_id !== "" && content.session_id.length <= MAX_SESSION_ID) event.sessionId = content.session_id;
-      // Relations stay readable on encrypted events, so an edit is known as one before it is decrypted.
+      // Relations stay readable on encrypted events, so an edit or a reaction is known as one before it is decrypted.
       const relates = isRecord(content["m.relates_to"]) ? content["m.relates_to"] : {};
-      const replaces = relates.rel_type === "m.replace" ? eventId(relates.event_id) : undefined;
-      if (replaces) event.replaces = replaces;
+      const target = eventId(relates.event_id);
+      if (target && relates.rel_type === "m.replace") event.replaces = target;
+      if (target && relates.rel_type === "m.annotation") event.annotates = target;
       return event;
+    }
+    case "m.reaction": {
+      const relates = isRecord(content["m.relates_to"]) ? content["m.relates_to"] : {};
+      const target = eventId(relates.event_id);
+      const key = reactionKey(relates.key);
+      return relates.rel_type === "m.annotation" && target && key ? { kind: "reaction", ...base, target, key } : undefined;
     }
     case "m.room.redaction": {
       // Room version 11 moved `redacts` into the content.

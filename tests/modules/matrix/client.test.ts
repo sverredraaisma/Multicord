@@ -163,6 +163,13 @@ describe("syncing and history", () => {
     expect(Object.fromEntries(url.searchParams)).toMatchObject({ dir: "b", from: "t2", limit: "50" });
     expect(JSON.parse(url.searchParams.get("filter")!)).toMatchObject({ lazy_load_members: true });
   });
+
+  it("asks for reactions in the timeline and in history", async () => {
+    expect(JSON.parse(SYNC_FILTER).room.timeline.types).toContain("m.reaction");
+    const { client, fetchFn } = fakeFetch(() => json({ chunk: [] }));
+    await client.messages(SESSION, "!r:x.org", "t2", 50);
+    expect(JSON.parse(callOf(fetchFn).url.searchParams.get("filter")!).types).toContain("m.reaction");
+  });
 });
 
 describe("encryption check", () => {

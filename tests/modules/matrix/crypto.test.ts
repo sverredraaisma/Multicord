@@ -192,9 +192,16 @@ describe("decrypting room events", () => {
     });
   });
 
+  it("reads an encrypted reaction, whose relation stays readable outside", async () => {
+    const { bob, send } = await pair();
+    const event = await send({ "m.relates_to": { rel_type: "m.annotation", event_id: "$x", key: "👍" } }, "m.reaction");
+    expect(event.annotates).toBe("$x");
+    expect(await bob.decrypt(ROOM, event)).toMatchObject({ kind: "reaction", target: "$x", key: "👍" });
+  });
+
   it("hides event types that are not shown, and says when an event is too large", async () => {
     const { bob, send } = await pair();
-    expect(await bob.decrypt(ROOM, await send({ "m.relates_to": { rel_type: "m.annotation", event_id: "$x", key: "👍" } }, "m.reaction"))).toBeUndefined();
+    expect(await bob.decrypt(ROOM, await send({ "m.relates_to": { rel_type: "m.annotation", event_id: "$x", key: "👍" } }, "m.poll.response"))).toBeUndefined();
     const event = await send({ msgtype: "m.text", body: "x" });
     expect(await bob.decrypt(ROOM, { ...event, raw: undefined })).toMatchObject({ kind: "encrypted", problem: "the message is too large" });
   });

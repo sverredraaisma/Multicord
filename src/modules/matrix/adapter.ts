@@ -3,7 +3,7 @@ import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../share
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { MAX_DIRECTS } from "../../shared/engine";
 import { escapeMarkdown } from "../../shared/markdown";
-import type { NativeAction, NativeAttachment, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState, NativeVoiceMember, NativeVoiceSession, VoiceNoticeFlag } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeMessage, NativePrompt, NativeReaction, NativeSidebarItem, NativeViewState, NativeVoiceMember, NativeVoiceSession, VoiceNoticeFlag } from "../../shared/native";
 import type { AccountStatus } from "../../shared/settings";
 import {
   MatrixError,
@@ -27,7 +27,7 @@ import {
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, serviceUrl, userId } from "./events";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, reactionKey, serviceUrl, userId } from "./events";
 import { AttachmentError, decryptAttachment } from "./media";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 import type { Verification, VerificationState } from "./verification";
@@ -141,8 +141,11 @@ const going = (verification: Verification): boolean => !["done", "cancelled"].in
 type Shown = Extract<MxEvent, { kind: "message" | "encrypted" }>;
 type Message = Extract<MxEvent, { kind: "message" }>;
 type RtcEvent = Extract<MxEvent, { kind: "rtc" }>;
+type Reaction = Extract<MxEvent, { kind: "reaction" }>;
 /** Encrypted sticky events kept per room until their keys arrive. */
 const MAX_STICKY_WAITING = 100;
+/** Reactions kept per room; beyond this the oldest go. */
+export const MAX_REACTIONS = 5000;
 
 interface Room {
   id: string;
@@ -162,6 +165,8 @@ interface Room {
   events: Shown[];
   /** The latest edit of each message, by "<sender>|<event id>": only the sender's own edits count. */
   edits: Map<string, Message>;
+  /** Reactions by their own event id (redacting that id takes one back), in the order they arrived. */
+  reactions: Map<string, { target: string; key: string; sender: string }>;
   prevBatch?: string;
   notifications: number;
   highlights: number;
@@ -311,7 +316,7 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
  * engine over plain Client-Server API calls. Devices Multicord owns get
  * end-to-end encryption (crypto.ts); with an access token copied from
  * Element encrypted rooms stay locked, and nothing is ever sent unencrypted
- * into an encrypted room.
+ * into an encrypted room but reactions, which Element sends unencrypted too.
  */
 export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   override readonly mode = "native" as const;
@@ -663,6 +668,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.edit(action.messageId, action.content);
       case "delete":
         return this.remove(action.messageId);
+      case "react":
+        return this.react(action.messageId, action.emoji, action.add);
       case "loadOlder":
         return this.loadOlder();
       case "logout":
@@ -680,7 +687,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       case "loadMedia":
         return this.loadMedia(action.key);
       default:
-        // Reactions, uploads, typing and forums are not offered for Matrix.
+        // Uploads, typing and forums are not offered for Matrix.
         return;
     }
   }
@@ -1318,6 +1325,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         heroes: [],
         events: [],
         edits: new Map(),
+        reactions: new Map(),
         notifications: 0,
         highlights: 0,
         lastActivity: 0,
@@ -1377,8 +1385,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         room.highlights = update.unread.highlights;
       }
       if (fresh || (update.limited && !initial)) {
-        // A gap: what we had no longer joins up with the new events.
-        if (!fresh) room.events = [];
+        // A gap: what we had no longer joins up with the new events (their reactions come again with them).
+        if (!fresh) {
+          room.events = [];
+          room.reactions.clear();
+        }
         room.prevBatch = update.prevBatch;
         // Membership changes may be in the gap too.
         room.memberIds = undefined;
@@ -1400,6 +1411,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   private removeEvent(room: Room, id: string): void {
     room.events = room.events.filter((e) => e.id !== id);
+    room.reactions.delete(id);
     // A redacted sticky membership no longer counts (as matrix-js-sdk has it).
     for (const [key, entry] of room.rtc) if (entry.id === id) room.rtc.set(key, { ...entry, member: null });
     for (const [key, edit] of room.edits) if (edit.id === id || key.endsWith(`|${id}`)) room.edits.delete(key);
@@ -1412,6 +1424,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.removeEvent(room, event.id);
       case "redaction":
         return this.removeEvent(room, event.redacts);
+      case "reaction":
+        return this.addReaction(room, event);
     }
     if (event.kind === "message" && event.replaces) {
       const key = `${event.sender}|${event.replaces}`;
@@ -1419,12 +1433,18 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       if (!known || known.ts <= event.ts) room.edits.set(key, event);
       return;
     }
-    // An edit that cannot be read changes nothing that can be shown.
-    if (event.kind === "encrypted" && event.replaces) return;
+    // An edit or a reaction that cannot be read changes nothing that can be shown.
+    if (event.kind === "encrypted" && (event.replaces || event.annotates)) return;
     if (room.events.some((e) => e.id === event.id)) return;
     room.events.push(event);
     room.lastActivity = Math.max(room.lastActivity, event.ts);
     if (live && event.sender !== this.session!.userId) this.notify(room, event);
+  }
+
+  /** Keeps a reaction; reactions neither notify nor count as activity, as in Element. */
+  private addReaction(room: Room, event: Reaction): void {
+    room.reactions.set(event.id, { target: event.target, key: event.key, sender: event.sender });
+    if (room.reactions.size > MAX_REACTIONS) room.reactions.delete(room.reactions.keys().next().value!);
   }
 
   private mentionsMe(room: Room, event: Shown): boolean {
@@ -1531,9 +1551,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       const known = new Set(room.events.map((e) => e.id));
       const older: Shown[] = [];
       for (const event of page.events) {
-        if (event.kind === "message" && event.replaces) this.addEvent(room, event, false);
+        if ((event.kind === "message" && event.replaces) || event.kind === "reaction") this.addEvent(room, event, false);
         else if (event.kind === "redaction") this.removeEvent(room, event.redacts);
-        else if ((event.kind === "message" || (event.kind === "encrypted" && !event.replaces)) && !known.has(event.id)) older.push(event);
+        else if ((event.kind === "message" || (event.kind === "encrypted" && !event.replaces && !event.annotates)) && !known.has(event.id)) older.push(event);
       }
       // Redactions in this page may also remove events from it.
       const redacted = new Set(page.events.flatMap((e) => (e.kind === "redaction" ? [e.redacts] : [])));
@@ -1652,6 +1672,39 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       await this.deps.api.redact(session, room.id, target.id);
       this.removeEvent(room, target.id);
       this.publish();
+    });
+  }
+
+  /** Our reaction with this key to this event: its event id, which redacting takes it back by. */
+  private ownReaction(room: Room, target: string, key: string): string | undefined {
+    const me = this.session!.userId;
+    for (const [id, reaction] of room.reactions) if (reaction.target === target && reaction.key === key && reaction.sender === me) return id;
+    return undefined;
+  }
+
+  /**
+   * Adds or takes back our reaction to a message. As in Element, a reaction
+   * goes out unencrypted even in an encrypted room: matrix-js-sdk never
+   * encrypts m.reaction, since its relation is readable either way and an
+   * encrypted one would notify like a message. Nothing goes into a room whose
+   * encryption Multicord cannot take part in. Taking it back redacts it.
+   */
+  private async react(local: string, key: string, add: boolean): Promise<void> {
+    const room = this.selectedRoom();
+    const target = room && this.findEvent(room, local);
+    if (!room || target?.kind !== "message" || !reactionKey(key) || this.lock(room)) return;
+    const session = this.session!;
+    const mine = this.ownReaction(room, target.id, key);
+    if (add === (mine !== undefined)) return;
+    await this.attempt(add ? "Reaction not sent" : "Reaction not removed", async () => {
+      if (mine) {
+        await this.deps.api.redact(session, room.id, mine);
+        this.removeEvent(room, mine);
+      } else {
+        const id = await this.deps.api.send(session, room.id, { "m.relates_to": { rel_type: "m.annotation", event_id: target.id, key } }, "m.reaction");
+        this.addReaction(room, { kind: "reaction", id, sender: session.userId, ts: Date.now(), target: target.id, key });
+      }
+      this.render();
     });
   }
 
@@ -2091,8 +2144,22 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.render();
   }
 
-  private toNative(room: Room, event: Shown, locked: boolean): NativeMessage {
-    const mine = event.sender === this.session!.userId;
+  /** A room's reactions by the event they react to, then by key (in the order keys first came): who reacted, each person once. */
+  private reactionIndex(room: Room): Map<string, Map<string, Set<string>>> {
+    const index = new Map<string, Map<string, Set<string>>>();
+    for (const { target, key, sender } of room.reactions.values()) {
+      let keys = index.get(target);
+      if (!keys) index.set(target, (keys = new Map()));
+      let senders = keys.get(key);
+      if (!senders) keys.set(key, (senders = new Set()));
+      senders.add(sender);
+    }
+    return index;
+  }
+
+  private toNative(room: Room, event: Shown, locked: boolean, reactions: Map<string, Map<string, Set<string>>>): NativeMessage {
+    const me = this.session!.userId;
+    const mine = event.sender === me;
     const native: NativeMessage = {
       id: this.local(event.id),
       author: this.memberName(room, event.sender),
@@ -2102,7 +2169,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       mine,
       canEdit: false,
       canDelete: mine,
-      reactions: [],
+      reactions: [...(reactions.get(event.id) ?? [])].map(([key, senders]): NativeReaction => ({ key, label: key, count: senders.size, me: senders.has(me) })),
       attachments: [],
     };
     if (event.kind !== "message") return native;
@@ -2166,6 +2233,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const room = this.selectedRoom();
     const userId = this.session!.userId;
     const locked = room ? this.lock(room)?.notice : undefined;
+    const reactions = room ? this.reactionIndex(room) : new Map<string, Map<string, Set<string>>>();
     return {
       screen: "chat",
       platform,
@@ -2176,7 +2244,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         ? {
             id: room.local,
             name: this.title(room),
-            messages: room.events.map((e) => this.toNative(room, e, locked !== undefined)),
+            messages: room.events.map((e) => this.toNative(room, e, locked !== undefined, reactions)),
             loading: this.loading.has(room.id),
             hasOlder: room.prevBatch !== undefined,
             typing: [],

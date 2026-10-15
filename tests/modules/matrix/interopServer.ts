@@ -228,6 +228,11 @@ export class InteropHomeserver extends FakeHomeserver {
       this.txns.set(id, event.event_id);
       return { event_id: event.event_id };
     }
+    if (what === "redact" && method === "PUT") {
+      // Room version 10: `redacts` sits beside the content.
+      const event = this.addEvent(roomId!, user, { type: "m.room.redaction", content: body, redacts: rest[0]! } as never);
+      return { event_id: event.event_id };
+    }
     if (what === "state") {
       const [type, stateKey = ""] = rest;
       if (method === "PUT") {
