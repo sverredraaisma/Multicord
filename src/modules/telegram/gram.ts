@@ -622,6 +622,10 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       // Reading a group also reads the mentions in it, as Telegram's apps do once they are seen.
       if (chatId.startsWith("-")) await client.invoke(new Api.messages.ReadMentions({ peer: await client.getInputEntity(peer(chatId)) }));
     },
+    mute: async (chatId, until) => {
+      const notifyPeer = new Api.InputNotifyPeer({ peer: await client.getInputEntity(peer(chatId)) });
+      await client.invoke(new Api.account.UpdateNotifySettings({ peer: notifyPeer, settings: new Api.InputPeerNotifySettings({ muteUntil: until }) }));
+    },
     members: async (chatId, offset, limit): Promise<TgMemberPage> => {
       if (!isChannelPeer(chatId)) {
         // A basic group's members come whole with its full info; it has a few hundred at most.

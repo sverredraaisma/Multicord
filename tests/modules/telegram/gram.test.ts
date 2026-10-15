@@ -22,11 +22,11 @@ const h = vi.hoisted(() => {
     "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
     "InputFile", "InputFileBig", "InputMediaUploadedPhoto", "InputMediaUploadedDocument",
     "PhotoPathSize", "VideoSize", "StickerSet", "InputStickerSetID", "InputMediaDocument", "InputDocument",
-    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate",
+    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
-    account: { GetPassword: class extends Base {} },
+    account: { GetPassword: class extends Base {}, UpdateNotifySettings: class extends Base {} },
     messages: {
       ReadMentions: class extends Base {},
       GetFullChat: class extends Base {},
@@ -396,6 +396,18 @@ describe("createGramApi", () => {
     const request = client.invoke.mock.calls[0]![0] as { peer: unknown };
     expect(request).toBeInstanceOf(Api.messages.ReadMentions);
     expect(request.peer).toEqual({ input: -1001234567890n });
+  });
+
+  it("mutes and unmutes a chat's notifications", async () => {
+    await expect(api.mute("-1001234567890", 2147483647)).resolves.toBeUndefined();
+    const request = client.invoke.mock.calls[0]![0] as { peer: { peer: unknown }; settings: { muteUntil: number } };
+    expect(request).toBeInstanceOf(Api.account.UpdateNotifySettings);
+    expect(request.peer).toBeInstanceOf(Api.InputNotifyPeer);
+    expect(request.peer.peer).toEqual({ input: -1001234567890n });
+    expect(request.settings).toBeInstanceOf(Api.InputPeerNotifySettings);
+    expect(request.settings.muteUntil).toBe(2147483647);
+    await api.mute("7", 0);
+    expect((client.invoke.mock.calls[1]![0] as { settings: { muteUntil: number } }).settings.muteUntil).toBe(0);
   });
 
   describe("avatar", () => {

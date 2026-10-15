@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
 import type { TelegramApi, TelegramCredentials, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
 import { MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
-import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
+import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, MUTE_FOREVER, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import { MAX_ATTACHMENTS, type NativeAction, type NativeViewState } from "../../../src/shared/native";
 import type { FileSource } from "../../../src/engine/runtime";
@@ -39,6 +39,7 @@ class FakeTelegramApi implements TelegramApi {
   edit = vi.fn(async (chatId: string, id: number, text: TgText) => msg(chatId, id, { out: true, ...text, edited: true }));
   remove = vi.fn(async (_chatId: string, _ids: number[]) => {});
   markRead = vi.fn(async (_chatId: string, _maxId: number) => {});
+  mute = vi.fn(async (_chatId: string, _until: number) => {});
   avatar = vi.fn(async (_chatId: string): Promise<string | undefined> => undefined);
   members = vi.fn(async (_chatId: string, _offset: number, _limit: number): Promise<TgMemberPage> => ({ members: [], total: 0 }));
   profile = vi.fn(async (userId: string): Promise<TgProfile> => ({ id: userId, name: `User ${userId}`, bot: false, presence: "offline" }));
@@ -559,9 +560,9 @@ describe("chat view", () => {
     await ctx.adapter.openConversation("2");
     expect(ctx.chat().sidebar).toEqual([
       { id: "section-user", name: "Direct messages", kind: "category", unread: false, mentions: 0, active: false },
-      { id: "1", name: "User 1", kind: "dm", unread: true, mentions: 2, active: false },
-      { id: "2", name: "User 2", kind: "dm", unread: false, mentions: 0, active: true },
-      { id: "3", name: "User 3", kind: "dm", unread: false, mentions: 0, active: false },
+      { id: "1", name: "User 1", kind: "dm", unread: true, mentions: 2, active: false, muted: false, canMute: true },
+      { id: "2", name: "User 2", kind: "dm", unread: false, mentions: 0, active: true, muted: false, canMute: true },
+      { id: "3", name: "User 3", kind: "dm", unread: false, mentions: 0, active: false, muted: false, canMute: true },
     ]);
   });
 
@@ -1189,6 +1190,40 @@ describe("groups and channels", () => {
     // A mute that ran out no longer counts.
     const later = await signedIn({ dialogs: [dlg(SUPER, { kind: "group", unreadCount: 3, mutedUntil: 1000 })] });
     expect(later.adapter.homeBadge()).toEqual({ unread: true, mentions: 0 });
+  });
+
+  it("shows which chats are muted and mutes or unmutes them in Telegram", async () => {
+    const ctx = await signedIn({ dialogs: rooms() });
+    expect(ctx.rows().map((i) => [i.name, i.muted, i.canMute])).toEqual([
+      ["User 1", false, true],
+      ["Quiet", true, true],
+      ["Family", false, true],
+      ["Club", true, true],
+      ["News", false, true],
+    ]);
+    await ctx.act({ type: "mute", channelId: viewId(GROUP), mute: true });
+    expect(ctx.api.mute).toHaveBeenLastCalledWith(GROUP, MUTE_FOREVER);
+    expect(ctx.rows().find((i) => i.name === "Family")!.muted).toBe(true);
+    // A muted one-to-one chat keeps its unread state but loses its count, here and in the Messages list.
+    await ctx.act({ type: "mute", channelId: "1", mute: true });
+    expect(ctx.rows()[0]).toMatchObject({ muted: true, unread: true, mentions: 0 });
+    expect(ctx.directs.at(-1)![0]).toMatchObject({ key: "1", mentions: 0 });
+    await ctx.act({ type: "mute", channelId: "2", mute: false });
+    expect(ctx.api.mute).toHaveBeenLastCalledWith("2", 0);
+    expect(ctx.rows()[1]).toMatchObject({ muted: false, mentions: 4 });
+    // Already so, or unknown: nothing to do.
+    const calls = ctx.api.mute.mock.calls.length;
+    await ctx.act({ type: "mute", channelId: "2", mute: false });
+    await ctx.act({ type: "mute", channelId: "404", mute: true });
+    expect(ctx.api.mute).toHaveBeenCalledTimes(calls);
+    // A failure says so and changes nothing.
+    ctx.api.mute.mockRejectedValueOnce(new Error("FLOOD_WAIT"));
+    await ctx.act({ type: "mute", channelId: viewId(NEWS), mute: true });
+    expect(ctx.chat().error).toBe("Could not mute the chat: FLOOD_WAIT");
+    expect(ctx.rows().find((i) => i.name === "News")!.muted).toBe(false);
+    ctx.api.mute.mockRejectedValueOnce(new Error("FLOOD_WAIT"));
+    await ctx.act({ type: "mute", channelId: viewId(SUPER), mute: false });
+    expect(ctx.chat().error).toBe("Could not unmute the chat: FLOOD_WAIT");
   });
 
   it("opens a group from the view and from the shell, by its chat id", async () => {

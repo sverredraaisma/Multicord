@@ -33,6 +33,8 @@ export const TOPIC_LIMIT = 50;
 /** Members fetched per page, and at most for one chat: big groups list their first ones and count the rest. */
 export const MEMBER_PAGE = 50;
 export const MEMBER_LIMIT = 200;
+/** A mute that does not end: the latest time Telegram takes, as its apps send for "mute forever". */
+export const MUTE_FOREVER = 2 ** 31 - 1;
 /** Members' profile pictures fetched per chat; the rest show initials. */
 export const MEMBER_AVATAR_LIMIT = 30;
 /** Largest media shown in the view (it travels as a data: URL); bigger files say so. */
@@ -489,6 +491,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.showProfile(action.id);
       case "react":
         return this.react(action.messageId, action.emoji, action.add);
+      case "mute":
+        return this.mute(chatIdOfView(action.channelId), action.mute);
       case "typing":
         return this.sendTyping();
       case "attach":
@@ -1118,6 +1122,19 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
    * whole set: one reaction, or three with Premium, the oldest giving way
    * to a new one as in Telegram's apps.
    */
+  /** Mutes or unmutes a chat in Telegram, for good (as Telegram's apps do), and follows it here at once. */
+  private async mute(chatId: string, mute: boolean): Promise<void> {
+    const dialog = this.dialog(chatId);
+    if (!dialog || !this.api || this.muted(dialog) === mute) return;
+    await this.attempt(mute ? "Could not mute the chat" : "Could not unmute the chat", async () => {
+      const until = mute ? MUTE_FOREVER : 0;
+      await this.api!.mute(chatId, until);
+      if (mute) dialog.mutedUntil = until;
+      else delete dialog.mutedUntil;
+      this.publish();
+    });
+  }
+
   private async react(messageId: string, key: string, add: boolean): Promise<void> {
     const chatId = this.selected;
     const dialog = chatId ? this.dialog(chatId) : undefined;
@@ -1624,7 +1641,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       for (const d of dialogs) {
         // Every chat shows its picture, so all are "dm" rows.
         const selected = d.chatId === this.selected;
-        const item: NativeSidebarItem = { id: viewId(d.chatId), name: d.title, kind: "dm", ...this.badge(d), active: selected && this.topic === undefined };
+        const item: NativeSidebarItem = { id: viewId(d.chatId), name: d.title, kind: "dm", ...this.badge(d), active: selected && this.topic === undefined, muted: this.muted(d), canMute: true };
         const avatar = this.avatars.get(d.chatId);
         if (avatar) item.iconUrl = avatar;
         sidebar.push(item);

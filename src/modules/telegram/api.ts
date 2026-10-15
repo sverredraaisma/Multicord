@@ -224,6 +224,8 @@ export interface TelegramApi {
   remove(chatId: string, ids: number[]): Promise<void>;
   /** Marks a chat, or one topic of a forum, read up to a message, with its mentions. */
   markRead(chatId: string, maxId: number, topicId?: number): Promise<void>;
+  /** Mutes a chat's notifications until a time (Unix seconds), or unmutes it with 0. */
+  mute(chatId: string, until: number): Promise<void>;
   /** A forum's topics, most recently active first. */
   topics(chatId: string, limit: number): Promise<TgTopic[]>;
   /** Starts a topic in a forum; its id. */
