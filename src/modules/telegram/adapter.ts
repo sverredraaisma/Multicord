@@ -6,10 +6,16 @@ import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, Na
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
-import { FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgPoll, type TgPreview, type TgProfile, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
+import { FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgMember, type TgMessage, type TgPoll, type TgPreview, type TgProfile, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
-/** Chats listed: one-to-one chats, groups and channels together, most recent first. */
-export const DIALOG_LIMIT = 200;
+/**
+ * Chats listed: one-to-one chats, groups and channels together, most recent
+ * first. The first page comes at sign-in, the rest a page at a time in the
+ * background, up to the limit.
+ */
+export const DIALOG_LIMIT = 1000;
+export const DIALOG_PAGE = 100;
+export const DIALOG_PAGE_MS = 2000;
 export const PAGE_SIZE = 50;
 /** Profile pictures fetched per refresh; the rest show initials. */
 export const AVATAR_LIMIT = 40;
@@ -331,7 +337,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.step = "chat";
     this.status = undefined;
     this.error = undefined;
-    await this.refreshDialogs();
+    await this.refreshDialogs(true);
     void this.loadAvatars();
   }
 
@@ -640,9 +646,41 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
 
   // --- Chats --------------------------------------------------------------------
 
-  private async refreshDialogs(): Promise<void> {
-    this.dialogs = (await this.api!.dialogs(DIALOG_LIMIT)).sort((a, b) => b.date - a.date);
+  /**
+   * Fetches the first page of dialogs afresh. Chats older than it, listed
+   * from later pages, stay, so a refresh (e.g. for a message from someone
+   * new) keeps them; newer ones it leaves out are gone (left or deleted).
+   * After signing in, the later pages follow in the background.
+   */
+  private async refreshDialogs(first = false): Promise<void> {
+    const page = await this.api!.dialogs(DIALOG_PAGE);
+    const fresh = new Set(page.dialogs.map((d) => d.chatId));
+    // A page with none after it is the whole list.
+    const oldest = page.next ? Math.min(...page.dialogs.map((d) => d.date)) : -Infinity;
+    const older = this.dialogs.filter((d) => !fresh.has(d.chatId) && d.date < oldest);
+    this.dialogs = [...page.dialogs, ...older].sort((a, b) => b.date - a.date);
     this.publish();
+    if (first && page.next) void this.pageDialogs(page.next);
+  }
+
+  /**
+   * Lists the chats after the first page, a page every DIALOG_PAGE_MS, up to
+   * DIALOG_LIMIT in all. Chats already listed keep what they have, which is
+   * as new or newer. A page that fails ends the paging until the next sign-in.
+   */
+  private async pageDialogs(next: TgDialogCursor | undefined): Promise<void> {
+    const session = this.session;
+    while (next && this.dialogs.length < DIALOG_LIMIT) {
+      await new Promise((resolve) => setTimeout(resolve, DIALOG_PAGE_MS));
+      if (session !== this.session) return;
+      const page = await this.api!.dialogs(DIALOG_PAGE, next).catch(() => undefined);
+      if (session !== this.session || !page) return;
+      const known = new Set(this.dialogs.map((d) => d.chatId));
+      const added = page.dialogs.filter((d) => !known.has(d.chatId)).slice(0, DIALOG_LIMIT - this.dialogs.length);
+      this.dialogs = [...this.dialogs, ...added].sort((a, b) => b.date - a.date);
+      this.publish();
+      next = page.next;
+    }
   }
 
   /** Refreshes the dialog list soon, e.g. after a message from someone new. */

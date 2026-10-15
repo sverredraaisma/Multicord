@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgPoll, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import type { TelegramApi, TelegramCredentials, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
 import { MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
-import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, MUTE_FOREVER, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
+import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, DIALOG_PAGE, DIALOG_PAGE_MS, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, MUTE_FOREVER, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import { MAX_ATTACHMENTS, type NativeAction, type NativeViewState } from "../../../src/shared/native";
 import type { FileSource } from "../../../src/engine/runtime";
@@ -31,7 +31,7 @@ class FakeTelegramApi implements TelegramApi {
   signIn = vi.fn(async (_phone: string, _hash: string, _code: string): Promise<TgSignIn> => ({ done: true }));
   checkPassword = vi.fn(async (_password: string) => {});
   me = vi.fn(async (): Promise<TgUser> => ({ id: "9", name: "Me", bot: false }));
-  dialogs = vi.fn(async (_limit: number) => this.dialogList.map((d) => ({ ...d })));
+  dialogs = vi.fn(async (_limit: number, _after?: TgDialogCursor): Promise<TgDialogPage> => ({ dialogs: this.dialogList.map((d) => ({ ...d })) }));
   history = vi.fn(async (chatId: string, _before: number | undefined, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1), msg(chatId, 2)]);
   pinned = vi.fn(async (chatId: string, _limit: number): Promise<TgMessage[]> => [msg(chatId, 2, { pinned: true })]);
   pin = vi.fn(async (_chatId: string, _id: number, _pin: boolean) => {});
@@ -394,7 +394,7 @@ describe("code step", () => {
     await ctx.answer("code", { code: "12 345" });
     expect(ctx.api.signIn).toHaveBeenCalledWith("+31612345678", "H", "12345");
     expect(ctx.secrets.get("session")).toBe("sess");
-    expect(ctx.api.dialogs).toHaveBeenCalledWith(DIALOG_LIMIT);
+    expect(ctx.api.dialogs).toHaveBeenCalledWith(DIALOG_PAGE);
     expect(ctx.rows().map((i) => i.id)).toEqual(["1", "2", "3"]);
     expect(ctx.adapter.accountStatus()).toEqual({ state: "signed-in", name: "Me" });
   });
@@ -888,6 +888,99 @@ describe("updates", () => {
     ctx.api.emit({ type: "message", message: msg("9", 1) });
     await vi.advanceTimersByTimeAsync(1000);
     expect(ctx.rows()).toHaveLength(3);
+  });
+
+  describe("paging through dialogs", () => {
+    const cursor = (chatId: string): TgDialogCursor => ({ chatId, id: 5, date: 7 });
+
+    /** Signed in with a first page that has more after it; later pages come from `pages`, by the cursor's chat. */
+    async function paged(pages: Record<string, TgDialogPage | Error>) {
+      vi.useFakeTimers();
+      const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+      ctx.api.dialogs.mockImplementation(async (_limit, after) => {
+        if (!after) return { dialogs: defaultDialogs(), next: cursor("3") };
+        const page = pages[after.chatId]!;
+        if (page instanceof Error) throw page;
+        return page;
+      });
+      await ctx.adapter.start();
+      await flush();
+      return ctx;
+    }
+
+    it("lists later pages in the background, a page at a time, keeping chats already listed", async () => {
+      const ctx = await paged({ "3": { dialogs: [dlg("2", { title: "Old", date: 1 }), dlg("4", { date: 5 })], next: cursor("4") }, "4": { dialogs: [dlg("5", { date: 4 })] } });
+      expect(ctx.api.dialogs).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(DIALOG_PAGE_MS);
+      expect(ctx.api.dialogs).toHaveBeenLastCalledWith(DIALOG_PAGE, cursor("3"));
+      expect(ctx.rows().map((r) => r.id)).toEqual(["1", "2", "3", "4"]);
+      expect(ctx.rows()[1]!.name).toBe("User 2");
+      await vi.advanceTimersByTimeAsync(DIALOG_PAGE_MS);
+      expect(ctx.api.dialogs).toHaveBeenLastCalledWith(DIALOG_PAGE, cursor("4"));
+      expect(ctx.rows().map((r) => r.id)).toEqual(["1", "2", "3", "4", "5"]);
+      // The last page had none after it.
+      await vi.advanceTimersByTimeAsync(DIALOG_PAGE_MS * 3);
+      expect(ctx.api.dialogs).toHaveBeenCalledTimes(3);
+      expect(ctx.directs.at(-1)!.map((d) => d.key)).toEqual(["1", "2", "3", "4", "5"]);
+    });
+
+    it("keeps chats from later pages when the first page is fetched afresh", async () => {
+      const ctx = await paged({ "3": { dialogs: [dlg("4", { date: 5 })] } });
+      await vi.advanceTimersByTimeAsync(DIALOG_PAGE_MS);
+      ctx.api.emit({ type: "message", message: msg("9", 1) });
+      ctx.api.dialogList = [...defaultDialogs(), dlg("9", { date: 99 })];
+      ctx.api.dialogs.mockImplementation(async () => ({ dialogs: ctx.api.dialogList, next: cursor("3") }));
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ctx.rows().map((r) => r.id)).toEqual(["9", "1", "2", "3", "4"]);
+      // A chat newer than the fresh page's oldest that it leaves out is gone; a page with none after it is the whole list.
+      ctx.api.dialogList = [dlg("9", { date: 99 }), dlg("3", { date: 10 })];
+      ctx.api.emit({ type: "message", message: msg("8", 1) });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ctx.rows().map((r) => r.id)).toEqual(["9", "3", "4"]);
+      ctx.api.dialogs.mockImplementation(async () => ({ dialogs: ctx.api.dialogList }));
+      ctx.api.emit({ type: "message", message: msg("8", 2) });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(ctx.rows().map((r) => r.id)).toEqual(["9", "3"]);
+      // A refresh does not start paging again.
+      await vi.advanceTimersByTimeAsync(DIALOG_PAGE_MS * 2);
+      expect(ctx.api.dialogs).toHaveBeenCalledTimes(5);
+    });
+
+    it("stops at DIALOG_LIMIT chats", async () => {
+      const many = (from: number) => Array.from({ length: DIALOG_PAGE }, (_, i) => dlg(String(from + i), { date: 0 }));
+      const pages: Record<string, TgDialogPage> = {};
+      for (let n = 0; n < DIALOG_LIMIT / DIALOG_PAGE + 1; n++) pages[String(1000 + n)] = { dialogs: many(10_000 + n * DIALOG_PAGE), next: cursor(String(1001 + n)) };
+      pages["3"] = pages["1000"]!;
+      const ctx = await paged(pages);
+      await vi.advanceTimersByTimeAsync(DIALOG_PAGE_MS * (DIALOG_LIMIT / DIALOG_PAGE + 3));
+      expect(ctx.rows()).toHaveLength(DIALOG_LIMIT);
+      expect(ctx.api.dialogs).toHaveBeenCalledTimes(DIALOG_LIMIT / DIALOG_PAGE + 1);
+    });
+
+    it("stops paging when a page fails", async () => {
+      const ctx = await paged({ "3": new Error("down") });
+      await vi.advanceTimersByTimeAsync(DIALOG_PAGE_MS * 3);
+      expect(ctx.api.dialogs).toHaveBeenCalledTimes(2);
+      expect(ctx.rows()).toHaveLength(3);
+    });
+
+    it("stops paging on signing out, before or while a page is fetched", async () => {
+      const ctx = await paged({ "3": { dialogs: [dlg("4")] } });
+      ctx.api.isAuthorized = false;
+      await ctx.act({ type: "logout" });
+      await vi.advanceTimersByTimeAsync(DIALOG_PAGE_MS * 3);
+      expect(ctx.api.dialogs).toHaveBeenCalledTimes(1);
+
+      let release: (page: TgDialogPage) => void = () => {};
+      const late = await paged({});
+      late.api.dialogs.mockImplementation((_limit, after) => (after ? new Promise((resolve) => (release = resolve)) : Promise.resolve({ dialogs: [] })));
+      await vi.advanceTimersByTimeAsync(DIALOG_PAGE_MS);
+      late.api.isAuthorized = false;
+      await late.act({ type: "logout" });
+      release({ dialogs: [dlg("4")] });
+      await vi.advanceTimersByTimeAsync(DIALOG_PAGE_MS * 3);
+      await expect(late.adapter.listDirectConversations()).resolves.toEqual([]);
+    });
   });
 
   it("counts an incoming message as unread, notifies and appends it to a loaded chat", async () => {

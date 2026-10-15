@@ -153,6 +153,21 @@ export interface TgDialog {
   date: number;
 }
 
+/** Where the next page of dialogs starts: after this chat and its last message, as Telegram pages them. */
+export interface TgDialogCursor {
+  chatId: string;
+  /** The last message's id and date (Unix seconds). */
+  id: number;
+  date: number;
+}
+
+/** A page of dialogs, in Telegram's order. */
+export interface TgDialogPage {
+  dialogs: TgDialog[];
+  /** Where the next page starts; absent after the last. */
+  next?: TgDialogCursor;
+}
+
 /** The topic every forum has, holding the messages posted in none other. */
 export const GENERAL_TOPIC = 1;
 
@@ -257,7 +272,8 @@ export interface TelegramApi {
   signIn(phone: string, hash: string, code: string): Promise<TgSignIn>;
   checkPassword(password: string): Promise<void>;
   me(): Promise<TgUser>;
-  dialogs(limit: number): Promise<TgDialog[]>;
+  /** A page of dialogs: the first (pinned chats, then the most recent), or the one after a cursor. */
+  dialogs(limit: number, after?: TgDialogCursor): Promise<TgDialogPage>;
   /** Messages before `beforeId` (or the newest), oldest first; in a forum, of one topic. */
   history(chatId: string, beforeId: number | undefined, limit: number, topicId?: number): Promise<TgMessage[]>;
   /** A chat's pinned messages, newest first. */

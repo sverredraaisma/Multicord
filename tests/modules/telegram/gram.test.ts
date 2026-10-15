@@ -408,13 +408,32 @@ describe("createGramApi", () => {
       { ...none, id: undefined, unreadCount: 0, unreadMentionsCount: 0, date: 60, entity: make(Api.User) },
       { ...none, id: 10n ** 19n, unreadCount: 0, unreadMentionsCount: 0, date: 50, entity: make(Api.User) },
     ]);
-    await expect(api.dialogs(20)).resolves.toEqual([
-      { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, readUpTo: 7, lastMessage: toMessage(last, "1") },
-      { chatId: "2", kind: "user", title: "@bo", bot: false, unreadCount: 0, unreadMentions: 0, date: 90, mutedUntil: 2147483647 },
-      { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, members: true, noMedia: true, noStickers: true },
-      { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true, left: true },
-    ]);
+    await expect(api.dialogs(20)).resolves.toEqual({
+      dialogs: [
+        { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, readUpTo: 7, lastMessage: toMessage(last, "1") },
+        { chatId: "2", kind: "user", title: "@bo", bot: false, unreadCount: 0, unreadMentions: 0, date: 90, mutedUntil: 2147483647 },
+        { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, members: true, noMedia: true, noStickers: true },
+        { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true, left: true },
+      ],
+    });
     expect(client.getDialogs).toHaveBeenCalledWith({ limit: 20 });
+  });
+
+  it("pages through dialogs after the last chat with a message", async () => {
+    const entity = make(Api.User, { firstName: "A" });
+    const row = (id: bigint, message?: unknown) => ({ dialog: {}, id, unreadCount: 0, unreadMentionsCount: 0, date: 1, entity, message });
+    client.getDialogs.mockResolvedValue([row(1n, make(Api.Message, { id: 4, date: 40 })), row(-1002n, make(Api.Message, { id: 9, date: 30 })), row(3n)]);
+    const page = await api.dialogs(3);
+    expect(page.next).toEqual({ chatId: "-1002", id: 9, date: 30 });
+    await api.dialogs(3, page.next);
+    expect(client.getInputEntity).toHaveBeenCalledWith(-1002n);
+    expect(client.getDialogs).toHaveBeenLastCalledWith({ limit: 3, offsetDate: 30, offsetId: 9, offsetPeer: { input: -1002n }, ignorePinned: true });
+    // A page short of the limit is the last; so is one whose chats have no messages to page from, or ids not Telegram's.
+    expect((await api.dialogs(4)).next).toBeUndefined();
+    client.getDialogs.mockResolvedValue([row(1n), row(2n)]);
+    expect((await api.dialogs(2)).next).toBeUndefined();
+    client.getDialogs.mockResolvedValue([{ ...row(1n, make(Api.Message, { id: 1, date: 1 })), id: undefined }]);
+    expect((await api.dialogs(1)).next).toBeUndefined();
   });
 
   it("lists pinned messages newest first, and pins and unpins quietly", async () => {
@@ -1158,7 +1177,7 @@ describe("forum topics", () => {
       client.getDialogs.mockResolvedValue([
         { dialog: {}, id: -1005n, unreadCount: 0, unreadMentionsCount: 0, date: 1, entity: make(Api.Channel, { title: "Club", megagroup: true, forum: true, defaultBannedRights: { manageTopics: true } }) },
       ]);
-      await expect(api.dialogs(5)).resolves.toEqual([expect.objectContaining({ chatId: "-1005", forum: true, noTopics: true })]);
+      await expect(api.dialogs(5)).resolves.toEqual({ dialogs: [expect.objectContaining({ chatId: "-1005", forum: true, noTopics: true })] });
     });
 
     it("lists a forum's topics", async () => {

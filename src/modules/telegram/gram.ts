@@ -12,6 +12,7 @@ import { LogLevel } from "telegram/extensions/Logger";
 import { generateRandomBytes, readBigIntFromBuffer, returnBigInt } from "telegram/Helpers";
 import { computeCheck } from "telegram/Password";
 import { StringSession } from "telegram/sessions/StringSession";
+import type { Dialog } from "telegram/tl/custom/dialog";
 import {
   FAVED_STICKERS,
   GENERAL_TOPIC,
@@ -23,6 +24,7 @@ import {
   type TelegramCredentials,
   type TgAllowedReactions,
   type TgDialog,
+  type TgDialogPage,
   type TgEntity,
   type TgFile,
   type TgMember,
@@ -550,6 +552,33 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
   return out;
 }
 
+/** GramJS's dialogs as the adapter lists them: chats the user can open, with their counts, mute and last message. */
+export function dialogsOf(found: readonly Dialog[]): TgDialog[] {
+  return found.flatMap((d): TgDialog[] => {
+    const chat = describeChat(d.entity);
+    const chatId = d.id?.toString() ?? "";
+    // Ids beyond 18 digits are not Telegram's; the view could not tell them apart.
+    if (!chat || !/^-?\d{1,18}$/.test(chatId)) return [];
+    const dialog: TgDialog = { chatId, kind: chat.kind, title: chat.title, bot: chat.bot, unreadCount: tally(d.unreadCount), unreadMentions: tally(d.unreadMentionsCount), date: d.date };
+    if (chat.readOnly) dialog.readOnly = true;
+    if (chat.members) dialog.members = true;
+    if (chat.left) dialog.left = true;
+    if (mediaBanned(d.entity)) dialog.noMedia = true;
+    if (stickersBanned(d.entity)) dialog.noStickers = true;
+    const forum = forumOf(d.entity);
+    if (forum.forum) dialog.forum = true;
+    if (forum.noTopics) dialog.noTopics = true;
+    const settings = d.dialog.notifySettings;
+    // A Unix time; "muted for ever" is the largest 32-bit one.
+    const mutedUntil = settings instanceof Api.PeerNotifySettings ? settings.muteUntil : undefined;
+    if (Number.isInteger(mutedUntil) && mutedUntil! > 0) dialog.mutedUntil = mutedUntil;
+    const readUpTo = d.dialog.readInboxMaxId;
+    if (Number.isInteger(readUpTo) && readUpTo > 0) dialog.readUpTo = readUpTo;
+    if (d.message) dialog.lastMessage = toMessage(d.message, chatId);
+    return [dialog];
+  });
+}
+
 /** Downloaded bytes, or undefined for none (or a path, which is not asked for). */
 const bytesOf = (data: unknown): Uint8Array | undefined => (data instanceof Uint8Array && data.length > 0 ? new Uint8Array(data) : undefined);
 
@@ -646,31 +675,16 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       const me = await client.getMe();
       return me.premium ? { id: me.id.toString(), name: userName(me), bot: me.bot === true, premium: true } : { id: me.id.toString(), name: userName(me), bot: me.bot === true };
     },
-    dialogs: async (limit) => {
-      const dialogs = await client.getDialogs({ limit });
-      return dialogs.flatMap((d): TgDialog[] => {
-        const chat = describeChat(d.entity);
-        const chatId = d.id?.toString() ?? "";
-        // Ids beyond 18 digits are not Telegram's; the view could not tell them apart.
-        if (!chat || !/^-?\d{1,18}$/.test(chatId)) return [];
-        const dialog: TgDialog = { chatId, kind: chat.kind, title: chat.title, bot: chat.bot, unreadCount: tally(d.unreadCount), unreadMentions: tally(d.unreadMentionsCount), date: d.date };
-        if (chat.readOnly) dialog.readOnly = true;
-        if (chat.members) dialog.members = true;
-        if (chat.left) dialog.left = true;
-        if (mediaBanned(d.entity)) dialog.noMedia = true;
-        if (stickersBanned(d.entity)) dialog.noStickers = true;
-        const forum = forumOf(d.entity);
-        if (forum.forum) dialog.forum = true;
-        if (forum.noTopics) dialog.noTopics = true;
-        const settings = d.dialog.notifySettings;
-        // A Unix time; "muted for ever" is the largest 32-bit one.
-        const mutedUntil = settings instanceof Api.PeerNotifySettings ? settings.muteUntil : undefined;
-        if (Number.isInteger(mutedUntil) && mutedUntil! > 0) dialog.mutedUntil = mutedUntil;
-        const readUpTo = d.dialog.readInboxMaxId;
-        if (Number.isInteger(readUpTo) && readUpTo > 0) dialog.readUpTo = readUpTo;
-        if (d.message) dialog.lastMessage = toMessage(d.message, chatId);
-        return [dialog];
-      });
+    dialogs: async (limit, after) => {
+      // Later pages leave out the pinned chats, which the first page has; they start after the cursor's chat and message.
+      const offset = after ? { offsetDate: after.date, offsetId: after.id, offsetPeer: await client.getInputEntity(peer(after.chatId)), ignorePinned: true } : {};
+      const found = await client.getDialogs({ limit, ...offset });
+      const page: TgDialogPage = { dialogs: dialogsOf(found) };
+      // A full page may have more after it: they start after its last chat with a message, as GramJS pages them.
+      const last = found.length >= limit ? found.findLast((d) => d.message instanceof Api.Message) : undefined;
+      const lastId = last?.id?.toString();
+      if (last && lastId && /^-?\d{1,18}$/.test(lastId)) page.next = { chatId: lastId, id: last.message!.id, date: last.message!.date };
+      return page;
     },
     history: async (chatId, beforeId, limit, topicId) => {
       // A topic's messages are the replies to its first one.
