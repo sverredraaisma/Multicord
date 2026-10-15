@@ -118,6 +118,10 @@ describe("mute actions", () => {
     expect(isNativeAction({ type: "mute", channelId: "x", mute: true })).toBe(false);
     expect(isNativeAction({ type: "mute", channelId: "5", mute: "yes" })).toBe(false);
     expect(isNativeAction({ type: "mute", channelId: "5" })).toBe(false);
+    expect(isNativeAction({ type: "archive", channelId: "5", archive: true })).toBe(true);
+    expect(isNativeAction({ type: "archive", channelId: "5", archive: false })).toBe(true);
+    expect(isNativeAction({ type: "archive", channelId: "x", archive: true })).toBe(false);
+    expect(isNativeAction({ type: "archive", channelId: "5", archive: 1 })).toBe(false);
   });
 });
 

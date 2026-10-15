@@ -732,6 +732,13 @@ describe("muting conversations", () => {
     root.querySelector<HTMLButtonElement>('.mute-toggle[aria-label="Unmute Ana"]')!.click();
     expect(act).toHaveBeenCalledWith({ type: "mute", channelId: "3", mute: false });
   });
+
+  it("sends an archive action from a row's archive button", () => {
+    const base = chat();
+    view.update(chat({ sidebar: [...base.sidebar.slice(0, 2), { ...base.sidebar[2]!, archived: true, canArchive: true }] }));
+    root.querySelector<HTMLButtonElement>('.archive-toggle[aria-label="Unarchive Ana"]')!.click();
+    expect(act).toHaveBeenCalledWith({ type: "archive", channelId: "3", archive: false });
+  });
 });
 
 describe("threads", () => {

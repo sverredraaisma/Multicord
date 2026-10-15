@@ -22,6 +22,10 @@ export interface NativeSidebarItem {
   muted?: boolean;
   /** The module can mute and unmute it from here (a `mute` action). */
   canMute?: boolean;
+  /** It is in the platform's archive. */
+  archived?: boolean;
+  /** The module can move it into the archive and out again from here (an `archive` action). */
+  canArchive?: boolean;
   /** An invitation the user has not answered: the row offers Accept (a `join` action) and Decline (`decline`). */
   invite?: NativeInvite;
   /** Not joined, but open to the user (e.g. a room its space lists): the row offers Join (a `join` action). */
@@ -1045,6 +1049,8 @@ export type NativeAction =
   | { type: "picker"; open: boolean }
   /** Mutes or unmutes a conversation's notifications on the platform, where its sidebar row says it can (canMute). */
   | { type: "mute"; channelId: string; mute: boolean }
+  /** Moves a conversation into the platform's archive or out again, where its sidebar row says it can (canArchive). */
+  | { type: "archive"; channelId: string; archive: boolean }
   /** The pins panel opened or closed: the module lists the open conversation's pinned messages (NativeChannelView.pins) only while it is open. */
   | { type: "pins"; open: boolean }
   /** Pins or unpins a message in the open conversation, where it says it may (canPin). */
@@ -1120,6 +1126,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return id(v.channelId);
     case "mute":
       return id(v.channelId) && typeof v.mute === "boolean";
+    case "archive":
+      return id(v.channelId) && typeof v.archive === "boolean";
     case "pins":
       return typeof v.open === "boolean";
     case "vote":

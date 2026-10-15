@@ -124,6 +124,26 @@ describe("channel items", () => {
     expect(channelItem(document, { ...base, canMute: true }, { onSelect: vi.fn(), onJoinVoice: vi.fn() }).querySelector(".mute-toggle")).toBeNull();
   });
 
+  it("offers an archive button where the module can archive a conversation", () => {
+    const onArchive = vi.fn();
+    const handlers = { onSelect: vi.fn(), onJoinVoice: vi.fn(), onArchive };
+    const base = { id: "1", name: "Ana", kind: "dm" as const, unread: false, mentions: 0, active: false };
+    expect(channelItem(document, base, handlers).querySelector(".archive-toggle")).toBeNull();
+    const row = channelItem(document, { ...base, canArchive: true }, handlers);
+    expect(row.classList.contains("archivable")).toBe(true);
+    const archive = row.querySelector<HTMLButtonElement>(".archive-toggle")!;
+    expect(archive.getAttribute("aria-label")).toBe("Archive Ana");
+    expect(archive.title).toBe("Archive");
+    archive.click();
+    expect(onArchive).toHaveBeenLastCalledWith("1", true);
+    const unarchive = channelItem(document, { ...base, archived: true, canArchive: true }, handlers).querySelector<HTMLButtonElement>(".archive-toggle")!;
+    expect(unarchive.getAttribute("aria-label")).toBe("Unarchive Ana");
+    expect(unarchive.title).toBe("Move out of the archive");
+    unarchive.click();
+    expect(onArchive).toHaveBeenLastCalledWith("1", false);
+    expect(channelItem(document, { ...base, canArchive: true }, { onSelect: vi.fn(), onJoinVoice: vi.fn() }).querySelector(".archive-toggle")).toBeNull();
+  });
+
   it("offers to accept or decline invitations, and to join conversations open to the user", () => {
     const onJoin = vi.fn();
     const onDecline = vi.fn();

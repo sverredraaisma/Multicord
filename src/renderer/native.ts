@@ -1212,6 +1212,7 @@ export class NativeView {
         onSelect: (channelId) => this.api.act({ type: "select", channelId }),
         onJoinVoice: (channelId) => this.api.act({ type: "joinVoice", channelId }),
         onMute: (channelId, mute) => this.api.act({ type: "mute", channelId, mute }),
+        onArchive: (channelId, archive) => this.api.act({ type: "archive", channelId, archive }),
         onJoin: (channelId) => this.api.act({ type: "join", channelId }),
         onDecline: (channelId) => this.api.act({ type: "decline", channelId }),
         onFold: (categoryId, collapsed) => {

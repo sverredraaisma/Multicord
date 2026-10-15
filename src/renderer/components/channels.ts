@@ -29,6 +29,8 @@ export interface ChannelHandlers {
   onJoinVoice(channelId: string): void;
   /** Mutes or unmutes a conversation; without it, rows offer no mute button. */
   onMute?(channelId: string, mute: boolean): void;
+  /** Archives or unarchives a conversation; without it, rows offer no archive button. */
+  onArchive?(channelId: string, archive: boolean): void;
   /** Accepts an invitation or joins a joinable conversation; without it, such rows offer no button for it. */
   onJoin?(channelId: string): void;
   /** Declines an invitation; without it, invitations offer no Decline. */
@@ -94,8 +96,9 @@ function offerItem(doc: Document, item: NativeSidebarItem, handlers: ChannelHand
 /**
  * One sidebar row: a category heading, or a text, thread, forum, voice or DM
  * channel with its unread state, mention badge, whether it is muted and (for
- * voice) members. Where the module can mute it, a bell beside it does. An
- * invitation or a conversation open to join gets buttons instead.
+ * voice) members. Where the module can mute it, a bell beside it does, and
+ * where it can archive it, an archive button. An invitation or a
+ * conversation open to join gets buttons instead.
  */
 export function channelItem(doc: Document, item: NativeSidebarItem, handlers: ChannelHandlers): HTMLElement {
   if (item.kind === "category") return categoryItem(doc, item, handlers);
@@ -132,6 +135,17 @@ export function channelItem(doc: Document, item: NativeSidebarItem, handlers: Ch
     toggle.append(icon(doc, "mute-icon", muted ? ICONS.bell : ICONS.bellOff));
     toggle.addEventListener("click", () => handlers.onMute!(item.id, !muted));
     li.classList.add("mutable");
+    li.append(toggle);
+  }
+  if (item.canArchive === true && handlers.onArchive) {
+    const archived = item.archived === true;
+    const toggle = el(doc, "button", "archive-toggle");
+    toggle.type = "button";
+    toggle.setAttribute("aria-label", `${archived ? "Unarchive" : "Archive"} ${item.name}`);
+    toggle.title = archived ? "Move out of the archive" : "Archive";
+    toggle.append(icon(doc, "mute-icon", archived ? ICONS.unarchive : ICONS.archive));
+    toggle.addEventListener("click", () => handlers.onArchive!(item.id, !archived));
+    li.classList.add("archivable");
     li.append(toggle);
   }
   if (item.members?.length) li.append(voiceMembers(doc, item.members));

@@ -102,7 +102,7 @@
 .muted-icon, .mute-icon { width: 14px; height: 14px; fill: currentColor; }
 .channels li.mutable { position: relative; }
 .channels li.mutable > .channel { padding-right: 32px; }
-.mute-toggle {
+.mute-toggle, .archive-toggle {
   position: absolute;
   top: 4px;
   right: 4px;
@@ -114,8 +114,14 @@
   color: var(--muted);
   cursor: pointer;
 }
-.mute-toggle:hover { background: var(--border); color: var(--text); }
+.mute-toggle:hover, .archive-toggle:hover { background: var(--border); color: var(--text); }
 li.mutable:hover > .mute-toggle, li.mutable:focus-within > .mute-toggle { display: inline-flex; }
+/* The archive button beside a row, left of the bell where there is one. */
+.channels li.archivable { position: relative; }
+.channels li.archivable > .channel { padding-right: 32px; }
+.channels li.mutable.archivable > .channel { padding-right: 56px; }
+li.mutable > .archive-toggle { right: 28px; }
+li.archivable:hover > .archive-toggle, li.archivable:focus-within > .archive-toggle { display: inline-flex; }
 /* Invitations and conversations open to join: the name, who invited, and their buttons. */
 .channels li.offer { display: flex; flex-direction: column; gap: 6px; margin: 2px 0; padding: 6px 8px; border-radius: 4px; background: var(--surface); }
 .offer-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
