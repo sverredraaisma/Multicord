@@ -13,6 +13,13 @@
 // fetch carries its https requests to the plain http server, as a TLS proxy in
 // front of it would. The Electron shell's network policy is not part of this:
 // the module's code runs here on Node's fetch.
+//
+// Multicord syncs as it would in the app: with simplified sliding sync
+// (MSC4186) when the server offers it, as Synapse does by default, else with
+// classic /sync. MULTICORD_LIVE_MATRIX_SLIDING=1 forces sliding sync (and fails
+// where the server has none), =0 classic sync; run the suite both ways.
+// Sticky events over sliding sync (call memberships) need Synapse's
+// experimental_features msc4354_enabled.
 
 import { initAsync } from "@matrix-org/matrix-sdk-crypto-wasm";
 import { ClientEvent, createClient, EventType, Preset, SyncState, type MatrixClient, type MatrixEvent } from "matrix-js-sdk";
@@ -20,11 +27,12 @@ import { CryptoEvent, VerificationPhase, VerifierEvent, type ShowSasCallbacks, t
 import { createDecipheriv, createHash, createHmac } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { MxSession } from "../../src/modules/matrix/api";
+import type { MatrixApi, MxEvent, MxRoomUpdate, MxSession, MxSyncMode } from "../../src/modules/matrix/api";
 import type { FileSource } from "../../src/engine/runtime";
 import { MatrixAdapter } from "../../src/modules/matrix/adapter";
-import { createMatrixClient } from "../../src/modules/matrix/client";
+import { createMatrixClient, TIMELINE_LIMIT } from "../../src/modules/matrix/client";
 import { openE2ee, type MatrixE2ee } from "../../src/modules/matrix/crypto";
+import { SLIDING_SYNC_FEATURE, SLIDING_SYNC_PATH } from "../../src/modules/matrix/sliding";
 import { createOAuthClient } from "../../src/modules/matrix/oauth";
 import type { NativeViewState } from "../../src/shared/native";
 import { encryptAttachment } from "../modules/matrix/attachments";
@@ -42,9 +50,17 @@ const HTTP = LIVE.replace(/\/+$/, "").replace("//localhost", "//127.0.0.1");
 /** The https address Multicord is given. */
 const HTTPS = LIVE ? `https://${new URL(LIVE).host}` : "";
 
+/** How Multicord syncs: forced either way, or (unset) as in the app. */
+const SYNC_MODE: MxSyncMode | undefined = { "1": "sliding" as const, "0": "classic" as const }[process.env.MULTICORD_LIVE_MATRIX_SLIDING ?? ""];
+/** Multicord's syncs so far, by kind. */
+const syncs = { classic: 0, sliding: 0 };
+
 /** Multicord's fetch: its https requests to the server go over plain http. */
 const liveFetch: typeof fetch = (input, init) => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const path = new URL(url).pathname;
+  if (path === "/_matrix/client/v3/sync") syncs.classic++;
+  if (path === SLIDING_SYNC_PATH) syncs.sliding++;
   return fetch(url.startsWith(`${HTTPS}/`) ? HTTP + url.slice(HTTPS.length) : url, init);
 };
 
@@ -81,7 +97,7 @@ async function multicord(user: string, password: string) {
   const renders: NativeViewState[] = [];
   const logs: string[] = [];
   let e2ee: MatrixE2ee | undefined;
-  const api = createMatrixClient(liveFetch);
+  const api = createMatrixClient(liveFetch, SYNC_MODE ? { syncMode: SYNC_MODE } : {});
   /** What the file picker hands out, one list per attach. */
   const picks: FileSource[][] = [];
   const adapter = new MatrixAdapter({
@@ -192,6 +208,7 @@ describe.skipIf(!LIVE || !SECRET)("Matrix against a live homeserver", { timeout:
   let mc: Multicord;
   let dm: string;
   let lobby: string;
+  let expected: "classic" | "sliding";
 
   beforeAll(async () => {
     for (const name of quiet) console[name] = () => {};
@@ -243,6 +260,10 @@ describe.skipIf(!LIVE || !SECRET)("Matrix against a live homeserver", { timeout:
 
   it("signs in with a password (Synapse offers m.login.password, no OAuth) and syncs", async () => {
     mc = await multicord(ALICE, PASSWORD);
+    // It synced the way asked for (unforced: sliding sync where the server offers it), and only that way.
+    expected = SYNC_MODE ?? ((await mc.api.supports(mc.session, SLIDING_SYNC_FEATURE)) ? "sliding" : "classic");
+    expect(syncs[expected]).toBeGreaterThan(0);
+    expect(syncs[expected === "sliding" ? "classic" : "sliding"]).toBe(0);
     expect(mc.session).toMatchObject({ baseUrl: HTTPS, userId: aliceId, ownDevice: true });
     expect(mc.session.oauth).toBeUndefined();
     expect(mc.adapter.accountStatus()).toEqual({ state: "signed-in", name: aliceId });
@@ -519,6 +540,53 @@ describe.skipIf(!LIVE || !SECRET)("Matrix against a live homeserver", { timeout:
     await until(async () => (await aliceElement.getCrypto()!.getDeviceVerificationStatus(aliceId, mc.session.deviceId))?.crossSigningVerified, "Element to see Multicord's device cross-signed");
   });
 
+  it("gets another device's sticky call membership (MSC4354), as it is sent and on a new connection", async () => {
+    // Synapse has sticky events only with experimental_features msc4354_enabled.
+    if (!(await mc.api.supports(mc.session, "org.matrix.msc4354"))) return;
+    // Devices of its own, with their own syncs, so Multicord's running one is left alone.
+    const api = createMatrixClient(liveFetch, { syncMode: expected });
+    const session = await api.login(HTTPS, ALICE, PASSWORD);
+    let since: string | undefined;
+    const seen: MxRoomUpdate[] = [];
+    const sync = async (from: MatrixApi, as: MxSession) => {
+      const next = await from.sync(as, since, 0);
+      since = next.nextBatch;
+      seen.push(...next.joined.filter((u) => u.roomId === lobby));
+    };
+    // Twice: a new sliding sync connection asks for sticky events once it has sent the rooms.
+    await sync(api, session);
+    await sync(api, session);
+    const asBob = { baseUrl: HTTPS, accessToken: bob.getAccessToken()!, userId: bobId, deviceId: bob.getDeviceId()!, ownDevice: false };
+    const content = {
+      slot_id: "m.call#ROOM",
+      application: { type: "m.call" },
+      member: { user_id: bobId, device_id: asBob.deviceId, id: "bob-member" },
+      msc4354_sticky_key: "bob-member",
+      transports: { published: [{ type: "livekit", livekit_service_url: "https://focus.example.org" }], can_subscribe: [] },
+      versions: [],
+    };
+    const id = await api.sendSticky(asBob, lobby, "org.matrix.msc4143.rtc.member", content, 600_000);
+    const isMembership = (e: MxEvent) => e.kind === "rtc" && e.id === id && e.member?.user === bobId;
+    await until(async () => {
+      await sync(api, session);
+      return seen.some((u) => u.timeline.some(isMembership));
+    }, "the membership in the timeline");
+    // Pushed out of the timeline a new connection starts with (classic sync's is the longer), it comes as sticky.
+    // A new device: Synapse answers a repeated first /sync of a device from its cache for a while.
+    for (let i = 0; i <= TIMELINE_LIMIT; i++) await bob.sendTextMessage(lobby, `filler ${i}`);
+    since = undefined;
+    seen.length = 0;
+    const fresh = createMatrixClient(liveFetch, { syncMode: expected });
+    const other = await fresh.login(HTTPS, ALICE, PASSWORD);
+    await until(async () => {
+      await sync(fresh, other);
+      return seen.some((u) => u.sticky?.some(isMembership));
+    }, "the membership as a sticky event on a new connection");
+    expect(seen.some((u) => u.timeline.some(isMembership))).toBe(false);
+    await fresh.logout(other);
+    await api.logout(session);
+  });
+
   it("signs out, which ends the device on the server", async () => {
     const { accessToken, deviceId } = mc.session;
     await mc.act({ type: "logout" });
@@ -562,5 +630,10 @@ describe.skipIf(!LIVE || !SECRET)("Matrix against a live homeserver", { timeout:
     await until(() => mc.messages().find((m) => m.content.includes("kept in the backup")), "the backed-up message on the new device");
     await mc.act({ type: "logout" });
     await until(() => mc.prompt("login"), "the sign-in screen again");
+  });
+
+  it("kept to one kind of sync throughout, with no fallback", () => {
+    expect(syncs[expected === "sliding" ? "classic" : "sliding"]).toBe(0);
+    expect(syncs[expected]).toBeGreaterThan(10);
   });
 });
