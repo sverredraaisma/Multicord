@@ -14,6 +14,7 @@ import {
   type NativeSidebarItem,
   type NativeSticker,
   type NativeStickerPack,
+  type NativeUnread,
   type NativeViewState,
   type NativeVoiceMember,
   type NativeVoiceSession,
@@ -503,6 +504,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   /** Custom emoji names by mxc URI, as reactions with them gave them. */
   private readonly shortcodes = new Map<string, string>();
   private selected: string | undefined;
+  /** Where the open room's news began when it was opened: the read receipt and when it was, the newest event then, and how many counted as unread. */
+  private unreadAt: { roomId: string; lastRead?: string; readTs?: number; newest?: string; count: number } | undefined;
   /** The open top-level space (a rail server), or undefined at home. */
   private openSpace: string | undefined;
   /** The room last opened in each space ("" for home), to open again on going back. */
@@ -778,6 +781,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const open = this.selectedRoom();
     const last = this.rooms.get(this.lastRoom.get(place) ?? "");
     const room = open && rooms.includes(open) ? open : last && rooms.includes(last) ? last : first ? rooms[0] : undefined;
+    if (room && room !== open) this.noteUnread(room);
     this.selected = room?.id;
     this.render();
     if (room) await this.opened(room);
@@ -1817,10 +1821,39 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     }
     const room = this.rooms.get(this.byLocal.get(local) ?? "");
     if (!room) return;
+    if (this.selected !== room.id) this.noteUnread(room);
     this.selected = room.id;
     this.lastRoom.set(this.openSpace ?? "", room.id);
     this.render();
     await this.opened(room);
+  }
+
+  /** Notes where a room being opened has news, before it is marked read. */
+  private noteUnread(room: Room): void {
+    this.unreadAt = room.notifications > 0 ? { roomId: room.id, lastRead: room.lastRead, readTs: room.readTs, newest: room.events.at(-1)?.id, count: room.notifications } : undefined;
+  }
+
+  /**
+   * The open room's unread marker: the first event from someone else after
+   * the read receipt it had when opened; without a receipt in the loaded
+   * events, the one after when it was read, if the loaded events reach back
+   * that far; without either (classic sync sends no receipts), the one as
+   * many from the end as counted unread, up to the newest event then.
+   */
+  private unreadView(room: Room, at: NonNullable<MatrixAdapter["unreadAt"]>): NativeUnread {
+    const me = this.session!.userId;
+    const events = room.events;
+    const complete = room.prevBatch === undefined;
+    const read = at.lastRead === undefined ? -1 : events.findIndex((e) => e.id === at.lastRead);
+    let first: Shown | undefined;
+    if (read >= 0) first = events.slice(read + 1).find((e) => e.sender !== me);
+    else if (at.readTs !== undefined) first = complete || events.some((e) => e.ts <= at.readTs!) ? events.find((e) => e.ts > at.readTs! && e.sender !== me) : undefined;
+    else {
+      const newest = events.findIndex((e) => e.id === at.newest);
+      const others = events.slice(0, newest + 1).filter((e) => e.sender !== me);
+      first = others.length >= at.count ? others[others.length - at.count] : complete ? others[0] : undefined;
+    }
+    return first ? { firstId: this.local(first.id), count: at.count } : { count: at.count };
   }
 
   /** A room just opened: its first messages if none came yet, and a read receipt if it is in view. */
@@ -3035,6 +3068,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             pending: (this.pending.get(room.id) ?? []).map((file) => ({ name: file.filename, size: file.size })),
             uploading: this.uploading.has(room.id),
             ...(locked ? { locked } : {}),
+            ...(this.unreadAt?.roomId === room.id ? { unread: this.unreadView(room, this.unreadAt) } : {}),
             // A locked room takes nothing from here; typing notices follow the user's setting.
             can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false, stickers: !locked },
           }

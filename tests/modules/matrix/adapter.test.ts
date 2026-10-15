@@ -660,6 +660,52 @@ describe("listing", () => {
     expect(ctx.chat().error).toBe("Could not unmute the room: Forbidden");
   });
 
+  it("marks where a room's news began when it was opened, from the server's counts without receipts", async () => {
+    const ctx = await signedIn(
+      sync({
+        directs: initialSync().directs,
+        joined: [...initialSync().joined, room("!new:x.org", { state: { name: "New", members: {} }, timeline: [msg("n1", ANA, "only one", 100)], unread: { notifications: 3, highlights: 0 } })],
+      }),
+    );
+    ctx.adapter.setVisible(true);
+    await ctx.open("Lounge");
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: ctx.messages()[0]!.id, count: 1 });
+    // Fewer loaded than counted: it began above them.
+    await ctx.open("Bo");
+    expect(ctx.chat().channel!.unread).toEqual({ count: 2 });
+    // Unless there is nothing older.
+    await ctx.open("New");
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: ctx.messages()[0]!.id, count: 3 });
+    await ctx.open("Secret");
+    expect(ctx.chat().channel).not.toHaveProperty("unread");
+    // Read now: opened again, it has no news.
+    await ctx.open("Lounge");
+    expect(ctx.chat().channel).not.toHaveProperty("unread");
+  });
+
+  it("marks where a room's news began from the read receipt, or when it was read", async () => {
+    const counted = (extra: Partial<MxSync>) => sync({ countUnread: true, ...extra });
+    const ctx = await signedIn(
+      counted({
+        directs: { [BO]: ["!dm:x.org"] },
+        joined: [
+          room("!dm:x.org", { state: { members: { [BO]: { name: "Bo", membership: "join" } } }, timeline: [msg("d1", BO, "one", 1000), msg("d2", ME, "mine", 1500), msg("d3", BO, "two", 2000)], read: { id: "$d1", ts: 1100 } }),
+          room("!lounge:x.org", { state: { name: "Lounge", members: {} }, timeline: [msg("l1", ANA, "hey", 500), msg("l2", ANA, "later", 900)], read: { id: "$reaction", ts: 600 } }),
+          room("!far:x.org", { state: { name: "Far", members: {} }, prevBatch: "p", timeline: [msg("f1", ANA, "a", 100), msg("f2", ANA, "b", 200)], read: { id: "$gone", ts: 50 } }),
+          room("!all:x.org", { state: { name: "All", members: {} }, timeline: [msg("a1", ANA, "a", 100)], read: { id: "$gone", ts: 50 } }),
+        ],
+      }),
+    );
+    await ctx.open("Bo");
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: ctx.messages()[2]!.id, count: 1 });
+    await ctx.open("Lounge");
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: ctx.messages()[1]!.id, count: 1 });
+    await ctx.open("Far");
+    expect(ctx.chat().channel!.unread).toEqual({ count: 2 });
+    await ctx.open("All");
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: ctx.messages()[0]!.id, count: 1 });
+  });
+
   it("shows DMs and other rooms in the sidebar", async () => {
     const ctx = await signedIn();
     expect(ctx.chat().sidebar).toEqual([
