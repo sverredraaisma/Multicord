@@ -29,6 +29,7 @@ import {
   type TgMemberPage,
   type TgMessage,
   type TgPresence,
+  type TgPreview,
   type TgProfile,
   type TgReaction,
   type TgSignIn,
@@ -116,6 +117,27 @@ export function mediaFile(media: Api.TypeMessageMedia | undefined): TgFile | und
   if (video) return { kind: "video", name: filename ?? (video.roundMessage ? "Video message" : "Video"), mime, size, ...dims };
   if (mime?.startsWith("image/")) return { kind: "image", name: filename ?? "Image", mime, size, ...dims };
   return { kind: "file", name: filename ?? "File", mime, size };
+}
+
+/**
+ * The link preview Telegram made for a message's link: site, title,
+ * description and photo (not a page's video or file, which would download
+ * in the photo's place). Undefined for a preview still pending or empty.
+ */
+export function webPreview(media: Api.TypeMessageMedia | undefined): TgPreview | undefined {
+  if (!(media instanceof Api.MessageMediaWebPage) || !(media.webpage instanceof Api.WebPage)) return undefined;
+  const page = media.webpage;
+  const text = (value: string | undefined, max: number) => (value && value.trim() !== "" ? value.slice(0, max) : undefined);
+  const preview: TgPreview = {};
+  if (/^https:\/\/\S{1,2040}$/.test(page.url)) preview.url = page.url;
+  const site = text(page.siteName, 100);
+  if (site) preview.site = site;
+  const title = text(page.title, 256);
+  if (title) preview.title = title;
+  const description = text(page.description, 1000);
+  if (description) preview.description = description;
+  if (page.photo instanceof Api.Photo && !page.document) preview.photo = mediaFile(new Api.MessageMediaPhoto({ photo: page.photo }));
+  return title || description || preview.photo ? preview : undefined;
 }
 
 /** Chat ids as GramJS marks them (Utils.getPeerId): a user's id, -id for a basic group, -100id for a supergroup or channel. */
@@ -468,6 +490,8 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
   if (reactions.length > 0) out.reactions = reactions;
   const file = mediaFile(message.media);
   if (file) out.file = file;
+  const preview = webPreview(message.media);
+  if (preview) out.preview = preview;
   const header = message.replyTo instanceof Api.MessageReplyHeader ? message.replyTo : undefined;
   // In a forum topic every message points at the topic's first; only one that also names a top id answers another.
   const topic = header?.forumTopic === true ? (header.replyToTopId ?? header.replyToMsgId) : undefined;

@@ -1115,6 +1115,26 @@ describe("media", () => {
     expect(still).not.toHaveProperty("mediaKey");
   });
 
+  it("shows link previews, their photo loaded on request in the message's media's place", async () => {
+    const ctx = await signedIn();
+    ctx.api.history.mockResolvedValueOnce([
+      msg("1", 1, { text: "https://site/a", preview: { url: "https://site/a", site: "Site", title: "Page", photo } }),
+      msg("1", 2, { text: "x", preview: { description: "Words only" } }),
+      msg("1", 3, { text: "y", preview: { title: "Gone", photo } }),
+    ]);
+    await ctx.act({ type: "select", channelId: "1" });
+    const embeds = () => ctx.chat().channel!.messages.map((m) => m.embeds);
+    expect(embeds()[0]).toEqual([{ url: "https://site/a", site: "Site", title: "Page", image: { url: undefined, mediaKey: "tg:1:1", width: 4, height: 3, size: 2, thumbnail: true } }]);
+    expect(embeds()[1]).toEqual([{ description: "Words only" }]);
+    await ctx.act({ type: "loadMedia", key: "tg:1:1" });
+    expect(ctx.api.download).toHaveBeenCalledWith("1", 1, false);
+    expect(embeds()[0]![0]!.image).toMatchObject({ url: "data:image/jpeg;base64,aGk=", mediaKey: undefined });
+    // A photo that could not be fetched is left out of the card.
+    ctx.api.download.mockResolvedValueOnce(undefined);
+    await ctx.act({ type: "loadMedia", key: "tg:1:3" });
+    expect(embeds()[2]).toEqual([{ title: "Gone" }]);
+  });
+
   it("says when media is too large, gone or failed, and ignores keys it did not give", async () => {
     const { MAX_MEDIA_BYTES } = await import("../../../src/modules/telegram/adapter");
     const ctx = await signedIn();

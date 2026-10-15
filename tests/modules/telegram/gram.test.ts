@@ -7,7 +7,7 @@ const h = vi.hoisted(() => {
     }
   }
   const names = [
-    "MessageMediaEmpty", "MessageMediaWebPage", "MessageMediaPhoto", "MessageMediaDocument", "Document",
+    "MessageMediaEmpty", "MessageMediaWebPage", "WebPage", "MessageMediaPhoto", "MessageMediaDocument", "Document",
     "DocumentAttributeSticker", "DocumentAttributeAudio", "DocumentAttributeVideo", "DocumentAttributeFilename",
     "MessageMediaGeo", "MessageMediaGeoLive", "MessageMediaVenue", "MessageMediaContact", "MessageMediaPoll",
     "PeerUser", "PeerChat", "PeerChannel", "Message", "MessageReplyHeader", "User", "Chat", "Channel", "ChatForbidden", "PeerNotifySettings",
@@ -111,7 +111,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -153,6 +153,32 @@ describe("mediaLabel", () => {
 
   it("falls back to a generic label", () => {
     expect(mediaLabel({} as never)).toBe("Attachment");
+  });
+});
+
+describe("webPreview", () => {
+  const photo = make(Api.Photo, { sizes: [make(Api.PhotoSize, { w: 8, h: 6, size: 50 })] });
+  const page = (props: Record<string, unknown>) => make(Api.MessageMediaWebPage, { webpage: make(Api.WebPage, { url: "https://site/a", ...props }) });
+
+  it("reads a page's site, title, description and photo", () => {
+    expect(webPreview(page({ siteName: "Site", title: "T".repeat(300), description: "Words", photo }))).toEqual({
+      url: "https://site/a",
+      site: "Site",
+      title: "T".repeat(256),
+      description: "Words",
+      photo: { kind: "image", name: "Photo", mime: "image/jpeg", width: 8, height: 6, size: 50 },
+    });
+    // A page's own video or file would download in the photo's place, so the photo is left out with it.
+    expect(webPreview(page({ url: "http://plain", title: "Clip", photo, document: {} }))).toEqual({ title: "Clip" });
+    expect(webPreview(page({ siteName: " ", description: "d", photo: {} }))).toEqual({ url: "https://site/a", description: "d" });
+  });
+
+  it("has nothing for other media, pending previews or empty ones", () => {
+    expect(webPreview(undefined)).toBeUndefined();
+    expect(webPreview(make(Api.MessageMediaPhoto))).toBeUndefined();
+    expect(webPreview(make(Api.MessageMediaWebPage, { webpage: {} }))).toBeUndefined();
+    expect(webPreview(page({ siteName: "Only a site" }))).toBeUndefined();
+    expect(toMessage(make(Api.Message, { id: 1, date: 2, media: page({ title: "T" }) }), "9").preview).toEqual({ url: "https://site/a", title: "T" });
   });
 });
 

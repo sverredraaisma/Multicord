@@ -70,6 +70,17 @@ export interface TgMessage {
   topicId?: number;
   /** Reactions with emoji, and how many gave each; others (custom emoji, paid) are left out. */
   reactions?: TgReaction[];
+  /** The link preview Telegram made for its link. */
+  preview?: TgPreview;
+}
+
+/** A link preview as Telegram made it; its photo downloads as the message's media. */
+export interface TgPreview {
+  url?: string;
+  site?: string;
+  title?: string;
+  description?: string;
+  photo?: TgFile;
 }
 
 /** An emoji reaction on a message. */

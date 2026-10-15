@@ -2,11 +2,11 @@ import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/run
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
-import type { NativeAction, NativeAttachment, NativeChannelView, NativeForumPost, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeForumPost, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
-import { FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
+import { FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgPreview, type TgProfile, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /** Chats listed: one-to-one chats, groups and channels together, most recent first. */
 export const DIALOG_LIMIT = 200;
@@ -1553,7 +1553,17 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const authorId = message.out ? this.me?.id : message.senderId;
     if (authorId) native.authorId = authorId;
     if (replied) native.reply = { author: replied.out ? (this.me?.name ?? "You") : (replied.sender ?? dialog.title), content: messageText(replied).slice(0, 100) };
+    if (message.preview) native.embeds = [this.embed(message, message.preview)];
     return native;
+  }
+
+  /** A link preview; its photo loads on request, as the message's media. */
+  private embed(message: TgMessage, preview: TgPreview): NativeEmbed {
+    const { photo, ...text } = preview;
+    const embed: NativeEmbed = text;
+    const shown = photo && this.attachment(message, photo);
+    if (shown && (shown.url || shown.mediaKey)) embed.image = { url: shown.url, mediaKey: shown.mediaKey, width: shown.width, height: shown.height, size: shown.size, thumbnail: true };
+    return embed;
   }
 
   /** A message's text as markdown for the view, worked out once per message. */
@@ -1586,13 +1596,15 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (!match || !this.api || this.media.has(key) || this.mediaLoading.has(key)) return;
     const [, chatId, id] = match;
     const message = this.loaded(chatId!).flat().find((m) => m.id === Number(id));
-    if (!message?.file) return;
+    // A message's own media, or else its link preview's photo, which Telegram downloads in its place.
+    const file = message?.file ?? message?.preview?.photo;
+    if (!file) return;
     this.mediaLoading.add(key);
     try {
-      const bytes = await this.api.download(chatId!, message.id, message.file.thumbnailOnly === true);
+      const bytes = await this.api.download(chatId!, message!.id, file.thumbnailOnly === true);
       if (!bytes) this.mediaFailed.set(key, "not available");
       else if (bytes.length > MAX_MEDIA_BYTES) this.mediaFailed.set(key, "too large to show here; open it in Telegram");
-      else this.remember(key, `data:${message.file.thumbnailOnly ? STICKER_MIME.lottie : (message.file.mime ?? "application/octet-stream")};base64,${toBase64(bytes)}`);
+      else this.remember(key, `data:${file.thumbnailOnly ? STICKER_MIME.lottie : (file.mime ?? "application/octet-stream")};base64,${toBase64(bytes)}`);
     } catch (error) {
       this.mediaFailed.set(key, `could not load: ${friendly(error)}`);
     } finally {
