@@ -44,6 +44,7 @@ const h = vi.hoisted(() => {
       GetFavedStickers: class extends Base {},
       FavedStickers: class extends Base {},
       UpdatePinnedMessage: class extends Base {},
+      ForwardMessages: class extends Base {},
     },
     channels: {
       GetFullChannel: class extends Base {},
@@ -406,6 +407,14 @@ describe("createGramApi", () => {
       expect.objectContaining({ peer: -7n, id: 5, unpin: true, silent: true }),
     ]);
     expect(client.invoke.mock.calls[0]![0]).toBeInstanceOf(Api.messages.UpdatePinnedMessage);
+    client.invoke.mockClear();
+    await api.forward("7", 3, "-1001234", 10);
+    await api.forward("7", 3, "8", 1);
+    expect(client.invoke.mock.calls.map(([r]) => r)).toEqual([
+      expect.objectContaining({ fromPeer: 7n, id: [3], toPeer: -1001234n, topMsgId: 10 }),
+      expect.not.objectContaining({ topMsgId: expect.anything() }),
+    ]);
+    expect(client.invoke.mock.calls[0]![0]).toBeInstanceOf(Api.messages.ForwardMessages);
   });
 
   it("returns history oldest first, skipping service messages", async () => {

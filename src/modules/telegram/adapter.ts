@@ -496,6 +496,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.sendSticker(action.stickerId, action.replyTo);
       case "pins":
         return this.showPins(action.open);
+      case "forward":
+        return this.forward(Number(action.messageId), action.channelId);
       case "search":
         return this.searchMessages(action.query);
       case "pin":
@@ -756,6 +758,24 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (this.pins?.chatId !== chatId) return;
     this.pins = { chatId, list };
     this.render();
+  }
+
+  /**
+   * Forwards a message of the open conversation natively, into a chat or a
+   * forum's topic from the sidebar; Telegram refuses where the source
+   * protects its content or the target takes no messages from the user.
+   */
+  private async forward(id: number, target: string): Promise<void> {
+    const from = this.selected;
+    const topic = this.topicsByView.get(target);
+    const to = topic?.chatId ?? chatIdOfView(target);
+    if (!from || !this.api || !this.dialog(to)) return;
+    try {
+      await this.api.forward(from, id, to, topic?.topic);
+    } catch (error) {
+      this.error = `Message not forwarded: ${friendly(error)}`;
+      this.render();
+    }
   }
 
   /** Searches the selected chat with Telegram's search, or ends the search with an empty query. Forums are not searched. */
@@ -1755,7 +1775,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       ...(this.unreadAt?.key === key ? { unread: this.unreadView(key, this.unreadAt) } : {}),
       ...(this.pins && this.pins.chatId === dialog.chatId && !dialog.forum ? { pins: this.pins.list } : {}),
       ...(this.search && this.search.chatId === dialog.chatId && !dialog.forum ? { search: this.search.results } : {}),
-      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: !dialog.forum, search: !dialog.forum },
+      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: !dialog.forum, search: !dialog.forum, forward: true },
     };
   }
 

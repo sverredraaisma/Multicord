@@ -36,6 +36,7 @@ class FakeTelegramApi implements TelegramApi {
   pinned = vi.fn(async (chatId: string, _limit: number): Promise<TgMessage[]> => [msg(chatId, 2, { pinned: true })]);
   pin = vi.fn(async (_chatId: string, _id: number, _pin: boolean) => {});
   search = vi.fn(async (chatId: string, _query: string, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1)]);
+  forward = vi.fn(async (_from: string, _id: number, _to: string, _topic?: number) => {});
   send = vi.fn(async (chatId: string, text: TgText, _replyTo?: number) => msg(chatId, 200, { out: true, ...text }));
   sentFiles = 300;
   sendFile = vi.fn(async (chatId: string, file: FileSource, caption: TgText, _replyTo?: number) => msg(chatId, this.sentFiles++, { out: true, ...caption, media: file.filename }));
@@ -591,7 +592,7 @@ describe("chat view", () => {
     await Promise.all([first, second]);
     expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE, undefined);
     expect(ctx.chat().channel).toMatchObject({ loading: false, hasOlder: false });
-    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false, stickers: true, pins: true, search: true });
+    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false, stickers: true, pins: true, search: true, forward: true });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
 
     await ctx.adapter.openConversation("1");
@@ -2814,5 +2815,30 @@ describe("search", () => {
     await ctx.act({ type: "search", query: "" });
     await ending;
     expect(ctx.chat().channel!.search).toBeUndefined();
+  });
+});
+
+describe("forwarding", () => {
+  const FORUM = "-1005";
+
+  it("forwards natively into another chat or a forum's topic, and shows a refusal", async () => {
+    const ctx = await signedIn({ dialogs: [...defaultDialogs(), dlg(FORUM, { kind: "group", title: "Club", forum: true })] });
+    await ctx.act({ type: "forward", messageId: "1", channelId: "2" });
+    expect(ctx.api.forward).not.toHaveBeenCalled();
+    ctx.api.topics.mockResolvedValue([{ id: 1, title: "General", unreadCount: 0, unreadMentions: 0, date: 5 }, { id: 10, title: "T10", unreadCount: 0, unreadMentions: 0, date: 6 }]);
+    await ctx.act({ type: "select", channelId: viewId(FORUM) });
+    const topicId = ctx.rows().find((r) => r.name === "T10")!.id;
+    await ctx.act({ type: "select", channelId: "1" });
+    expect(ctx.chat().channel!.can.forward).toBe(true);
+    await ctx.act({ type: "forward", messageId: "2", channelId: "2" });
+    expect(ctx.api.forward).toHaveBeenLastCalledWith("1", 2, "2", undefined);
+    await ctx.act({ type: "forward", messageId: "2", channelId: topicId });
+    expect(ctx.api.forward).toHaveBeenLastCalledWith("1", 2, FORUM, 10);
+    // A chat not listed is no target.
+    await ctx.act({ type: "forward", messageId: "2", channelId: "777" });
+    expect(ctx.api.forward).toHaveBeenCalledTimes(2);
+    ctx.api.forward.mockRejectedValueOnce(tgError("CHAT_FORWARDS_RESTRICTED"));
+    await ctx.act({ type: "forward", messageId: "2", channelId: "2" });
+    expect(ctx.chat().error).toMatch(/^Message not forwarded: /);
   });
 });
