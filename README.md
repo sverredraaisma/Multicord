@@ -108,6 +108,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - member lists for text channels and DMs: a channel's list as Fluxer groups it (hoisted roles, then online, then offline), with presence, custom status and role colours, asked for over the gateway only while the panel is open, 100 at a time up to 200, with the rest counted. Profile cards show a user's name (their nickname on the server), tag, pronouns, bio and roles on the open server; members picked from the list are mentioned as real Fluxer mentions
   - threads under their channel, and forum channels with their posts and a form for new ones
   - voice channels with who is in them, and calls with microphone, camera and screen share (through LiveKit, as Fluxer uses)
+  - calls in DMs and groups: the call button in the header starts one, which rings the others, or joins the one going on; a call ringing for you shows above the conversation with Accept and Decline (which stops it ringing for you, as in Fluxer's apps) and as a notification while Multicord is not in front; who is in a call shows under its DM
   - desktop notifications that follow your Fluxer notification settings (mutes, server and channel levels, @everyone suppression); muted channels and DMs show as muted. Muting from Multicord is not offered, as Fluxer does not document how its settings are changed
   - service status in Settings > Diagnostics: whether the instance's API, gateway and media servers answer their documented health checks (`/_health`), asked every five minutes, with the instance's status page where it names one
 
@@ -197,7 +198,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
 
   Telegram gives API credentials per app (my.telegram.org, "API development tools"). Builds can include them via the `MULTICORD_TELEGRAM_API_ID` and `MULTICORD_TELEGRAM_API_HASH` environment variables; otherwise Multicord asks for an API ID and hash on first sign-in and stores them encrypted.
 - **Component gallery:** `npm run gallery` opens `dist/gallery.html`, which shows every component with sample data. Use it to check designs without signing in anywhere.
-- **Extra platforms** as web views (shallow tier: one rail icon, unread state from the page title). Settings offers the open-source platforms from the study by name, each with its own label and colour and its public instance prefilled (self-hosted instances take their own address): Fluxer's own web client (for what the native client refuses: encrypted voice, DM calls, security keys), Matrix (through Element web), Stoat, Spacebar and Nerimity, and Mumble through its web client (mumble-web, at your server's address; Mumble's own protocol needs raw sockets no module may open), plus any other web chat app. Settings writes them to `platforms.json` in the app's user-data folder (`%APPDATA%\Multicord` on Windows), which can also be edited by hand:
+- **Extra platforms** as web views (shallow tier: one rail icon, unread state from the page title). Settings offers the open-source platforms from the study by name, each with its own label and colour and its public instance prefilled (self-hosted instances take their own address): Fluxer's own web client (for what the native client refuses: encrypted voice, peer-to-peer calls, security keys), Matrix (through Element web), Stoat, Spacebar and Nerimity, and Mumble through its web client (mumble-web, at your server's address; Mumble's own protocol needs raw sockets no module may open), plus any other web chat app. Settings writes them to `platforms.json` in the app's user-data folder (`%APPDATA%\Multicord` on Windows), which can also be edited by hand:
 
   ```json
   [
@@ -273,7 +274,7 @@ Each file's header says how to run it; the servers run in Docker on this machine
 - Fluxer (native) does not support:
   - **Security keys (WebAuthn):** they are bound to Fluxer's own web origin, and Multicord won't impersonate it. Accounts protected only by a security key can sign in with a backup code.
   - **End-to-end encrypted voice channels:** Fluxer's scheme is undocumented, so Multicord refuses them rather than joining unencrypted.
-  - **Calls in DMs:** voice works in server voice channels only.
+  - **Peer-to-peer calls:** Fluxer can connect a small call directly between the people in it instead of through a voice server. Multicord never asks for that, so the calls it starts use a voice server, but it cannot join a call that others started peer-to-peer.
 
   For these, add "Fluxer (web)", Fluxer's own web client, in Settings.
   - **Archived threads:** only open threads and forum posts are listed.

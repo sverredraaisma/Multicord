@@ -334,7 +334,7 @@ describe("FluxerAdapter chat", () => {
     ]);
     expect(state.sidebar[3]).toMatchObject({ unread: true, mentions: 2 });
     expect(state.channel).toMatchObject({ id: "113", name: "lobby", loading: false, hasOlder: false });
-    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, stickers: true, gifs: false, pins: true, search: true, forward: true });
+    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, stickers: true, gifs: false, pins: true, search: true, forward: true, call: false });
     expect(state.channel!.messages[0]).toMatchObject({ id: "450", author: "Ana", content: "m450", mine: false });
     expect(calls.some((c) => c.url.includes("/channels/113/messages?limit=50"))).toBe(true);
 
@@ -1215,6 +1215,146 @@ describe("FluxerAdapter voice", () => {
     expect(chat().sidebar.find((i) => i.kind === "voice")!.members).toEqual([
       { name: "Ana", avatarUrl: "https://media.fx/avatars/2/av.png?size=64", muted: true, video: true },
     ]);
+  });
+});
+
+describe("FluxerAdapter DM and group calls", () => {
+  async function online(routes: Handler[] = []) {
+    const ctx = setup({ token: "flx", routes });
+    const incoming = vi.fn();
+    ctx.adapter.onIncomingCall(incoming);
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openHome();
+    const socket = () => ctx.sockets.at(-1)!;
+    const voiceOps = () => socket().sent.filter((p) => p.op === 4).map((p) => p.d);
+    let seq = 20;
+    const dispatch = async (t: string, d: unknown) => {
+      socket().receive({ op: 0, s: seq++, t, d });
+      await vi.advanceTimersByTimeAsync(100);
+    };
+    const rings = () => ctx.calls.filter((c) => c.url.endsWith("/call/ring"));
+    return { ...ctx, incoming, socket, voiceOps, dispatch, rings };
+  }
+
+  it("offers a call in DMs and groups, starts one by ringing, and joins it without a guild", async () => {
+    const { adapter, chat, voiceOps, rings, dispatch } = await online();
+    await adapter.handleAction({ type: "select", channelId: "900" });
+    expect(chat().channel!.can.call).toBe(true);
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(rings().map((c) => [c.init.method, c.init.body])).toEqual([["POST", "{}"]]);
+    expect(voiceOps()).toEqual([{ guild_id: null, channel_id: "900", self_mute: false, self_deaf: false, self_video: false, self_stream: false }]);
+    expect(chat().voice).toMatchObject({ channelId: "900", channelName: "Ana", guildName: "Call" });
+    // The grant for a call has no guild; toggles and leaving say so too.
+    await dispatch("VOICE_SERVER_UPDATE", { channel_id: "900", token: "lk", endpoint: "voice.fx", connection_id: "c9" });
+    expect(chat().voice).toMatchObject({ url: "wss://voice.fx", token: "lk" });
+    await adapter.handleAction({ type: "voiceState", mute: true, deaf: false, video: false, stream: false });
+    expect(voiceOps().at(-1)).toMatchObject({ guild_id: null, channel_id: "900", connection_id: "c9", self_mute: true });
+    await dispatch("CALL_CREATE", { channel_id: "900", message_id: "5", ringing: ["2"], voice_states: [{ user_id: "1", channel_id: "900", connection_id: "c9" }] });
+    expect(chat().sidebar.find((i) => i.id === "900")!.members).toEqual([{ name: "me", avatarUrl: undefined, muted: false, video: false }]);
+    await adapter.handleAction({ type: "leaveVoice" });
+    expect(voiceOps().at(-1)).toEqual({ guild_id: null, channel_id: null, connection_id: "c9" });
+    // A call that is going on is joined without ringing again.
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(rings()).toHaveLength(1);
+    // Guild text channels take no calls of their own.
+    await adapter.openServer("100");
+    expect(chat().channel!.can.call).toBe(false);
+  });
+
+  it("joins when a call started meanwhile, and says when one cannot start", async () => {
+    let answer: { status: number; body?: unknown } = { status: 400, body: { code: "CALL_ALREADY_EXISTS", message: "exists" } };
+    const { adapter, chat, voiceOps } = await online([(url) => (url.endsWith("/call/ring") ? answer : undefined)]);
+    await adapter.handleAction({ type: "joinVoice", channelId: "901" });
+    expect(voiceOps()).toHaveLength(1);
+    expect(chat().voice).toMatchObject({ channelId: "901", channelName: "Group" });
+    await adapter.handleAction({ type: "leaveVoice" });
+    answer = { status: 400, body: { code: "CANNOT_SEND_MESSAGES_TO_USER", message: "Cannot send messages to this user" } };
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(voiceOps()).toHaveLength(1);
+    expect(chat().error).toMatch(/^Could not start the call: /);
+    expect(chat().voice).toBeNull();
+  });
+
+  it("shows a call ringing for the user once, with Accept joining and Decline stopping it", async () => {
+    const { adapter, chat, incoming, voiceOps, rings, dispatch, calls } = await online();
+    const ring = { channel_id: "900", message_id: "5", ringing: ["1"], voice_states: [{ user_id: "2", channel_id: "900", connection_id: "a" }] };
+    await dispatch("CALL_CREATE", ring);
+    expect(chat().incomingCall).toEqual({ channelId: "900", from: "Ana" });
+    expect(incoming).toHaveBeenCalledExactlyOnceWith({ conversationKey: "900", from: "Ana", video: false });
+    await dispatch("CALL_UPDATE", ring);
+    expect(incoming).toHaveBeenCalledOnce();
+    // Declined: the bar goes at once, and Fluxer stops ringing the user alone.
+    await adapter.handleAction({ type: "declineCall", channelId: "900" });
+    expect(chat().incomingCall).toBeUndefined();
+    const stop = calls.filter((c) => c.url.endsWith("/channels/900/call/stop-ringing"));
+    expect(stop.map((c) => [c.init.method, c.init.body])).toEqual([["POST", undefined]]);
+    // No longer rung, then rung again: news once more.
+    await dispatch("CALL_UPDATE", { ...ring, ringing: [] });
+    await dispatch("CALL_UPDATE", ring);
+    expect(chat().incomingCall).toBeUndefined();
+    await dispatch("CALL_DELETE", { channel_id: "900" });
+    expect(chat().sidebar.find((i) => i.id === "900")).not.toHaveProperty("members");
+    await dispatch("CALL_CREATE", { ...ring, voice_states: [] });
+    // With nobody in it yet, the DM's name says who calls.
+    expect(chat().incomingCall).toEqual({ channelId: "900", from: "Ana" });
+    expect(incoming).toHaveBeenCalledTimes(2);
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(rings()).toHaveLength(0);
+    expect(voiceOps()).toEqual([expect.objectContaining({ guild_id: null, channel_id: "900" })]);
+    expect(chat().incomingCall).toBeUndefined();
+    // Calls in unknown channels, or ringing others, are not the user's.
+    await dispatch("CALL_CREATE", { channel_id: "404", ringing: ["1"] });
+    await dispatch("CALL_CREATE", { channel_id: "901", ringing: ["2"] });
+    await dispatch("CALL_CREATE", { channel_id: "x", ringing: ["1"] });
+    expect(chat().incomingCall).toBeUndefined();
+    await adapter.handleAction({ type: "declineCall", channelId: "903" }); // no such call
+    expect(calls.filter((c) => c.url.includes("/call/stop-ringing"))).toHaveLength(1);
+  });
+
+  it("says when declining failed", async () => {
+    const { adapter, chat, dispatch } = await online([(url) => (url.endsWith("/stop-ringing") ? { status: 404, body: { code: "NO_ACTIVE_CALL", message: "No call" } } : undefined)]);
+    await dispatch("CALL_CREATE", { channel_id: "900", ringing: ["1"] });
+    await adapter.handleAction({ type: "declineCall", channelId: "900" });
+    expect(chat().error).toMatch(/^Could not decline the call: /);
+  });
+
+  it("gives up joins Fluxer refuses, and peer-to-peer calls it cannot join", async () => {
+    const { adapter, chat, socket, voiceOps, dispatch } = await online();
+    await dispatch("CALL_CREATE", { channel_id: "900", ringing: [] });
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    socket().receive({ op: 12, d: { code: "VOICE_P2P_CONSENT_REQUIRED", message: "This call is peer-to-peer" } });
+    expect(chat()).toMatchObject({ voice: null, error: "This call connects people directly (peer-to-peer), which Multicord does not support." });
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    socket().receive({ op: 12, d: { code: "VOICE_CHANNEL_FULL" } });
+    expect(chat()).toMatchObject({ voice: null, error: "Could not join: the call is full." });
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    socket().receive({ op: 12, d: { code: "SOMETHING_NEW" } });
+    expect(chat().error).toBe("Could not join voice (SOMETHING_NEW).");
+    // Nothing to give up, or a malformed error: nothing happens.
+    socket().receive({ op: 12, d: { code: 5 } });
+    socket().receive({ op: 12, d: { code: "VOICE_CHANNEL_FULL" } });
+    // A peer-to-peer grant is left at once.
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await dispatch("VOICE_SERVER_UPDATE", { channel_id: "900", connection_id: "p1", p2p: true, ice_servers: [] });
+    expect(voiceOps().at(-1)).toEqual({ guild_id: null, channel_id: null, connection_id: "p1" });
+    expect(chat().voice).toBeNull();
+    // A grant connected already is not given up over a later error.
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await dispatch("VOICE_SERVER_UPDATE", { channel_id: "900", token: "lk", endpoint: "voice.fx", connection_id: "c2" });
+    socket().receive({ op: 12, d: { code: "VOICE_CHANNEL_FULL" } });
+    expect(chat().voice).toMatchObject({ token: "lk" });
+    // A grant for an abandoned call is left without a guild.
+    await dispatch("VOICE_SERVER_UPDATE", { channel_id: "901", token: "lk", endpoint: "voice.fx", connection_id: "c3" });
+    expect(voiceOps().at(-1)).toEqual({ guild_id: null, channel_id: null, connection_id: "c3" });
+  });
+
+  it("offers no calls where the instance runs no voice", async () => {
+    const { adapter, chat } = await online([
+      (url) => (url.endsWith("/.well-known/fluxer") ? { status: 200, body: { ...DISCOVERY, features: { voice_enabled: false } } } : undefined),
+    ]);
+    await adapter.handleAction({ type: "select", channelId: "900" });
+    expect(chat().channel!.can.call).toBe(false);
   });
 });
 

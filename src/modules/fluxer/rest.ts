@@ -243,6 +243,16 @@ export class FluxerRest {
     return { messages: (Array.isArray(record.messages) ? record.messages : []).flatMap((m) => parseMessage(m) ?? []), indexing: record.indexing === true };
   }
 
+  /** Starts a DM or group call, ringing the others (POST /channels/{id}/call/ring). */
+  async ringCall(channelId: string): Promise<void> {
+    await this.request("POST", `/channels/${channelId}/call/ring`, {});
+  }
+
+  /** Stops a call ringing for the user, which is how a call is declined. */
+  async declineCall(channelId: string): Promise<void> {
+    await this.request("POST", `/channels/${channelId}/call/stop-ringing`);
+  }
+
   async pin(channelId: string, messageId: string, pin: boolean): Promise<void> {
     await this.request(pin ? "PUT" : "DELETE", `/channels/${channelId}/pins/${messageId}`);
   }

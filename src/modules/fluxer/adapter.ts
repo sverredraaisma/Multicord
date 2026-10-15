@@ -26,7 +26,7 @@ import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/run
 import { solveAltcha } from "./captcha";
 import { discoverInstance, globalExpressions, type FluxerInstance } from "./discovery";
 import { FluxerGateway, type GatewayStatus, type SocketFactory } from "./gateway";
-import { FluxerRest, type LoginResult, type RestOptions } from "./rest";
+import { FluxerApiError, FluxerRest, type LoginResult, type RestOptions } from "./rest";
 import { FluxerState, MEMBER_LIST_POSITIONS, TYPING_MS } from "./state";
 import {
   ChannelType,
@@ -64,6 +64,9 @@ const MEMBER_WINDOW = 100;
 /** How long to wait for a member list before saying it did not come (Fluxer sends none where the user may not see the channel's members). */
 const MEMBER_LIST_TIMEOUT_MS = 15_000;
 
+/** Why a peer-to-peer call cannot be joined from here. */
+const P2P_UNSUPPORTED = "This call connects people directly (peer-to-peer), which Multicord does not support.";
+
 /** How often the instance's health endpoints are asked whether its services run. */
 export const HEALTH_INTERVAL_MS = 5 * 60_000;
 
@@ -73,7 +76,8 @@ export function liveKitUrl(endpoint: string): string {
 }
 
 interface VoiceConnection {
-  guildId: string;
+  /** None for a DM or group call. */
+  guildId?: string;
   channelId: string;
   connectionId?: string;
   url?: string;
@@ -108,6 +112,8 @@ export interface FluxerAdapterDeps {
 
 type Selection = { kind: "home" } | { kind: "guild"; guildId: string };
 
+/** DMs and groups have calls of their own, joined without a guild. */
+const isPrivateCall = (channel: FluxerChannel): boolean => channel.type === ChannelType.Dm || channel.type === ChannelType.GroupDm;
 const timestampOf = (id: string | undefined): number => (id ? Number((BigInt(id) >> 22n) + FLUXER_EPOCH) : 0);
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 const newNonce = (): string => String(Date.now()) + String(Math.floor(Math.random() * 1e6));
@@ -180,6 +186,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private memberError: string | undefined;
   /** The profile card the view asked for last. */
   private profile: NativeProfile | undefined;
+  /** DM and group calls the user declined while they rang, and those already announced to the shell. */
+  private readonly declined = new Set<string>();
+  private readonly announced = new Set<string>();
   /** Whether the instance's services answered their health checks last time. */
   private checks: HealthCheck[] = [];
   private healthTimer: ReturnType<typeof setInterval> | undefined;
@@ -262,6 +271,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.leaveVoice(`Voice failed: ${action.message}`);
       case "voiceNotice":
         return this.voiceNotice(action.message, action.off);
+      case "declineCall":
+        return this.declineCall(action.channelId);
       case "removeAttachment":
         this.pending.get(this.selectedChannelId ?? "")?.splice(action.index, 1);
         return this.render();
@@ -464,6 +475,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         dispatch: (event, data) => {
           this.state.apply(event, data);
           if (event === "VOICE_SERVER_UPDATE") this.onVoiceServer(data);
+          if (event === "READY" || event.startsWith("CALL_")) this.announceRinging();
           // Someone pinned or unpinned in the channel whose pins are listed.
           if (event === "CHANNEL_PINS_UPDATE" && this.pins && typeof data === "object" && data !== null && (data as { channel_id?: unknown }).channel_id === this.pins.channelId) void this.loadPins(this.pins.channelId);
           if (event === "READY") {
@@ -481,6 +493,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
           this.render();
         },
         authFailed: () => this.endSession("Your session has ended. Please sign in again."),
+        voiceRefused: (code) => this.voiceRefused(code),
       },
       this.deps.platform,
     );
@@ -704,19 +717,34 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
    */
   private async joinVoice(channelId: string): Promise<void> {
     const channel = this.state.channels.get(channelId);
-    if (!channel?.guildId || channel.type !== ChannelType.GuildVoice || !this.gateway) return;
+    const call = channel !== undefined && isPrivateCall(channel);
+    if (!channel || !this.gateway || !(call || (channel.guildId && channel.type === ChannelType.GuildVoice))) return;
     if (!this.instance!.voiceEnabled) {
       this.error = `Voice is turned off on this ${this.deps.def.name} instance.`;
       return this.render();
     }
     if (this.voice?.channelId === channelId) return;
+    this.declined.delete(channelId);
+    // A DM or group with no call yet: ringing the others starts one, which is then joined like any other.
+    if (call && !this.state.calls.has(channelId)) {
+      try {
+        await this.rest!.ringCall(channelId);
+      } catch (error) {
+        if (!(error instanceof FluxerApiError && error.code === "CALL_ALREADY_EXISTS")) {
+          this.error = `Could not start the call: ${messageOf(error)}`;
+          return this.render();
+        }
+      }
+      if (this.voice?.channelId === channelId) return;
+    }
     if (this.voice) this.leaveVoice(undefined);
     const mute = false;
     const deaf = false;
-    this.voice = { guildId: channel.guildId, channelId, mute, deaf, video: false, stream: false };
+    this.voice = { ...(call ? {} : { guildId: channel.guildId }), channelId, mute, deaf, video: false, stream: false };
     this.error = undefined;
     this.gateway.command(VOICE_STATE_UPDATE, {
-      guild_id: channel.guildId,
+      // A call's placement has no guild.
+      guild_id: call ? null : channel.guildId,
       channel_id: channelId,
       self_mute: mute,
       self_deaf: deaf,
@@ -733,14 +761,16 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     const d = (typeof data === "object" && data !== null ? data : {}) as Record<string, unknown>;
     const voice = this.voice;
     if (!voice || d.channel_id !== voice.channelId) {
-      // Only the requesting session gets this event, so it answers a join we have since abandoned: leave it.
-      if (typeof d.guild_id === "string" && typeof d.connection_id === "string") {
-        this.gateway?.command(VOICE_STATE_UPDATE, { guild_id: d.guild_id, channel_id: null, connection_id: d.connection_id });
+      // Only the requesting session gets this event, so it answers a join we have since abandoned: leave it (a call has no guild).
+      if (typeof d.connection_id === "string") {
+        this.gateway?.command(VOICE_STATE_UPDATE, { guild_id: typeof d.guild_id === "string" ? d.guild_id : null, channel_id: null, connection_id: d.connection_id });
       }
       return;
     }
-    if (typeof d.token !== "string" || typeof d.endpoint !== "string") return;
     if (typeof d.connection_id === "string") voice.connectionId = d.connection_id;
+    // A peer-to-peer grant (asked for only with p2p, which Multicord never sends) has no voice server to connect to.
+    if (d.p2p === true) return this.leaveVoice(P2P_UNSUPPORTED);
+    if (typeof d.token !== "string" || typeof d.endpoint !== "string") return;
     // Fluxer's end-to-end encrypted voice scheme is not documented; never connect unencrypted to a channel that asks for it.
     if (d.e2ee_key !== undefined && d.e2ee_key !== null) {
       return this.leaveVoice("This channel uses end-to-end encrypted voice, which Multicord does not support yet.");
@@ -756,7 +786,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     if (!voice) return;
     Object.assign(voice, flags);
     this.gateway?.command(VOICE_STATE_UPDATE, {
-      guild_id: voice.guildId,
+      guild_id: voice.guildId ?? null,
       channel_id: voice.channelId,
       connection_id: voice.connectionId,
       self_mute: voice.mute,
@@ -765,6 +795,60 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       self_stream: voice.stream,
     });
     this.render();
+  }
+
+  /** A join Fluxer refused and said why (Gateway Error): one still waiting for its grant is given up. */
+  private voiceRefused(code: string): void {
+    if (!this.voice || this.voice.token) return;
+    const reasons: Record<string, string> = {
+      VOICE_P2P_CONSENT_REQUIRED: P2P_UNSUPPORTED,
+      VOICE_P2P_UNAVAILABLE: P2P_UNSUPPORTED,
+      VOICE_CHANNEL_FULL: "Could not join: the call is full.",
+    };
+    this.leaveVoice(reasons[code] ?? `Could not join voice (${code}).`);
+  }
+
+  /** Declines a DM or group call ringing for the user: Fluxer stops ringing them, and the bar goes at once. */
+  private async declineCall(channelId: string): Promise<void> {
+    if (!this.state.calls.has(channelId) || !this.rest) return;
+    this.declined.add(channelId);
+    this.render();
+    await this.rest.declineCall(channelId).catch((error: unknown) => {
+      this.error = `Could not decline the call: ${messageOf(error)}`;
+      this.render();
+    });
+  }
+
+  /** A DM or group call ringing for the user, which they have neither joined nor declined. */
+  private ringing(): { channelId: string; from: string } | undefined {
+    const me = this.state.me?.id;
+    if (!me) return undefined;
+    for (const [channelId, call] of this.state.calls) {
+      const channel = this.state.channels.get(channelId);
+      if (!channel || !call.ringing.includes(me) || this.declined.has(channelId) || this.voice?.channelId === channelId) continue;
+      // Whoever is in the call already is calling; else the DM's or group's name says who.
+      const caller = this.state.voiceMembers(channelId).find(({ user }) => user.id !== me)?.user;
+      return { channelId, from: caller ? displayName(caller) : this.channelTitle(channel) };
+    }
+    return undefined;
+  }
+
+  /** Tells the shell of a call that has started ringing for the user, once a call, so it rings while the view is not in front. */
+  private announceRinging(): void {
+    const me = this.state.me?.id;
+    for (const id of [...this.announced]) if (!this.state.calls.get(id)?.ringing.includes(me ?? "")) this.announced.delete(id);
+    for (const id of [...this.declined]) if (!this.state.calls.has(id)) this.declined.delete(id);
+    const ringing = this.ringing();
+    if (!ringing || this.announced.has(ringing.channelId)) return;
+    this.announced.add(ringing.channelId);
+    this.incomingCalls.emit({ conversationKey: ringing.channelId, from: ringing.from, video: false });
+  }
+
+  /** What the call panel calls a voice channel or a DM or group call. */
+  private voiceChannelName(channelId: string): string {
+    const channel = this.state.channels.get(channelId);
+    if (!channel) return "Voice";
+    return isPrivateCall(channel) ? this.channelTitle(channel) : (channel.name ?? "Voice");
   }
 
   /** A problem the call survives: shown, with the camera or screen share that failed turned off for everyone. */
@@ -779,7 +863,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private leaveVoice(error: string | undefined): void {
     const voice = this.voice;
     if (voice?.connectionId) {
-      this.gateway?.command(VOICE_STATE_UPDATE, { guild_id: voice.guildId, channel_id: null, connection_id: voice.connectionId });
+      this.gateway?.command(VOICE_STATE_UPDATE, { guild_id: voice.guildId ?? null, channel_id: null, connection_id: voice.connectionId });
     }
     this.dropVoice(error);
   }
@@ -797,8 +881,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     if (!voice) return null;
     return {
       channelId: voice.channelId,
-      channelName: this.state.channels.get(voice.channelId)?.name ?? "Voice",
-      guildName: this.state.guilds.get(voice.guildId)?.name ?? "",
+      channelName: this.voiceChannelName(voice.channelId),
+      guildName: voice.guildId ? (this.state.guilds.get(voice.guildId)?.name ?? "") : "Call",
       url: voice.url,
       token: voice.token,
       mute: voice.mute,
@@ -1378,7 +1462,21 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       // Muted in Fluxer (the channel, or its server): shown so; muting from here is not offered.
       ...(kind !== "category" && this.state.isMuted(channel) ? { muted: true } : {}),
     });
-    if (this.selection.kind === "home") return this.state.privateChannels().map((c) => item(c, "dm"));
+    // Who is in a voice channel or call, listed under its row.
+    const inVoice = (channelId: string) =>
+      this.state.voiceMembers(channelId).map(({ user, state }) => ({
+        name: displayName(user),
+        avatarUrl: this.iconUrl("avatars", user.id, user.avatar, 64),
+        muted: state.selfMute || state.selfDeaf,
+        video: state.selfVideo || state.selfStream,
+      }));
+    if (this.selection.kind === "home") {
+      return this.state.privateChannels().map((c) => {
+        const entry = item(c, "dm");
+        const members = inVoice(c.id);
+        return members.length > 0 ? { ...entry, members } : entry;
+      });
+    }
     const kindOf = (c: FluxerChannel): NativeSidebarItem["kind"] =>
       c.type === ChannelType.GuildCategory
         ? "category"
@@ -1402,12 +1500,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         const entry = item(c, kindOf(c));
         if (entry.kind === "voice") {
           entry.active = c.id === this.voice?.channelId;
-          entry.members = this.state.voiceMembers(c.id).map(({ user, state }) => ({
-            name: displayName(user),
-            avatarUrl: this.iconUrl("avatars", user.id, user.avatar, 64),
-            muted: state.selfMute || state.selfDeaf,
-            video: state.selfVideo || state.selfStream,
-          }));
+          entry.members = inVoice(c.id);
         }
         // A forum is unread when any of its posts is.
         if (entry.kind === "forum") {
@@ -1434,6 +1527,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         const expressionGuilds = this.expressionGuilds();
         const gifs = this.instance!.gifs;
         const members = channel ? this.memberView(channel) : undefined;
+        const ringing = this.ringing();
         return {
           screen: "chat",
           platform,
@@ -1466,6 +1560,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                   // Fluxer allows guild stickers in DMs only with global expressions.
                   stickers: channel.guildId !== undefined || this.globalExpressions(),
                   gifs,
+                  // DMs and groups have calls of their own, where the instance runs voice.
+                  call: isPrivateCall(channel) && this.instance!.voiceEnabled,
                 },
                 posts: FORUM_TYPES.has(channel.type)
                   ? this.state.forumPosts(channel.id).map((p) => ({
@@ -1484,6 +1580,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
           stickers: this.stickerPacks(expressionGuilds),
           gifs: gifs ? this.gifResults : undefined,
           ...(this.profile ? { profile: this.profile } : {}),
+          ...(ringing ? { incomingCall: ringing } : {}),
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };
       }

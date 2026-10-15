@@ -17,9 +17,11 @@ export interface GatewayHandlers {
   status(status: GatewayStatus): void;
   /** The token was rejected; the caller must log in again. */
   authFailed(): void;
+  /** A voice join was refused with one of the codes Fluxer reports (Gateway Error, op 12). */
+  voiceRefused?(code: string): void;
 }
 
-const Op = { Dispatch: 0, Heartbeat: 1, Identify: 2, Resume: 6, Reconnect: 7, InvalidSession: 9, Hello: 10, HeartbeatAck: 11 };
+const Op = { Dispatch: 0, Heartbeat: 1, Identify: 2, Resume: 6, Reconnect: 7, InvalidSession: 9, Hello: 10, HeartbeatAck: 11, GatewayError: 12 };
 const AUTH_FAILED = 4004;
 /** Identify flag: deliver threads, forum and media channels and their events. */
 const CHANNEL_THREADS = 1 << 2;
@@ -119,6 +121,9 @@ export class FluxerGateway {
         break;
       case Op.Reconnect:
         this.reconnect();
+        break;
+      case Op.GatewayError:
+        if (isRecord(payload.d) && typeof payload.d.code === "string") this.handlers.voiceRefused?.(payload.d.code.slice(0, 64));
         break;
       case Op.InvalidSession:
         // The socket stays open; start a fresh session on it.

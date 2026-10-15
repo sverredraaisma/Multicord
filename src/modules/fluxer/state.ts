@@ -80,6 +80,8 @@ export class FluxerState {
   readonly stickers = new Map<string, FluxerGuildSticker[]>();
   /** Voice connections by connection id. */
   readonly voiceStates = new Map<string, FluxerVoiceState>();
+  /** Calls in DMs and groups, by channel id: who is being rung. Their participants are in voiceStates. */
+  readonly calls = new Map<string, { ringing: string[] }>();
   /** Who is typing where: channel id -> user id -> expiry (epoch ms). */
   readonly typing = new Map<string, Map<string, number>>();
   /** Notification settings per guild id, or DM_SETTINGS for DMs. */
@@ -100,7 +102,7 @@ export class FluxerState {
     this.me = undefined;
     this.traits = [];
     this.folders = undefined;
-    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.notifySettings, this.typing, this.voiceStates, this.emojis, this.stickers, this.roles, this.presences, this.memberLists]) map.clear();
+    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.notifySettings, this.typing, this.voiceStates, this.calls, this.emojis, this.stickers, this.roles, this.presences, this.memberLists]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -223,6 +225,14 @@ export class FluxerState {
         break;
       case "VOICE_STATE_UPDATE":
         this.setVoiceState(parseVoiceState(data));
+        break;
+      case "CALL_CREATE":
+      case "CALL_UPDATE":
+        this.setCall(d);
+        break;
+      case "CALL_DELETE":
+        // Unavailable calls are dropped too: nothing can be done with them here until Fluxer creates them again.
+        if (isId(d.channel_id)) this.dropCall(d.channel_id);
         break;
       case "MESSAGE_ACK":
         this.setReadState(parseReadState(data));
@@ -517,6 +527,21 @@ export class FluxerState {
 
   private setStickers(guildId: string, stickers: unknown): void {
     this.stickers.set(guildId, list(stickers).flatMap((s) => parseGuildSticker(s) ?? []));
+  }
+
+  /** A DM or group call as CALL_CREATE and CALL_UPDATE give it: who is rung, and who is in it. */
+  private setCall(d: Record<string, unknown>): void {
+    if (!isId(d.channel_id)) return;
+    const channelId = d.channel_id;
+    this.calls.set(channelId, { ringing: list(d.ringing).filter(isId) });
+    if (!Array.isArray(d.voice_states)) return;
+    for (const [key, v] of [...this.voiceStates]) if (v.channelId === channelId) this.voiceStates.delete(key);
+    for (const v of list(d.voice_states)) this.setVoiceState(parseVoiceState(v));
+  }
+
+  private dropCall(channelId: string): void {
+    this.calls.delete(channelId);
+    for (const [key, v] of [...this.voiceStates]) if (v.channelId === channelId && v.guildId === undefined) this.voiceStates.delete(key);
   }
 
   private setVoiceState(state: FluxerVoiceState | undefined): void {
