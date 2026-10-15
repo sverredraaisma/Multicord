@@ -826,7 +826,7 @@ describe("conversations", () => {
     const { channel } = ctx.chat();
     expect(channel).toMatchObject({ id: ctx.item("Bo").id, name: "Bo", loading: false, hasOlder: true, typing: [], pending: [], uploading: false });
     expect(channel).not.toHaveProperty("locked");
-    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, pins: true, search: true, forward: true });
+    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, stickers: true, pins: true, search: true, forward: true });
     expect(ctx.item("Bo").active).toBe(true);
     expect(ctx.messages()).toEqual([
       {
@@ -987,7 +987,7 @@ describe("conversations", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     expect(ctx.chat().channel!.locked).toBe(ENCRYPTED_NOTICE);
-    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: false, stickers: false, pins: true, search: true, forward: false });
+    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: true, stickers: false, pins: true, search: true, forward: false });
     expect(ctx.messages()).toEqual([
       expect.objectContaining({ content: ENCRYPTED_TEXT.replace("—", "—"), author: ANA, canEdit: false, canDelete: false }),
       expect.objectContaining({ content: "before encryption", mine: true, canEdit: false, canDelete: true }),
@@ -4812,5 +4812,168 @@ describe("forwarding", () => {
     expect(ctx.chat().channel!.can.forward).toBe(false);
     await ctx.act({ type: "forward", messageId: ctx.messages()[0]!.id, channelId: ctx.item("Bo").id });
     expect(ctx.api.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("member panel and profiles", () => {
+  const ZED = "@zed:x.org";
+  const CY = "@cy:x.org";
+  const LOUNGE = "/v3/rooms/!lounge%3Ax.org";
+  type Ctx = Awaited<ReturnType<typeof signedIn>>;
+  /** Answers by path: a value, an error to throw, or a promise to wait on. */
+  const answer = (ctx: Ctx, replies: Record<string, unknown>) =>
+    ctx.api.request.mockImplementation(async (_s, _m, path) => {
+      const reply = replies[path];
+      if (reply instanceof Error) throw reply;
+      if (reply === undefined) throw new MatrixError(404, "M_NOT_FOUND", "Not found");
+      return (await reply) as Record<string, unknown>;
+    });
+  const joined = {
+    joined: {
+      [ANA]: { display_name: "Ana", avatar_url: "mxc://x.org/ana" },
+      [ME]: { display_name: "Me" },
+      [BO]: { avatar_url: "mxc://x.org/bo" },
+      [ZED]: "junk",
+      [CY]: { avatar_url: "mxc://x.org/cy" },
+      "@err:x.org": { display_name: "Err", avatar_url: "mxc://x.org/err" },
+      nobody: {},
+    },
+  };
+  const thumbnails = (ctx: Ctx) =>
+    ctx.api.thumbnail.mockImplementation(async (_s, mxc) => {
+      if (mxc === "mxc://x.org/err") throw new Error("down");
+      return mxc === "mxc://x.org/ana" || mxc === "mxc://x.org/bo2" ? `data:image/png;base64,${mxc.slice(-3)}` : undefined;
+    });
+
+  it("lists the open room's joined members by power level while the panel is open", async () => {
+    const ctx = await signedIn();
+    thumbnails(ctx);
+    answer(ctx, { [`${LOUNGE}/joined_members`]: joined, [`${LOUNGE}/state/m.room.power_levels/`]: { users: { [ANA]: 100, [BO]: 50, [ME]: "high", bad: 100 } } });
+    // Opened with no room open: nothing to list until one opens.
+    await ctx.act({ type: "members", open: true });
+    expect(ctx.api.request).not.toHaveBeenCalled();
+    await ctx.open("Lounge");
+    expect(ctx.chat().channel!.can.members).toBe(true);
+    const list = ctx.chat().channel!.members!;
+    expect(list.sections).toEqual([
+      { name: "Admins", members: [{ id: ANA, name: "Ana", mention: ANA, avatarUrl: "data:image/png;base64,ana" }] },
+      { name: "Moderators", members: [{ id: BO, name: BO, mention: BO }] },
+      { name: "Members", members: [{ id: CY, name: CY, mention: CY }, { id: ZED, name: ZED, mention: ZED }, { id: "@err:x.org", name: "Err", mention: "@err:x.org" }, { id: ME, name: "Me", mention: ME }] },
+    ]);
+    expect(list).toMatchObject({ hasMore: false, loading: false });
+    // Pictures of the first members, each asked for once (Bo's was tried for the DM already).
+    expect(ctx.api.thumbnail.mock.calls.map(([, mxc]) => mxc)).toEqual(["mxc://x.org/bo", "mxc://x.org/ana", "mxc://x.org/cy", "mxc://x.org/err"]);
+    // Opening the same room again keeps the list; closing drops it.
+    const calls = ctx.api.request.mock.calls.length;
+    await ctx.open("Lounge");
+    expect(ctx.api.request.mock.calls.length).toBe(calls);
+    await ctx.act({ type: "members", open: false });
+    expect(ctx.chat().channel!.members).toBeUndefined();
+    // Reopened: fetched afresh, and nothing more to picture.
+    await ctx.act({ type: "members", open: true });
+    expect(ctx.api.request.mock.calls.length).toBe(calls + 2);
+    expect(ctx.api.thumbnail).toHaveBeenCalledTimes(4);
+  });
+
+  it("counts members beyond those shown, says when the list fails, and follows the open room", async () => {
+    const ctx = await signedIn();
+    const many = { joined: Object.fromEntries(Array.from({ length: 205 }, (_, i) => [`@u${String(i).padStart(3, "0")}:x.org`, { display_name: `U${String(i).padStart(3, "0")}` }])) };
+    answer(ctx, { [`${LOUNGE}/joined_members`]: many, "/v3/rooms/!dm%3Ax.org/joined_members": new MatrixError(403, "M_FORBIDDEN", "You are not in this room") });
+    await ctx.open("Lounge");
+    await ctx.act({ type: "members", open: true });
+    const list = ctx.chat().channel!.members!;
+    expect(list.sections.map((s) => [s.name, s.members.length])).toEqual([["Members", 200]]);
+    expect(list.more).toBe(5);
+    await ctx.open("Bo");
+    expect(ctx.chat().channel!.members).toEqual({ sections: [], hasMore: false, loading: false, error: expect.stringMatching(/^Could not load members: /) });
+    // Going home reopens the room last open there: its list follows.
+    await ctx.adapter.openHome();
+    await flush();
+    expect(ctx.chat().channel!.members).toBeDefined();
+  });
+
+  it("drops a list for a panel closed, or a room left, meanwhile", async () => {
+    const ctx = await signedIn();
+    let release: (value: unknown) => void = () => {};
+    answer(ctx, { [`${LOUNGE}/joined_members`]: new Promise((resolve) => (release = resolve)) });
+    await ctx.open("Lounge");
+    const pending = ctx.act({ type: "members", open: true });
+    expect(ctx.chat().channel!.members).toEqual({ sections: [], hasMore: false, loading: true });
+    await ctx.act({ type: "members", open: false });
+    release(joined);
+    await pending;
+    expect(ctx.chat().channel!.members).toBeUndefined();
+    expect(ctx.api.thumbnail.mock.calls.map(([, mxc]) => mxc)).not.toContain("mxc://x.org/ana");
+
+    // A picture arriving after the panel closed is not waited for further.
+    let picture: (value: string | undefined) => void = () => {};
+    answer(ctx, { [`${LOUNGE}/joined_members`]: joined });
+    ctx.api.thumbnail.mockImplementation(() => new Promise((resolve) => (picture = resolve)));
+    const opening = ctx.act({ type: "members", open: true });
+    await flush();
+    await ctx.act({ type: "members", open: false });
+    picture("data:image/png;base64,ana");
+    await opening;
+    // Members are by name without power levels: Cy's picture was the first asked for, and the only one.
+    expect(ctx.api.thumbnail.mock.calls.map(([, mxc]) => mxc).filter((m) => m === "mxc://x.org/cy" || m === "mxc://x.org/ana")).toEqual(["mxc://x.org/cy"]);
+  });
+
+  it("answers profile cards with the room's name and role, then the user's profile and presence", async () => {
+    const ctx = await signedIn();
+    thumbnails(ctx);
+    answer(ctx, {
+      [`${LOUNGE}/joined_members`]: joined,
+      [`${LOUNGE}/state/m.room.power_levels/`]: { users: { [ANA]: 100, [BO]: 50 } },
+      [`/v3/profile/${encodeURIComponent(BO)}`]: { displayname: "Bo B", avatar_url: "mxc://x.org/bo2" },
+      [`/v3/presence/${encodeURIComponent(BO)}/status`]: { presence: "unavailable", status_msg: "lunch" },
+      [`/v3/profile/${encodeURIComponent(CY)}`]: { avatar_url: "mxc://x.org/err" },
+      [`/v3/presence/${encodeURIComponent(CY)}/status`]: { presence: "away" },
+    });
+    await ctx.act({ type: "profile", id: "nope" });
+    expect(ctx.chat().profile).toBeUndefined();
+    // No room open: the user's own profile and presence.
+    const pending = ctx.act({ type: "profile", id: BO });
+    expect(ctx.chat().profile).toEqual({ id: BO, username: BO, loading: true });
+    await pending;
+    expect(ctx.chat().profile).toEqual({ id: BO, username: BO, name: "Bo B", presence: "idle", status: "lunch", avatarUrl: "data:image/png;base64,bo2" });
+    // In a room with its list loaded: the room's name and the role; a picture already fetched is not fetched again.
+    await ctx.open("Lounge");
+    await ctx.act({ type: "members", open: true });
+    await ctx.act({ type: "profile", id: ANA });
+    expect(ctx.chat().profile).toEqual({ id: ANA, username: ANA, name: "Ana", roles: [{ name: "Admin" }] });
+    const fetched = ctx.api.thumbnail.mock.calls.length;
+    await ctx.act({ type: "profile", id: BO });
+    expect(ctx.chat().profile).toEqual({ id: BO, username: BO, name: "Bo B", presence: "idle", status: "lunch", avatarUrl: "data:image/png;base64,bo2", roles: [{ name: "Moderator" }] });
+    expect(ctx.api.thumbnail.mock.calls.length).toBe(fetched);
+    // A picture that does not load, and presence the card cannot use.
+    await ctx.act({ type: "profile", id: CY });
+    expect(ctx.chat().profile).toEqual({ id: CY, username: CY });
+  });
+
+  it("drops profile answers for a card since replaced, and shows a room picture at once", async () => {
+    const first = initialSync();
+    const ctx = await signedIn(first);
+    ctx.api.thumbnail.mockImplementation(async (_s, mxc) => (mxc === "mxc://x.org/bo3" ? "data:image/png;base64,AA==" : undefined));
+    // The DM's picture is Bo's room picture, fetched for the rail.
+    await ctx.live(sync({ joined: [room("!dm:x.org", { state: { members: { [BO]: { name: "Bo", membership: "join", avatar: "mxc://x.org/bo3" } } } })] }));
+    let release: (value: unknown) => void = () => {};
+    answer(ctx, { [`/v3/profile/${encodeURIComponent(ANA)}`]: new Promise((resolve) => (release = resolve)) });
+    const waiting = ctx.act({ type: "profile", id: ANA });
+    await ctx.open("Bo");
+    await ctx.act({ type: "profile", id: BO });
+    release({ displayname: "Late" });
+    await waiting;
+    expect(ctx.chat().profile).toEqual({ id: BO, username: BO, name: "Bo", avatarUrl: "data:image/png;base64,AA==" });
+
+    // Replaced while its picture loads.
+    let picture: (value: string | undefined) => void = () => {};
+    answer(ctx, { [`/v3/profile/${encodeURIComponent(ANA)}`]: { avatar_url: "mxc://x.org/slow" } });
+    ctx.api.thumbnail.mockImplementation(() => new Promise((resolve) => (picture = resolve)));
+    const slow = ctx.act({ type: "profile", id: ANA });
+    await flush();
+    await ctx.act({ type: "profile", id: ZED });
+    picture("data:image/png;base64,slow");
+    await slow;
+    expect(ctx.chat().profile).toEqual({ id: ZED, username: ZED });
   });
 });

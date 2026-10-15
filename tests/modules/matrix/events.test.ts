@@ -29,6 +29,10 @@ import {
   parseEncryption,
   parseEvent,
   parseMembers,
+  parseJoinedMembers,
+  parsePowerLevels,
+  parsePresence,
+  parseProfile,
   parseMutedRooms,
   PUSH_RULES_TYPE,
   parseMxc,
@@ -460,6 +464,26 @@ describe("encryption", () => {
     expect(parseCryptoSync({ "org.matrix.msc2732.device_unused_fallback_key_types": [] }).fallbackKeys).toEqual([]);
     expect(parseCryptoSync({ device_lists: "x", to_device: "x" })).toEqual({ toDevice: "[]", changed: [], left: [], oneTimeKeys: {} });
     expect(parseSync({ next_batch: "s", device_one_time_keys_count: { signed_curve25519: 3 } }).crypto?.oneTimeKeys).toEqual({ signed_curve25519: 3 });
+  });
+
+  it("reads joined members, power levels, profiles and presence", () => {
+    expect(parseJoinedMembers({ joined: { "@a:x": { display_name: " Ana ", avatar_url: "mxc://x/a" }, "@b:x": { display_name: 5, avatar_url: "https://x/b" }, "@c:x": null, bad: {} } })).toEqual([
+      { id: "@a:x", name: "Ana", avatar: "mxc://x/a" },
+      { id: "@b:x" },
+      { id: "@c:x" },
+    ]);
+    expect(parseJoinedMembers({ joined: [] })).toEqual([]);
+    expect(parseJoinedMembers(null)).toEqual([]);
+    expect(parseProfile("@a:x", { displayname: "Ana", avatar_url: "mxc://x/a" })).toEqual({ id: "@a:x", name: "Ana", avatar: "mxc://x/a" });
+    expect(parseProfile("@a:x", undefined)).toEqual({ id: "@a:x" });
+    expect([...parsePowerLevels({ users: { "@a:x": 100, "@b:x": 50.5, bad: 100 } })]).toEqual([["@a:x", 100]]);
+    expect(parsePowerLevels({ users: null }).size).toBe(0);
+    expect(parsePowerLevels(undefined).size).toBe(0);
+    expect(parsePresence({ presence: "unavailable", status_msg: " lunch " })).toEqual({ presence: "idle", status: "lunch" });
+    expect(parsePresence({ presence: "online", status_msg: 5 })).toEqual({ presence: "online" });
+    expect(parsePresence({ presence: "offline" })).toEqual({ presence: "offline" });
+    expect(parsePresence({ presence: "constructor" })).toBeUndefined();
+    expect(parsePresence("junk")).toBeUndefined();
   });
 
   it("lists joined and invited members", () => {

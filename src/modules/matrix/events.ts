@@ -826,6 +826,61 @@ export function parseMembers(raw: unknown): string[] {
   return [...members];
 }
 
+/** Someone in a room's member list, or a profile: their user id, display name and picture (mxc://). */
+export interface MxProfile {
+  id: string;
+  name?: string;
+  avatar?: string;
+}
+
+function profileOf(id: string, name: unknown, avatar: unknown): MxProfile {
+  const profile: MxProfile = { id };
+  const shown = cleanName(name);
+  if (shown) profile.name = shown;
+  if (parseMxc(avatar)) profile.avatar = avatar as string;
+  return profile;
+}
+
+/** The members in a /joined_members response, at most MAX_USERS. */
+export function parseJoinedMembers(raw: unknown): MxProfile[] {
+  const joined = isRecord(raw) && isRecord(raw.joined) ? raw.joined : {};
+  return Object.entries(joined)
+    .slice(0, MAX_USERS)
+    .flatMap(([id, value]) => {
+      const user = userId(id);
+      const info = isRecord(value) ? value : {};
+      return user ? [profileOf(user, info.display_name, info.avatar_url)] : [];
+    });
+}
+
+/** A /profile response: the user's own display name and picture, outside any room. */
+export function parseProfile(id: string, raw: unknown): MxProfile {
+  const info = isRecord(raw) ? raw : {};
+  return profileOf(id, info.displayname, info.avatar_url);
+}
+
+/** Users' power levels in an m.room.power_levels content; those not named have 0 (users_default is not read). */
+export function parsePowerLevels(raw: unknown): Map<string, number> {
+  const users = isRecord(raw) && isRecord(raw.users) ? raw.users : {};
+  const levels = new Map<string, number>();
+  for (const [id, level] of Object.entries(users).slice(0, MAX_USERS)) {
+    const user = userId(id);
+    if (user && Number.isInteger(level)) levels.set(user, level as number);
+  }
+  return levels;
+}
+
+const PRESENCE = new Map<unknown, "online" | "idle" | "offline">([["online", "online"], ["unavailable", "idle"], ["offline", "offline"]]);
+
+/** A /presence/{user}/status response; undefined where the homeserver says nothing usable (many turn presence off). */
+export function parsePresence(raw: unknown): { presence: "online" | "idle" | "offline"; status?: string } | undefined {
+  const info = isRecord(raw) ? raw : {};
+  const presence = PRESENCE.get(info.presence);
+  if (!presence) return undefined;
+  const status = cleanName(info.status_msg, 128);
+  return status ? { presence, status } : { presence };
+}
+
 /** A /messages page (dir=b): Matrix sends it newest first. */
 export function parsePage(raw: unknown): MxPage {
   if (!isRecord(raw)) throw new Error("The homeserver sent an unreadable history page");

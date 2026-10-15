@@ -5,12 +5,16 @@ import { MAX_DIRECTS, MAX_HTTP_BODY, MAX_READ, type PickedFile } from "../../sha
 import { escapeMarkdown } from "../../shared/markdown";
 import {
   MAX_ATTACHMENTS,
+  MEMBER_ROWS_SHOWN,
   type NativeAction,
   type NativeAttachment,
   type NativeCustomEmoji,
+  type NativeMemberList,
+  type NativeMemberSection,
   type NativeMessage,
   type NativeMessageList,
   type NativeSearchResults,
+  type NativeProfile,
   type NativePrompt,
   type NativeReaction,
   type NativeSidebarItem,
@@ -50,7 +54,7 @@ import {
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseEmotes, parseEvent, parseMxc, reactionKey, serviceUrl, userId } from "./events";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseEmotes, parseEvent, parseJoinedMembers, parseMxc, parsePowerLevels, parsePresence, parseProfile, reactionKey, serviceUrl, userId, type MxProfile } from "./events";
 import { AttachmentError, decryptAttachment, encryptAttachment, imageSize } from "./media";
 import { emoticonHtml, emoticonMarkdown, HTML_FORMAT, packImageId, stickerFormat, textMentions } from "./packs";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
@@ -63,6 +67,12 @@ export const MAX_LISTED_PINS = 50;
 export const SEARCH_LIMIT = 50;
 /** Profile pictures fetched per refresh; the rest show initials. */
 export const AVATAR_LIMIT = 40;
+/** Pictures of a room's members fetched for its member panel; the rest show initials. */
+export const MEMBER_AVATAR_LIMIT = 30;
+/** Member panel sections by power level (admins at 100 and up, moderators at 50 and up, members), and the role a profile card names. */
+const RANKS = ["Admins", "Moderators", "Members"];
+const ROLES = ["Admin", "Moderator"];
+const rankOf = (level: number): number => (level >= 100 ? 0 : level >= 50 ? 1 : 2);
 /** How long the server may hold a /sync open; the HTTP bridge sets no timeout of its own. */
 export const SYNC_TIMEOUT_MS = 30_000;
 const RETRY_MIN_MS = 2000;
@@ -535,6 +545,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   /** The open room's search results, until the search ends; and a count that drops answers to earlier searches. */
   private search: { roomId: string; results: NativeSearchResults } | undefined;
   private searchCount = 0;
+  /** The view's member panel is open: the open room's members are fetched and shown. */
+  private membersOpen = false;
+  /** The open room's joined members and their power levels, fetched afresh when the panel opens on it. */
+  private memberList: { roomId: string; members: MxProfile[]; levels: Map<string, number>; loading: boolean; error?: string } | undefined;
+  /** The profile card the view asked for last. */
+  private profile: NativeProfile | undefined;
   /** Pinned events fetched for the pins panel (decrypted where they could be), by event id; null for one the server would not give. */
   private readonly pinnedEvents = new Map<string, Shown | null>();
   /** Our device's call, joining or joined; one at a time. */
@@ -799,6 +815,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (room && room !== open) this.noteUnread(room);
     this.selected = room?.id;
     this.render();
+    this.followMembers();
     if (room) await this.opened(room);
   }
 
@@ -847,6 +864,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.mutedRooms.clear();
     this.pins = undefined;
     this.search = undefined;
+    this.membersOpen = false;
+    this.memberList = undefined;
+    this.profile = undefined;
     this.pinnedEvents.clear();
     this.directsChanged.emit([]);
     this.publishServers();
@@ -961,6 +981,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.searchMessages(action.query);
       case "pin":
         return this.pin(action.messageId, action.pin);
+      case "members":
+        return this.setMembersOpen(action.open);
+      case "profile":
+        return this.showProfile(action.id);
       default:
         // Forums are not offered for Matrix.
         return;
@@ -1858,6 +1882,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.selected = room.id;
     this.lastRoom.set(this.openSpace ?? "", room.id);
     this.render();
+    this.followMembers();
     await this.opened(room);
   }
 
@@ -2043,6 +2068,126 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     await this.attempt("Message not forwarded", async () => {
       await this.sendContent(this.session!, to, { msgtype: "m.text", body, "m.mentions": {} });
     });
+  }
+
+  /** The view's member panel opened (fetching the open room's members afresh) or closed. */
+  private async setMembersOpen(open: boolean): Promise<void> {
+    this.membersOpen = open;
+    this.memberList = undefined;
+    this.render();
+    if (open) await this.loadMembers();
+  }
+
+  /** With the panel open, its list follows the open room. */
+  private followMembers(): void {
+    if (this.membersOpen && this.memberList?.roomId !== this.selected) void this.loadMembers();
+  }
+
+  /**
+   * Fetches the open room's joined members (GET joined_members) and power
+   * levels, only while the panel shows them: a room may have thousands.
+   * Pictures of the first members follow through the thumbnail path. The
+   * homeserver sends no presence here (sync asks for none).
+   */
+  private async loadMembers(): Promise<void> {
+    const room = this.selectedRoom();
+    this.memberList = undefined;
+    if (!room) return this.render();
+    const list: NonNullable<MatrixAdapter["memberList"]> = { roomId: room.id, members: [], levels: new Map(), loading: true };
+    this.memberList = list;
+    this.render();
+    const session = this.session!;
+    const path = `/v3/rooms/${encodeURIComponent(room.id)}`;
+    try {
+      const [joined, levels] = await Promise.all([
+        this.deps.api.request(session, "GET", `${path}/joined_members`),
+        // Without power levels, everyone is listed as a member.
+        this.deps.api.request(session, "GET", `${path}/state/m.room.power_levels/`).catch(() => undefined),
+      ]);
+      list.members = parseJoinedMembers(joined);
+      list.levels = parsePowerLevels(levels);
+    } catch (error) {
+      list.error = `Could not load members: ${friendly(error)}`;
+    }
+    list.loading = false;
+    // Closed, another room opened, or signed out meanwhile.
+    if (this.memberList !== list) return;
+    this.render();
+    let found = false;
+    for (const member of this.sortedMembers(list).slice(0, MEMBER_AVATAR_LIMIT)) {
+      const mxc = member.avatar;
+      if (!mxc || this.avatarsTried.has(mxc)) continue;
+      this.avatarsTried.add(mxc);
+      const url = await this.deps.api.thumbnail(session, mxc).catch(() => undefined);
+      if (this.memberList !== list) return;
+      if (url) this.avatars.set(mxc, url);
+      found ||= url !== undefined;
+    }
+    if (found) this.render();
+  }
+
+  /** Admins (power level 100 and up) first, then moderators (50 and up), then members; by name within each. */
+  private sortedMembers(list: NonNullable<MatrixAdapter["memberList"]>): MxProfile[] {
+    const level = (m: MxProfile) => rankOf(list.levels.get(m.id) ?? 0);
+    return [...list.members].sort((a, b) => level(a) - level(b) || (a.name ?? a.id).localeCompare(b.name ?? b.id));
+  }
+
+  /** The member panel's list: at most MEMBER_ROWS_SHOWN, the rest counted. Members are mentioned by user id, which sending turns into a pill. */
+  private memberView(room: Room, list: NonNullable<MatrixAdapter["memberList"]>): NativeMemberList {
+    const sections: NativeMemberSection[] = [];
+    const shown = this.sortedMembers(list).slice(0, MEMBER_ROWS_SHOWN);
+    for (const member of shown) {
+      const title = RANKS[rankOf(list.levels.get(member.id) ?? 0)]!;
+      if (sections.at(-1)?.name !== title) sections.push({ name: title, members: [] });
+      const avatarUrl = this.avatars.get(member.avatar ?? "");
+      sections.at(-1)!.members.push({ id: member.id, name: member.name ?? this.memberName(room, member.id), mention: member.id, ...(avatarUrl ? { avatarUrl } : {}) });
+    }
+    const view: NativeMemberList = { sections, hasMore: false, loading: list.loading };
+    if (list.members.length > shown.length) view.more = list.members.length - shown.length;
+    if (list.error) view.error = list.error;
+    return view;
+  }
+
+  /**
+   * Someone's profile card: their name and picture in the open room, and
+   * their role where the member list knows it, at once; then their own
+   * profile and, where the homeserver shares it, their presence.
+   */
+  private async showProfile(id: string): Promise<void> {
+    const user = userId(id);
+    if (!user) return;
+    const room = this.selectedRoom();
+    const member = room?.members.get(user);
+    const profile: NativeProfile = { id: user, username: user, loading: true };
+    if (member?.name) profile.name = member.name;
+    const known = this.avatars.get(member?.avatar ?? "");
+    if (known) profile.avatarUrl = known;
+    // The member list, where loaded, is the open room's.
+    const rank = rankOf(this.memberList?.levels.get(user) ?? 0);
+    if (rank < 2) profile.roles = [{ name: ROLES[rank]! }];
+    this.profile = profile;
+    this.render();
+    const session = this.session!;
+    const path = encodeURIComponent(user);
+    const [found, presence] = await Promise.all([
+      this.deps.api.request(session, "GET", `/v3/profile/${path}`).catch(() => undefined),
+      this.deps.api.request(session, "GET", `/v3/presence/${path}/status`).catch(() => undefined),
+    ]);
+    if (this.profile !== profile) return;
+    const own = parseProfile(user, found);
+    if (!profile.name && own.name) profile.name = own.name;
+    Object.assign(profile, parsePresence(presence));
+    const mxc = own.avatar;
+    if (!known && mxc) {
+      const url = this.avatars.get(mxc) ?? (await this.deps.api.thumbnail(session, mxc).catch(() => undefined));
+      if (this.profile !== profile) return;
+      if (url) {
+        this.avatars.set(mxc, url);
+        profile.avatarUrl = url;
+      }
+    }
+    delete profile.loading;
+    this.render();
   }
 
   /** Pins or unpins a message in the open room's m.room.pinned_events; the homeserver decides whether the user may. */
@@ -3205,8 +3350,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             ...(this.unreadAt?.roomId === room.id ? { unread: this.unreadView(room, this.unreadAt) } : {}),
             ...(this.pins?.roomId === room.id ? { pins: this.pins.list } : {}),
             ...(this.search?.roomId === room.id ? { search: this.search.results } : {}),
+            ...(this.membersOpen && this.memberList?.roomId === room.id ? { members: this.memberView(room, this.memberList) } : {}),
             // A locked room takes nothing from here; typing notices follow the user's setting.
-            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false, stickers: !locked, pins: true, search: true, forward: !locked },
+            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: true, stickers: !locked, pins: true, search: true, forward: !locked },
           }
         : null,
       // After the messages, which fill it.
@@ -3214,6 +3360,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       ...(customEmoji.length ? { customEmoji } : {}),
       ...(stickers.length ? { stickers } : {}),
       voice: this.voiceSession(),
+      ...(this.profile ? { profile: this.profile } : {}),
       error: this.error ?? this.ringText(),
     };
   }
