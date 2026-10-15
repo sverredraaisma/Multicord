@@ -39,6 +39,7 @@ export interface FluxerUser {
   username: string;
   globalName?: string;
   avatar?: string;
+  bot?: boolean;
 }
 
 export interface FluxerGuild {
@@ -269,7 +270,9 @@ export function compareIds(a: string, b: string): number {
 
 export function parseUser(value: unknown): FluxerUser | undefined {
   if (!isRecord(value) || !isId(value.id) || typeof value.username !== "string") return undefined;
-  return { id: value.id, username: value.username, globalName: str(value.global_name), avatar: str(value.avatar) };
+  const user: FluxerUser = { id: value.id, username: value.username, globalName: str(value.global_name), avatar: str(value.avatar) };
+  if (value.bot === true) user.bot = true;
+  return user;
 }
 
 /** Accepts both a plain guild and a READY / GUILD_CREATE object that nests the guild in `properties`. */
@@ -511,4 +514,133 @@ export function parseGuildSettings(value: unknown): [string, FluxerNotifySetting
       channels,
     },
   ];
+}
+
+/** A guild role, for member list headings, name colours and profile cards. */
+export interface FluxerRole {
+  id: string;
+  name: string;
+  /** 0xrrggbb; 0 for none. */
+  color: number;
+  position: number;
+}
+
+export function parseRole(value: unknown): FluxerRole | undefined {
+  if (!isRecord(value) || !isId(value.id) || typeof value.name !== "string") return undefined;
+  const color = typeof value.color === "number" && Number.isInteger(value.color) && value.color > 0 && value.color <= 0xffffff ? value.color : 0;
+  return { id: value.id, name: value.name, color, position: typeof value.position === "number" ? value.position : 0 };
+}
+
+/** "#rrggbb" for a role colour; undefined for none. */
+export const roleColor = (role: FluxerRole | undefined): string | undefined => (role && role.color > 0 ? `#${role.color.toString(16).padStart(6, "0")}` : undefined);
+
+export type FluxerStatus = "online" | "idle" | "dnd" | "offline";
+
+/** How present someone is, as others see it (invisible shows as offline), and their custom status text. */
+export interface FluxerPresence {
+  userId: string;
+  status: FluxerStatus;
+  text?: string;
+}
+
+const STATUSES: readonly string[] = ["online", "idle", "dnd"];
+
+export function parsePresence(value: unknown): FluxerPresence | undefined {
+  if (!isRecord(value)) return undefined;
+  const userId = isRecord(value.user) ? value.user.id : value.user_id;
+  if (!isId(userId)) return undefined;
+  const status = typeof value.status === "string" && STATUSES.includes(value.status) ? (value.status as FluxerStatus) : "offline";
+  const presence: FluxerPresence = { userId, status };
+  const text = status !== "offline" && isRecord(value.custom_status) ? str(value.custom_status.text) : undefined;
+  if (text) presence.text = text.slice(0, 128);
+  return presence;
+}
+
+/** Someone in a guild's member list. */
+export interface FluxerMember {
+  user: FluxerUser;
+  nick?: string;
+  roles: string[];
+  presence: FluxerPresence;
+}
+
+export function parseMember(value: unknown): FluxerMember | undefined {
+  const user = isRecord(value) ? parseUser(value.user) : undefined;
+  if (!user) return undefined;
+  const record = value as Json;
+  const presence = parsePresence({ ...(isRecord(record.presence) ? record.presence : {}), user: { id: user.id } }) as FluxerPresence;
+  return { user, nick: str(record.nick), roles: list(record.roles).filter(isId), presence };
+}
+
+/** A heading in a member list: a hoisted role's id, "online" or "offline", and how many are under it. */
+export interface FluxerListGroup {
+  id: string;
+  count: number;
+}
+
+export type FluxerListItem = { group: FluxerListGroup } | { member: FluxerMember };
+
+/** GUILD_MEMBER_LIST_UPDATE: a channel's member list, as SYNC operations that replace ranges of it. */
+export interface FluxerMemberListUpdate {
+  guildId: string;
+  channelId: string;
+  memberCount: number;
+  groups: FluxerListGroup[];
+  ops: { start: number; end: number; items: FluxerListItem[] }[];
+}
+
+const count = (value: unknown): number => (typeof value === "number" && Number.isInteger(value) && value > 0 ? Math.min(value, 10_000_000) : 0);
+
+function parseGroup(value: unknown): FluxerListGroup | undefined {
+  return isRecord(value) && typeof value.id === "string" && (isId(value.id) || value.id === "online" || value.id === "offline") ? { id: value.id, count: count(value.count) } : undefined;
+}
+
+export function parseMemberListUpdate(value: unknown): FluxerMemberListUpdate | undefined {
+  if (!isRecord(value) || !isId(value.guild_id) || !isId(value.id)) return undefined;
+  const ops = list(value.ops).flatMap((raw) => {
+    // SYNC is the only operation Fluxer sends; others are ignored, as its docs ask.
+    if (!isRecord(raw) || raw.op !== "SYNC" || !Array.isArray(raw.range)) return [];
+    const [start, end] = raw.range as unknown[];
+    if (!Number.isInteger(start) || !Number.isInteger(end) || (start as number) < 0 || (end as number) < (start as number)) return [];
+    const items = list(raw.items).flatMap((item): FluxerListItem[] => {
+      if (!isRecord(item)) return [];
+      const group = parseGroup(item.group);
+      if (group) return [{ group }];
+      const member = parseMember(item.member);
+      return member ? [{ member }] : [];
+    });
+    return [{ start: start as number, end: end as number, items }];
+  });
+  return { guildId: value.guild_id, channelId: value.id, memberCount: count(value.member_count), groups: list(value.groups).flatMap((g) => parseGroup(g) ?? []), ops };
+}
+
+/** What GET /users/{id}/profile tells about someone; a guild's part only when asked with its id. */
+export interface FluxerProfile {
+  user: FluxerUser;
+  discriminator?: string;
+  bio?: string;
+  pronouns?: string;
+  nick?: string;
+  roles?: string[];
+}
+
+export function parseProfile(value: unknown): FluxerProfile | undefined {
+  const user = isRecord(value) ? parseUser(value.user) : undefined;
+  if (!user) return undefined;
+  const record = value as Json;
+  const own = isRecord(record.user_profile) ? record.user_profile : {};
+  const inGuild = isRecord(record.guild_member_profile) ? record.guild_member_profile : {};
+  const profile: FluxerProfile = { user };
+  const disc = (record.user as Json).discriminator;
+  if (typeof disc === "string" && /^\d{1,4}$/.test(disc) && !/^0+$/.test(disc)) profile.discriminator = disc;
+  const bio = str(inGuild.bio) ?? str(own.bio);
+  if (bio) profile.bio = bio;
+  const pronouns = str(inGuild.pronouns) ?? str(own.pronouns);
+  if (pronouns) profile.pronouns = pronouns;
+  if (isRecord(record.guild_member)) {
+    const nick = str(record.guild_member.nick);
+    if (nick) profile.nick = nick;
+    profile.roles = list(record.guild_member.roles).filter(isId);
+  }
+  return profile;
 }

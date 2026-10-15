@@ -1,6 +1,6 @@
 import type { FileSource } from "../../engine/runtime";
 import { captchaToken, isAltchaChallenge, solveAltcha, type AltchaChallenge } from "./captcha";
-import { isRecord, parseChannel, parseGif, parseMessage, parseUser, type FluxerChannel, type FluxerGif, type FluxerMessage, type FluxerUser } from "./types";
+import { isRecord, parseChannel, parseGif, parseMessage, parseProfile, parseUser, type FluxerChannel, type FluxerGif, type FluxerMessage, type FluxerProfile, type FluxerUser } from "./types";
 
 /** Error from the Fluxer API, carrying its error code (e.g. CAPTCHA_REQUIRED). */
 export class FluxerApiError extends Error {
@@ -245,6 +245,12 @@ export class FluxerRest {
 
   async pin(channelId: string, messageId: string, pin: boolean): Promise<void> {
     await this.request(pin ? "PUT" : "DELETE", `/channels/${channelId}/pins/${messageId}`);
+  }
+
+  /** What someone shows others (GET /users/{id}/profile); with a guild, also their nickname and roles there. */
+  async profile(userId: string, guildId?: string): Promise<FluxerProfile | undefined> {
+    const query = guildId ? `?${new URLSearchParams({ guild_id: guildId })}` : "";
+    return parseProfile(await this.request("GET", `/users/${userId}/profile${query}`));
   }
 
   async ack(channelId: string, messageId: string): Promise<void> {

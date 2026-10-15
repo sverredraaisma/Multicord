@@ -297,7 +297,7 @@ describe("FluxerAdapter chat", () => {
     ]);
     expect(state.sidebar[3]).toMatchObject({ unread: true, mentions: 2 });
     expect(state.channel).toMatchObject({ id: "113", name: "lobby", loading: false, hasOlder: false });
-    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, gifs: false, pins: true, search: true, forward: true });
+    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, stickers: true, gifs: false, pins: true, search: true, forward: true });
     expect(state.channel!.messages[0]).toMatchObject({ id: "450", author: "Ana", content: "m450", mine: false });
     expect(calls.some((c) => c.url.includes("/channels/113/messages?limit=50"))).toBe(true);
 
@@ -1613,5 +1613,192 @@ describe("FluxerAdapter forwarding", () => {
     expect(parse(message("1", "113", { message_snapshots: ["junk"] }))!.forwarded).toBeUndefined();
     const ctx = await opened([(url) => (url.includes("/messages?") ? { status: 200, body: [message("451", "113", { content: "look", message_snapshots: [{ message: {} }] })] } : undefined)]);
     expect(ctx.chat().channel!.messages[0]!.content).toBe("look\n*Forwarded*");
+  });
+});
+
+describe("FluxerAdapter members and profiles", () => {
+  async function opened(routes: Handler[] = []) {
+    const ctx = setup({ token: "flx_saved", routes });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    ctx.adapter.state.apply("GUILD_SYNC", {
+      id: "100",
+      properties: { name: "Alpha" },
+      roles: [{ id: "100", name: "@everyone", position: 0 }, { id: "50", name: "Mods", color: 0xff0000, position: 2 }, { id: "51", name: "Blue", color: 0x0000ff, position: 1 }, { id: "52", name: "Plain", position: 3 }],
+    });
+    await ctx.adapter.openServer("100");
+    return ctx;
+  }
+  type Ctx = Awaited<ReturnType<typeof opened>>;
+  const lazy = (ctx: Ctx) => ctx.sockets.at(-1)!.sent.filter((p) => p.op === 14).map((p) => p.d);
+  const membersOf = (ctx: Ctx) => ctx.chat().channel!.members;
+  const dispatch = (ctx: Ctx, t: string, d: unknown) => ctx.sockets.at(-1)!.receive({ op: 0, s: 9, t, d });
+  const offline = (from: number, n: number) => Array.from({ length: n }, (_, i) => ({ member: { user: { id: String(from + i), username: `u${from + i}` }, roles: [], presence: { status: "offline" } } }));
+  /** A list of 2 hoisted, 1 online and 150 offline members: 156 positions. */
+  const firstWindow = () => ({
+    guild_id: "100",
+    id: "113",
+    member_count: 153,
+    online_count: 3,
+    groups: [{ id: "50", count: 2 }, { id: "online", count: 1 }, { id: "offline", count: 150 }],
+    ops: [
+      {
+        op: "SYNC",
+        range: [0, 99],
+        items: [
+          { group: { id: "50", count: 2 } },
+          { member: { user: ANA, nick: "Annie", roles: ["50", "51", "999"], presence: { status: "online", custom_status: { text: "brb" } } } },
+          { member: { user: { id: "3", username: "bot", bot: true }, roles: ["51"], presence: { status: "dnd" } } },
+          { group: { id: "online", count: 1 } },
+          { member: { user: { id: "4", username: "cy" }, roles: [], presence: { status: "idle" } } },
+          { group: { id: "offline", count: 150 } },
+          ...offline(1000, 94),
+        ],
+      },
+    ],
+  });
+
+  it("subscribes to the open channel's member list while the panel is open, a window at a time", async () => {
+    const ctx = await opened();
+    expect(ctx.chat().channel!.can.members).toBe(true);
+    expect(membersOf(ctx)).toBeUndefined();
+    await ctx.adapter.handleAction({ type: "members", open: true });
+    expect(lazy(ctx).at(-1)).toEqual({ subscriptions: { "100": { active: true, typing: true, member_list_channels: { "113": [[0, 99]] } } } });
+    expect(membersOf(ctx)).toEqual({ sections: [], hasMore: false, loading: true });
+
+    // A list for another channel is ignored.
+    dispatch(ctx, "GUILD_MEMBER_LIST_UPDATE", { ...firstWindow(), id: "111" });
+    dispatch(ctx, "GUILD_MEMBER_LIST_UPDATE", firstWindow());
+    await vi.advanceTimersByTimeAsync(100);
+    const list = membersOf(ctx)!;
+    expect(list.sections.map((s) => [s.name, s.members.length])).toEqual([["Mods — 2", 2], ["Online — 1", 1], ["Offline — 150", 94]]);
+    expect(list.sections[0]!.members).toEqual([
+      { id: "2", name: "Annie", avatarUrl: "https://media.fx/avatars/2/av.png?size=64", presence: "online", color: "#ff0000", status: "brb", mention: "<@2>" },
+      { id: "3", name: "bot", presence: "dnd", color: "#0000ff", status: "Bot", mention: "<@3>" },
+    ]);
+    expect(list.sections[1]!.members[0]).toEqual({ id: "4", name: "cy", presence: "idle", mention: "<@4>" });
+    expect(list).toMatchObject({ hasMore: true, loading: false, more: 56 });
+    // Their presence is known elsewhere too, e.g. in profiles.
+    expect(ctx.adapter.state.presences.get("2")).toEqual({ userId: "2", status: "online", text: "brb" });
+
+    // Only a matching offset asks for the next window, and only once.
+    await ctx.adapter.handleAction({ type: "loadMembers", offset: 10 });
+    expect(lazy(ctx)).toHaveLength(2);
+    await ctx.adapter.handleAction({ type: "loadMembers", offset: 97 });
+    expect(lazy(ctx).at(-1)).toEqual({ subscriptions: { "100": { active: true, typing: true, member_list_channels: { "113": [[0, 99], [100, 199]] } } } });
+    expect(membersOf(ctx)).toMatchObject({ hasMore: false, loading: true });
+    await ctx.adapter.handleAction({ type: "loadMembers", offset: 97 });
+    expect(lazy(ctx)).toHaveLength(3);
+    dispatch(ctx, "GUILD_MEMBER_LIST_UPDATE", { ...firstWindow(), ops: [{ op: "SYNC", range: [100, 199], items: offline(1094, 56) }] });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(membersOf(ctx)!.sections.at(-1)!.members).toHaveLength(150);
+    expect(membersOf(ctx)).toMatchObject({ hasMore: false, loading: false });
+    expect(membersOf(ctx)!.more).toBeUndefined();
+
+    // Closing ends the subscription and forgets the list.
+    await ctx.adapter.handleAction({ type: "members", open: false });
+    expect(lazy(ctx).at(-1)).toEqual({ subscriptions: { "100": { member_list_channels: { "113": [] } } } });
+    expect(membersOf(ctx)).toBeUndefined();
+    expect(ctx.adapter.state.memberLists.size).toBe(0);
+    await ctx.adapter.handleAction({ type: "loadMembers", offset: 0 });
+    expect(lazy(ctx)).toHaveLength(4);
+  });
+
+  it("follows the open channel and a new session, and says when no list comes", async () => {
+    const ctx = await opened();
+    await ctx.adapter.handleAction({ type: "members", open: true });
+    await ctx.adapter.handleAction({ type: "select", channelId: "111" });
+    expect(lazy(ctx).slice(-2)).toEqual([
+      { subscriptions: { "100": { member_list_channels: { "113": [] } } } },
+      { subscriptions: { "100": { active: true, typing: true, member_list_channels: { "111": [[0, 99]] } } } },
+    ]);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(membersOf(ctx)).toEqual({ sections: [], hasMore: false, loading: true, error: "Fluxer did not send this channel's members." });
+    // A list that comes late still shows; members before any heading go under "Members", as do unknown roles.
+    dispatch(ctx, "GUILD_MEMBER_LIST_UPDATE", {
+      guild_id: "100",
+      id: "111",
+      member_count: 2,
+      groups: [{ id: "77", count: 1 }],
+      ops: [{ op: "SYNC", range: [0, 2], items: [{ member: { user: ANA, roles: [], presence: { status: "online" } } }, { group: { id: "77", count: 1 } }, { member: { user: { id: "4", username: "cy" }, roles: [] } }] }],
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(membersOf(ctx)!.sections.map((s) => [s.name, s.members.map((m) => m.id)])).toEqual([["Members", ["2"]], ["Members — 1", ["4"]]]);
+    expect(membersOf(ctx)).toMatchObject({ hasMore: false, loading: false });
+    // A new session subscribes again.
+    dispatch(ctx, "READY", readyPayload());
+    expect(lazy(ctx).at(-1)).toEqual({ subscriptions: { "100": { active: true, typing: true, member_list_channels: { "111": [[0, 99]] } } } });
+    // A list answered in time shows no error.
+    await ctx.adapter.openServer("100");
+    await ctx.adapter.handleAction({ type: "select", channelId: "113" });
+    dispatch(ctx, "GUILD_MEMBER_LIST_UPDATE", { guild_id: "100", id: "113", member_count: 0, groups: [], ops: [] });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(membersOf(ctx)).toEqual({ sections: [], hasMore: false, loading: false });
+  });
+
+  it("lists a DM's people with their presence, and forgets the panel with the session", async () => {
+    const ctx = await opened();
+    await ctx.adapter.handleAction({ type: "members", open: true });
+    await ctx.adapter.openHome();
+    await ctx.adapter.handleAction({ type: "select", channelId: "900" });
+    expect(ctx.chat().channel!.can.members).toBe(true);
+    expect(membersOf(ctx)).toEqual({
+      sections: [{ name: "Members", members: [{ id: "2", name: "Ana", avatarUrl: "https://media.fx/avatars/2/av.png?size=64", mention: "<@2>" }, { id: "1", name: "me", mention: "<@1>" }] }],
+      hasMore: false,
+      loading: false,
+    });
+    dispatch(ctx, "PRESENCE_UPDATE", { user: { id: "1" }, status: "online" });
+    dispatch(ctx, "PRESENCE_UPDATE_BULK", { presences: [{ user: { id: "2" }, status: "invisible" }] });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(membersOf(ctx)!.sections[0]!.members.map((m) => [m.id, m.presence])).toEqual([["1", "online"], ["2", "offline"]]);
+    await ctx.adapter.handleAction({ type: "logout" });
+    expect(ctx.last().screen).toBe("login");
+  });
+
+  it("answers profile cards from what is known, then Fluxer's profile with the open guild's roles", async () => {
+    let refuse = false;
+    let release: () => void = () => {};
+    const ctx = await opened([
+      (url) => (refuse && url.includes("/profile") ? { status: 403, body: { code: "MISSING_ACCESS", message: "No" } } : undefined),
+      (url) =>
+        url === "https://api.fx/v1/users/2/profile?guild_id=100"
+          ? { status: 200, body: { user: { ...ANA, discriminator: "0042" }, user_profile: { bio: "Hi there", pronouns: "she/her" }, guild_member: { nick: "Annie", roles: ["50", "100", "51", "52"] } } }
+          : undefined,
+      (url) => (url === "https://api.fx/v1/users/4/profile" ? (release(), { status: 200, body: { user: { id: "4", username: "cy", discriminator: "0000", bot: true } } }) : undefined),
+    ]);
+    await ctx.adapter.handleAction({ type: "profile", id: "not an id" });
+    expect(ctx.chat().profile).toBeUndefined();
+    const pending = ctx.adapter.handleAction({ type: "profile", id: "2" });
+    expect(ctx.chat().profile).toEqual({ id: "2", loading: true, name: "Ana", username: "@ana", avatarUrl: "https://media.fx/avatars/2/av.png?size=128" });
+    await pending;
+    expect(ctx.chat().profile).toEqual({
+      id: "2",
+      name: "Annie",
+      username: "ana#0042",
+      avatarUrl: "https://media.fx/avatars/2/av.png?size=128",
+      status: "she/her",
+      about: "Hi there",
+      roles: [{ name: "Plain" }, { name: "Mods", color: "#ff0000" }, { name: "Blue", color: "#0000ff" }],
+    });
+
+    // In a DM: no guild; an unknown user starts empty; a card replaced meanwhile is dropped.
+    await ctx.adapter.openHome();
+    await ctx.adapter.handleAction({ type: "select", channelId: "900" });
+    let next: Promise<void> | undefined;
+    release = () => {
+      release = () => {};
+      next = ctx.adapter.handleAction({ type: "profile", id: "5" });
+    };
+    await ctx.adapter.handleAction({ type: "profile", id: "4" });
+    await next;
+    expect(ctx.chat().profile).toEqual({ id: "5" });
+    ctx.adapter.state.apply("PRESENCE_UPDATE", { user: { id: "4" }, status: "idle" });
+    await ctx.adapter.handleAction({ type: "profile", id: "4" });
+    expect(ctx.chat().profile).toEqual({ id: "4", name: "cy", username: "@cy", presence: "idle", status: "Bot" });
+
+    // Refused: the card keeps what it has.
+    refuse = true;
+    await ctx.adapter.handleAction({ type: "profile", id: "2" });
+    expect(ctx.chat().profile).toEqual({ id: "2", name: "Ana", username: "@ana", avatarUrl: "https://media.fx/avatars/2/av.png?size=128" });
   });
 });

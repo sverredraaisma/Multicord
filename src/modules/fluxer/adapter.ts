@@ -6,6 +6,10 @@ import {
   type NativeCustomEmoji,
   type NativeGifResults,
   type NativeListedMessage,
+  type NativeMember,
+  type NativeMemberList,
+  type NativeMemberSection,
+  type NativeProfile,
   type NativeMessage,
   type NativeMessageList,
   type NativeSearchResults,
@@ -23,7 +27,7 @@ import { solveAltcha } from "./captcha";
 import { discoverInstance, globalExpressions, type FluxerInstance } from "./discovery";
 import { FluxerGateway, type GatewayStatus, type SocketFactory } from "./gateway";
 import { FluxerRest, type LoginResult, type RestOptions } from "./rest";
-import { FluxerState, TYPING_MS } from "./state";
+import { FluxerState, MEMBER_LIST_POSITIONS, TYPING_MS } from "./state";
 import {
   ChannelType,
   compareIds,
@@ -33,6 +37,11 @@ import {
   TEXT_CHANNEL_TYPES,
   displayName,
   emojiKey,
+  roleColor,
+  isId,
+  type FluxerMember,
+  type FluxerProfile,
+  type FluxerUser,
   type FluxerChannel,
   type FluxerEmoji,
   type FluxerMessage,
@@ -50,6 +59,10 @@ const VOICE_STATE_UPDATE = 4;
 const VOICE_JOIN_TIMEOUT_MS = 15_000;
 /** GIF searches wait for a pause in typing; only the latest one is shown. */
 const GIF_DEBOUNCE_MS = 300;
+/** Member list positions op 14 asks for at once (Fluxer's largest range). */
+const MEMBER_WINDOW = 100;
+/** How long to wait for a member list before saying it did not come (Fluxer sends none where the user may not see the channel's members). */
+const MEMBER_LIST_TIMEOUT_MS = 15_000;
 
 /** LiveKit wants a ws(s) URL; Fluxer's endpoint may be a bare host. */
 export function liveKitUrl(endpoint: string): string {
@@ -154,6 +167,16 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   /** The open channel's search results, until the search ends; and a count that drops answers to earlier searches. */
   private search: { channelId: string; results: NativeSearchResults } | undefined;
   private searchCount = 0;
+  /** The view's member panel is open: the open channel's members are asked for and shown. */
+  private membersOpen = false;
+  /** Windows of the open guild channel's member list asked for (loadMembers adds one). */
+  private memberWindows = 1;
+  private memberTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The guild channel whose member list is subscribed to. */
+  private watched: { channelId: string; guildId: string } | undefined;
+  private memberError: string | undefined;
+  /** The profile card the view asked for last. */
+  private profile: NativeProfile | undefined;
 
   constructor(private readonly deps: FluxerAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -241,6 +264,12 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.searchMessages(action.query);
       case "pin":
         return this.pin(action.messageId, action.pin);
+      case "members":
+        return this.setMembersOpen(action.open);
+      case "loadMembers":
+        return this.loadMembers(action.offset);
+      case "profile":
+        return this.showProfile(action.id);
       case "logout":
         return this.logout();
     }
@@ -401,6 +430,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
             this.render();
           }
           if ((event === "READY" || event === "RESUMED") && this.selection.kind === "guild") this.subscribe(this.selection.guildId);
+          // A new session has no member list subscription of ours.
+          if ((event === "READY" || event === "RESUMED") && this.membersOpen) this.requestMembers();
         },
         status: (status) => {
           this.connection = status;
@@ -437,6 +468,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     this.state.reset();
     clearTimeout(this.gifTimer);
     this.gifResults = undefined;
+    this.membersOpen = false;
+    clearTimeout(this.memberTimer);
+    this.profile = undefined;
     this.selection = { kind: "home" };
     this.selectedChannelId = undefined;
     this.lastChannel.clear();
@@ -457,7 +491,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     if (channelId !== this.selectedChannelId) this.unreadAt = !forum && this.state.isUnread(channel) ? { channelId, after: this.state.readStates.get(channelId)?.lastMessageId } : undefined;
     if (this.pins?.channelId !== channelId) this.pins = undefined;
     if (this.search?.channelId !== channelId) this.search = undefined;
+    const changed = channelId !== this.selectedChannelId;
     this.selectedChannelId = channelId;
+    if (changed && this.membersOpen) this.requestMembers();
     this.lastChannel.set(channel.guildId ?? "home", channelId);
     this.error = undefined;
     this.render();
@@ -926,6 +962,175 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
+  // --- Members and profiles --------------------------------------------------
+
+  /** Where the member panel's list comes from: a guild text channel's member list (gateway), a DM's recipients; none for forums, threads and voice. */
+  private memberSource(channel: FluxerChannel): "guild" | "dm" | undefined {
+    if (channel.type === ChannelType.Dm || channel.type === ChannelType.GroupDm) return "dm";
+    return channel.guildId && TEXT_CHANNEL_TYPES.has(channel.type) && !THREAD_TYPES.has(channel.type) ? "guild" : undefined;
+  }
+
+  /** The view's member panel opened (asking for the open channel's list afresh) or closed (ending the subscription). */
+  private setMembersOpen(open: boolean): void {
+    this.membersOpen = open;
+    if (open) this.requestMembers();
+    else this.dropMembers();
+    this.render();
+  }
+
+  /** Subscribes to the open guild channel's member list (op 14), its first window; DMs need nothing fetched. */
+  private requestMembers(): void {
+    this.dropMembers();
+    this.memberWindows = 1;
+    this.memberError = undefined;
+    const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
+    if (!channel || this.memberSource(channel) !== "guild") return;
+    this.watched = { channelId: channel.id, guildId: channel.guildId! };
+    this.state.watchMembers(channel.id, channel.guildId!);
+    this.askMembers(this.watched);
+  }
+
+  private askMembers(watched: { channelId: string; guildId: string }): void {
+    const ranges = Array.from({ length: this.memberWindows }, (_, i) => [i * MEMBER_WINDOW, (i + 1) * MEMBER_WINDOW - 1]);
+    this.gateway?.command(LAZY_REQUEST, { subscriptions: { [watched.guildId]: { active: true, typing: true, member_list_channels: { [watched.channelId]: ranges } } } });
+    if (this.memberWindows > 1) return;
+    clearTimeout(this.memberTimer);
+    this.memberTimer = setTimeout(() => {
+      if (this.watched !== watched || this.state.memberLists.get(watched.channelId)?.synced) return;
+      this.memberError = "Fluxer did not send this channel's members.";
+      this.render();
+    }, MEMBER_LIST_TIMEOUT_MS);
+  }
+
+  /** Forgets the list being kept, and tells Fluxer to stop sending it (an empty range list). */
+  private dropMembers(): void {
+    clearTimeout(this.memberTimer);
+    const watched = this.watched;
+    this.watched = undefined;
+    if (!watched) return;
+    this.state.memberLists.delete(watched.channelId);
+    this.gateway?.command(LAZY_REQUEST, { subscriptions: { [watched.guildId]: { member_list_channels: { [watched.channelId]: [] } } } });
+  }
+
+  /** The next window of the list; `offset` is how many the view lists, so a window is never asked twice. */
+  private loadMembers(offset: number): void {
+    const channel = this.watched && this.state.channels.get(this.watched.channelId);
+    const view = channel ? this.memberView(channel) : undefined;
+    if (!view?.hasMore || offset !== view.sections.reduce((sum, s) => sum + s.members.length, 0)) return;
+    this.memberWindows++;
+    this.askMembers(this.watched!);
+    this.render();
+  }
+
+  /** The member panel's list: Fluxer's own grouping (hoisted roles, then online, then offline) for guild channels; recipients for DMs. */
+  private memberView(channel: FluxerChannel): NativeMemberList | undefined {
+    if (!this.membersOpen) return undefined;
+    if (this.memberSource(channel) === "dm") return this.dmMembers(channel);
+    const list = this.watched?.channelId === channel.id ? this.state.memberLists.get(channel.id) : undefined;
+    if (!list) return undefined;
+    const asked = Math.min(this.memberWindows * MEMBER_WINDOW, MEMBER_LIST_POSITIONS);
+    const sections: NativeMemberSection[] = [];
+    let listed = 0;
+    for (const item of list.items.slice(0, asked)) {
+      if (!item) continue;
+      if ("group" in item) {
+        sections.push({ name: `${this.groupName(list.guildId, item.group.id)} — ${item.group.count}`, members: [] });
+        continue;
+      }
+      if (sections.length === 0) sections.push({ name: "Members", members: [] });
+      sections.at(-1)!.members.push(this.guildMember(list.guildId, item.member));
+      listed++;
+    }
+    const loading = !list.synced || list.reach < Math.min(list.positions, asked);
+    const view: NativeMemberList = { sections: sections.filter((s) => s.members.length > 0), hasMore: !loading && asked < Math.min(list.positions, MEMBER_LIST_POSITIONS), loading };
+    if (list.synced && list.memberCount > listed) view.more = list.memberCount - listed;
+    if (this.memberError && !list.synced) view.error = this.memberError;
+    return view;
+  }
+
+  private groupName(guildId: string, id: string): string {
+    if (id === "online") return "Online";
+    if (id === "offline") return "Offline";
+    return this.state.roles.get(guildId)?.find((r) => r.id === id)?.name ?? "Members";
+  }
+
+  /** Someone's highest role with a colour, for their name. */
+  private topColor(guildId: string, roleIds: readonly string[]): string | undefined {
+    const roles = (this.state.roles.get(guildId) ?? []).filter((r) => r.color > 0 && roleIds.includes(r.id));
+    return roleColor(roles.sort((a, b) => b.position - a.position)[0]);
+  }
+
+  private guildMember(guildId: string, member: FluxerMember): NativeMember {
+    const row = this.memberRow(member.user, member.presence.status, member.presence.text);
+    if (member.nick) row.name = member.nick;
+    const color = this.topColor(guildId, member.roles);
+    if (color) row.color = color;
+    return row;
+  }
+
+  /** A member row; Fluxer's syntax mentions them as <@id>. */
+  private memberRow(user: FluxerUser, presence: NativeMember["presence"], text: string | undefined): NativeMember {
+    const row: NativeMember = { id: user.id, name: displayName(this.state.users.get(user.id) ?? user), mention: `<@${user.id}>` };
+    const avatar = this.iconUrl("avatars", user.id, user.avatar, 64);
+    if (avatar) row.avatarUrl = avatar;
+    if (presence) row.presence = presence;
+    const status = text ?? (user.bot ? "Bot" : undefined);
+    if (status) row.status = status;
+    return row;
+  }
+
+  /** A DM's or group DM's people, the user included, those online first; presence as far as Fluxer has told. */
+  private dmMembers(channel: FluxerChannel): NativeMemberList {
+    const people = [...channel.recipients, ...(this.state.me ? [this.state.me] : [])].filter((u, i, all) => all.findIndex((o) => o.id === u.id) === i);
+    const rank = (row: NativeMember) => (row.presence === undefined || row.presence === "offline" ? 1 : 0);
+    const rows = people
+      .map((u) => {
+        const presence = this.state.presences.get(u.id);
+        return this.memberRow(u, presence?.status, presence?.text);
+      })
+      .sort((a, b) => rank(a) - rank(b));
+    return { sections: [{ name: "Members", members: rows }], hasMore: false, loading: false };
+  }
+
+  /**
+   * Someone's profile card: what is known at once (name, picture, presence),
+   * then their profile from Fluxer, with their nickname and roles in the open
+   * guild. Fluxer refuses profiles of people the user shares nothing with.
+   */
+  private async showProfile(id: string): Promise<void> {
+    if (!isId(id) || !this.rest) return;
+    const guildId = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId)?.guildId : undefined;
+    const profile: NativeProfile = { id, loading: true };
+    const user = this.state.users.get(id);
+    if (user) Object.assign(profile, this.profileView(user, undefined, guildId));
+    this.profile = profile;
+    this.render();
+    try {
+      const found = await this.rest.profile(id, guildId);
+      if (this.profile !== profile) return;
+      if (found) Object.assign(profile, this.profileView(found.user, found, guildId));
+    } catch {
+      // Not shown to this user (403), or gone: the card keeps what the view has.
+    }
+    if (this.profile !== profile) return;
+    delete profile.loading;
+    this.render();
+  }
+
+  private profileView(user: FluxerUser, found: FluxerProfile | undefined, guildId: string | undefined): Partial<NativeProfile> {
+    const view: Partial<NativeProfile> = { name: found?.nick ?? displayName(user), username: found?.discriminator ? `${user.username}#${found.discriminator}` : `@${user.username}` };
+    const avatar = this.iconUrl("avatars", user.id, user.avatar, 128);
+    if (avatar) view.avatarUrl = avatar;
+    const presence = this.state.presences.get(user.id);
+    if (presence) view.presence = presence.status;
+    const status = presence?.text ?? found?.pronouns ?? (user.bot ? "Bot" : undefined);
+    if (status) view.status = status;
+    if (found?.bio) view.about = found.bio;
+    const roles = guildId && found?.roles ? (this.state.roles.get(guildId) ?? []).filter((r) => r.id !== guildId && found.roles!.includes(r.id)) : [];
+    if (roles.length > 0) view.roles = roles.sort((a, b) => b.position - a.position).map((r) => ({ name: r.name, ...(roleColor(r) ? { color: roleColor(r) } : {}) }));
+    return view;
+  }
+
   // --- Rail and view ---------------------------------------------------------
 
   private schedulePublish(): void {
@@ -1185,6 +1390,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         const guild = this.selection.kind === "guild" ? this.state.guilds.get(this.selection.guildId) : undefined;
         const expressionGuilds = this.expressionGuilds();
         const gifs = this.instance!.gifs;
+        const members = channel ? this.memberView(channel) : undefined;
         return {
           screen: "chat",
           platform,
@@ -1204,6 +1410,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt) } : {}),
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
                 ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
+                ...(members ? { members } : {}),
                 can: {
                   pins: !FORUM_TYPES.has(channel.type),
                   search: !FORUM_TYPES.has(channel.type),
@@ -1212,7 +1419,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                   react: true,
                   attach: this.deps.files !== undefined,
                   typing: true,
-                  members: false,
+                  members: this.memberSource(channel) !== undefined,
                   // Fluxer allows guild stickers in DMs only with global expressions.
                   stickers: channel.guildId !== undefined || this.globalExpressions(),
                   gifs,
@@ -1233,6 +1440,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
           customEmoji: this.customEmoji(expressionGuilds),
           stickers: this.stickerPacks(expressionGuilds),
           gifs: gifs ? this.gifResults : undefined,
+          ...(this.profile ? { profile: this.profile } : {}),
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };
       }

@@ -20,6 +20,12 @@ import {
   parseReadState,
   parseUser,
   parseVoiceState,
+  parseMemberListUpdate,
+  parsePresence,
+  parseRole,
+  type FluxerListItem,
+  type FluxerPresence,
+  type FluxerRole,
   type FluxerChannel,
   type FluxerEmoji,
   DM_SETTINGS,
@@ -39,6 +45,22 @@ const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
 const MAX_CACHED_MESSAGES = 200;
 /** Fluxer, like Discord, shows typing for about 10 seconds per event. */
 export const TYPING_MS = 10_000;
+
+/** List positions kept per member list: two of the windows of 100 that op 14 asks for. */
+export const MEMBER_LIST_POSITIONS = 200;
+
+/** A channel's member list as far as Fluxer has sent it: headings and members by list position. */
+export interface MemberListState {
+  guildId: string;
+  /** Whether Fluxer has sent the list at all. */
+  synced: boolean;
+  memberCount: number;
+  /** List positions the headings and their members take, as Fluxer counts them. */
+  positions: number;
+  /** How far SYNC operations have filled the list (the position after the last they replaced). */
+  reach: number;
+  items: (FluxerListItem | undefined)[];
+}
 
 /** Client-side view of one Fluxer session, built from READY and dispatch events. */
 export class FluxerState {
@@ -63,6 +85,12 @@ export class FluxerState {
   /** Notification settings per guild id, or DM_SETTINGS for DMs. */
   readonly notifySettings = new Map<string, FluxerNotifySettings>();
   folders: FluxerFolder[] | undefined;
+  /** Each guild's roles. */
+  readonly roles = new Map<string, FluxerRole[]>();
+  /** Presences of those the server tells about (friends, DM partners, open member lists); by user id; unknown for the rest. */
+  readonly presences = new Map<string, FluxerPresence>();
+  /** Member lists the user asked for (the member panel), by channel id: list positions as Fluxer's SYNC operations fill them. */
+  readonly memberLists = new Map<string, MemberListState>();
 
   readonly changed = new Emitter<void>();
   /** New messages from others, for acking in the open channel. */
@@ -72,7 +100,7 @@ export class FluxerState {
     this.me = undefined;
     this.traits = [];
     this.folders = undefined;
-    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.notifySettings, this.typing, this.voiceStates, this.emojis, this.stickers]) map.clear();
+    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.notifySettings, this.typing, this.voiceStates, this.emojis, this.stickers, this.roles, this.presences, this.memberLists]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -89,6 +117,28 @@ export class FluxerState {
         for (const r of list(d.read_states)) this.setReadState(parseReadState(r));
         this.folders = parseFolders(d.user_settings);
         for (const g of list(d.user_guild_settings)) this.setNotifySettings(parseGuildSettings(g));
+        for (const p of list(d.presences)) this.setPresence(parsePresence(p));
+        break;
+      case "PRESENCE_UPDATE":
+        this.setPresence(parsePresence(data));
+        break;
+      case "PRESENCE_UPDATE_BULK":
+        for (const p of list(d.presences)) this.setPresence(parsePresence(p));
+        break;
+      case "GUILD_ROLE_CREATE":
+      case "GUILD_ROLE_UPDATE": {
+        const role = parseRole(d.role);
+        const roles = isId(d.guild_id) ? this.roles.get(d.guild_id) : undefined;
+        if (role && roles) this.roles.set(d.guild_id as string, [...roles.filter((r) => r.id !== role.id), role]);
+        break;
+      }
+      case "GUILD_ROLE_DELETE": {
+        const roles = isId(d.guild_id) ? this.roles.get(d.guild_id) : undefined;
+        if (roles) this.roles.set(d.guild_id as string, roles.filter((r) => r.id !== d.role_id));
+        break;
+      }
+      case "GUILD_MEMBER_LIST_UPDATE":
+        this.applyMemberList(data);
         break;
       case "USER_GUILD_SETTINGS_UPDATE":
         this.setNotifySettings(parseGuildSettings(data));
@@ -371,6 +421,34 @@ export class FluxerState {
     if (entry) this.notifySettings.set(entry[0], entry[1]);
   }
 
+  private setPresence(presence: FluxerPresence | undefined): void {
+    if (presence) this.presences.set(presence.userId, presence);
+  }
+
+  /** Starts keeping a channel's member list, which Fluxer sends once op 14 asks for it; lists not asked for are ignored. */
+  watchMembers(channelId: string, guildId: string): void {
+    this.memberLists.set(channelId, { guildId, synced: false, memberCount: 0, positions: 0, reach: 0, items: [] });
+  }
+
+  private applyMemberList(data: unknown): void {
+    const update = parseMemberListUpdate(data);
+    const list = update ? this.memberLists.get(update.channelId) : undefined;
+    if (!update || !list || list.guildId !== update.guildId) return;
+    list.synced = true;
+    list.memberCount = update.memberCount;
+    list.positions = update.groups.reduce((sum, g) => sum + 1 + g.count, 0);
+    for (const op of update.ops) {
+      const end = Math.min(op.end, MEMBER_LIST_POSITIONS - 1);
+      if (op.start > end) continue;
+      for (let i = op.start; i <= end; i++) list.items[i] = op.items[i - op.start];
+      list.reach = Math.max(list.reach, end + 1);
+    }
+    for (const item of list.items) if (item && "member" in item) {
+      this.addUser(item.member.user);
+      this.setPresence(item.member.presence);
+    }
+  }
+
   private addUser(user: FluxerUser | undefined): void {
     if (user) this.users.set(user.id, user);
   }
@@ -390,6 +468,7 @@ export class FluxerState {
     for (const c of [...list(record.channels), ...list(record.threads)]) this.addChannel(parseChannel(c, guild.id));
     if (Array.isArray(record.emojis)) this.setEmojis(guild.id, record.emojis);
     if (Array.isArray(record.stickers)) this.setStickers(guild.id, record.stickers);
+    if (Array.isArray(record.roles)) this.roles.set(guild.id, record.roles.flatMap((r) => parseRole(r) ?? []));
     if (Array.isArray(record.voice_states)) {
       for (const [key, v] of [...this.voiceStates]) if (v.guildId === guild.id) this.voiceStates.delete(key);
       for (const v of record.voice_states) this.setVoiceState(parseVoiceState(v, guild.id));
@@ -400,6 +479,7 @@ export class FluxerState {
     this.guilds.delete(guildId);
     this.emojis.delete(guildId);
     this.stickers.delete(guildId);
+    this.roles.delete(guildId);
     for (const channel of [...this.channels.values()]) {
       if (channel.guildId === guildId) {
         this.channels.delete(channel.id);
