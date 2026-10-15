@@ -201,6 +201,11 @@ export class StoatRest {
     return isRecord(data) ? data : {};
   }
 
+  /** Saves synced user settings: each key's value is JSON text, stamped with the time it changed. */
+  async setSettings(values: Record<string, string>, now: number = Date.now()): Promise<void> {
+    await this.request("POST", `/sync/settings/set?timestamp=${now}`, values);
+  }
+
   /**
    * Uploads a file to Autumn's attachments bucket as multipart form data and
    * returns its id, which a message then claims.

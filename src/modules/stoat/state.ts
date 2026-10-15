@@ -18,6 +18,7 @@ import {
   parseUser,
   MAX_CONTENT,
   MAX_NAME,
+  type NotifyLevel,
   type StoatChannel,
   type StoatEmoji,
   type StoatMessage,
@@ -318,13 +319,19 @@ export class StoatState {
   shouldNotify(message: StoatMessage): boolean {
     const channel = this.channels.get(message.channelId);
     if (!channel || !this.meId || message.authorId === this.meId || message.flags & MessageFlag.SuppressNotifications) return false;
-    const level =
-      this.notifySettings.channels.get(channel.id) ??
-      (channel.serverId ? this.notifySettings.servers.get(channel.serverId) : undefined) ??
-      (channel.serverId ? "mention" : "all");
+    const level = this.notifyLevel(channel);
     if (level === "all") return true;
     if (level === "mention") return this.mentionsMe(message);
     return false;
+  }
+
+  /** A channel's notification level: its own, else its server's, else the default (everything in DMs and groups, mentions in servers). */
+  notifyLevel(channel: StoatChannel): NotifyLevel {
+    return (
+      this.notifySettings.channels.get(channel.id) ??
+      (channel.serverId ? this.notifySettings.servers.get(channel.serverId) : undefined) ??
+      (channel.serverId ? "mention" : "all")
+    );
   }
 
   mentionsMe(message: StoatMessage): boolean {

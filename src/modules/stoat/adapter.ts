@@ -7,7 +7,7 @@ import { BaseAdapter } from "../../shared/baseAdapter";
 import { StoatEvents, type EventsStatus, type SocketFactory } from "./events";
 import { discoverInstance, instanceHosts, StoatRest, type LoginResult, type RestOptions, type StoatInstance } from "./rest";
 import { StoatState, TYPING_MS } from "./state";
-import { ChannelType, TEXT_CHANNEL_TYPES, displayName, idTime, isId, type StoatChannel, type StoatFile, type StoatMessage } from "./types";
+import { ChannelType, TEXT_CHANNEL_TYPES, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatFile, type StoatMessage } from "./types";
 
 const PAGE_SIZE = 50;
 const PUBLISH_DELAY_MS = 100;
@@ -137,6 +137,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         return this.remove(action.messageId);
       case "react":
         return this.react(action.messageId, action.emoji, action.add);
+      case "mute":
+        return this.mute(action.channelId, action.mute);
       case "loadOlder":
         return this.loadOlder();
       case "typing":
@@ -463,6 +465,25 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   /**
+   * Mutes a channel, DM or group in the user's Stoat notification settings,
+   * or unmutes it: its own level goes, or becomes "mention" where its server
+   * is muted. The setting is fetched fresh, so changes made elsewhere stay.
+   */
+  private async mute(channelId: string, mute: boolean): Promise<void> {
+    const channel = this.state.channels.get(channelId);
+    if (!channel || !this.rest || (this.state.notifyLevel(channel) === "muted") === mute) return;
+    await this.attempt(mute ? "Could not mute" : "Could not unmute", async () => {
+      const current = await this.rest!.settings(["notifications"]);
+      const serverMuted = channel.serverId !== undefined && this.state.notifySettings.servers.get(channel.serverId) === "muted";
+      const text = withChannelLevel(current.notifications, channelId, mute ? "muted" : serverMuted ? "mention" : undefined);
+      const now = Date.now();
+      await this.rest!.setSettings({ notifications: text }, now);
+      this.state.setNotifySettings([now, text]);
+      this.schedulePublish();
+    });
+  }
+
+  /**
    * Tells others we are typing. Stoat shows it until told to stop, so it is
    * re-announced while typing goes on and ended after a pause or on send.
    */
@@ -702,6 +723,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       unread: this.state.isUnread(channel),
       mentions: this.state.mentions(channel.id),
       active: channel.id === this.selectedChannelId,
+      muted: this.state.notifyLevel(channel) === "muted",
+      canMute: true,
     });
     if (this.selection.kind === "home") return this.state.privateChannels().map((c) => item(c, "dm"));
     return this.state.serverEntries(this.selection.serverId).map((entry) =>

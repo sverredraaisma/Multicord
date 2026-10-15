@@ -259,7 +259,7 @@ describe("StoatAdapter session", () => {
     await goOnline(readyPayload({ channel_unreads: undefined }));
     expect(requests("/sync/unreads")).toHaveLength(1);
     await adapter.openServer(BETA);
-    expect(chat().sidebar).toEqual([{ id: CHAT, name: "chat", kind: "text", iconUrl: undefined, unread: true, mentions: 1, active: true }]);
+    expect(chat().sidebar).toEqual([{ id: CHAT, name: "chat", kind: "text", iconUrl: undefined, unread: true, mentions: 1, active: true, muted: false, canMute: true }]);
 
     const failing = setup({ token: "saved", routes: [(url) => (url.includes("/sync/") ? { status: 500 } : undefined)] });
     await failing.adapter.start();
@@ -335,10 +335,10 @@ describe("StoatAdapter navigation", () => {
     const view = chat();
     expect(view.title).toBe("Alpha");
     expect(view.sidebar).toEqual([
-      { id: LOBBY, name: "lobby", kind: "text", iconUrl: undefined, unread: false, mentions: 0, active: true },
+      { id: LOBBY, name: "lobby", kind: "text", iconUrl: undefined, unread: false, mentions: 0, active: true, muted: false, canMute: true },
       { id: "cat1", name: "Text", kind: "category", unread: false, mentions: 0, active: false },
-      { id: GENERAL, name: "general", kind: "text", iconUrl: undefined, unread: true, mentions: 2, active: false },
-      { id: RULES, name: "rules", kind: "text", iconUrl: undefined, unread: false, mentions: 0, active: false },
+      { id: GENERAL, name: "general", kind: "text", iconUrl: undefined, unread: true, mentions: 2, active: false, muted: false, canMute: true },
+      { id: RULES, name: "rules", kind: "text", iconUrl: undefined, unread: false, mentions: 0, active: false, muted: false, canMute: true },
     ]);
     expect(view.channel).toMatchObject({ id: LOBBY, name: "lobby", loading: false, hasOlder: false, typing: [], pending: [], uploading: false });
     await expect(adapter.openServer("nope")).rejects.toThrow("Unknown Stoat server: nope");
@@ -802,6 +802,47 @@ describe("StoatAdapter live updates", () => {
     await event({ type: "Message", ...message(811, DM) });
     await vi.advanceTimersByTimeAsync(750);
     expect(requests("/ack/")).toHaveLength(2);
+  });
+
+  it("shows muted channels and mutes or unmutes them in the user's settings, keeping the rest", async () => {
+    const { adapter, chat, event, online, routes, requests } = setup({ token: "saved" });
+    let saved = JSON.stringify({ server: { [ALPHA]: "muted" }, channel: { [DM]: "muted", [GROUP]: "all" }, extra: 1 });
+    routes.push((url, init) => {
+      if (url.endsWith("/sync/settings/fetch")) return { status: 200, body: { notifications: [1, saved] } };
+      if (url.includes("/sync/settings/set")) saved = JSON.parse(init.body as string).notifications;
+      return undefined;
+    });
+    await online();
+    const row = (id: string) => chat().sidebar.find((i) => i.id === id)!;
+    expect(row(DM)).toMatchObject({ muted: true, canMute: true });
+    expect(row(GROUP)).toMatchObject({ muted: false, canMute: true });
+    await adapter.handleAction({ type: "mute", channelId: GROUP, mute: true });
+    const set = requests("/sync/settings/set").at(-1)!;
+    expect(set.url).toBe(`https://stoat.test/api/sync/settings/set?timestamp=${Date.now()}`);
+    expect(JSON.parse(saved)).toEqual({ server: { [ALPHA]: "muted" }, channel: { [DM]: "muted", [GROUP]: "muted" }, extra: 1 });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(chat().sidebar.find((i) => i.id === GROUP)!.muted).toBe(true);
+    await adapter.handleAction({ type: "mute", channelId: DM, mute: false });
+    expect(JSON.parse(saved).channel).toEqual({ [GROUP]: "muted" });
+    // A channel of a muted server is unmuted with a level of its own.
+    await adapter.openServer(ALPHA);
+    expect(chat().sidebar.find((i) => i.id === GENERAL)!.muted).toBe(true);
+    await adapter.handleAction({ type: "mute", channelId: GENERAL, mute: false });
+    expect(JSON.parse(saved).channel[GENERAL]).toBe("mention");
+    await vi.advanceTimersByTimeAsync(100);
+    expect(chat().sidebar.find((i) => i.id === GENERAL)!.muted).toBe(false);
+    // Already so, or unknown: nothing is sent.
+    const before = requests("/sync/settings/set").length;
+    await adapter.handleAction({ type: "mute", channelId: GENERAL, mute: false });
+    await adapter.handleAction({ type: "mute", channelId: ulid(999), mute: true });
+    expect(requests("/sync/settings/set")).toHaveLength(before);
+    // Failures say so.
+    routes.unshift((url) => (url.includes("/sync/settings/set") ? { status: 500, body: { type: "InternalError" } } : undefined));
+    await adapter.handleAction({ type: "mute", channelId: GENERAL, mute: true });
+    expect(chat().error).toMatch(/^Could not mute: /);
+    await adapter.handleAction({ type: "mute", channelId: LOBBY, mute: false });
+    expect(chat().error).toMatch(/^Could not unmute: /);
+    await event({ type: "Pong" });
   });
 
   it("notifies as the user's settings say, naming where the message came from", async () => {

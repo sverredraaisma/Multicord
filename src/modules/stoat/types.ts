@@ -347,6 +347,26 @@ export function parseNotifySettings(value: unknown): StoatNotifySettings | undef
   return { servers: levels(data.server), channels: levels(data.channel) };
 }
 
+/**
+ * The "notifications" setting's JSON text with one channel's level set, or
+ * its own level removed (undefined), keeping everything else in it as it was.
+ * `value` is the setting as /sync/settings/fetch gives it; anything
+ * unreadable counts as no settings yet.
+ */
+export function withChannelLevel(value: unknown, channelId: string, level: NotifyLevel | undefined): string {
+  let data: unknown;
+  try {
+    data = Array.isArray(value) && typeof value[1] === "string" ? JSON.parse(value[1]) : {};
+  } catch {
+    data = {};
+  }
+  const settings = isRecord(data) ? data : {};
+  const channels = isRecord(settings.channel) ? { ...settings.channel } : {};
+  if (level) channels[channelId] = level;
+  else delete channels[channelId];
+  return JSON.stringify({ ...settings, channel: channels });
+}
+
 /** Display name: display name, else username. */
 export function displayName(user: StoatUser): string {
   return user.displayName ?? user.username;

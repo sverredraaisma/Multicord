@@ -11,6 +11,7 @@ import {
   parseFile,
   parseMessage,
   parseNotifySettings,
+  withChannelLevel,
   parseReactions,
   parseServer,
   parseUnread,
@@ -188,5 +189,15 @@ describe("Stoat parsers", () => {
     expect(parseNotifySettings([1, "[]"])).toBeUndefined();
     expect(parseNotifySettings([1, "x".repeat(100_001)])).toBeUndefined();
     expect(parseNotifySettings("{}")).toBeUndefined();
+  });
+
+  it("sets or removes one channel's notification level, keeping the rest of the setting", () => {
+    const current = [1, JSON.stringify({ server: { a: "muted" }, channel: { b: "all" }, other: true })];
+    expect(JSON.parse(withChannelLevel(current, "c", "muted"))).toEqual({ server: { a: "muted" }, channel: { b: "all", c: "muted" }, other: true });
+    expect(JSON.parse(withChannelLevel(current, "b", undefined))).toEqual({ server: { a: "muted" }, channel: {}, other: true });
+    // Unreadable or missing settings start empty.
+    for (const value of [undefined, "{}", [1, "not json"], [1, "[]"], [1, JSON.stringify({ channel: "x" })]]) {
+      expect(JSON.parse(withChannelLevel(value, "c", "muted")).channel).toEqual({ c: "muted" });
+    }
   });
 });
