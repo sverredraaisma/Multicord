@@ -2,15 +2,17 @@ import type { AsyncSecretStore } from "../../engine/runtime";
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
-import type { NativeAction, NativeAttachment, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeSidebarItem, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeViewState } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
-import { isChannelPeer, telegramError, type TelegramApi, type TelegramCredentials, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgUpdate, type TgUser } from "./api";
+import { isChannelPeer, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgReaction, type TgUpdate, type TgUser } from "./api";
 
 /** Chats listed: one-to-one chats, groups and channels together, most recent first. */
 export const DIALOG_LIMIT = 200;
 export const PAGE_SIZE = 50;
 /** Profile pictures fetched per refresh; the rest show initials. */
 export const AVATAR_LIMIT = 40;
+/** Reactions a Premium user may give one message; others give one. Telegram's default (reactions_user_max_premium). */
+export const PREMIUM_REACTIONS = 3;
 /** Members fetched per page, and at most for one chat: big groups list their first ones and count the rest. */
 export const MEMBER_PAGE = 50;
 export const MEMBER_LIMIT = 200;
@@ -159,6 +161,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly membersHidden = new Set<string>();
   /** Users whose pictures were asked for, so none is asked twice. */
   private readonly avatarsAsked = new Set<string>();
+  /** Which reactions each group or channel takes, once asked; chats asked about meanwhile. */
+  private readonly allowed = new Map<string, TgAllowedReactions>();
+  private readonly allowedAsked = new Set<string>();
+  /** The emoji Telegram offers as reactions to this user, once asked. */
+  private reactionList: string[] | undefined;
+  private reactionListAsked = false;
   /** The profile card the view asked for last. */
   private profile: NativeProfile | undefined;
   private visible = false;
@@ -303,6 +311,10 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.membersHidden.clear();
     this.membersOpen = false;
     this.profile = undefined;
+    this.allowed.clear();
+    this.allowedAsked.clear();
+    this.reactionList = undefined;
+    this.reactionListAsked = false;
     this.session++;
     this.selected = undefined;
     this.directsChanged.emit([]);
@@ -343,10 +355,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.loadMembers(action.offset);
       case "profile":
         return this.showProfile(action.id);
+      case "react":
+        return this.react(action.messageId, action.emoji, action.add);
       case "logout":
         return this.signOut();
       default:
-        // Reactions, uploads, forums and voice are not offered for Telegram.
+        // Uploads, forums and voice are not offered for Telegram.
         return;
     }
   }
@@ -511,6 +525,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.selected = chatId;
     this.render();
     if (this.membersOpen && !this.memberLists.has(chatId)) void this.fetchMembers(chatId);
+    void this.fetchAllowedReactions(chatId);
     if (!this.messages.has(chatId)) await this.fetchHistory(chatId, undefined);
     if (this.visible) await this.markRead(chatId);
   }
@@ -634,6 +649,16 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         if (dialog?.lastMessage?.id === message.id) dialog.lastMessage = message;
         return this.publish();
       }
+      case "reactions": {
+        const cached = this.messages.get(update.chatId);
+        const index = cached?.findIndex((m) => m.id === update.id) ?? -1;
+        if (index < 0) return;
+        const before = cached![index]!;
+        // Without the user's own choice in the update, what they gave stays as it was.
+        const reactions = update.own ? update.reactions : update.reactions.map((r) => ({ ...r, chosen: before.reactions?.some((o) => o.emoji === r.emoji && o.chosen) === true }));
+        cached![index] = { ...before, reactions };
+        return this.render();
+      }
       case "delete": {
         // Deletions in private chats and basic groups carry no chat id: message ids are unique per account
         // there. Supergroups and channels number their own messages, and name the chat.
@@ -644,6 +669,74 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.publish();
       }
     }
+  }
+
+  // --- Reactions ----------------------------------------------------------------
+
+  /** Reactions are given where the user still is and the chat takes some. */
+  private canReact(dialog: TgDialog): boolean {
+    return dialog.left !== true && this.allowed.get(dialog.chatId)?.kind !== "none";
+  }
+
+  /** Asks once which reactions a group or channel takes, and which Telegram offers this user. */
+  private async fetchAllowedReactions(chatId: string): Promise<void> {
+    // Only an open chat is asked about, and chats are listed only while signed in.
+    const api = this.api!;
+    const session = this.session;
+    if (!this.reactionListAsked) {
+      this.reactionListAsked = true;
+      const list = await api.reactionList().catch(() => []);
+      if (session !== this.session) return;
+      // Unknown, it is asked again next time; meanwhile Telegram decides when a reaction is given.
+      if (list.length > 0) this.reactionList = list;
+      else this.reactionListAsked = false;
+    }
+    if (!chatId.startsWith("-") || this.allowedAsked.has(chatId)) return;
+    this.allowedAsked.add(chatId);
+    try {
+      const allowed = await api.allowedReactions(chatId);
+      if (session !== this.session) return;
+      this.allowed.set(chatId, allowed);
+      this.render();
+    } catch {
+      // Asked again when the chat is opened next.
+      if (session === this.session) this.allowedAsked.delete(chatId);
+    }
+  }
+
+  /** Why a chat does not take this reaction, if it does not. */
+  private refused(chatId: string, emoji: string): string | undefined {
+    const allowed = this.allowed.get(chatId) ?? { kind: "all" };
+    if (allowed.kind === "some" && !allowed.emoji.includes(emoji)) return `This chat does not take ${viewEmoji(emoji)} as a reaction.`;
+    if (allowed.kind === "all" && this.reactionList && !this.reactionList.includes(emoji)) return `Telegram does not offer ${viewEmoji(emoji)} as a reaction.`;
+    return undefined;
+  }
+
+  /**
+   * Adds or removes one of the user's reactions. Telegram takes the user's
+   * whole set: one reaction, or three with Premium, the oldest giving way
+   * to a new one as in Telegram's apps.
+   */
+  private async react(messageId: string, key: string, add: boolean): Promise<void> {
+    const chatId = this.selected;
+    const dialog = chatId ? this.dialog(chatId) : undefined;
+    const message = chatId ? this.messages.get(chatId)?.find((m) => m.id === Number(messageId)) : undefined;
+    if (!chatId || !dialog || !message || !this.api || !this.canReact(dialog)) return;
+    const emoji = reactionEmoji(key);
+    const own = (message.reactions ?? []).filter((r) => r.chosen).map((r) => r.emoji);
+    if (add === own.includes(emoji)) return;
+    if (add) {
+      const refusal = this.refused(chatId, emoji);
+      if (refusal) {
+        this.error = refusal;
+        return this.render();
+      }
+    }
+    const chosen = add ? [...own, emoji].slice(-(this.me?.premium ? PREMIUM_REACTIONS : 1)) : own.filter((e) => e !== emoji);
+    await this.attempt("Reaction failed", async () => {
+      await this.api!.react(chatId, message.id, chosen);
+      this.onUpdate({ type: "reactions", chatId, id: message.id, reactions: withChosen(message.reactions ?? [], chosen), own: true });
+    });
   }
 
   // --- Members and profiles -----------------------------------------------------
@@ -832,7 +925,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       mine: message.out,
       canEdit: message.out && message.text !== "",
       canDelete: message.out,
-      reactions: [],
+      reactions: (message.reactions ?? []).map((r): NativeReaction => ({ key: viewEmoji(r.emoji), label: viewEmoji(r.emoji), count: r.count, me: r.chosen })),
       attachments: message.file ? [this.attachment(message, message.file)] : [],
     };
     // Edited as the markdown it shows, so formatting survives the edit.
@@ -934,7 +1027,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
             uploading: false,
             ...(locked ? { locked } : {}),
             // Reactions, files and typing notices are not offered here yet.
-            can: { reply: !locked, react: false, attach: false, typing: false, members: this.canListMembers(dialog) },
+            can: { reply: !locked, react: this.canReact(dialog), attach: false, typing: false, members: this.canListMembers(dialog) },
             ...(members ? { members } : {}),
           }
         : null,
@@ -947,6 +1040,20 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private render(): void {
     this.deps.render(this.viewState());
   }
+}
+
+/**
+ * A message's reactions once the user's own are these: the ones they gave
+ * up count one less (and go at none), new ones one more.
+ */
+export function withChosen(reactions: TgReaction[], chosen: string[]): TgReaction[] {
+  const out = reactions.flatMap((r): TgReaction[] => {
+    const mine = chosen.includes(r.emoji);
+    const count = r.count + (mine && !r.chosen ? 1 : !mine && r.chosen ? -1 : 0);
+    return count > 0 ? [{ emoji: r.emoji, count, chosen: mine }] : [];
+  });
+  for (const emoji of chosen) if (!out.some((r) => r.emoji === emoji)) out.push({ emoji, count: 1, chosen: true });
+  return out;
 }
 
 /** Stored or entered API credentials: a positive integer id and a 32-character hex hash. */

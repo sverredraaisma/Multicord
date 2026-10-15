@@ -7,6 +7,8 @@ export interface TgUser {
   id: string;
   name: string;
   bot: boolean;
+  /** Telegram Premium: more reactions per message, and the premium ones. */
+  premium?: boolean;
 }
 
 /** A message's photo, video, sound, sticker or file, as far as the view needs to know it. */
@@ -60,7 +62,21 @@ export interface TgMessage {
   date: number;
   edited: boolean;
   replyToId?: number;
+  /** Reactions with emoji, and how many gave each; others (custom emoji, paid) are left out. */
+  reactions?: TgReaction[];
 }
+
+/** An emoji reaction on a message. */
+export interface TgReaction {
+  /** As Telegram writes it, without variation selectors (e.g. "❤"). */
+  emoji: string;
+  count: number;
+  /** The user gave it. */
+  chosen: boolean;
+}
+
+/** The reactions a chat takes: any of Telegram's, only some, or none. */
+export type TgAllowedReactions = { kind: "all" } | { kind: "some"; emoji: string[] } | { kind: "none" };
 
 /** A one-to-one chat (with a user, a bot or yourself), a group (basic or super) or a broadcast channel. */
 export type TgChatKind = "user" | "group" | "channel";
@@ -79,6 +95,8 @@ export interface TgDialog {
   readOnly?: boolean;
   /** Its members may be listed, as far as the dialog tells: groups the user is in, channels they administer. */
   members?: boolean;
+  /** The user left it, or was removed: they can only read what is left. */
+  left?: boolean;
   lastMessage?: TgMessage;
   date: number;
 }
@@ -124,7 +142,9 @@ export type TgSignIn = { done: true } | { password: true; hint?: string } | { si
 export type TgUpdate =
   | { type: "message"; message: TgMessage }
   | { type: "edit"; message: TgMessage }
-  | { type: "delete"; chatId?: string; ids: number[] };
+  | { type: "delete"; chatId?: string; ids: number[] }
+  /** A message's reactions now; `chosen` is only known when `own` is set (Telegram leaves it out of some updates). */
+  | { type: "reactions"; chatId: string; id: number; reactions: TgReaction[]; own: boolean };
 
 export interface TelegramApi {
   connect(): Promise<void>;
@@ -150,6 +170,12 @@ export interface TelegramApi {
   members(chatId: string, offset: number, limit: number): Promise<TgMemberPage>;
   /** What a user shows others: name, username, bio and how recently they were online. */
   profile(userId: string): Promise<TgProfile>;
+  /** Sets the user's reactions on a message: these emoji, replacing those they gave; none removes them. */
+  react(chatId: string, messageId: number, emoji: string[]): Promise<void>;
+  /** Which reactions a group or channel takes. */
+  allowedReactions(chatId: string): Promise<TgAllowedReactions>;
+  /** The emoji Telegram offers as reactions to this user, where a chat takes all. */
+  reactionList(): Promise<string[]>;
   /** A message's media (or its thumbnail), as bytes; undefined when there is none. */
   download(chatId: string, messageId: number, thumbnail: boolean): Promise<Uint8Array | undefined>;
   onUpdate(cb: (update: TgUpdate) => void): void;
@@ -162,6 +188,22 @@ export interface TelegramApi {
 export interface TelegramCredentials {
   apiId: number;
   apiHash: string;
+}
+
+/** Emoji presentation selector (U+FE0F), which Telegram's reactions go without. */
+const VARIATION = new RegExp(String.fromCharCode(0xfe0f), "g");
+
+/** An emoji as Telegram writes reactions: without variation selectors. */
+export const reactionEmoji = (emoji: string): string => emoji.replace(VARIATION, "");
+
+/** Telegram's reactions that are text symbols unless marked as emoji: heart, snowman, writing hand, dove, male and female signs. */
+const TEXT_DEFAULT = new Set([0x2764, 0x2603, 0x270d, 0x1f54a, 0x2642, 0x2640]);
+
+/** A reaction as the view's emoji picker writes it (❤ as ❤️), so its own reactions match the picker's. */
+export function viewEmoji(emoji: string): string {
+  let out = "";
+  for (const char of emoji) out += TEXT_DEFAULT.has(char.codePointAt(0)!) ? char + String.fromCharCode(0xfe0f) : char;
+  return out;
 }
 
 /** Whether a chat id is a supergroup's or channel's, whose message ids are their own (GramJS's rule: -100 and no further zero). */

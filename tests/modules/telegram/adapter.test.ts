@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgText, TgUpdate } from "../../../src/modules/telegram/api";
-import { AVATAR_LIMIT, DIALOG_LIMIT, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
+import type { TelegramApi, TelegramCredentials, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgText, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import { AVATAR_LIMIT, DIALOG_LIMIT, PREMIUM_REACTIONS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import type { NativeAction, NativeViewState } from "../../../src/shared/native";
 
@@ -28,7 +28,7 @@ class FakeTelegramApi implements TelegramApi {
   sendCode = vi.fn(async (_phone: string) => ({ hash: "H", viaApp: false }));
   signIn = vi.fn(async (_phone: string, _hash: string, _code: string): Promise<TgSignIn> => ({ done: true }));
   checkPassword = vi.fn(async (_password: string) => {});
-  me = vi.fn(async () => ({ id: "9", name: "Me", bot: false }));
+  me = vi.fn(async (): Promise<TgUser> => ({ id: "9", name: "Me", bot: false }));
   dialogs = vi.fn(async (_limit: number) => this.dialogList.map((d) => ({ ...d })));
   history = vi.fn(async (chatId: string, _before: number | undefined, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1), msg(chatId, 2)]);
   send = vi.fn(async (chatId: string, text: TgText, _replyTo?: number) => msg(chatId, 200, { out: true, ...text }));
@@ -38,6 +38,9 @@ class FakeTelegramApi implements TelegramApi {
   avatar = vi.fn(async (_chatId: string): Promise<string | undefined> => undefined);
   members = vi.fn(async (_chatId: string, _offset: number, _limit: number): Promise<TgMemberPage> => ({ members: [], total: 0 }));
   profile = vi.fn(async (userId: string): Promise<TgProfile> => ({ id: userId, name: `User ${userId}`, bot: false, presence: "offline" }));
+  react = vi.fn(async (_chatId: string, _id: number, _emoji: string[]) => {});
+  allowedReactions = vi.fn(async (_chatId: string): Promise<TgAllowedReactions> => ({ kind: "all" }));
+  reactionList = vi.fn(async (): Promise<string[]> => ["👍", "❤", "🔥", "😁"]);
   download = vi.fn(async (_chatId: string, _id: number, _thumbnail: boolean): Promise<Uint8Array | undefined> => new Uint8Array([104, 105]));
   onUpdate = vi.fn((cb: (update: TgUpdate) => void) => void (this.listener = cb));
   session = vi.fn(() => "sess");
@@ -558,8 +561,8 @@ describe("chat view", () => {
     await Promise.all([first, second]);
     expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE);
     expect(ctx.chat().channel).toMatchObject({ loading: false, hasOlder: false });
-    // Reactions, files and typing notices are not offered for Telegram, so the view hides them.
-    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: false, attach: false, typing: false, members: false });
+    // Files and typing notices are not offered for Telegram yet.
+    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: false, members: false });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
 
     await ctx.adapter.openConversation("1");
@@ -1542,5 +1545,195 @@ describe("members and profiles", () => {
       await fresh.act({ type: "members", open: true });
       expect(fresh.renders.at(-1)).toBeDefined();
     });
+  });
+});
+
+describe("reactions", () => {
+  const HEART = "❤" + String.fromCharCode(0xfe0f);
+  const open = async (messages: TgMessage[], options: Options = {}) => {
+    const ctx = await signedIn(options);
+    ctx.api.history.mockResolvedValue(messages);
+    await ctx.adapter.openConversation(options.dialogs?.[0]?.chatId ?? "1");
+    await flush();
+    return ctx;
+  };
+  const reacted = (extra: Partial<TgMessage> = {}) => msg("1", 5, { reactions: [{ emoji: "❤", count: 2, chosen: false }, { emoji: "👍", count: 1, chosen: true }], ...extra });
+
+  it("shows reactions with counts and the user's own, hearts as the emoji picker writes them", async () => {
+    const ctx = await open([reacted()]);
+    expect(ctx.chat().channel!.messages[0]!.reactions).toEqual([
+      { key: HEART, label: HEART, count: 2, me: false },
+      { key: "👍", label: "👍", count: 1, me: true },
+    ]);
+    expect(ctx.chat().channel!.can.react).toBe(true);
+  });
+
+  it("gives a reaction in place of the user's one, and takes it back", async () => {
+    const ctx = await open([reacted()]);
+    await ctx.act({ type: "react", messageId: "5", emoji: HEART, add: true });
+    expect(ctx.api.react).toHaveBeenLastCalledWith("1", 5, ["❤"]);
+    expect(ctx.chat().channel!.messages[0]!.reactions).toEqual([{ key: HEART, label: HEART, count: 3, me: true }]);
+    await ctx.act({ type: "react", messageId: "5", emoji: HEART, add: false });
+    expect(ctx.api.react).toHaveBeenLastCalledWith("1", 5, []);
+    expect(ctx.chat().channel!.messages[0]!.reactions).toEqual([{ key: HEART, label: HEART, count: 2, me: false }]);
+    // Asking for what is already so does nothing.
+    await ctx.act({ type: "react", messageId: "5", emoji: HEART, add: false });
+    expect(ctx.api.react).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets Premium users give up to PREMIUM_REACTIONS, the oldest giving way", async () => {
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    ctx.api.me.mockResolvedValue({ id: "9", name: "Me", bot: false, premium: true });
+    await ctx.adapter.start();
+    await flush();
+    ctx.api.history.mockResolvedValue([msg("1", 5)]);
+    await ctx.adapter.openConversation("1");
+    await flush();
+    for (const emoji of ["👍", "🔥", HEART, "😁"]) await ctx.act({ type: "react", messageId: "5", emoji, add: true });
+    expect(PREMIUM_REACTIONS).toBe(3);
+    expect(ctx.api.react.mock.calls.map((c) => c[2])).toEqual([["👍"], ["👍", "🔥"], ["👍", "🔥", "❤"], ["🔥", "❤", "😁"]]);
+  });
+
+  it("refuses reactions Telegram does not offer", async () => {
+    const ctx = await open([msg("1", 5)]);
+    await ctx.act({ type: "react", messageId: "5", emoji: "🤖", add: true });
+    expect(ctx.chat().error).toBe("Telegram does not offer 🤖 as a reaction.");
+    expect(ctx.api.react).not.toHaveBeenCalled();
+  });
+
+  it("follows what a group takes, and offers no reactions where it takes none", async () => {
+    const group = [dlg("-5", { kind: "group", title: "G" }), dlg("-6", { kind: "group", title: "H" })];
+    const ctx = await signedIn({ dialogs: group });
+    ctx.api.history.mockResolvedValue([msg("-5", 5)]);
+    ctx.api.allowedReactions.mockResolvedValueOnce({ kind: "some", emoji: ["👍"] }).mockResolvedValueOnce({ kind: "none" });
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    await flush();
+    expect(ctx.api.allowedReactions).toHaveBeenCalledWith("-5");
+    await ctx.act({ type: "react", messageId: "5", emoji: "🔥", add: true });
+    expect(ctx.chat().error).toBe("This chat does not take 🔥 as a reaction.");
+    await ctx.act({ type: "react", messageId: "5", emoji: "👍", add: true });
+    expect(ctx.api.react).toHaveBeenCalledWith("-5", 5, ["👍"]);
+    ctx.api.history.mockResolvedValue([msg("-6", 5)]);
+    await ctx.act({ type: "select", channelId: viewId("-6") });
+    await flush();
+    expect(ctx.chat().channel!.can.react).toBe(false);
+    await ctx.act({ type: "react", messageId: "5", emoji: "👍", add: true });
+    expect(ctx.api.react).toHaveBeenCalledTimes(1);
+    // Asked once per chat; one-to-one chats take all.
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    await flush();
+    expect(ctx.api.allowedReactions).toHaveBeenCalledTimes(2);
+    expect(ctx.api.reactionList).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks again after a failure, and leaves the choice to Telegram while it cannot tell", async () => {
+    const group = [dlg("-5", { kind: "group", title: "G" })];
+    const ctx = await signedIn({ dialogs: group });
+    ctx.api.history.mockResolvedValue([msg("-5", 5)]);
+    ctx.api.allowedReactions.mockRejectedValueOnce(new Error("down"));
+    ctx.api.reactionList.mockRejectedValueOnce(new Error("down"));
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    await flush();
+    await ctx.act({ type: "react", messageId: "5", emoji: "🤖", add: true });
+    expect(ctx.api.react).toHaveBeenCalledWith("-5", 5, ["🤖"]);
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    await flush();
+    expect(ctx.api.allowedReactions).toHaveBeenCalledTimes(2);
+    expect(ctx.api.reactionList).toHaveBeenCalledTimes(2);
+  });
+
+  it("offers no reactions in chats the user left, and ignores unknown messages", async () => {
+    const group = [dlg("-5", { kind: "group", title: "G", left: true, readOnly: true })];
+    const ctx = await open([msg("-5", 5)], { dialogs: group });
+    expect(ctx.chat().channel!.can.react).toBe(false);
+    await ctx.act({ type: "react", messageId: "5", emoji: "👍", add: true });
+    const other = await open([msg("1", 5)]);
+    await other.act({ type: "react", messageId: "77", emoji: "👍", add: true });
+    const none = await signedIn();
+    await none.act({ type: "react", messageId: "5", emoji: "👍", add: true });
+    expect(ctx.api.react).not.toHaveBeenCalled();
+    expect(other.api.react).not.toHaveBeenCalled();
+    expect(none.api.react).not.toHaveBeenCalled();
+  });
+
+  it("reports a reaction Telegram refused", async () => {
+    const ctx = await open([msg("1", 5)]);
+    ctx.api.react.mockRejectedValue(tgError("REACTION_INVALID"));
+    await ctx.act({ type: "react", messageId: "5", emoji: "👍", add: true });
+    expect(ctx.chat().error).toBe("Reaction failed: REACTION_INVALID");
+    expect(ctx.chat().channel!.messages[0]!.reactions).toEqual([]);
+  });
+
+  it("follows live reactions, keeping the user's own where the update leaves them out", async () => {
+    const ctx = await open([reacted()]);
+    ctx.api.emit({ type: "reactions", chatId: "1", id: 5, reactions: [{ emoji: "👍", count: 4, chosen: false }, { emoji: "🔥", count: 1, chosen: false }], own: false });
+    expect(ctx.chat().channel!.messages[0]!.reactions).toEqual([
+      { key: "👍", label: "👍", count: 4, me: true },
+      { key: "🔥", label: "🔥", count: 1, me: false },
+    ]);
+    ctx.api.emit({ type: "reactions", chatId: "1", id: 5, reactions: [{ emoji: "👍", count: 3, chosen: false }], own: true });
+    expect(ctx.chat().channel!.messages[0]!.reactions).toEqual([{ key: "👍", label: "👍", count: 3, me: false }]);
+    // Messages of other chats, or not loaded, are left alone.
+    const renders = ctx.renders.length;
+    ctx.api.emit({ type: "reactions", chatId: "2", id: 5, reactions: [], own: true });
+    ctx.api.emit({ type: "reactions", chatId: "1", id: 99, reactions: [], own: true });
+    expect(ctx.renders.length).toBe(renders);
+  });
+
+  it("keeps none of the user's own in an update without them for a message that had none", async () => {
+    const ctx = await open([msg("1", 5)]);
+    ctx.api.emit({ type: "reactions", chatId: "1", id: 5, reactions: [{ emoji: "👍", count: 1, chosen: true }], own: false });
+    expect(ctx.chat().channel!.messages[0]!.reactions).toEqual([{ key: "👍", label: "👍", count: 1, me: false }]);
+  });
+
+  it("forgets what chats take on sign-out", async () => {
+    const group = [dlg("-5", { kind: "group", title: "G" })];
+    const ctx = await signedIn({ dialogs: group });
+    ctx.api.allowedReactions.mockResolvedValue({ kind: "none" });
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    await flush();
+    expect(ctx.chat().channel!.can.react).toBe(false);
+    await ctx.act({ type: "logout" });
+    await ctx.answer("phone", { phone: "+31612345678" });
+    await ctx.answer("code", { code: "1" });
+    await flush();
+    ctx.api.allowedReactions.mockResolvedValue({ kind: "all" });
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    await flush();
+    expect(ctx.chat().channel!.can.react).toBe(true);
+  });
+
+  it("drops answers that arrive after a sign-out", async () => {
+    const group = [dlg("-5", { kind: "group", title: "G" })];
+    const first = await signedIn({ dialogs: group });
+    let release!: () => void;
+    first.api.reactionList.mockImplementationOnce(() => new Promise((resolve) => (release = () => resolve(["👍"]))));
+    await first.act({ type: "select", channelId: viewId("-5") });
+    await first.act({ type: "logout" });
+    release();
+    await flush();
+    expect(first.api.allowedReactions).not.toHaveBeenCalled();
+
+    for (const answer of [() => Promise.reject(new Error("x")), () => Promise.resolve({ kind: "none" } as const)]) {
+      const ctx = await signedIn({ dialogs: group });
+      let settle!: () => void;
+      ctx.api.allowedReactions.mockImplementationOnce(() => new Promise((resolve, reject) => (settle = () => void answer().then(resolve, reject))));
+      await ctx.act({ type: "select", channelId: viewId("-5") });
+      await flush();
+      await ctx.act({ type: "logout" });
+      settle();
+      await flush();
+      await ctx.answer("phone", { phone: "+31612345678" });
+      await ctx.answer("code", { code: "1" });
+      await flush();
+      await ctx.act({ type: "select", channelId: viewId("-5") });
+      await flush();
+      expect(ctx.chat().channel!.can.react).toBe(true);
+    }
+  });
+
+  it("counts the user's choice in: one more for new ones, one less for those given up", () => {
+    const before = [{ emoji: "a", count: 1, chosen: true }, { emoji: "b", count: 2, chosen: true }, { emoji: "c", count: 1, chosen: false }];
+    expect(withChosen(before, ["b", "c", "d"])).toEqual([{ emoji: "b", count: 2, chosen: true }, { emoji: "c", count: 2, chosen: true }, { emoji: "d", count: 1, chosen: true }]);
   });
 });

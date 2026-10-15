@@ -16,11 +16,18 @@ const h = vi.hoisted(() => {
     "ChatParticipantCreator", "ChannelFull", "ChannelParticipant", "ChannelParticipantAdmin", "ChannelParticipantCreator", "ChannelParticipantsRecent", "ChannelParticipantsAdmins",
     "MessageEntityBold", "MessageEntityItalic", "MessageEntityUnderline", "MessageEntityStrike", "MessageEntitySpoiler", "MessageEntityCode", "MessageEntityPre",
     "MessageEntityTextUrl", "MessageEntityBlockquote", "MessageEntityMention",
+    "ReactionEmoji", "ReactionCustomEmoji", "ReactionCount", "MessageReactions", "ChatReactionsNone", "ChatReactionsSome", "ChatReactionsAll", "UpdateMessageReactions",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
     account: { GetPassword: class extends Base {} },
-    messages: { ReadMentions: class extends Base {}, GetFullChat: class extends Base {} },
+    messages: {
+      ReadMentions: class extends Base {},
+      GetFullChat: class extends Base {},
+      SendReaction: class extends Base {},
+      GetAvailableReactions: class extends Base {},
+      AvailableReactions: class extends Base {},
+    },
     channels: { GetFullChannel: class extends Base {}, GetParticipants: class extends Base {}, ChannelParticipants: class extends Base {} },
     users: { GetFullUser: class extends Base {} },
   };
@@ -62,6 +69,7 @@ vi.mock("telegram", () => ({ Api: h.Api, TelegramClient: h.FakeClient }));
 vi.mock("telegram/events/DeletedMessage", () => ({ DeletedMessage: h.eventClass() }));
 vi.mock("telegram/events/EditedMessage", () => ({ EditedMessage: h.eventClass() }));
 vi.mock("telegram/events/NewMessage", () => ({ NewMessage: h.eventClass() }));
+vi.mock("telegram/events/Raw", () => ({ Raw: h.eventClass() }));
 vi.mock("telegram/extensions/Logger", () => ({ LogLevel: { ERROR: "error" } }));
 vi.mock("telegram/Helpers", () => ({ returnBigInt: (value: string) => BigInt(value) }));
 vi.mock("telegram/Password", () => ({ computeCheck: async (request: unknown, password: string) => ({ request, password }) }));
@@ -74,7 +82,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, mediaFile, mediaLabel, membersOf, presenceOf, SAVED_MESSAGES, toMessage } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, toMessage } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -133,14 +141,14 @@ describe("describeChat", () => {
   const rights = (props: Record<string, unknown>) => props;
 
   it("describes users, bots and the chat with yourself", () => {
-    expect(describeChat(make(Api.User, { firstName: "Ana", bot: true }))).toEqual({ kind: "user", title: "Ana", bot: true, readOnly: false, members: false });
-    expect(describeChat(make(Api.User, { firstName: "Me", self: true }))).toEqual({ kind: "user", title: SAVED_MESSAGES, bot: false, readOnly: false, members: false });
+    expect(describeChat(make(Api.User, { firstName: "Ana", bot: true }))).toEqual({ kind: "user", title: "Ana", bot: true, readOnly: false, members: false, left: false });
+    expect(describeChat(make(Api.User, { firstName: "Me", self: true }))).toEqual({ kind: "user", title: SAVED_MESSAGES, bot: false, readOnly: false, members: false, left: false });
   });
 
   it("describes basic groups, read-only when left or when members may not write", () => {
-    expect(describeChat(make(Api.Chat, { title: "Family" }))).toEqual({ kind: "group", title: "Family", bot: false, readOnly: false, members: true });
+    expect(describeChat(make(Api.Chat, { title: "Family" }))).toEqual({ kind: "group", title: "Family", bot: false, readOnly: false, members: true, left: false });
     expect(describeChat(make(Api.Chat, { title: "" }))).toMatchObject({ title: "Group" });
-    expect(describeChat(make(Api.Chat, { title: "Old", left: true }))).toMatchObject({ readOnly: true, members: false });
+    expect(describeChat(make(Api.Chat, { title: "Old", left: true }))).toMatchObject({ readOnly: true, members: false, left: true });
     expect(describeChat(make(Api.Chat, { title: "Quiet", defaultBannedRights: rights({ sendMessages: true }) }))).toMatchObject({ readOnly: true });
     expect(describeChat(make(Api.Chat, { title: "Quiet", defaultBannedRights: rights({ sendPlain: true }), adminRights: {} }))).toMatchObject({ readOnly: false });
     expect(describeChat(make(Api.Chat, { title: "Quiet", defaultBannedRights: rights({ sendMessages: true }), creator: true }))).toMatchObject({ readOnly: false });
@@ -154,16 +162,16 @@ describe("describeChat", () => {
   });
 
   it("describes broadcast channels, open only to their posting admins", () => {
-    expect(describeChat(make(Api.Channel, { title: "News", broadcast: true }))).toEqual({ kind: "channel", title: "News", bot: false, readOnly: true, members: false });
-    expect(describeChat(make(Api.Channel, { title: "", broadcast: true, creator: true }))).toEqual({ kind: "channel", title: "Channel", bot: false, readOnly: false, members: true });
+    expect(describeChat(make(Api.Channel, { title: "News", broadcast: true }))).toEqual({ kind: "channel", title: "News", bot: false, readOnly: true, members: false, left: false });
+    expect(describeChat(make(Api.Channel, { title: "", broadcast: true, creator: true }))).toEqual({ kind: "channel", title: "Channel", bot: false, readOnly: false, members: true, left: false });
     expect(describeChat(make(Api.Channel, { title: "News", adminRights: { postMessages: true } }))).toMatchObject({ readOnly: false, members: true });
     expect(describeChat(make(Api.Channel, { title: "News", adminRights: { editMessages: true } }))).toMatchObject({ readOnly: true });
   });
 
   it("describes supergroups as groups, read-only when left, banned, silenced or a broadcast group", () => {
     const group = (props: Record<string, unknown>) => describeChat(make(Api.Channel, { title: "Club", megagroup: true, ...props }));
-    expect(group({})).toEqual({ kind: "group", title: "Club", bot: false, readOnly: false, members: true });
-    expect(group({ left: true })).toMatchObject({ readOnly: true, members: false });
+    expect(group({})).toEqual({ kind: "group", title: "Club", bot: false, readOnly: false, members: true, left: false });
+    expect(group({ left: true })).toMatchObject({ readOnly: true, members: false, left: true });
     expect(group({ bannedRights: rights({ sendMessages: true }) })).toMatchObject({ readOnly: true });
     expect(group({ defaultBannedRights: rights({ sendPlain: true }) })).toMatchObject({ readOnly: true });
     expect(group({ gigagroup: true })).toMatchObject({ readOnly: true });
@@ -309,7 +317,7 @@ describe("createGramApi", () => {
       { ...none, id: 1n, unreadCount: 2, unreadMentionsCount: 0, date: 100, message: last, entity: make(Api.User, { firstName: "Ana", bot: true }) },
       { ...settings({ muteUntil: 2147483647 }), id: 2n, unreadCount: 0, unreadMentionsCount: 0, date: 90, entity: make(Api.User, { username: "bo" }) },
       { ...settings({ muteUntil: 0 }), id: -7n, unreadCount: 3, unreadMentionsCount: 1, date: 85, entity: make(Api.Chat, { title: "Family" }) },
-      { ...none, id: -1001234567890n, unreadCount: 2_000_000, unreadMentionsCount: -1, date: 80, entity: make(Api.Channel, { title: "News", broadcast: true }) },
+      { ...none, id: -1001234567890n, unreadCount: 2_000_000, unreadMentionsCount: -1, date: 80, entity: make(Api.Channel, { title: "News", broadcast: true, left: true }) },
       { ...none, id: 3n, unreadCount: 0, unreadMentionsCount: 0, date: 75, entity: {} },
       { ...none, id: 4n, unreadCount: 0, unreadMentionsCount: 0, date: 70, entity: make(Api.ChatForbidden) },
       { ...none, id: undefined, unreadCount: 0, unreadMentionsCount: 0, date: 60, entity: make(Api.User) },
@@ -319,7 +327,7 @@ describe("createGramApi", () => {
       { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, lastMessage: toMessage(last, "1") },
       { chatId: "2", kind: "user", title: "@bo", bot: false, unreadCount: 0, unreadMentions: 0, date: 90, mutedUntil: 2147483647 },
       { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, members: true },
-      { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true },
+      { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true, left: true },
     ]);
     expect(client.getDialogs).toHaveBeenCalledWith({ limit: 20 });
   });
@@ -382,14 +390,26 @@ describe("createGramApi", () => {
     const setup = () => {
       const cb = vi.fn();
       api.onUpdate(cb);
-      const [newH, editH, delH] = client.addEventHandler.mock.calls.map((c) => c[0] as (event: unknown) => void);
-      return { cb, newH: newH!, editH: editH!, delH: delH! };
+      const [newH, editH, delH, rawH] = client.addEventHandler.mock.calls.map((c) => c[0] as (event: unknown) => void);
+      return { cb, newH: newH!, editH: editH!, delH: delH!, rawH: rawH! };
     };
     const event = (peerId: unknown) => ({ message: make(Api.Message, { id: 4, date: 4, message: "x", peerId }) });
 
-    it("registers three handlers", () => {
+    it("registers handlers for messages, edits, deletions and raw updates", () => {
       setup();
-      expect(client.addEventHandler).toHaveBeenCalledTimes(3);
+      expect(client.addEventHandler).toHaveBeenCalledTimes(4);
+      expect((client.addEventHandler.mock.calls[3]![1] as { args: { types: unknown[] } }).args.types).toEqual([Api.UpdateMessageReactions]);
+    });
+
+    it("forwards reaction updates of messages it can place", () => {
+      const { cb, rawH } = setup();
+      const reactions = make(Api.MessageReactions, { min: true, results: [make(Api.ReactionCount, { reaction: make(Api.ReactionEmoji, { emoticon: "👍" }), count: 2 })] });
+      rawH(make(Api.UpdateMessageReactions, { peer: make(Api.PeerUser, { userId: 8n }), msgId: 4, reactions }));
+      rawH(make(Api.UpdateMessageReactions, { peer: {}, msgId: 4, reactions }));
+      rawH(make(Api.UpdateMessageReactions, { peer: make(Api.PeerUser, { userId: 8n }), msgId: 0, reactions }));
+      rawH(make(Api.UpdateMessageReactions, { peer: make(Api.PeerUser, { userId: 8n }), msgId: 1.5, reactions }));
+      rawH({});
+      expect(cb.mock.calls).toEqual([[{ type: "reactions", chatId: "8", id: 4, reactions: [{ emoji: "👍", count: 2, chosen: false }], own: false }]]);
     });
 
     it("forwards messages and edits of private chats, groups and channels", () => {
@@ -668,5 +688,94 @@ describe("entities", () => {
   it("gives messages their formatting", () => {
     const message = make(Api.Message, { id: 1, date: 1, message: "hi", entities: [make(Api.MessageEntityBold, { offset: 0, length: 2 })] });
     expect(toMessage(message, "9").entities).toEqual([{ type: "bold", offset: 0, length: 2 }]);
+  });
+});
+
+describe("reactions", () => {
+  const emoji = (emoticon: unknown) => make(Api.ReactionEmoji, { emoticon });
+  const counted = (reaction: unknown, count: unknown, chosenOrder?: number) => make(Api.ReactionCount, { reaction, count, chosenOrder });
+
+  it("reads emoji reactions with their counts and the user's own, without variation selectors", () => {
+    const heart = "❤" + String.fromCharCode(0xfe0f);
+    const results = [
+      counted(emoji(heart), 3, 0),
+      counted(emoji("👍"), 1),
+      // Custom emoji, malformed or empty reactions, and repeats are left out.
+      counted(make(Api.ReactionCustomEmoji, { documentId: 1n }), 4),
+      counted(emoji("<b>"), 1),
+      counted(emoji(""), 1),
+      counted(emoji("x".repeat(33)), 1),
+      counted(emoji(7), 1),
+      counted(emoji("🔥"), 0),
+      counted(emoji("👍"), 9),
+      {},
+    ];
+    expect(reactionsOf(make(Api.MessageReactions, { results }))).toEqual({ reactions: [{ emoji: "❤", count: 3, chosen: true }, { emoji: "👍", count: 1, chosen: false }], own: true });
+    expect(reactionsOf(make(Api.MessageReactions, { min: true }))).toEqual({ reactions: [], own: false });
+    expect(reactionsOf(undefined)).toEqual({ reactions: [], own: true });
+    const many = Array.from({ length: 60 }, (_, i) => counted(emoji(String(i)), 1));
+    expect(reactionsOf(make(Api.MessageReactions, { results: many })).reactions).toHaveLength(50);
+  });
+
+  it("gives messages their reactions", () => {
+    const reactions = make(Api.MessageReactions, { results: [counted(emoji("👍"), 2)] });
+    expect(toMessage(make(Api.Message, { id: 1, date: 1, message: "", reactions }), "9").reactions).toEqual([{ emoji: "👍", count: 2, chosen: false }]);
+    expect(toMessage(make(Api.Message, { id: 1, date: 1, message: "" }), "9")).not.toHaveProperty("reactions");
+  });
+
+  it("reads which reactions a chat takes", () => {
+    expect(allowedOf(make(Api.ChatReactionsNone))).toEqual({ kind: "none" });
+    expect(allowedOf(make(Api.ChatReactionsAll))).toEqual({ kind: "all" });
+    expect(allowedOf(undefined)).toEqual({ kind: "all" });
+    expect(allowedOf(make(Api.ChatReactionsSome, { reactions: [emoji("👍"), make(Api.ReactionCustomEmoji)] }))).toEqual({ kind: "some", emoji: ["👍"] });
+  });
+
+  describe("through the client", () => {
+    let client: InstanceType<typeof h.FakeClient>;
+    let api: ReturnType<typeof createGramApi>;
+    beforeEach(() => {
+      api = createGramApi({ apiId: 1, apiHash: "h" }, "", { os: "linux", appVersion: "1" });
+      client = h.FakeClient.instances.at(-1)!;
+    });
+
+    it("sets the user's reactions on a message", async () => {
+      client.invoke.mockResolvedValue({});
+      await api.react("-1001234", 5, ["👍", "❤"]);
+      const request = client.invoke.mock.calls[0]![0] as { peer: unknown; msgId: number; reaction: { emoticon: string }[] };
+      expect(request).toBeInstanceOf(Api.messages.SendReaction);
+      expect(request).toMatchObject({ peer: -1001234n, msgId: 5 });
+      expect(request.reaction.map((r) => r.emoticon)).toEqual(["👍", "❤"]);
+      expect(request.reaction[0]).toBeInstanceOf(Api.ReactionEmoji);
+    });
+
+    it("asks a group's or channel's full info which reactions it takes; one-to-one chats take all", async () => {
+      await expect(api.allowedReactions("7")).resolves.toEqual({ kind: "all" });
+      expect(client.invoke).not.toHaveBeenCalled();
+      client.invoke.mockResolvedValue({ fullChat: { availableReactions: make(Api.ChatReactionsNone) } });
+      await expect(api.allowedReactions("-7")).resolves.toEqual({ kind: "none" });
+      expect(client.invoke.mock.calls[0]![0]).toBeInstanceOf(Api.messages.GetFullChat);
+      expect((client.invoke.mock.calls[0]![0] as { chatId: unknown }).chatId).toBe(7n);
+      await expect(api.allowedReactions("-1001234")).resolves.toEqual({ kind: "none" });
+      expect(client.invoke.mock.calls[1]![0]).toBeInstanceOf(Api.channels.GetFullChannel);
+    });
+
+    it("lists the reactions Telegram offers, premium ones only to Premium users", async () => {
+      const list = make(Api.messages.AvailableReactions, {
+        reactions: [{ reaction: "👍" }, { reaction: "💀", inactive: true }, { reaction: "⭐", premium: true }, { reaction: "<x>" }],
+      });
+      client.invoke.mockResolvedValue(list);
+      client.getMe.mockResolvedValue({ id: 1n });
+      await expect(api.reactionList()).resolves.toEqual(["👍"]);
+      expect(client.invoke.mock.calls[0]![0]).toBeInstanceOf(Api.messages.GetAvailableReactions);
+      client.getMe.mockResolvedValue({ id: 1n, premium: true });
+      await expect(api.reactionList()).resolves.toEqual(["👍", "⭐"]);
+      client.invoke.mockResolvedValue({});
+      await expect(api.reactionList()).resolves.toEqual([]);
+    });
+
+    it("says when the user has Premium", async () => {
+      client.getMe.mockResolvedValue({ id: 1n, firstName: "A", premium: true });
+      await expect(api.me()).resolves.toEqual({ id: "1", name: "A", bot: false, premium: true });
+    });
   });
 });

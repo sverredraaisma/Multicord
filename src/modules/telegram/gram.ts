@@ -6,15 +6,18 @@ import { Api, TelegramClient } from "telegram";
 import { DeletedMessage, type DeletedMessageEvent } from "telegram/events/DeletedMessage";
 import { EditedMessage, type EditedMessageEvent } from "telegram/events/EditedMessage";
 import { NewMessage, type NewMessageEvent } from "telegram/events/NewMessage";
+import { Raw } from "telegram/events/Raw";
 import { LogLevel } from "telegram/extensions/Logger";
 import { returnBigInt } from "telegram/Helpers";
 import { computeCheck } from "telegram/Password";
 import { StringSession } from "telegram/sessions/StringSession";
 import {
   isChannelPeer,
+  reactionEmoji,
   telegramError,
   type TelegramApi,
   type TelegramCredentials,
+  type TgAllowedReactions,
   type TgDialog,
   type TgEntity,
   type TgFile,
@@ -23,6 +26,7 @@ import {
   type TgMessage,
   type TgPresence,
   type TgProfile,
+  type TgReaction,
   type TgSignIn,
   type TgText,
   type TgUpdate,
@@ -128,22 +132,22 @@ const banned = (rights: Api.TypeChatBannedRights | undefined): boolean => rights
  * longer open (forbidden) and basic groups that moved into a supergroup
  * (listed as that).
  */
-export function describeChat(entity: unknown): { kind: TgDialog["kind"]; title: string; bot: boolean; readOnly: boolean; members: boolean } | undefined {
-  if (entity instanceof Api.User) return { kind: "user", title: entity.self ? SAVED_MESSAGES : userName(entity), bot: entity.bot === true, readOnly: false, members: false };
+export function describeChat(entity: unknown): { kind: TgDialog["kind"]; title: string; bot: boolean; readOnly: boolean; members: boolean; left: boolean } | undefined {
+  if (entity instanceof Api.User) return { kind: "user", title: entity.self ? SAVED_MESSAGES : userName(entity), bot: entity.bot === true, readOnly: false, members: false, left: false };
   if (entity instanceof Api.Chat) {
     if (entity.deactivated || entity.migratedTo) return undefined;
     const admin = entity.creator === true || entity.adminRights !== undefined;
     const left = entity.left === true;
-    return { kind: "group", title: entity.title || "Group", bot: false, readOnly: left || (!admin && banned(entity.defaultBannedRights)), members: !left };
+    return { kind: "group", title: entity.title || "Group", bot: false, readOnly: left || (!admin && banned(entity.defaultBannedRights)), members: !left, left };
   }
   if (entity instanceof Api.Channel) {
     const title = entity.title || "Channel";
     const admin = entity.creator === true || entity.adminRights !== undefined;
     // Only admins with the right post in a broadcast channel, and in a broadcast group (gigagroup); only admins see a channel's subscribers.
-    if (!entity.megagroup) return { kind: "channel", title, bot: false, readOnly: !(entity.creator === true || entity.adminRights?.postMessages === true), members: admin };
-    const silenced = entity.gigagroup === true || banned(entity.bannedRights) || banned(entity.defaultBannedRights);
     const left = entity.left === true;
-    return { kind: "group", title, bot: false, readOnly: left || (!admin && silenced), members: !left };
+    if (!entity.megagroup) return { kind: "channel", title, bot: false, readOnly: !(entity.creator === true || entity.adminRights?.postMessages === true), members: admin, left };
+    const silenced = entity.gigagroup === true || banned(entity.bannedRights) || banned(entity.defaultBannedRights);
+    return { kind: "group", title, bot: false, readOnly: left || (!admin && silenced), members: !left, left };
   }
   return undefined;
 }
@@ -222,6 +226,40 @@ export function apiEntities(entities: readonly TgEntity[]): Api.TypeMessageEntit
   });
 }
 
+/** Most reactions read per message. */
+const MAX_REACTIONS = 50;
+
+/** A short, plain emoji from Telegram; undefined for anything else. */
+const emojiOf = (reaction: unknown): string | undefined => {
+  const emoticon = reaction instanceof Api.ReactionEmoji ? reaction.emoticon : undefined;
+  const emoji = typeof emoticon === "string" && emoticon.length <= 32 && !/[\s<>]/.test(emoticon) ? reactionEmoji(emoticon) : "";
+  return emoji !== "" ? emoji : undefined;
+};
+
+/**
+ * A message's emoji reactions with their counts, and whether the user gave
+ * each (`own`: Telegram says so; in "min" updates it does not). Custom
+ * emoji and paid reactions are left out: showing them would mean fetching
+ * their stickers.
+ */
+export function reactionsOf(reactions: unknown): { reactions: TgReaction[]; own: boolean } {
+  if (!(reactions instanceof Api.MessageReactions)) return { reactions: [], own: true };
+  const out: TgReaction[] = [];
+  for (const result of (Array.isArray(reactions.results) ? reactions.results : []).slice(0, MAX_REACTIONS)) {
+    const emoji = result instanceof Api.ReactionCount ? emojiOf(result.reaction) : undefined;
+    const count = tally((result as { count?: unknown }).count);
+    if (emoji && count > 0 && !out.some((r) => r.emoji === emoji)) out.push({ emoji, count, chosen: result.chosenOrder !== undefined });
+  }
+  return { reactions: out, own: reactions.min !== true };
+}
+
+/** What a chat's full info says about reactions; a chat that says nothing takes all. */
+export function allowedOf(reactions: unknown): TgAllowedReactions {
+  if (reactions instanceof Api.ChatReactionsNone) return { kind: "none" };
+  if (reactions instanceof Api.ChatReactionsSome) return { kind: "some", emoji: reactions.reactions.flatMap((r) => emojiOf(r) ?? []) };
+  return { kind: "all" };
+}
+
 /** Text and its formatting, as GramJS sends them. */
 const outgoing = (text: TgText) => ({ formattingEntities: apiEntities(text.entities) });
 
@@ -247,6 +285,8 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
   if (message.mentioned === true) out.mentioned = true;
   const media = mediaLabel(message.media);
   if (media) out.media = media;
+  const { reactions } = reactionsOf(message.reactions);
+  if (reactions.length > 0) out.reactions = reactions;
   const file = mediaFile(message.media);
   if (file) out.file = file;
   const reply = message.replyTo instanceof Api.MessageReplyHeader ? message.replyTo.replyToMsgId : undefined;
@@ -296,7 +336,7 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
     },
     me: async (): Promise<TgUser> => {
       const me = await client.getMe();
-      return { id: me.id.toString(), name: userName(me), bot: me.bot === true };
+      return me.premium ? { id: me.id.toString(), name: userName(me), bot: me.bot === true, premium: true } : { id: me.id.toString(), name: userName(me), bot: me.bot === true };
     },
     dialogs: async (limit) => {
       const dialogs = await client.getDialogs({ limit });
@@ -308,6 +348,7 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         const dialog: TgDialog = { chatId, kind: chat.kind, title: chat.title, bot: chat.bot, unreadCount: tally(d.unreadCount), unreadMentions: tally(d.unreadMentionsCount), date: d.date };
         if (chat.readOnly) dialog.readOnly = true;
         if (chat.members) dialog.members = true;
+        if (chat.left) dialog.left = true;
         const settings = d.dialog.notifySettings;
         // A Unix time; "muted for ever" is the largest 32-bit one.
         const mutedUntil = settings instanceof Api.PeerNotifySettings ? settings.muteUntil : undefined;
@@ -373,6 +414,21 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       if (!photo || typeof photo === "string" || photo.length === 0 || photo.length > MAX_AVATAR_BYTES) return undefined;
       return `data:image/jpeg;base64,${photo.toString("base64")}`;
     },
+    react: async (chatId, messageId, emoji) => {
+      await client.invoke(new Api.messages.SendReaction({ peer: peer(chatId), msgId: messageId, reaction: emoji.map((emoticon) => new Api.ReactionEmoji({ emoticon })) }));
+    },
+    allowedReactions: async (chatId) => {
+      if (!chatId.startsWith("-")) return { kind: "all" };
+      const full = isChannelPeer(chatId)
+        ? await client.invoke(new Api.channels.GetFullChannel({ channel: peer(chatId) }))
+        : await client.invoke(new Api.messages.GetFullChat({ chatId: returnBigInt(chatId.slice(1)) }));
+      return allowedOf((full.fullChat as { availableReactions?: unknown }).availableReactions);
+    },
+    reactionList: async () => {
+      const [list, me] = await Promise.all([client.invoke(new Api.messages.GetAvailableReactions({ hash: 0 })), client.getMe()]);
+      if (!(list instanceof Api.messages.AvailableReactions)) return [];
+      return list.reactions.filter((r) => r.inactive !== true && (r.premium !== true || me.premium === true)).flatMap((r) => emojiOf(new Api.ReactionEmoji({ emoticon: r.reaction })) ?? []);
+    },
     download: async (chatId, messageId, thumbnail) => {
       const [message] = await client.getMessages(peer(chatId), { ids: [messageId] });
       if (!(message instanceof Api.Message) || !message.media) return undefined;
@@ -397,6 +453,12 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         if (event.peer && !chatId) return;
         cb(chatId ? { type: "delete", chatId, ids: event.deletedIds } : { type: "delete", ids: event.deletedIds });
       }, new DeletedMessage({}));
+      client.addEventHandler((update: Api.TypeUpdate) => {
+        if (!(update instanceof Api.UpdateMessageReactions)) return;
+        const chatId = chatIdOf(update.peer);
+        if (!chatId || !Number.isInteger(update.msgId) || update.msgId <= 0) return;
+        cb({ type: "reactions", chatId, id: update.msgId, ...reactionsOf(update.reactions) });
+      }, new Raw({ types: [Api.UpdateMessageReactions] }));
     },
     session: () => (client.session as StringSession).save(),
     logOut: async () => void (await client.invoke(new Api.auth.LogOut())),
