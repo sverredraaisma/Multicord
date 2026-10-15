@@ -210,6 +210,38 @@ describe("per-service settings", () => {
   });
 });
 
+describe("media that loads by itself", () => {
+  it("has a general limit, 5 MB unless chosen otherwise, checked strictly", () => {
+    expect(DEFAULT_SETTINGS.general.mediaAutoLoad).toBe("5mb");
+    expect(parseSettings({ general: { mediaAutoLoad: "25mb" } }).general.mediaAutoLoad).toBe("25mb");
+    expect(parseSettings({ general: { mediaAutoLoad: "7mb" } }).general.mediaAutoLoad).toBe("5mb");
+    expect(isSettingsPatch({ general: { mediaAutoLoad: "off" } })).toBe(true);
+    for (const bad of ["inherit", "3mb", 5, null]) expect(isSettingsPatch({ general: { mediaAutoLoad: bad } })).toBe(false);
+  });
+
+  it("lets a service choose its own limit, or go back to the general one", () => {
+    const parsed = parseSettings({ services: { matrix: { notifications: true, mediaAutoLoad: "all" }, telegram: { notifications: true, mediaAutoLoad: "huge" } } });
+    expect(parsed.services).toEqual({ matrix: { notifications: true, mediaAutoLoad: "all" }, telegram: { notifications: true } });
+    expect(isSettingsPatch({ services: { matrix: { mediaAutoLoad: "inherit" }, telegram: { mediaAutoLoad: "1mb" } } })).toBe(true);
+    expect(isSettingsPatch({ services: { matrix: { mediaAutoLoad: "2mb" } } })).toBe(false);
+    const own = applySettingsPatch(DEFAULT_SETTINGS, { services: { matrix: { mediaAutoLoad: "off" } } });
+    expect(own.services.matrix).toEqual({ notifications: true, mediaAutoLoad: "off" });
+    // Changing something else keeps it; "inherit" drops it.
+    expect(applySettingsPatch(own, { services: { matrix: { notifications: false } } }).services.matrix).toEqual({ notifications: false, mediaAutoLoad: "off" });
+    expect(applySettingsPatch(own, { services: { matrix: { mediaAutoLoad: "inherit" } } }).services.matrix).toEqual({ notifications: true });
+  });
+
+  it("gives each service its limit in bytes", async () => {
+    const { mediaAutoLoadLimit } = await import("../../src/shared/settings");
+    const settings = applySettingsPatch(DEFAULT_SETTINGS, { general: { mediaAutoLoad: "10mb" }, services: { matrix: { mediaAutoLoad: "off" }, telegram: { mediaAutoLoad: "all" }, stoat: { mediaAutoLoad: "1mb" } } });
+    expect(mediaAutoLoadLimit(settings, "matrix")).toBe(0);
+    expect(mediaAutoLoadLimit(settings, "telegram")).toBe(Number.POSITIVE_INFINITY);
+    expect(mediaAutoLoadLimit(settings, "stoat")).toBe(1024 * 1024);
+    expect(mediaAutoLoadLimit(settings, "fluxer")).toBe(10 * 1024 * 1024);
+    expect(mediaAutoLoadLimit(DEFAULT_SETTINGS, "fluxer")).toBe(5 * 1024 * 1024);
+  });
+});
+
 describe("settings modules declare for their services", () => {
   const FIELDS: ServiceSettingField[] = [
     { kind: "toggle", key: "typing", label: "Send typing notices", default: true },

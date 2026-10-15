@@ -437,7 +437,7 @@ describe("banners", () => {
 describe("general and about", () => {
   it("general switches reflect state and send updates", () => {
     const state = viewState();
-    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, streamerMode: "on", openLinks: false, autoUpdate: false, richPresence: false };
+    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, streamerMode: "on", openLinks: false, autoUpdate: false, richPresence: false, mediaAutoLoad: "5mb" };
     mount(state);
     expect(switchFor("tray").checked).toBe(false);
     expect(switchFor("Start with").checked).toBe(true);

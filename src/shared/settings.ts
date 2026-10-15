@@ -69,7 +69,17 @@ export interface GeneralSettings {
   autoUpdate: boolean;
   /** Show games' and apps' Rich Presence on Discord, through a local Discord IPC server. */
   richPresence: boolean;
+  /** Media a native view fetches on request loads by itself up to this size; services may choose their own. */
+  mediaAutoLoad: MediaAutoLoad;
 }
+
+/** How much held-back media loads by itself: nothing, up to a size, or anything. */
+export const MEDIA_AUTO_LOAD = ["off", "1mb", "5mb", "10mb", "25mb", "all"] as const;
+export type MediaAutoLoad = (typeof MEDIA_AUTO_LOAD)[number];
+export const isMediaAutoLoad = (value: unknown): value is MediaAutoLoad => (MEDIA_AUTO_LOAD as readonly unknown[]).includes(value);
+
+const MB = 1024 * 1024;
+const AUTO_LOAD_BYTES: Record<MediaAutoLoad, number> = { off: 0, "1mb": MB, "5mb": 5 * MB, "10mb": 10 * MB, "25mb": 25 * MB, all: Number.POSITIVE_INFINITY };
 
 /** Where updating stands; development runs cannot update. */
 export type UpdateStatus =
@@ -115,6 +125,8 @@ export type ShortcutAction = keyof ShortcutSettings;
 export interface ServiceSettings {
   /** Desktop notifications from this service; the general switch still applies. */
   notifications: boolean;
+  /** Its own limit for media that loads by itself; absent: the general one. */
+  mediaAutoLoad?: MediaAutoLoad;
   /**
    * Values for the settings its module declares (ModuleManifest.settings).
    * Stored loosely; serviceSettingValues() checks them against the fields.
@@ -251,8 +263,28 @@ export function serviceSettings(settings: AppSettings, id: string): ServiceSetti
   return { ...DEFAULT_SERVICE_SETTINGS, ...(Object.hasOwn(settings.services, id) ? settings.services[id] : {}) };
 }
 
+/**
+ * The most a service's native view loads by itself, in bytes: the service's
+ * own choice, else the general one; 0 for nothing, Infinity for any size.
+ */
+export function mediaAutoLoadLimit(settings: AppSettings, id: string): number {
+  return AUTO_LOAD_BYTES[serviceSettings(settings, id).mediaAutoLoad ?? settings.general.mediaAutoLoad];
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
-  general: { closeToTray: true, launchAtLogin: false, notifications: true, spellcheck: true, railGrouping: "mixed", zoom: 1, streamerMode: "auto", openLinks: false, autoUpdate: true, richPresence: false },
+  general: {
+    closeToTray: true,
+    launchAtLogin: false,
+    notifications: true,
+    spellcheck: true,
+    railGrouping: "mixed",
+    zoom: 1,
+    streamerMode: "auto",
+    openLinks: false,
+    autoUpdate: true,
+    richPresence: false,
+    mediaAutoLoad: "5mb",
+  },
   voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, enhancedNoiseSuppression: false, pushToTalkGlobal: false },
   // Off by default: global shortcuts take keys away from every other app.
   shortcuts: { toggleMute: null, toggleDeafen: null, showApp: null },
@@ -278,8 +310,8 @@ const SHORTCUT_KEYS: readonly ShortcutAction[] = ["toggleMute", "toggleDeafen", 
 export interface SettingsPatch {
   general?: Partial<GeneralSettings>;
   shortcuts?: Partial<ShortcutSettings>;
-  /** Per service: fields to change, or null to go back to the defaults. */
-  services?: Record<string, Partial<ServiceSettings> | null>;
+  /** Per service: fields to change, or null to go back to the defaults. A media limit of "inherit" drops the service's own. */
+  services?: Record<string, (Partial<Omit<ServiceSettings, "mediaAutoLoad">> & { mediaAutoLoad?: MediaAutoLoad | "inherit" }) | null>;
   voice?: Partial<Record<"input" | "output" | "camera", DeviceChoice | null>> &
     Partial<Pick<VoiceSettings, "echoCancellation" | "noiseSuppression" | "autoGainControl" | "enhancedNoiseSuppression" | "pushToTalkGlobal">> & { pushToTalk?: string | null };
 }
@@ -297,6 +329,7 @@ const GENERAL_CHECKS: { [K in keyof GeneralSettings]: (value: unknown) => value 
   openLinks: (v): v is boolean => typeof v === "boolean",
   autoUpdate: (v): v is boolean => typeof v === "boolean",
   richPresence: (v): v is boolean => typeof v === "boolean",
+  mediaAutoLoad: isMediaAutoLoad,
 };
 const GENERAL_KEYS = Object.keys(GENERAL_CHECKS) as (keyof GeneralSettings)[];
 const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl", "enhancedNoiseSuppression", "pushToTalkGlobal"] as const;
@@ -334,6 +367,7 @@ export function parseSettings(raw: unknown): AppSettings {
     for (const [id, value] of Object.entries(raw.services).slice(0, MAX_SERVICE_SETTINGS)) {
       if (!SERVICE_ID.test(id) || !isRecord(value) || typeof value.notifications !== "boolean") continue;
       settings.services[id] = { notifications: value.notifications };
+      if (isMediaAutoLoad(value.mediaAutoLoad)) settings.services[id].mediaAutoLoad = value.mediaAutoLoad;
       const options = parseServiceSettingValues(value.options);
       if (options) settings.services[id].options = options;
     }
@@ -351,7 +385,11 @@ export function isSettingsPatch(value: unknown): value is SettingsPatch {
     for (const [id, v] of Object.entries(services)) {
       if (!SERVICE_ID.test(id)) return false;
       if (v === null) continue;
-      if (!isRecord(v) || !Object.entries(v).every(([key, field]) => (key === "notifications" && typeof field === "boolean") || (key === "options" && isServiceSettingValues(field)))) return false;
+      const fits = ([key, field]: [string, unknown]): boolean =>
+        (key === "notifications" && typeof field === "boolean") ||
+        (key === "mediaAutoLoad" && (field === "inherit" || isMediaAutoLoad(field))) ||
+        (key === "options" && isServiceSettingValues(field));
+      if (!isRecord(v) || !Object.entries(v).every(fits)) return false;
     }
   }
   if (shortcuts !== undefined) {
@@ -391,7 +429,10 @@ export function applySettingsPatch(settings: AppSettings, patch: SettingsPatch):
     if (value === null) delete next.services[id];
     else if (Object.keys(next.services).length < MAX_SERVICE_SETTINGS || Object.hasOwn(next.services, id)) {
       const current = serviceSettings(next, id);
-      const merged: ServiceSettings = { ...current, ...value };
+      const { mediaAutoLoad, ...rest } = value;
+      const merged: ServiceSettings = { ...current, ...rest };
+      if (mediaAutoLoad === "inherit") delete merged.mediaAutoLoad;
+      else if (mediaAutoLoad) merged.mediaAutoLoad = mediaAutoLoad;
       // Values merge per key, so changing one keeps the others; at most MAX_SERVICE_FIELDS are kept.
       if (value.options) merged.options = Object.fromEntries(Object.entries({ ...current.options, ...value.options }).slice(-MAX_SERVICE_FIELDS));
       next.services[id] = merged;
