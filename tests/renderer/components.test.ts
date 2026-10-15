@@ -153,6 +153,25 @@ describe("messages", () => {
     attachments: [],
   };
 
+  it("shows a thread's summary, which opens it where the conversation has threads, and offers to open one", () => {
+    const onOpenThread = vi.fn();
+    const h = { ...handlers(), onOpenThread };
+    const threads = { reply: true, react: true, threads: true };
+    const item = messageItem(document, { ...message, thread: { count: 3, latest: "Bo" } }, h, { can: threads });
+    const summary = item.querySelector<HTMLButtonElement>("button.thread-summary")!;
+    expect(summary.textContent).toBe("3 replies · latest from Bo");
+    summary.click();
+    expect(onOpenThread).toHaveBeenCalledTimes(1);
+    [...item.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "Thread")!.click();
+    expect(onOpenThread).toHaveBeenCalledTimes(2);
+    // Without threads here, or without a handler, the summary only shows; without replies there is none.
+    const plain = messageItem(document, { ...message, thread: { count: 1 } }, h, { can: { reply: true, react: true } });
+    expect(plain.querySelector("div.thread-summary")!.textContent).toBe("1 reply");
+    expect([...plain.querySelectorAll(".message-actions button")].map((b) => b.textContent)).not.toContain("Thread");
+    expect(messageItem(document, { ...message, thread: { count: 2 } }, handlers(), { can: threads }).querySelector("div.thread-summary")).not.toBeNull();
+    expect(messageItem(document, { ...message, thread: { count: 0 } }, h, { can: threads }).querySelector(".thread-summary")).toBeNull();
+  });
+
   it("renders markdown content with custom emoji", () => {
     const item = messageItem(document, message, handlers(), { customEmojiUrl: (id) => `https://media/${id}.webp` });
     expect(item.dataset.id).toBe("5");

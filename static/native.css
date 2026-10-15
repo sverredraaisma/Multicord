@@ -548,6 +548,16 @@ button.member:hover, button.member:focus-visible { background: var(--surface); c
 .search-form { margin: 8px; }
 .search-input { box-sizing: border-box; width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); font: inherit; }
 .pin-marker { font-size: 12px; }
+/* Threads: a summary under the message, and the thread beside the conversation with a composer of its own. */
+.thread-summary { align-self: flex-start; margin-top: 4px; padding: 2px 8px; border: 0; border-radius: 4px; background: var(--panel); color: var(--accent); font: inherit; font-size: 13px; }
+button.thread-summary { cursor: pointer; }
+button.thread-summary:hover { text-decoration: underline; }
+.thread-panel { position: relative; display: flex; flex-direction: column; width: 320px; padding: 8px 0 0; }
+.thread-panel[hidden] { display: none; }
+.thread-panel > .member-section { margin-right: 36px; }
+.thread-messages { flex: 1; min-height: 0; padding: 8px; }
+.thread-panel .locked-notice, .thread-composer { margin: 8px; }
+.thread-composer[hidden] { display: none; }
 .message.jump-target { border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .member-more { margin: 4px 8px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--text); font: inherit; cursor: pointer; }
 .member-more:disabled { cursor: progress; opacity: 0.6; }

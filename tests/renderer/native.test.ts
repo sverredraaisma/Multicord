@@ -637,6 +637,86 @@ describe("muting conversations", () => {
   });
 });
 
+describe("threads", () => {
+  const THREADS = { ...ALL, threads: true };
+  const withThread = (thread: unknown, can: object = THREADS) =>
+    chat({ channel: { id: "2", name: "general", messages: [msg("10", { thread: { count: 2, latest: "Bo" } })], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: can as typeof ALL, thread: thread as never } });
+  const panel = () => root.querySelector<HTMLElement>(".thread-panel")!;
+  const composer = () => root.querySelector<HTMLTextAreaElement>(".thread-composer")!;
+  const key = (field: HTMLTextAreaElement, name: string, extra: KeyboardEventInit = {}) => field.dispatchEvent(new KeyboardEvent("keydown", { key: name, cancelable: true, ...extra }));
+
+  it("opens a message's thread from its summary, and shows it beside the conversation with a composer of its own", () => {
+    view.update(withThread(undefined));
+    expect(panel().hidden).toBe(true);
+    root.querySelector<HTMLButtonElement>(".messages button.thread-summary")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "thread", rootId: "10" });
+    const replies = [msg("10", { canEdit: true, source: "x" }), msg("11", { author: "Bo", attachments: [{ name: "a.png", kind: "image", mediaKey: "k1", size: 10 }] })];
+    view.update(withThread({ rootId: "10", messages: replies, loading: true, note: "Only the latest replies are listed.", error: "Some could not be loaded." }));
+    expect(panel().hidden).toBe(false);
+    expect([...panel().querySelectorAll("li.message")].map((li) => (li as HTMLElement).dataset.id)).toEqual(["10", "11"]);
+    // Not edited or answered one by one here; media waits for a click.
+    expect([...panel().querySelectorAll(".message-actions button")].map((b) => b.textContent)).not.toContain("Edit");
+    expect(panel().querySelector("button.attachment.load")).not.toBeNull();
+    expect(panel().querySelector(".older-row")!.textContent).toBe("Loading…");
+    expect(panel().querySelector(".panel-note")!.textContent).toBe("Only the latest replies are listed.");
+    expect(panel().querySelector(".member-error")!.textContent).toBe("Some could not be loaded.");
+    const field = composer();
+    field.value = "in the thread";
+    key(field, "Enter", { shiftKey: true });
+    expect(act).not.toHaveBeenCalledWith(expect.objectContaining({ thread: "10" }));
+    key(field, "Enter");
+    expect(act).toHaveBeenLastCalledWith({ type: "send", content: "in the thread", thread: "10" });
+    expect(field.value).toBe("");
+    const calls = act.mock.calls.length;
+    field.value = "  ";
+    key(field, "Enter");
+    key(field, "a");
+    expect(act).toHaveBeenCalledTimes(calls);
+    // Typing survives updates of the same thread; another thread starts afresh.
+    field.value = "draft";
+    view.update(withThread({ rootId: "10", messages: replies, loading: false }));
+    expect(composer()).toBe(field);
+    expect(field.value).toBe("draft");
+    expect(panel().querySelector(".panel-note, .member-error")).toBeNull();
+    // Scrolled up in the thread, it stays there as replies come.
+    const list = panel().querySelector<HTMLElement>(".thread-messages")!;
+    Object.defineProperty(list, "scrollHeight", { configurable: true, value: 1000 });
+    Object.defineProperty(list, "clientHeight", { configurable: true, value: 100 });
+    list.scrollTop = 200;
+    view.update(withThread({ rootId: "10", messages: [...replies, msg("13")] }));
+    expect(list.scrollTop).toBe(200);
+    view.update(withThread({ rootId: "12", messages: [] }));
+    expect(field.value).toBe("");
+    key(field, "Escape");
+    expect(act).toHaveBeenLastCalledWith({ type: "thread" });
+    panel().querySelector<HTMLButtonElement>('[aria-label="Close thread"]')!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "thread" });
+  });
+
+  it("shows custom emoji and favourite stars in a thread where the view has them", () => {
+    view = new NativeView(root, { act, favourites: vi.fn() });
+    view.update({ ...withThread({ rootId: "10", messages: [msg("10", { content: "<:blob:x.org/blob>", attachments: [{ name: "a.png", kind: "image", url: "https://media/a.png" }] })] }), emojiUrls: { "x.org/blob": "https://media/blob.png" } });
+    expect(panel().querySelector<HTMLImageElement>("img.emoji")!.src).toBe("https://media/blob.png");
+    expect(panel().querySelector(".favourite-star")).not.toBeNull();
+  });
+
+  it("says why nothing may be sent into a thread, and shows none where the conversation has no threads", () => {
+    view.update(withThread({ rootId: "10", messages: [msg("10")], locked: "Encrypted" }));
+    expect(composer().hidden).toBe(true);
+    expect(panel().querySelector<HTMLElement>(".locked-notice")!.textContent).toBe("Encrypted");
+    view.update(withThread({ rootId: "10", messages: [msg("10")] }, ALL));
+    expect(panel().hidden).toBe(true);
+    // A summary only shows there.
+    expect(root.querySelector(".messages div.thread-summary")!.textContent).toBe("2 replies · latest from Bo");
+    // Leaving the thread, the composer has nowhere to send.
+    const field = composer();
+    field.value = "late";
+    const calls = act.mock.calls.length;
+    key(field, "Enter");
+    expect(act).toHaveBeenCalledTimes(calls);
+  });
+});
+
 describe("joining conversations", () => {
   it("answers invitations, joins listed conversations, and joins by address where the module offers it", () => {
     const base = chat();

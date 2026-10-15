@@ -3,7 +3,7 @@ import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, unreadMarker, type NativeUnread } from "../shared/native";
+import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
@@ -100,6 +100,8 @@ export class NativeView {
   private searchOpen = false;
   /** A search was sent since it opened, so the module has results to drop when it closes. */
   private searched = false;
+  /** The thread the side panel shows, by its root message. */
+  private threadRoot: string | undefined;
   /** The mention being typed in the composer, while it has suggestions: where its "@" is, who fits, and the highlighted one. */
   private mention: { start: number; options: MentionCandidate[]; active: number } | undefined;
 
@@ -454,7 +456,34 @@ export class NativeView {
     forward.addEventListener("keydown", (event) => {
       if (event.key === "Escape") this.closeForward();
     });
-    area.append(main, messagePanel, members, profile, forward);
+    // A message's thread: its messages, and a composer of its own, kept across updates so typing is never lost.
+    const threadPanel = el(doc, "aside", "member-panel thread-panel");
+    threadPanel.id = "thread-panel";
+    threadPanel.setAttribute("aria-label", "Thread");
+    threadPanel.hidden = true;
+    const threadClose = el(doc, "button", "profile-close", "×");
+    threadClose.type = "button";
+    threadClose.setAttribute("aria-label", "Close thread");
+    threadClose.addEventListener("click", () => this.api.act({ type: "thread" }));
+    const threadStatus = el(doc, "div", "thread-status");
+    const threadMessages = el(doc, "ol", "messages thread-messages");
+    const threadNotice = el(doc, "div", "locked-notice");
+    const threadComposer = el(doc, "textarea", "composer thread-composer");
+    threadComposer.maxLength = MAX_MESSAGE_LENGTH;
+    threadComposer.rows = 1;
+    threadComposer.placeholder = "Reply in thread";
+    threadComposer.setAttribute("aria-label", "Reply in thread");
+    threadComposer.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") return this.api.act({ type: "thread" });
+      if (event.key !== "Enter" || event.shiftKey) return;
+      event.preventDefault();
+      const content = threadComposer.value;
+      if (content.trim() === "" || !this.threadRoot) return;
+      this.api.act({ type: "send", content, thread: this.threadRoot });
+      threadComposer.value = "";
+    });
+    threadPanel.append(threadClose, el(doc, "h3", "member-section", "Thread"), threadStatus, threadMessages, threadNotice, threadComposer);
+    area.append(main, messagePanel, threadPanel, members, profile, forward);
 
     const layout = el(doc, "div", "chat");
     layout.append(sidebar, area);
@@ -473,6 +502,11 @@ export class NativeView {
       searchForm,
       searchInput,
       messagePanel,
+      threadPanel,
+      threadStatus,
+      threadMessages,
+      threadNotice,
+      threadComposer,
       profile,
       forward,
       banner,
@@ -880,6 +914,7 @@ export class NativeView {
     },
     onPin: (message, pin) => this.api.act({ type: "pin", messageId: message.id, pin }),
     onVote: (message, options) => this.api.act({ type: "vote", messageId: message.id, options }),
+    onOpenThread: (message) => this.api.act({ type: "thread", rootId: message.id }),
     onForward: (message) => {
       this.forwardFor = message;
       this.updateForward(true);
@@ -1053,6 +1088,42 @@ export class NativeView {
     [...panel.querySelectorAll<HTMLElement>("button, input")].find((b) => (b.dataset.id ?? b.className) === focusKey)?.focus();
   }
 
+  /**
+   * The thread panel: the open thread's messages (not editable or answerable
+   * one by one here, which the conversation is for) and its composer, or why
+   * nothing may be sent; shown while the module lists the thread.
+   */
+  private updateThread(): void {
+    const panel = this.parts.threadPanel!;
+    const list = this.parts.threadMessages!;
+    const channel = this.lastState?.channel;
+    const thread = channel && this.can.threads ? threadView(channel.thread) : undefined;
+    panel.hidden = !thread;
+    if (!thread) {
+      this.threadRoot = undefined;
+      return list.replaceChildren();
+    }
+    const doc = this.doc;
+    const status = this.parts.threadStatus!;
+    status.replaceChildren(...[thread.note && el(doc, "p", "panel-note", thread.note), thread.error && el(doc, "p", "member-error", thread.error)].filter((n): n is HTMLParagraphElement => Boolean(n)));
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
+    const can = { reply: false, react: false, forward: false, threads: false };
+    // Media here loads when clicked: what loads by itself is watched in the conversation only.
+    const handlers = { ...this.messageHandlers, autoLoad: undefined, ...(this.favouritesOn ? {} : { onFavourite: undefined }) };
+    const items = thread.messages.map((message) => messageItem(doc, { ...message, canEdit: false }, handlers, { customEmojiUrl: (id, animated) => this.emojiUrl(id, animated), can }));
+    if (thread.loading) items.push(el(doc, "li", "older-row", "Loading…"));
+    list.replaceChildren(...items);
+    const notice = this.parts.threadNotice!;
+    notice.textContent = thread.locked ?? "";
+    notice.hidden = !thread.locked;
+    const composer = this.parts.threadComposer as HTMLTextAreaElement;
+    composer.hidden = Boolean(thread.locked);
+    // Another thread: the reply being written was for the last one.
+    if (thread.rootId !== this.threadRoot) composer.value = "";
+    if (thread.rootId !== this.threadRoot || atBottom) list.scrollTop = list.scrollHeight;
+    this.threadRoot = thread.rootId;
+  }
+
   /** Opens someone's card at once with what the view knows, and asks the module for the rest. */
   private openProfile(seed: ProfileCardData): void {
     this.profileFor = seed;
@@ -1122,6 +1193,7 @@ export class NativeView {
     heading!.textContent = channel ? channel.name : "Select a conversation";
     this.updateMembers();
     this.updateMessagePanel();
+    this.updateThread();
     this.updateForward();
     this.updateProfile();
     this.parts.typing!.textContent = typingText(channel?.typing ?? []);

@@ -214,6 +214,63 @@ export interface NativeMessage {
   canPin?: boolean;
   /** A poll it carries; read by the view through messagePoll(). */
   poll?: NativePoll;
+  /** It has replies in a thread of its own (NativeChannelCan.threads); read by the view through threadSummary(). */
+  thread?: NativeThreadSummary;
+}
+
+/** A message's thread, as its summary under it says: how many replies, and who wrote the latest. */
+export interface NativeThreadSummary {
+  count: number;
+  /** The latest reply's author, by name. */
+  latest?: string;
+}
+
+/** A thread summary as the view trusts it: a positive count (capped) and a name cut short; undefined without replies. */
+export function threadSummary(value: unknown): NativeThreadSummary | undefined {
+  const v = record(value);
+  const replies = count(v?.count);
+  if (!v || replies === 0) return undefined;
+  const summary: NativeThreadSummary = { count: replies };
+  const latest = shortText(v.latest);
+  if (latest) summary.latest = latest;
+  return summary;
+}
+
+/** The thread open in the side panel: its root message and replies, as far as the module has them. */
+export interface NativeThreadView {
+  /** The message it hangs from (NativeMessage.id). */
+  rootId: string;
+  /** Oldest first: the root, where the module has it, then the replies. */
+  messages: NativeMessage[];
+  loading: boolean;
+  /** Why the thread could not be (fully) loaded. */
+  error?: string;
+  /** Something the user should know about it, e.g. that only the latest replies are listed. */
+  note?: string;
+  /** Set when nothing may be sent into it: why, shown in place of its composer. */
+  locked?: string;
+}
+
+/** Most messages the thread panel shows: the latest. */
+export const MAX_THREAD_MESSAGES = 200;
+
+/**
+ * A thread as the view trusts it: a usable root id, at most
+ * MAX_THREAD_MESSAGES messages with usable ids (the latest), texts cut
+ * short. Undefined without one.
+ */
+export function threadView(value: unknown): NativeThreadView | undefined {
+  const v = record(value);
+  if (!v || !id(v.rootId)) return undefined;
+  const messages = (Array.isArray(v.messages) ? v.messages : []).filter((m): m is NativeMessage => id(record(m)?.id)).slice(-MAX_THREAD_MESSAGES);
+  const thread: NativeThreadView = { rootId: v.rootId as string, messages, loading: v.loading === true };
+  const error = shortText(v.error, 300);
+  if (error) thread.error = error;
+  const note = shortText(v.note, 300);
+  if (note) thread.note = note;
+  const locked = shortText(v.locked, 1000);
+  if (locked) thread.locked = locked;
+  return thread;
 }
 
 /** A poll in a message, as far as the platform shows it to the user. */
@@ -464,6 +521,12 @@ export interface NativeChannelView {
    * opens. Read by the view through searchResults().
    */
   search?: NativeSearchResults;
+  /**
+   * The thread open in the side panel (after a `thread` action with a
+   * rootId), while can.threads is on, until it is closed or another
+   * conversation opens. Read by the view through threadView().
+   */
+  thread?: NativeThreadView;
 }
 
 export interface NativeUnread {
@@ -570,9 +633,11 @@ export interface NativeChannelCan {
   search?: boolean;
   /** Forward its messages into another of this module's conversations (`forward` actions). */
   forward?: boolean;
+  /** Open a message's thread and reply in it (`thread` actions, send's `thread`, NativeChannelView.thread). */
+  threads?: boolean;
 }
 
-export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins", "search", "forward"] as const satisfies readonly (keyof NativeChannelCan)[];
+export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins", "search", "forward", "threads"] as const satisfies readonly (keyof NativeChannelCan)[];
 
 /** A conversation's flags as the view trusts them: each on only when it is exactly `true`. */
 export function channelCan(value: unknown): Required<NativeChannelCan> {
@@ -888,7 +953,8 @@ export type NativeAction =
   | { type: "prompt"; id: string; values: Record<string, string> }
   | { type: "cancelPrompt"; id: string }
   | { type: "select"; channelId: string }
-  | { type: "send"; content: string; replyTo?: string }
+  /** Sends a message; with `thread`, into the thread of that message (can.threads). */
+  | { type: "send"; content: string; replyTo?: string; thread?: string }
   | { type: "edit"; messageId: string; content: string }
   | { type: "delete"; messageId: string }
   | { type: "react"; messageId: string; emoji: string; add: boolean }
@@ -942,6 +1008,8 @@ export type NativeAction =
    * as a new message saying where it came from. Never across modules.
    */
   | { type: "forward"; messageId: string; channelId: string }
+  /** Opens a message's thread in the side panel (can.threads), or closes it without a rootId. */
+  | { type: "thread"; rootId?: string }
   /** Votes in a poll of the open conversation (NativePoll.canVote): the options chosen, replacing earlier ones; none takes the vote back. */
   | { type: "vote"; messageId: string; options: string[] }
   /** Accepts an invitation, or joins a conversation the sidebar lists as joinable. */
@@ -994,7 +1062,9 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return id(v.channelId);
     case "send":
       // Empty text is allowed: a message may be attachments only.
-      return text(v.content, 0, MAX_MESSAGE_LENGTH) && (v.replyTo === undefined || id(v.replyTo));
+      return text(v.content, 0, MAX_MESSAGE_LENGTH) && (v.replyTo === undefined || id(v.replyTo)) && (v.thread === undefined || id(v.thread));
+    case "thread":
+      return v.rootId === undefined || id(v.rootId);
     case "joinVoice":
       return id(v.channelId);
     case "mute":

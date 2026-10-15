@@ -1,5 +1,5 @@
 import type { FavouriteKind } from "../../shared/favourites";
-import { isShownUrl, messageEmbeds, messagePoll, type NativeAttachment, type NativeChannelCan, type NativeEmbed, type NativeMessage, type NativePoll } from "../../shared/native";
+import { isShownUrl, messageEmbeds, messagePoll, threadSummary, type NativeAttachment, type NativeChannelCan, type NativeEmbed, type NativeMessage, type NativePoll } from "../../shared/native";
 import { avatar } from "./avatar";
 import { el, setColor } from "./dom";
 import { formatSize, formatTime } from "./format";
@@ -255,6 +255,8 @@ export interface MessageHandlers {
   onCopy?(message: NativeMessage): void;
   /** Votes in the message's poll; without it polls only show. */
   onVote?(message: NativeMessage, options: string[]): void;
+  /** Opens the message's thread, where the conversation has threads (can.threads); without it threads only show their summary. */
+  onOpenThread?(message: NativeMessage): void;
   /** Opens the author's profile (messages with an authorId); without it the author is plain text. */
   onOpenProfile?(message: NativeMessage): void;
   /** Stars or unstars a GIF, sticker or picture; without it media has no star. */
@@ -271,7 +273,7 @@ export interface MessageOptions extends MarkdownOptions {
   /** Whether the quick reaction palette is open. */
   reacting?: boolean;
   /** What the conversation allows (NativeChannelView.can); everything when left out. */
-  can?: Pick<NativeChannelCan, "reply" | "react"> & Partial<Pick<NativeChannelCan, "forward">>;
+  can?: Pick<NativeChannelCan, "reply" | "react"> & Partial<Pick<NativeChannelCan, "forward" | "threads">>;
   /** The message just jumped to (from the pins or search results), marked until the next jump. */
   highlighted?: boolean;
 }
@@ -289,6 +291,7 @@ function messageActions(doc: Document, message: NativeMessage, handlers: Message
   if (message.canDelete) action("Delete", () => handlers.onDelete(message));
   if (message.canPin === true && handlers.onPin) action(message.pinned === true ? "Unpin" : "Pin", () => handlers.onPin!(message, message.pinned !== true));
   if (can?.forward === true && handlers.onForward) action("Forward", () => handlers.onForward!(message));
+  if (can?.threads === true && handlers.onOpenThread) action("Thread", () => handlers.onOpenThread!(message));
   if (message.content.trim() !== "" && handlers.onCopy) action("Copy text", () => handlers.onCopy!(message));
   return bar;
 }
@@ -377,6 +380,17 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
   const poll = messagePoll(message.poll);
   if (poll) body.append(pollCard(doc, poll, handlers.onVote && ((chosen) => handlers.onVote!(message, chosen))));
   for (const embed of messageEmbeds(message.embeds)) body.append(embedCard(doc, embed, handlers.onLoadMedia, handlers.autoLoad, options));
+  const thread = threadSummary(message.thread);
+  if (thread) {
+    const label = `${thread.count === 1 ? "1 reply" : `${thread.count} replies`}${thread.latest ? ` · latest from ${thread.latest}` : ""}`;
+    const open = options.can?.threads === true && handlers.onOpenThread;
+    const summary = open ? el(doc, "button", "thread-summary", label) : el(doc, "div", "thread-summary", label);
+    if (open) {
+      (summary as HTMLButtonElement).type = "button";
+      summary.addEventListener("click", () => handlers.onOpenThread!(message));
+    }
+    body.append(summary);
+  }
 
   // Where reactions cannot be given, the ones others gave still show.
   const canReact = options.can?.react !== false;

@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
+import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_THREAD_MESSAGES, threadSummary, threadView, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -179,8 +179,9 @@ describe("media requests", () => {
 
 describe("conversation capability flags", () => {
   it("turns a flag on only when it is exactly true", () => {
-    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false, pins: false, search: false, forward: false };
-    expect(channelCan({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true, forward: true })).toEqual({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true, forward: true });
+    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false, pins: false, search: false, forward: false, threads: false };
+    const all = { reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true, forward: true, threads: true };
+    expect(channelCan(all)).toEqual(all);
     expect(channelCan({ reply: true, react: "yes", attach: 1, members: "true", stickers: "yes", extra: true })).toEqual({ ...none, reply: true });
     for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual(none);
   });
@@ -533,6 +534,38 @@ describe("forwarding", () => {
     expect(isNativeAction({ type: "forward", messageId: "5", channelId: "6" })).toBe(true);
     expect(isNativeAction({ type: "forward", messageId: "5", channelId: "!room:x.org" })).toBe(false);
     expect(isNativeAction({ type: "forward", messageId: "$e", channelId: "6" })).toBe(false);
+  });
+});
+
+describe("threads", () => {
+  it("validates opening and closing a thread, and sending into one", () => {
+    expect(isNativeAction({ type: "thread" })).toBe(true);
+    expect(isNativeAction({ type: "thread", rootId: "5" })).toBe(true);
+    expect(isNativeAction({ type: "thread", rootId: "$root" })).toBe(false);
+    expect(isNativeAction({ type: "send", content: "hi", thread: "5" })).toBe(true);
+    expect(isNativeAction({ type: "send", content: "hi", thread: "x" })).toBe(false);
+  });
+
+  it("keeps sane summaries and threads", () => {
+    for (const value of [undefined, { count: 0 }, { count: -1 }, { count: 1.5 }, { count: "3" }]) expect(threadSummary(value)).toBeUndefined();
+    expect(threadSummary({ count: 3, latest: "Ana" })).toEqual({ count: 3, latest: "Ana" });
+    expect(threadSummary({ count: 1e12, latest: " " })).toEqual({ count: 100_000_000 });
+    expect(threadView(undefined)).toBeUndefined();
+    expect(threadView({ rootId: "$root", messages: [] })).toBeUndefined();
+    const message = (id: unknown) => ({ id, author: "Ana", content: "x", timestamp: "t", edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] });
+    expect(threadView({ rootId: "5", messages: [message("5"), message("bad"), null, message("6")], loading: "yes", error: "E", note: " ", locked: "No" })).toEqual({
+      rootId: "5",
+      messages: [message("5"), message("6")],
+      loading: false,
+      error: "E",
+      locked: "No",
+    });
+    const many = Array.from({ length: MAX_THREAD_MESSAGES + 2 }, (_, i) => message(String(i + 1)));
+    const thread = threadView({ rootId: "1", messages: many, loading: true, note: "Latest only" })!;
+    expect(thread.messages).toHaveLength(MAX_THREAD_MESSAGES);
+    expect(thread.messages[0]!.id).toBe("3");
+    expect(thread).toMatchObject({ loading: true, note: "Latest only" });
+    expect(threadView({ rootId: "1", messages: "x" })).toEqual({ rootId: "1", messages: [], loading: false });
   });
 });
 
