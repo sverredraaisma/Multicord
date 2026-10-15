@@ -1,0 +1,79 @@
+# Synapse for the live media check (scripts/live-media). A template: run.mjs
+# fills in the @@...@@ values (secrets made fresh for each run) and mounts the
+# result at /data. Nothing here is a real secret.
+server_name: "mc-media-hs"
+# The client reaches Synapse through the TLS proxy as hs.mcmedia.test.
+public_baseurl: "https://hs.mcmedia.test/"
+pid_file: /data/homeserver.pid
+listeners:
+  - port: 8008
+    resources:
+      - compress: false
+        names: [client, federation]
+    tls: false
+    type: http
+    x_forwarded: true
+  # Federation over TLS, for lk-jwt-service's OpenID check (https://mc-media-hs:8448).
+  - port: 8448
+    resources:
+      - names: [federation, openid]
+    tls: true
+    type: http
+tls_certificate_path: /data/tls.crt
+tls_private_key_path: /data/tls.key
+database:
+  name: sqlite3
+  args:
+    database: /data/homeserver.db
+log_config: "/data/log.yaml"
+media_store_path: /data/media_store
+registration_shared_secret: "@@REGISTRATION_SECRET@@"
+report_stats: false
+macaroon_secret_key: "@@MACAROON_SECRET@@"
+form_secret: "@@FORM_SECRET@@"
+signing_key_path: "/data/signing.key"
+trusted_key_servers: []
+suppress_key_server_warning: true
+enable_registration: false
+url_preview_enabled: false
+serve_client_wellknown: true
+max_event_delay_duration: 24h
+
+# The call service, as Element Call finds it: .well-known (MSC4143 rtc_foci) and rtc/transports.
+extra_well_known_client_content:
+  org.matrix.msc4143.rtc_foci:
+    - type: livekit
+      livekit_service_url: "https://focus.mcmedia.test"
+matrix_rtc:
+  transports:
+    # The service for /sfu/get, and the LiveKit server as lk-jwt-service names
+    # it (its LIVEKIT_URL) for the homeserver's rtc/livekit/get_token (MSC4195).
+    - type: livekit
+      livekit_service_url: "https://focus.mcmedia.test"
+      url: "ws://mc-media-lk:7880"
+
+# lk-jwt-service as an application service: Synapse proxies rtc/livekit to it
+# (MSC4512), and it asks Synapse who is joined (MSC4502).
+app_service_config_files:
+  - /data/lk-as.yaml
+
+experimental_features:
+  msc3266_enabled: true
+  msc4222_enabled: true
+  msc4143_enabled: true
+  # Sticky events (m.rtc.member), and the homeserver-proxied LiveKit token.
+  msc4354_enabled: true
+  msc4502_enabled: true
+  msc4512_enabled: true
+
+rc_message: { per_second: 1000, burst_count: 1000 }
+rc_login:
+  address: { per_second: 1000, burst_count: 1000 }
+  account: { per_second: 1000, burst_count: 1000 }
+  failed_attempts: { per_second: 1000, burst_count: 1000 }
+rc_registration: { per_second: 1000, burst_count: 1000 }
+rc_joins:
+  local: { per_second: 1000, burst_count: 1000 }
+rc_key_requests: { per_second: 1000, burst_count: 1000 }
+rc_delayed_event_mgmt: { per_second: 1000, burst_count: 1000 }
+rc_media_create: { per_second: 1000, burst_count: 1000 }

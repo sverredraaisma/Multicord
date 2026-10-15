@@ -1,0 +1,14 @@
+# LiveKit for the live media check (template). Its media ports are published
+# one to one, so the ICE candidates it names (127.0.0.1:@@RTC_TCP@@ and
+# @@RTC_UDP@@/udp) reach it from the host.
+port: 7880
+bind_addresses: [0.0.0.0]
+rtc:
+  tcp_port: @@RTC_TCP@@
+  udp_port: @@RTC_UDP@@
+  node_ip: 127.0.0.1
+  use_external_ip: false
+keys:
+  @@LK_KEY@@: @@LK_SECRET@@
+logging:
+  level: warn
