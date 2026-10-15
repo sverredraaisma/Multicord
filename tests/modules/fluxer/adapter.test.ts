@@ -540,7 +540,7 @@ describe("FluxerAdapter chat", () => {
                 status: 200,
                 body: [
                   message("460", "113", {
-                    content: "hi <@2> and <@!404> in <#111> or <#404>",
+                    content: "hi <@2> and <@!404> in <#111> or <#404>, <@&71> <@&404>",
                     edited_timestamp: "t",
                     attachments: [
                       { id: "1", filename: "cat.png", content_type: "image/png", proxy_url: "https://media.fx/a/cat.png" },
@@ -570,12 +570,13 @@ describe("FluxerAdapter chat", () => {
     });
     await ctx.adapter.start();
     await ctx.goOnline();
+    ctx.adapter.state.roles.set("100", [{ id: "71", name: "Mods", color: 0, position: 1 }]);
     await ctx.adapter.openServer("100");
     expect(ctx.chat().channel!.messages[0]).toEqual({
       id: "460",
       author: "Ana",
       avatarUrl: "https://media.fx/avatars/2/av.png?size=64",
-      content: "hi @Ana and <@!404> in #general or <#404>",
+      content: "hi @Ana and <@!404> in #general or <#404>, @Mods <@&404>",
       timestamp: "2026-10-14T12:00:00Z",
       edited: true,
       mine: false,

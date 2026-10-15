@@ -89,6 +89,8 @@ export class FluxerState {
   folders: FluxerFolder[] | undefined;
   /** Each guild's roles. */
   readonly roles = new Map<string, FluxerRole[]>();
+  /** The user's own roles in each guild, for role mentions: from the guild's own member object, kept current by GUILD_MEMBER_UPDATE. */
+  readonly ownRoles = new Map<string, string[]>();
   /** Presences of those the server tells about (friends, DM partners, open member lists); by user id; unknown for the rest. */
   readonly presences = new Map<string, FluxerPresence>();
   /** Member lists the user asked for (the member panel), by channel id: list positions as Fluxer's SYNC operations fill them. */
@@ -102,7 +104,7 @@ export class FluxerState {
     this.me = undefined;
     this.traits = [];
     this.folders = undefined;
-    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.notifySettings, this.typing, this.voiceStates, this.calls, this.emojis, this.stickers, this.roles, this.presences, this.memberLists]) map.clear();
+    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.notifySettings, this.typing, this.voiceStates, this.calls, this.emojis, this.stickers, this.roles, this.ownRoles, this.presences, this.memberLists]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -144,6 +146,9 @@ export class FluxerState {
         break;
       case "USER_GUILD_SETTINGS_UPDATE":
         this.setNotifySettings(parseGuildSettings(data));
+        break;
+      case "GUILD_MEMBER_UPDATE":
+        if (isId(d.guild_id) && isRecord(d.user) && d.user.id === this.me?.id) this.ownRoles.set(d.guild_id, list(d.roles).filter(isId));
         break;
       case "GUILD_CREATE":
       case "GUILD_SYNC":
@@ -398,9 +403,9 @@ export class FluxerState {
     return slots;
   }
 
-  /** Whether a message mentions the user, by name or as @everyone/@here. Role mentions are not known here (the user's roles are not tracked). */
+  /** Whether a message mentions the user: by name, as @everyone/@here, or through a role they have. */
   mentionsMe(message: FluxerMessage): boolean {
-    return message.mentionEveryone || (this.me !== undefined && message.mentionIds.includes(this.me.id));
+    return message.mentionEveryone || (this.me !== undefined && message.mentionIds.includes(this.me.id)) || this.mentionsMyRole(message);
   }
 
   /** Whether the user muted a channel (or its server, or all DMs) in Fluxer, for now. */
@@ -424,7 +429,14 @@ export class FluxerState {
     const level = pick(override?.level) ?? pick(settings?.level) ?? (channel.guildId ? NotifyLevel.Mentions : NotifyLevel.All);
     if (level === NotifyLevel.All) return true;
     if (level === NotifyLevel.None) return false;
-    return message.mentionIds.includes(this.me.id) || (message.mentionEveryone && !settings?.suppressEveryone);
+    return message.mentionIds.includes(this.me.id) || (message.mentionEveryone && !settings?.suppressEveryone) || (this.mentionsMyRole(message) && !settings?.suppressRoles);
+  }
+
+  /** Whether a guild message mentions a role the user has there. */
+  private mentionsMyRole(message: FluxerMessage): boolean {
+    const guildId = this.channels.get(message.channelId)?.guildId;
+    const roles = guildId ? (this.ownRoles.get(guildId) ?? []) : [];
+    return (message.roleMentionIds ?? []).some((r) => roles.includes(r));
   }
 
   private setNotifySettings(entry: [string, FluxerNotifySettings] | undefined): void {
@@ -479,6 +491,9 @@ export class FluxerState {
     if (Array.isArray(record.emojis)) this.setEmojis(guild.id, record.emojis);
     if (Array.isArray(record.stickers)) this.setStickers(guild.id, record.stickers);
     if (Array.isArray(record.roles)) this.roles.set(guild.id, record.roles.flatMap((r) => parseRole(r) ?? []));
+    // The session's own member object is among the members it gets.
+    const own = list(record.members).find((m) => isRecord(m) && isRecord(m.user) && m.user.id === this.me?.id) as Record<string, unknown> | undefined;
+    if (own) this.ownRoles.set(guild.id, list(own.roles).filter(isId));
     if (Array.isArray(record.voice_states)) {
       for (const [key, v] of [...this.voiceStates]) if (v.guildId === guild.id) this.voiceStates.delete(key);
       for (const v of record.voice_states) this.setVoiceState(parseVoiceState(v, guild.id));
@@ -490,6 +505,7 @@ export class FluxerState {
     this.emojis.delete(guildId);
     this.stickers.delete(guildId);
     this.roles.delete(guildId);
+    this.ownRoles.delete(guildId);
     for (const channel of [...this.channels.values()]) {
       if (channel.guildId === guildId) {
         this.channels.delete(channel.id);

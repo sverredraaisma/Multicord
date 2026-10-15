@@ -191,6 +191,34 @@ describe("notification settings", () => {
     expect(state.shouldNotify(msg("404"))).toBe(false);
   });
 
+  it("counts mentions of the user's roles in that guild, unless role mentions are suppressed", () => {
+    const state = new FluxerState();
+    const payload = readyPayload();
+    (payload.guilds[0] as Record<string, unknown>).members = [{ user: { id: "2" }, roles: ["70"] }, { user: { id: "1" }, roles: ["71", "x"] }];
+    state.apply("READY", payload);
+    expect([...state.ownRoles]).toEqual([["100", ["71"]]]);
+    const mentioning = (channel: string, roles: string[]) => msg(channel, { roleMentionIds: roles });
+    expect(state.mentionsMe(mentioning("111", ["71"]))).toBe(true);
+    expect(state.mentionsMe(mentioning("111", ["70"]))).toBe(false);
+    expect(state.mentionsMe(mentioning("211", ["71"]))).toBe(false);
+    expect(state.mentionsMe(mentioning("900", ["71"]))).toBe(false);
+    expect(state.shouldNotify(mentioning("111", ["71"]))).toBe(true);
+    // A new message counts as a mention.
+    state.apply("MESSAGE_CREATE", { id: "720", channel_id: "113", author: ANA, mention_roles: ["71"] });
+    expect(state.mentions("113")).toBe(1);
+    // Roles change with GUILD_MEMBER_UPDATE for the user only.
+    state.apply("GUILD_MEMBER_UPDATE", { guild_id: "100", user: { id: "2" }, roles: ["72"] });
+    state.apply("GUILD_MEMBER_UPDATE", { guild_id: "100", user: { id: "1" }, roles: ["72"] });
+    expect(state.mentionsMe(mentioning("111", ["71"]))).toBe(false);
+    expect(state.mentionsMe(mentioning("111", ["72"]))).toBe(true);
+    // suppress_roles stops them notifying; they still count as mentions.
+    state.apply("USER_GUILD_SETTINGS_UPDATE", { guild_id: "100", message_notifications: 1, suppress_roles: true });
+    expect(state.shouldNotify(mentioning("111", ["72"]))).toBe(false);
+    expect(state.mentionsMe(mentioning("111", ["72"]))).toBe(true);
+    state.apply("GUILD_DELETE", { id: "100" });
+    expect(state.ownRoles.has("100")).toBe(false);
+  });
+
   it("follows guild levels, channel overrides and suppress_everyone", () => {
     const state = withSettings([
       {

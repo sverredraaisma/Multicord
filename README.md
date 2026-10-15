@@ -98,10 +98,10 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - replies, reactions (with quick reactions), and editing and deleting your own messages
   - typing indicators
   - where the news begins: opening a channel with unread messages marks the first after your read position (Fluxer gives no count, so the divider says "New messages")
-  - mentions: messages that mention you or @everyone are highlighted (role mentions are not, as Multicord does not track your roles), and `@name` in the composer inserts a real Fluxer mention of someone who wrote recently
+  - mentions: messages that mention you, a role you have in that server or @everyone are highlighted (role mentions show the role's name, and notify unless you turned role mentions off for that server in Fluxer), and `@name` in the composer inserts a real Fluxer mention of someone who wrote recently
   - attachment uploads, picked with the OS file dialog
   - link previews Fluxer made (articles, site cards, bots' rich embeds) as cards, their pictures through the instance's media proxy
-  - pinned messages: a channel's pins in the pins panel, followed live, and pinning or unpinning from a message's menu (Fluxer decides who may; Multicord does not track roles, so it offers it on every ordinary message and shows Fluxer's refusal)
+  - pinned messages: a channel's pins in the pins panel, followed live, and pinning or unpinning from a message's menu (Fluxer decides who may; Multicord does not work out permissions, so it offers it on every ordinary message and shows Fluxer's refusal)
   - search in the open channel or DM, on the instance (its first 25 results, newest first); the instance says when it is still indexing
   - forwarding a message natively (Fluxer's forward, which copies it without naming its author) into another channel or DM listed in the sidebar; forwarded messages show their copy quoted under "Forwarded"
   - custom emoji, stickers and GIFs in the picker, by Fluxer's rules: a server's own emoji and stickers there, and every server's (also in DMs) only for accounts with global expressions, which Fluxer gives premium (Plutonium) accounts or whomever the instance's limits say. Stickers are WebP, still or animated, and go as stickers; Lottie stickers in messages show their name. GIF search uses the instance's own provider (Klipy on fluxer.app), with trending GIFs before you type, where the instance has one

@@ -1350,6 +1350,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         const user = this.state.users.get(id);
         return user ? `@${displayName(user)}` : match;
       })
+      .replace(/<@&(\d{1,20})>/g, (match, id: string) => {
+        const role = [...this.state.roles.values()].flat().find((r) => r.id === id);
+        return role ? `@${role.name}` : match;
+      })
       .replace(/<#(\d{1,20})>/g, (match, id: string) => {
         const channel = this.state.channels.get(id);
         return channel?.name ? `#${channel.name}` : match;

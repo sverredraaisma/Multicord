@@ -173,6 +173,8 @@ export interface FluxerMessage {
   edited: boolean;
   mentionIds: string[];
   mentionEveryone: boolean;
+  /** Roles it mentions, where it mentions any. */
+  roleMentionIds?: string[];
   attachments: FluxerAttachment[];
   stickers: FluxerSticker[];
   embeds: FluxerMediaEmbed[];
@@ -314,6 +316,7 @@ export function parseMessage(value: unknown): FluxerMessage | undefined {
     edited: typeof value.edited_timestamp === "string",
     mentionIds: list(value.mentions).flatMap((m) => (isRecord(m) && isId(m.id) ? [m.id] : [])),
     mentionEveryone: value.mention_everyone === true,
+    ...(list(value.mention_roles).some(isId) ? { roleMentionIds: list(value.mention_roles).filter(isId) } : {}),
     attachments: parseAttachments(value.attachments),
     stickers: list(value.sticker_items ?? value.stickers).flatMap((s) =>
       isRecord(s) && isId(s.id) && typeof s.name === "string" ? [{ id: s.id, name: s.name.slice(0, 100), format: typeof s.format_type === "number" ? s.format_type : 1, animated: s.animated === true }] : [],
@@ -480,6 +483,8 @@ export interface FluxerNotifySettings {
   /** Muted until this epoch ms; Infinity for an open-ended mute. */
   mutedUntil?: number;
   suppressEveryone: boolean;
+  /** Role mentions do not count (suppress_roles); set only when they do not. */
+  suppressRoles?: boolean;
   channels: Map<string, { level?: number; mutedUntil?: number }>;
 }
 
@@ -511,6 +516,7 @@ export function parseGuildSettings(value: unknown): [string, FluxerNotifySetting
       level: level(value.message_notifications),
       mutedUntil: mutedUntil(value.muted, value.mute_config),
       suppressEveryone: value.suppress_everyone === true,
+      ...(value.suppress_roles === true ? { suppressRoles: true } : {}),
       channels,
     },
   ];
