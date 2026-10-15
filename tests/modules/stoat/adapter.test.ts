@@ -773,7 +773,7 @@ describe("StoatAdapter attachments", () => {
     expect(chat().error).toBe("This Stoat instance does not accept files.");
     await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "a.gif", size: 3, type: "image/gif" } });
     expect(chat().channel!.pending).toEqual([]);
-    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, pins: true, search: true });
+    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, pins: true, search: true, forward: true });
     // Without a file server there are no avatar or icon URLs either, nor emoji pictures to pick.
     expect(chat().sidebar[0]!.iconUrl).toBeUndefined();
     expect(chat().customEmoji).toEqual([]);
@@ -1108,5 +1108,33 @@ describe("StoatAdapter search", () => {
     const before = calls.length;
     await adapter.handleAction({ type: "search", query: "nowhere" });
     expect(calls.length).toBe(before);
+  });
+});
+
+describe("StoatAdapter forwarding", () => {
+  it("sends a copy saying who wrote it, quoting the text with links to the files, pinging nobody", async () => {
+    const history = message(460, GENERAL, {
+      content: `hi <@${ME_ID}> and <@${ulid(77)}>, @everyone\nsecond line`,
+      attachments: [{ _id: "f1", tag: "attachments", filename: "cat.png", content_type: "image/png", metadata: { type: "Image" } }],
+    });
+    const { adapter, chat, online, requests, routes } = setup({ token: "saved", routes: [(url) => (url.includes(`/channels/${GENERAL}/messages?`) ? { status: 200, body: { messages: [history, message(461, GENERAL, { content: "" })], users: [ANA] } } : undefined)] });
+    await online();
+    await adapter.openConversation(GENERAL);
+    expect(chat().channel!.can.forward).toBe(true);
+    await adapter.handleAction({ type: "forward", messageId: ulid(460), channelId: DM });
+    const post = requests(`/channels/${DM}/messages`).at(-1)!;
+    const zw = String.fromCharCode(0x200b);
+    expect(JSON.parse(post.init.body as string).content).toBe(`Forwarded from Ana:\n> hi @me and @someone, @${zw}everyone\n> second line\nhttps://cdn.test/attachments/f1`);
+    await adapter.handleAction({ type: "forward", messageId: ulid(461), channelId: DM });
+    expect(JSON.parse(requests(`/channels/${DM}/messages`).at(-1)!.init.body as string).content).toBe("Forwarded from Ana:");
+    // Unknown messages or targets send nothing.
+    const sent = requests("/messages").filter((c) => c.init.method === "POST").length;
+    await adapter.handleAction({ type: "forward", messageId: ulid(999), channelId: DM });
+    await adapter.handleAction({ type: "forward", messageId: ulid(460), channelId: ulid(998) });
+    await adapter.handleAction({ type: "forward", messageId: ulid(460), channelId: ulid(112) });
+    expect(requests("/messages").filter((c) => c.init.method === "POST").length).toBe(sent);
+    routes.unshift((url, init) => (init.method === "POST" && url.endsWith("/messages") ? { status: 403, body: { type: "MissingPermission" } } : undefined));
+    await adapter.handleAction({ type: "forward", messageId: ulid(460), channelId: DM });
+    expect(chat().error).toBe("Message not forwarded: You do not have permission to do that.");
   });
 });

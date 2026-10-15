@@ -12,6 +12,8 @@ import { ChannelType, TEXT_CHANNEL_TYPES, compareIds, displayName, idTime, isId,
 const PAGE_SIZE = 50;
 /** The longest search Stoat takes. */
 export const MAX_SEARCH = 64;
+/** The longest message Stoat takes, which a forwarded copy is cut to. */
+export const FORWARD_LENGTH = 2000;
 const PUBLISH_DELAY_MS = 100;
 const ACK_DELAY_MS = 750;
 /** Typing is re-announced this often while the user keeps typing, and ended after this long idle. */
@@ -161,6 +163,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         return this.render();
       case "pins":
         return this.showPins(action.open);
+      case "forward":
+        return this.forward(action.messageId, action.channelId);
       case "search":
         return this.searchMessages(action.query);
       case "pin":
@@ -402,6 +406,29 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     const channelId = this.selectedChannelId;
     const oldest = channelId ? this.state.messages.get(channelId)?.[0] : undefined;
     if (channelId && oldest && this.hasOlder.get(channelId)) await this.fetchHistory(channelId, oldest.id);
+  }
+
+  /**
+   * Forwards a message of the open channel into another channel, DM or
+   * group: Stoat has no forwarding, so a new message says who wrote it and
+   * quotes the text, with links to the files. Mentions in it are made plain
+   * text, so the copy pings nobody.
+   */
+  private async forward(messageId: string, target: string): Promise<void> {
+    const message = this.state.findMessage(this.selectedChannelId, messageId);
+    const to = this.state.channels.get(target);
+    if (!message || !to || !TEXT_CHANNEL_TYPES.has(to.type)) return;
+    const quiet = String.fromCharCode(0x200b);
+    const text = this.renderContent(message.content)
+      .replace(new RegExp(`<@(${ULID})>`, "g"), "@someone")
+      .replace(/@(everyone|online)\b/g, `@${quiet}$1`);
+    const quoted = text === "" ? [] : text.split("\n").map((line) => `> ${line}`);
+    const files = message.attachments.flatMap((a) => this.fileUrl(a) ?? []);
+    const content = [`Forwarded from ${this.authorName(message)}:`, ...quoted, ...files].join("\n").slice(0, FORWARD_LENGTH);
+    await this.attempt("Message not forwarded", async () => {
+      const sent = await this.rest!.sendMessage(to.id, content, `multicord-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
+      if (sent) this.state.addSent(sent);
+    });
   }
 
   private async send(content: string, replyTo?: string): Promise<void> {
@@ -893,7 +920,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
                 ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
                 // Files need the instance's file server (Autumn).
-                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: false, pins: true, search: true },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: false, pins: true, search: true, forward: true },
               }
             : null,
           customEmoji: channel ? this.customEmoji(channel) : [],
