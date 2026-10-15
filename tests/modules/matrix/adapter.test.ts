@@ -2822,8 +2822,9 @@ describe("reading the newer call memberships", () => {
   it("lists sticky memberships from the timeline and beside it, preferring them to the same device's state membership", async () => {
     const ctx = await withCalls();
     await ctx.live(
-      rtcSync("!lounge:x.org", [rtcEvent(ANA, "A1", "a1"), msg("l2", ANA, "joining", 600)], {
-        sticky: [rtcEvent(BO, "B1", "b1")],
+      // Fixed join times: people are listed in the order they joined.
+      rtcSync("!lounge:x.org", [rtcEvent(ANA, "A1", "a1", { member: { createdTs: 2_000 } }), msg("l2", ANA, "joining", 600)], {
+        sticky: [rtcEvent(BO, "B1", "b1", { member: { createdTs: 1_000 } })],
         calls: new Map([["_@ana:x.org_A1_m.call", callMember(ANA, "A1", { focus: "https://other.x.org" })]]),
       }),
     );
