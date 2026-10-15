@@ -3,6 +3,8 @@
 // formatted_body, its plain body keeping ":shortcode:", as Element, Cinny and
 // FluffyChat send it; a sticker is an m.sticker event with the pack's mxc://
 // address, which stays unencrypted in encrypted rooms too, as in Element.
+// User IDs in the text (as the composer inserts mentions) become pills: links
+// to https://matrix.to/#/<user id> showing the name, as Element sends them.
 
 import type { MxPackImage } from "./api";
 import { escapeMarkdown } from "../../shared/markdown";
@@ -25,13 +27,35 @@ export function emoticonTag(image: MxPackImage): string {
   return `<img data-mx-emoticon src="${image.url}" alt="${name}" title="${name}" height="32" />`;
 }
 
+/** A Matrix user ID in a message's text: "@localpart:server", the server with an optional port. */
+const USER_IN_TEXT = /@[a-z0-9._=\-/+]{1,255}:[A-Za-z0-9.-]{1,255}(?::\d{1,5})?/;
+/** Most users one message mentions. */
+export const MAX_TEXT_MENTIONS = 50;
+
+/** The user IDs a message's text names, each once, at most MAX_TEXT_MENTIONS. */
+export function textMentions(text: string): string[] {
+  const found = new Set(text.match(new RegExp(USER_IN_TEXT.source, "g")) ?? []);
+  return [...found].slice(0, MAX_TEXT_MENTIONS);
+}
+
+/** A pill: a link to a user that clients show as their name. */
+export function pillTag(userId: string, name: string): string {
+  return `<a href="https://matrix.to/#/${userId}">${escapeHtml(name)}</a>`;
+}
+
 /**
  * The text as formatted_body, each ":shortcode:" of a known custom emoji as
- * its picture; undefined when the text has none, and goes as plain text only.
+ * its picture and each user ID `pill` names (it gives their name) as a pill;
+ * undefined when the text has neither, and goes as plain text only.
  */
-export function emoticonHtml(text: string, emoticon: (shortcode: string) => MxPackImage | undefined): string | undefined {
-  const { out, found } = replaceShortcodes(text, (code) => {
-    const image = emoticon(code);
+export function emoticonHtml(text: string, emoticon: (shortcode: string) => MxPackImage | undefined, pill: (userId: string) => string | undefined = () => undefined): string | undefined {
+  const pattern = new RegExp(`${IN_TEXT.source}|(${USER_IN_TEXT.source})`, "g");
+  const { out, found } = replaceMatches(text, pattern, (match) => {
+    if (match[2]) {
+      const name = pill(match[2]);
+      return name === undefined ? undefined : pillTag(match[2], name);
+    }
+    const image = emoticon(match[1]!);
     return image && emoticonTag(image);
   }, escapeHtml);
   return found ? out : undefined;
@@ -42,19 +66,18 @@ export function emoticonHtml(text: string, emoticon: (shortcode: string) => MxPa
  * names as <:shortcode:id>, which the view draws with its picture (emojiUrls).
  */
 export function emoticonMarkdown(text: string, id: (shortcode: string) => string | undefined): string {
-  return replaceShortcodes(text, (code) => {
-    const found = id(code);
-    return found && `<:${code}:${found}>`;
+  return replaceMatches(text, new RegExp(IN_TEXT.source, "g"), (match) => {
+    const found = id(match[1]!);
+    return found && `<:${match[1]}:${found}>`;
   }, escapeMarkdown).out;
 }
 
-/** Text with the ":shortcode:"s `replace` knows replaced, the rest escaped; and whether any was. */
-function replaceShortcodes(text: string, replace: (shortcode: string) => string | undefined, escape: (text: string) => string): { out: string; found: boolean } {
-  const pattern = new RegExp(IN_TEXT.source, "g");
+/** Text with the matches of a global pattern that `replace` knows replaced, the rest escaped; and whether any was. */
+function replaceMatches(text: string, pattern: RegExp, replace: (match: RegExpExecArray) => string | undefined, escape: (text: string) => string): { out: string; found: boolean } {
   let out = "";
   let done = 0;
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-    const replaced = replace(match[1]!);
+    const replaced = replace(match);
     if (!replaced) {
       // Its closing colon may open the next one (":not:known:").
       pattern.lastIndex = match.index + 1;

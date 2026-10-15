@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MxPackImage } from "../../../src/modules/matrix/api";
-import { emoticonHtml, emoticonMarkdown, emoticonTag, escapeHtml, packImageId, stickerFormat } from "../../../src/modules/matrix/packs";
+import { emoticonHtml, emoticonMarkdown, emoticonTag, escapeHtml, MAX_TEXT_MENTIONS, packImageId, pillTag, stickerFormat, textMentions } from "../../../src/modules/matrix/packs";
 
 const image = (shortcode: string, extra: Partial<MxPackImage> = {}): MxPackImage => ({ shortcode, url: `mxc://x.org/${shortcode}`, info: {}, emoticon: true, sticker: true, ...extra });
 const known = new Map([
@@ -37,6 +37,17 @@ describe("custom emoji in messages", () => {
   it("has no HTML for text without known emoji", () => {
     expect(emoticonHtml("plain :dog: text", lookup)).toBeUndefined();
     expect(emoticonHtml("", lookup)).toBeUndefined();
+    expect(emoticonHtml("for @ana:x.org", lookup)).toBeUndefined();
+  });
+
+  it("finds user IDs in text, each once and up to a limit, and makes pills of those named", () => {
+    expect(textMentions("@ana:x.org, @bo:y.org:8448 and @ana:x.org; not @nobody or a@b")).toEqual(["@ana:x.org", "@bo:y.org:8448"]);
+    expect(textMentions(Array.from({ length: MAX_TEXT_MENTIONS + 5 }, (_, i) => `@u${i}:x.org`).join(" "))).toHaveLength(MAX_TEXT_MENTIONS);
+    expect(textMentions("none")).toEqual([]);
+    expect(pillTag("@ana:x.org", "Ana <3")).toBe('<a href="https://matrix.to/#/@ana:x.org">Ana &lt;3</a>');
+    const names = new Map([["@ana:x.org", "Ana"]]);
+    expect(emoticonHtml("hi @ana:x.org :cat: @bo:x.org", lookup, (id) => names.get(id))).toBe(`hi ${pillTag("@ana:x.org", "Ana")} ${emoticonTag(image("cat"))} @bo:x.org`);
+    expect(emoticonHtml("@bo:x.org", lookup, (id) => names.get(id))).toBeUndefined();
   });
 });
 

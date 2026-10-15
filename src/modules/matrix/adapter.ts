@@ -49,7 +49,7 @@ import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
 import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseEmotes, parseMxc, reactionKey, serviceUrl, userId } from "./events";
 import { AttachmentError, decryptAttachment, encryptAttachment, imageSize } from "./media";
-import { emoticonHtml, emoticonMarkdown, HTML_FORMAT, packImageId, stickerFormat } from "./packs";
+import { emoticonHtml, emoticonMarkdown, HTML_FORMAT, packImageId, stickerFormat, textMentions } from "./packs";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 import type { Verification, VerificationState } from "./verification";
 
@@ -1960,12 +1960,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private async sendText(session: MxSession, room: Room, text: string, replied: Shown | undefined): Promise<void> {
-    const content: Record<string, unknown> = { msgtype: "m.text", body: text, "m.mentions": {} };
-    const html = this.emoticonHtml(room, text);
+    const mentioned = this.mentioned(session, text);
+    const content: Record<string, unknown> = { msgtype: "m.text", body: text, "m.mentions": mentioned.length > 0 ? { user_ids: mentioned } : {} };
+    const html = this.messageHtml(room, text, mentioned);
     if (html) Object.assign(content, { format: HTML_FORMAT, formatted_body: html });
     if (replied) content["m.relates_to"] = { "m.in_reply_to": { event_id: replied.id } };
     const id = await this.sendContent(session, room, content);
-    const sent: Message = { kind: "message", id, sender: session.userId, ts: Date.now(), content: sentContent("m.text", text, content), mentions: [] };
+    const sent: Message = { kind: "message", id, sender: session.userId, ts: Date.now(), content: sentContent("m.text", text, content), mentions: mentioned };
     if (replied) sent.replyTo = replied.id;
     this.addEvent(room, sent, false);
   }
@@ -2061,7 +2062,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (!room || target?.kind !== "message" || target.sender !== session.userId || !EDITABLE.has(target.content.msgtype)) return;
     await this.attempt("Message not edited", async () => {
       const { msgtype } = target.content;
-      const fresh: Record<string, unknown> = { msgtype, body: text, "m.mentions": {} };
+      // The new content says everyone it mentions; the edit itself no one, so nobody is notified again.
+      const mentioned = this.mentioned(session, text);
+      const fresh: Record<string, unknown> = { msgtype, body: text, "m.mentions": mentioned.length > 0 ? { user_ids: mentioned } : {} };
       const content: Record<string, unknown> = {
         msgtype,
         body: `* ${text}`,
@@ -2069,13 +2072,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         "m.relates_to": { rel_type: "m.replace", event_id: target.id },
         "m.mentions": {},
       };
-      const html = this.emoticonHtml(room, text);
+      const html = this.messageHtml(room, text, mentioned);
       if (html) {
         Object.assign(fresh, { format: HTML_FORMAT, formatted_body: html });
         Object.assign(content, { format: HTML_FORMAT, formatted_body: `* ${html}` });
       }
       const id = await this.sendContent(session, room, content);
-      this.addEvent(room, { kind: "message", id, sender: session.userId, ts: Date.now(), content: sentContent(msgtype, text, fresh), mentions: [], replaces: target.id }, false);
+      this.addEvent(room, { kind: "message", id, sender: session.userId, ts: Date.now(), content: sentContent(msgtype, text, fresh), mentions: mentioned, replaces: target.id }, false);
       this.publish();
     });
   }
@@ -2296,9 +2299,15 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   /** A message's text as formatted_body with the room's custom emoji in it; undefined without any. */
-  private emoticonHtml(room: Room, text: string): string | undefined {
+  /** The users a message's text mentions by their ID, as the composer inserts mentions; never the user themselves. */
+  private mentioned(session: MxSession, text: string): string[] {
+    return textMentions(text).filter((user) => user !== session.userId);
+  }
+
+  /** formatted_body for a message: its custom emoji as pictures and the users it mentions as pills; undefined for plain text. */
+  private messageHtml(room: Room, text: string, mentioned: string[]): string | undefined {
     const { emoticons } = this.offer(room);
-    return emoticonHtml(text, (shortcode) => emoticons.get(shortcode)?.image);
+    return emoticonHtml(text, (shortcode) => emoticons.get(shortcode)?.image, (user) => (mentioned.includes(user) ? this.memberName(room, user) : undefined));
   }
 
   /** The loadMedia key of a sticker's picture. */
@@ -2886,6 +2895,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const native: NativeMessage = {
       id: this.local(event.id),
       author: this.memberName(room, event.sender),
+      // Mentioned by their user ID, which goes out as a pill (messageHtml) and in m.mentions.
+      authorId: event.sender,
+      ...(mine ? {} : { authorMention: event.sender }),
       content: escapeMarkdown(this.eventText(room, event)),
       timestamp: new Date(event.ts).toISOString(),
       edited: false,

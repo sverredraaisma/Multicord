@@ -752,6 +752,8 @@ describe("conversations", () => {
       {
         id: expect.stringMatching(/^\d+$/),
         author: "Bo",
+        authorId: BO,
+        authorMention: BO,
         content: "hello \\*there\\*",
         timestamp: new Date(1000).toISOString(),
         edited: false,
@@ -761,7 +763,7 @@ describe("conversations", () => {
         reactions: [],
         attachments: [],
       },
-      expect.objectContaining({ author: "Me", content: "hi Bo", mine: true, canEdit: true, canDelete: true, source: "hi Bo" }),
+      expect.objectContaining({ author: "Me", authorId: ME, content: "hi Bo", mine: true, canEdit: true, canDelete: true, source: "hi Bo" }),
     ]);
   });
 
@@ -1012,6 +1014,32 @@ describe("sending", () => {
       "m.mentions": {},
     });
     expect(ctx.messages()[1]).toMatchObject({ content: "hi Bo!", edited: true, source: "hi Bo!" });
+  });
+
+  it("sends the users a message names by ID as mentions and pills, new and edited, and offers authors' IDs to mention", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Bo");
+    expect(ctx.messages().map((m) => m.authorMention)).toEqual([BO, undefined]);
+    await ctx.act({ type: "send", content: `hi ${BO} and @cy:y.org:8448, ${BO} <3 (not ${ME})` });
+    const pill = (id: string, name: string) => `<a href="https://matrix.to/#/${id}">${name}</a>`;
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", {
+      msgtype: "m.text",
+      body: `hi ${BO} and @cy:y.org:8448, ${BO} <3 (not ${ME})`,
+      "m.mentions": { user_ids: [BO, "@cy:y.org:8448"] },
+      format: "org.matrix.custom.html",
+      formatted_body: `hi ${pill(BO, "Bo")} and ${pill("@cy:y.org:8448", "@cy:y.org:8448")}, ${pill(BO, "Bo")} &lt;3 (not ${ME})`,
+    });
+    const sent = ctx.messages().at(-1)!;
+    await ctx.act({ type: "edit", messageId: sent.id, content: `bye ${BO}` });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", {
+      msgtype: "m.text",
+      body: `* bye ${BO}`,
+      "m.new_content": { msgtype: "m.text", body: `bye ${BO}`, "m.mentions": { user_ids: [BO] }, format: "org.matrix.custom.html", formatted_body: `bye ${pill(BO, "Bo")}` },
+      "m.relates_to": { rel_type: "m.replace", event_id: expect.any(String) },
+      "m.mentions": {},
+      format: "org.matrix.custom.html",
+      formatted_body: `* bye ${pill(BO, "Bo")}`,
+    });
   });
 
   it("keeps an emote an emote when editing", async () => {
