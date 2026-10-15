@@ -459,14 +459,20 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   /** Finds the homeserver and its sign-in options, then asks how to sign in. */
   private async showSignIn(error?: string): Promise<void> {
     this.connecting(`Looking up ${this.host()}…`);
+    const unreachable = (failure: unknown) => this.showRetry(`Could not reach a Matrix homeserver at ${this.host()}: ${friendly(failure)}`, () => this.showSignIn(error));
+    let loginFailure: unknown;
+    let flows: { password: boolean } | undefined;
     try {
       this.baseUrl = await this.deps.api.discover(this.deps.def.url);
-      this.passwordLogin = (await this.deps.api.loginFlows(this.baseUrl)).password;
+      flows = await this.deps.api.loginFlows(this.baseUrl).catch((failure: unknown) => void (loginFailure = failure));
     } catch (failure) {
-      return this.showRetry(`Could not reach a Matrix homeserver at ${this.host()}: ${friendly(failure)}`, () => this.showSignIn(error));
+      return unreachable(failure);
     }
     // Discovery never throws: without an account server, the other ways remain.
     this.oauthServer = await this.deps.oauth?.discover(this.baseUrl).catch(() => undefined);
+    // A homeserver that signs in only through its account server need not serve the login endpoint (Synapse with MAS answers it with M_UNRECOGNIZED).
+    if (!flows && !this.oauthServer) return unreachable(loginFailure);
+    this.passwordLogin = flows?.password ?? false;
     await this.discoverFoci();
     const server = this.oauthServer;
     await this.lockToHosts(hostsOf(this.deps.def.url, this.baseUrl, server?.issuer, server?.deviceEndpoint, server?.tokenEndpoint, server?.registrationEndpoint, server?.revocationEndpoint));

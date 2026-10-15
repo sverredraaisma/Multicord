@@ -1146,6 +1146,24 @@ describe("signing in with OAuth 2.0", () => {
     expect(ctx.prompt().prompt.id).toBe("login");
   });
 
+  it("offers the browser when the homeserver does not serve the login endpoint, as Synapse with MAS may not", async () => {
+    const oauth = fakeOAuth();
+    const ctx = setup({}, false, { oauth });
+    ctx.api.loginFlows.mockRejectedValueOnce(new MatrixError(404, "M_UNRECOGNIZED", "Unrecognized request"));
+    await ctx.adapter.start();
+    expect(ctx.prompt().prompt).toMatchObject({ id: "oauth", cancel: "Use an access token instead" });
+    // Without an account server it still is unreachable.
+    const bare = setup({}, false, { oauth: { ...fakeOAuth(), discover: vi.fn(async () => undefined) } });
+    bare.api.loginFlows.mockRejectedValueOnce(new MatrixError(404, "M_UNRECOGNIZED", "Unrecognized request"));
+    await bare.adapter.start();
+    expect(bare.prompt()).toMatchObject({ prompt: { id: "retry" }, error: "Could not reach a Matrix homeserver at x.org: Unrecognized request" });
+    // Nor does an account server help when the homeserver itself is not found.
+    const lost = setup({}, false, { oauth: fakeOAuth() });
+    lost.api.discover.mockRejectedValueOnce(new Error("The homeserver address must be an https URL"));
+    await lost.adapter.start();
+    expect(lost.prompt()).toMatchObject({ prompt: { id: "retry" }, error: "Could not reach a Matrix homeserver at x.org: The homeserver address must be an https URL" });
+  });
+
   it("shows a code, waits for the approval and signs in with a device of its own", async () => {
     const ctx = await atOAuth();
     ctx.oauth.pollDevice.mockResolvedValueOnce({ state: "pending" }).mockResolvedValueOnce({ state: "slow_down" });
