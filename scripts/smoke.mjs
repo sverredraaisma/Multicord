@@ -26,7 +26,7 @@ import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { evaluate } from "./live-media/cdp.mjs";
+import { evaluate, evaluateIn } from "./live-media/cdp.mjs";
 import { launch, remaining, stop, sweep } from "./live-media/processes.mjs";
 
 const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -37,6 +37,8 @@ const KEEP = args.has("--keep");
 const DEADLINE_MS = 150_000;
 const BUILT_IN = ["discord", "fluxer", "telegram"];
 const NATIVE = ["fluxer", "telegram"];
+/** The native built-ins whose views can share the screen (their session has the shell's display-media handler). */
+const SCREEN_SHARE = ["fluxer"];
 /** Marks the hook's lines in the log. */
 const TAG = "[smoke-hook]";
 
@@ -176,6 +178,55 @@ function mainResults(log) {
   return results;
 }
 
+/** In a page: the camera and microphone's tracks, stopped again. */
+const USER_MEDIA = `navigator.mediaDevices.getUserMedia({ audio: true, video: true }).then((stream) => {
+  const result = { audio: stream.getAudioTracks().length, video: stream.getVideoTracks().length, labels: stream.getTracks().map((t) => t.label).join(", ") };
+  stream.getTracks().forEach((t) => t.stop());
+  return result;
+}, (e) => ({ error: e.name + ": " + e.message }))`;
+
+/** In a page: a screen share's video tracks, stopped again (also if it comes after the time is up). */
+const DISPLAY_MEDIA = `new Promise((resolve) => {
+  let late = false;
+  const timer = setTimeout(() => { late = true; resolve({ error: "no answer within 20s" }); }, 20000);
+  navigator.mediaDevices.getDisplayMedia({ video: true }).then((stream) => {
+    const video = stream.getVideoTracks();
+    const result = { video: video.length, state: video[0] ? video[0].readyState : "" };
+    stream.getTracks().forEach((t) => t.stop());
+    clearTimeout(timer);
+    if (!late) resolve(result);
+  }, (e) => { clearTimeout(timer); resolve({ error: e.name + ": " + e.message }); });
+})`;
+
+/** In the picker: chooses a screen (else the first source), without system audio; its name, or "" before the sources show. */
+const PICK_SCREEN = `(() => {
+  const button = document.querySelector('.source[data-id^="screen:"]') || document.querySelector(".source");
+  if (!button) return "";
+  const audio = document.getElementById("share-audio");
+  if (audio) audio.checked = false;
+  button.click();
+  return button.textContent;
+})()`;
+
+/**
+ * Asks a page for a screen share and answers the shell's picker if it shows.
+ * @returns {Promise<{ picked: string, video?: number, state?: string, error?: string }>}
+ */
+async function shareIn(port, view) {
+  let settled = false;
+  const answer = evaluateIn(view, DISPLAY_MEDIA, 25_000)
+    .catch((error) => ({ error: error.message }))
+    .finally(() => (settled = true));
+  let picked = "";
+  const end = Date.now() + 20_000;
+  while (!settled && !picked && Date.now() < end) {
+    const picker = (await targets(port).catch(() => [])).find((t) => t.type === "page" && t.webSocketDebuggerUrl && /\/picker\.html$/.test(t.url));
+    if (picker) picked = await evaluateIn(picker, PICK_SCREEN, 5_000).catch(() => "");
+    if (!picked) await sleep(250);
+  }
+  return { picked, ...(await answer) };
+}
+
 if (!existsSync(path.join(REPO, "dist", "main.js")) || !existsSync(path.join(REPO, "dist", "rail.html"))) {
   process.stderr.write("smoke: dist/ is missing; run `npm run build` first\n");
   process.exit(1);
@@ -220,6 +271,8 @@ async function main() {
       // Offline: every name but the local ones fails to resolve.
       ...(ONLINE ? [] : ["--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost, EXCLUDE 127.0.0.1"]),
       "--enable-logging=stderr",
+      // Chromium's fake camera and microphone, for the getUserMedia check: no real device is opened.
+      "--use-fake-device-for-media-stream",
     ],
     { cwd: REPO, logFile, env },
   );
@@ -283,7 +336,33 @@ async function main() {
   }
   check("app still running", alive());
 
-  // 5. The log: the hook was loaded, and nothing uncaught; no engine stopped.
+  // 5. Media in the native views (native.html, one per native built-in).
+  const mac = process.platform === "darwin";
+  const nativeViews = await until(async () => {
+    const views = (await targets(port)).filter((t) => t.type === "page" && t.webSocketDebuggerUrl && /\/native\.html$/.test(t.url));
+    return views.length === NATIVE.length ? views : undefined;
+  }, "the native views", 15_000).catch((error) => error);
+  if (nativeViews instanceof Error) check("native views load", false, nativeViews.message);
+  else {
+    // Camera and microphone, from Chromium's fake devices.
+    const media = await evaluateIn(nativeViews[0], USER_MEDIA, 15_000).catch((error) => ({ error: error.message }));
+    const ok = media.audio > 0 && media.video > 0;
+    if (!ok && mac && /NotAllowedError/.test(media.error ?? "")) skip("camera and microphone (fake devices) give tracks", `macOS refused access: ${media.error}`);
+    else check("camera and microphone (fake devices) give tracks", ok, media.error ?? `${media.audio} audio, ${media.video} video: ${media.labels}`);
+
+    // Screen share: getDisplayMedia goes to the shell's handler, whose picker we answer with a screen.
+    const shared = [];
+    for (const view of nativeViews) shared.push(await shareIn(port, view));
+    const answered = shared.filter((s) => s.video > 0).length;
+    const refused = shared.filter((s) => s.error && !s.picked).length;
+    const detail = shared.map((s) => (s.error ? `${s.error}${s.picked ? ` (picked ${s.picked})` : ""}` : `${s.video} video track from "${s.picked}", ${s.state}`)).join("; ");
+    const sharedOk = answered === SCREEN_SHARE.length && refused === NATIVE.length - SCREEN_SHARE.length;
+    const access = results.get("capture-sources")?.access;
+    if (!sharedOk && mac && access !== "granted") skip("screen share in the native views gives a video track", `no Screen Recording permission (${access}): ${detail}`);
+    else check("screen share in the native views gives a video track", sharedOk, detail);
+  }
+
+  // 6. The log: the hook was loaded, and nothing uncaught; no engine stopped.
   const log = readLog();
   check("error hook loaded in the main process", log.includes(`${TAG} loaded`));
   const uncaught = log.split("\n").filter((l) => l.startsWith(`${TAG} uncaught exception:`) || l.startsWith(`${TAG} unhandled rejection:`));
