@@ -52,6 +52,8 @@ export interface TgMessage {
   sender?: string;
   /** The sending user's id, where a user sent it (not a channel posting as itself); in private chats, only for incoming messages. */
   senderId?: string;
+  /** The sending user's public username (without "@"), where they have one; group and channel messages only. */
+  senderUsername?: string;
   /** It mentions the user or answers one of theirs. */
   mentioned?: boolean;
   text: string;
@@ -142,6 +144,8 @@ export interface TgMember {
   /** An admin's custom title. */
   rank?: string;
   presence: TgPresence;
+  /** Their public username (without "@"), where they have one. */
+  username?: string;
 }
 
 export interface TgMemberPage {

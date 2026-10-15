@@ -1413,6 +1413,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (avatar) row.avatarUrl = avatar;
     const status = member.rank ?? (member.bot ? "Bot" : member.presence === "recently" ? "last seen recently" : undefined);
     if (status) row.status = status;
+    if (member.username) row.mention = `@${member.username}`;
     return row;
   }
 
@@ -1505,6 +1506,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (native.canEdit) native.source = markdown;
     // Telegram's own flag: it mentions the user, or answers one of their messages.
     if (message.mentioned && !message.out) native.mentionsMe = true;
+    // Telegram turns "@username" into a mention as it is sent; people without a username are mentioned by name, as plain text.
+    if (message.senderUsername && !message.out) native.authorMention = `@${message.senderUsername}`;
     const authorId = message.out ? this.me?.id : message.senderId;
     if (authorId) native.authorId = authorId;
     if (replied) native.reply = { author: replied.out ? (this.me?.name ?? "You") : (replied.sender ?? dialog.title), content: messageText(replied).slice(0, 100) };

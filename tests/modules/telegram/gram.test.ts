@@ -570,15 +570,25 @@ describe("members and profiles", () => {
     expect(toMessage(make(Api.Message, { ...base, peerId: make(Api.PeerChannel, { channelId: 1n }), fromId: make(Api.PeerChannel, { channelId: 1n }) }), "-1001")).not.toHaveProperty("senderId");
   });
 
+  it("gives a group message's sender's username, where it looks like one", () => {
+    const base = { id: 5, date: 1000, message: "hi", peerId: make(Api.PeerChat, { chatId: 1n }) };
+    const from = (props: Record<string, unknown>) => toMessage(Object.assign(make(Api.Message, base), { sender: user(7, props) }), "-1");
+    expect(from({ username: "ana_x" }).senderUsername).toBe("ana_x");
+    expect(from({ username: "bot" })).not.toHaveProperty("senderUsername");
+    expect(from({ username: "a b c d" })).not.toHaveProperty("senderUsername");
+    expect(from({})).not.toHaveProperty("senderUsername");
+    expect(toMessage(Object.assign(make(Api.Message, base), { sender: make(Api.Chat, { title: "Club" }) }), "-1")).not.toHaveProperty("senderUsername");
+  });
+
   it("maps participants to members with their role, leaving out deleted and unknown users", () => {
-    const users = [user(1, { status: make(Api.UserStatusOnline) }), user(2, { bot: true, username: "bot" }), user(3), user(4, { deleted: true }), {}];
+    const users = [user(1, { status: make(Api.UserStatusOnline), username: "first_one" }), user(2, { bot: true, username: "bot" }), user(3), user(4, { deleted: true }), {}];
     expect(
       membersOf(
         [part(Api.ChatParticipantCreator, 1), part(Api.ChannelParticipantAdmin, 2, { rank: "Helper" }), part(Api.ChatParticipantAdmin, 3, { rank: "" }), part(Api.ChatParticipant, 4), part(Api.ChatParticipant, 5), {}, undefined],
         users,
       ),
     ).toEqual([
-      { id: "1", name: "U1", bot: false, presence: "online", role: "owner" },
+      { id: "1", name: "U1", bot: false, presence: "online", role: "owner", username: "first_one" },
       { id: "2", name: "U2", bot: true, presence: "offline", role: "admin", rank: "Helper" },
       { id: "3", name: "U3", bot: false, presence: "offline", role: "admin" },
     ]);

@@ -45,6 +45,11 @@ import { MAX_ENTITIES } from "./format";
 /** Largest profile picture passed on (as a data: URL); bigger ones show initials. */
 const MAX_AVATAR_BYTES = 140_000;
 
+/** A user's public username, where it looks like one (4 to 32 letters, digits and underscores). */
+function usernameOf(user: Api.User): string | undefined {
+  return typeof user.username === "string" && /^[A-Za-z0-9_]{4,32}$/.test(user.username) ? user.username : undefined;
+}
+
 function userName(user: { firstName?: string; lastName?: string; username?: string } | undefined): string {
   const name = [user?.firstName, user?.lastName].filter(Boolean).join(" ");
   return name || (user?.username ? `@${user.username}` : "Telegram user");
@@ -215,6 +220,8 @@ export function membersOf(participants: readonly unknown[], users: readonly unkn
     const member: TgMember = { id, name: userName(user), bot: user.bot === true, presence: presenceOf(user.status) };
     if (participant instanceof Api.ChatParticipantCreator || participant instanceof Api.ChannelParticipantCreator) member.role = "owner";
     else if (participant instanceof Api.ChatParticipantAdmin || participant instanceof Api.ChannelParticipantAdmin) member.role = "admin";
+    const username = usernameOf(user);
+    if (username) member.username = username;
     const rank = (participant as { rank?: unknown }).rank;
     if (typeof rank === "string" && rank !== "") member.rank = rank;
     return [member];
@@ -447,6 +454,8 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
   if (!(message.peerId instanceof Api.PeerUser)) {
     const sender = entityName(message.sender) ?? (message.postAuthor || undefined);
     if (sender) out.sender = sender;
+    const username = message.sender instanceof Api.User ? usernameOf(message.sender) : undefined;
+    if (username) out.senderUsername = username;
   }
   // Who sent it, for their profile: the user named as sender, or in a private chat the other side.
   const from = message.fromId instanceof Api.PeerUser ? message.fromId.userId : message.peerId instanceof Api.PeerUser && message.out !== true ? message.peerId.userId : undefined;

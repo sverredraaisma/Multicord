@@ -1243,9 +1243,11 @@ describe("groups and channels", () => {
 
   it("marks messages that mention or answer the user, as Telegram flags them", async () => {
     const ctx = await signedIn({ dialogs: rooms() });
-    ctx.api.history.mockResolvedValueOnce([msg(GROUP, 1, { mentioned: true }), msg(GROUP, 2), msg(GROUP, 3, { out: true, mentioned: true })]);
+    ctx.api.history.mockResolvedValueOnce([msg(GROUP, 1, { mentioned: true, senderUsername: "ana_x" }), msg(GROUP, 2), msg(GROUP, 3, { out: true, mentioned: true, senderUsername: "me_me" })]);
     await ctx.adapter.openConversation(GROUP);
     expect(ctx.chat().channel!.messages.map((m) => m.mentionsMe === true)).toEqual([true, false, false]);
+    // Those with a username are mentioned by it.
+    expect(ctx.chat().channel!.messages.map((m) => m.authorMention)).toEqual(["@ana_x", undefined, undefined]);
   });
 
   it("clears a group's mentions once read", async () => {
@@ -1316,7 +1318,7 @@ describe("members and profiles", () => {
     release(
       page(
         [
-          member("4", { presence: "recently" }),
+          member("4", { presence: "recently", username: "mila_4" }),
           member("5", { presence: "online", bot: true }),
           member("2", { role: "admin", rank: "Helper", presence: "online" }),
           member("3", { role: "owner" }),
@@ -1335,7 +1337,7 @@ describe("members and profiles", () => {
           name: "Members",
           members: [
             { id: "5", name: "M5", presence: "online", status: "Bot" },
-            { id: "4", name: "M4", presence: "offline", status: "last seen recently" },
+            { id: "4", name: "M4", presence: "offline", status: "last seen recently", mention: "@mila_4" },
             { id: "9", name: "Me", presence: "offline" },
           ],
         },
