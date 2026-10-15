@@ -861,6 +861,7 @@ export class NativeView {
       if (!win?.confirm || win.confirm("Delete this message?")) this.api.act({ type: "delete", messageId: message.id });
     },
     onPin: (message, pin) => this.api.act({ type: "pin", messageId: message.id, pin }),
+    onVote: (message, options) => this.api.act({ type: "vote", messageId: message.id, options }),
     onForward: (message) => {
       this.forwardFor = message;
       this.updateForward(true);

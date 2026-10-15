@@ -1861,3 +1861,11 @@ describe("media picker and favourites", () => {
     expect(root.querySelector(".media-picker")).toBeNull();
   });
 });
+
+describe("polls in the view", () => {
+  it("sends the vote for the message", () => {
+    view.update(chat({ channel: { ...chat().channel!, messages: [msg("10", { poll: { question: "Q", options: [{ id: "a", text: "A" }], multiple: false, closed: false, canVote: true } })] } }));
+    root.querySelector<HTMLButtonElement>("button.poll-option")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "vote", messageId: "10", options: ["a"] });
+  });
+});

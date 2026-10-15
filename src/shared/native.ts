@@ -199,6 +199,63 @@ export interface NativeMessage {
   pinned?: boolean;
   /** The user may pin or unpin it (a `pin` action), as far as the module can tell; the platform has the last word. */
   canPin?: boolean;
+  /** A poll it carries; read by the view through messagePoll(). */
+  poll?: NativePoll;
+}
+
+/** A poll in a message, as far as the platform shows it to the user. */
+export interface NativePoll {
+  question: string;
+  options: NativePollOption[];
+  /** More than one option may be chosen. */
+  multiple: boolean;
+  /** Voting has ended. */
+  closed: boolean;
+  /** How many have voted, where the platform says. */
+  total?: number;
+  /** The user may vote here (`vote` actions); without it the poll only shows. */
+  canVote?: boolean;
+}
+
+export interface NativePollOption {
+  /** Module-scoped, passed back in vote actions. */
+  id: string;
+  text: string;
+  /** Votes for it, where the platform shows them (often only after voting). */
+  votes?: number;
+  /** The user chose it. */
+  chosen?: boolean;
+  /** A quiz's right answer, once the platform tells. */
+  correct?: boolean;
+}
+
+export const MAX_POLL_OPTIONS = 20;
+const MAX_POLL_QUESTION = 300;
+export const isPollOptionId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value);
+
+/** A poll as the view trusts it: a question, 1 to MAX_POLL_OPTIONS options with usable ids (each once) and texts cut short; undefined otherwise. */
+export function messagePoll(value: unknown): NativePoll | undefined {
+  const v = record(value);
+  const question = shortText(v?.question, MAX_POLL_QUESTION);
+  if (!v || !question) return undefined;
+  const seen = new Set<string>();
+  const options: NativePollOption[] = [];
+  for (const raw of Array.isArray(v.options) ? v.options.slice(0, MAX_POLL_OPTIONS) : []) {
+    const o = record(raw);
+    const text = shortText(o?.text);
+    if (!o || !isPollOptionId(o.id) || seen.has(o.id) || !text) continue;
+    seen.add(o.id);
+    const option: NativePollOption = { id: o.id, text };
+    if (typeof o.votes === "number" && Number.isInteger(o.votes) && o.votes >= 0) option.votes = Math.min(o.votes, 100_000_000);
+    if (o.chosen === true) option.chosen = true;
+    if (o.correct === true) option.correct = true;
+    options.push(option);
+  }
+  if (options.length === 0) return undefined;
+  const poll: NativePoll = { question, options, multiple: v.multiple === true, closed: v.closed === true };
+  if (typeof v.total === "number" && Number.isInteger(v.total) && v.total >= 0) poll.total = Math.min(v.total, 100_000_000);
+  if (v.canVote === true) poll.canVote = true;
+  return poll;
 }
 
 /** A message as a list of them shows it (pinned messages, search results): who, when, and its text. */
@@ -867,6 +924,8 @@ export type NativeAction =
    * as a new message saying where it came from. Never across modules.
    */
   | { type: "forward"; messageId: string; channelId: string }
+  /** Votes in a poll of the open conversation (NativePoll.canVote): the options chosen, replacing earlier ones; none takes the vote back. */
+  | { type: "vote"; messageId: string; options: string[] }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -918,6 +977,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return id(v.channelId) && typeof v.mute === "boolean";
     case "pins":
       return typeof v.open === "boolean";
+    case "vote":
+      return id(v.messageId) && Array.isArray(v.options) && v.options.length <= MAX_POLL_OPTIONS && v.options.every(isPollOptionId) && new Set(v.options).size === v.options.length;
     case "forward":
       return id(v.messageId) && id(v.channelId);
     case "search":

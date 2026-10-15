@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, memberList, memberProfile, mentionText, messageList, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
+import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -533,5 +533,35 @@ describe("forwarding", () => {
     expect(isNativeAction({ type: "forward", messageId: "5", channelId: "6" })).toBe(true);
     expect(isNativeAction({ type: "forward", messageId: "5", channelId: "!room:x.org" })).toBe(false);
     expect(isNativeAction({ type: "forward", messageId: "$e", channelId: "6" })).toBe(false);
+  });
+});
+
+describe("polls", () => {
+  it("validates votes: a message and distinct option ids, none taking the vote back", () => {
+    expect(isNativeAction({ type: "vote", messageId: "5", options: ["a", "b-1"] })).toBe(true);
+    expect(isNativeAction({ type: "vote", messageId: "5", options: [] })).toBe(true);
+    expect(isNativeAction({ type: "vote", messageId: "5", options: ["a", "a"] })).toBe(false);
+    expect(isNativeAction({ type: "vote", messageId: "5", options: ["a b"] })).toBe(false);
+    expect(isNativeAction({ type: "vote", messageId: "5", options: "a" })).toBe(false);
+    expect(isNativeAction({ type: "vote", messageId: "x", options: ["a"] })).toBe(false);
+    expect(isNativeAction({ type: "vote", messageId: "5", options: Array.from({ length: MAX_POLL_OPTIONS + 1 }, (_, i) => `o${i}`) })).toBe(false);
+  });
+
+  it("keeps sane polls with usable options", () => {
+    expect(messagePoll(undefined)).toBeUndefined();
+    expect(messagePoll({ question: " ", options: [{ id: "a", text: "A" }] })).toBeUndefined();
+    expect(messagePoll({ question: "Q", options: "x" })).toBeUndefined();
+    expect(messagePoll({ question: "Q", options: [{ id: "a b", text: "A" }] })).toBeUndefined();
+    expect(
+      messagePoll({
+        question: "Q".repeat(400),
+        options: [{ id: "a", text: "A", votes: 3, chosen: true, correct: true }, { id: "a", text: "again" }, { id: "b", text: "B", votes: -1, chosen: "yes" }, { id: "c" }, null],
+        multiple: true,
+        closed: "no",
+        total: 7,
+        canVote: true,
+      }),
+    ).toEqual({ question: "Q".repeat(300), options: [{ id: "a", text: "A", votes: 3, chosen: true, correct: true }, { id: "b", text: "B" }], multiple: true, closed: false, total: 7, canVote: true });
+    expect(messagePoll({ question: "Q", options: [{ id: "a", text: "A" }], total: 1.5, closed: true })).toEqual({ question: "Q", options: [{ id: "a", text: "A" }], multiple: false, closed: true });
   });
 });

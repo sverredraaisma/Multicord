@@ -165,6 +165,18 @@ a.embed-title:hover { text-decoration: underline; }
 .embed-description { color: var(--text); font-size: 14px; }
 .embed .embed-thumbnail { flex: none; max-width: 80px; max-height: 80px; }
 .embed .embed-image { max-width: 100%; }
+/* Polls: each option with a bar for its share of the votes. */
+.poll { display: flex; flex-direction: column; gap: 6px; max-width: 432px; margin-top: 6px; padding: 10px 12px; border-radius: 8px; background: var(--panel); }
+.poll-question { font-weight: 600; overflow-wrap: anywhere; }
+.poll-options { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.poll-option { display: flex; gap: 8px; align-items: center; width: 100%; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: linear-gradient(to right, color-mix(in srgb, var(--accent) 25%, transparent) var(--share, 0%), transparent var(--share, 0%)); color: var(--text); font: inherit; text-align: left; }
+button.poll-option { cursor: pointer; }
+button.poll-option:hover { border-color: var(--accent); }
+.poll-option.chosen { border-color: var(--accent); font-weight: 600; }
+.poll-option.correct { border-color: #23a55a; }
+.poll-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.poll-share, .poll-meta { color: var(--muted); font-size: 12px; }
+.poll-retract { align-self: flex-start; }
 .composer {
   margin: 0 16px 16px;
   padding: 11px 14px;

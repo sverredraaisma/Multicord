@@ -247,6 +247,59 @@ describe("pinned messages", () => {
   });
 });
 
+describe("polls", () => {
+  const base: NativeMessage = { id: "5", author: "Ana", content: "", timestamp: "", edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] };
+  const handlers = (): MessageHandlers => ({ onReply: vi.fn(), onToggleReactionPicker: vi.fn(), onReact: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(), onVote: vi.fn() });
+  const options = [
+    { id: "a", text: "Yes", votes: 3, chosen: true },
+    { id: "b", text: "No", votes: 1 },
+  ];
+  const buttons = (item: HTMLElement) => [...item.querySelectorAll<HTMLButtonElement>("button.poll-option")];
+
+  it("votes for one option, showing shares, and takes the vote back", () => {
+    const h = handlers();
+    const item = messageItem(document, { ...base, poll: { question: "Lunch?", options, multiple: false, closed: false, canVote: true } }, h);
+    expect(item.querySelector(".poll-question")!.textContent).toBe("Lunch?");
+    expect(buttons(item).map((b) => [b.textContent, b.getAttribute("aria-pressed"), b.style.getPropertyValue("--share")])).toEqual([
+      ["Yes75%", "true", "75%"],
+      ["No25%", "false", "25%"],
+    ]);
+    expect(item.querySelector(".poll-meta")!.textContent).toBe("Choose one · 4 votes");
+    buttons(item)[0]!.click();
+    expect(h.onVote).not.toHaveBeenCalled();
+    buttons(item)[1]!.click();
+    expect(h.onVote).toHaveBeenLastCalledWith(expect.objectContaining({ id: "5" }), ["b"]);
+    item.querySelector<HTMLButtonElement>(".poll-retract")!.click();
+    expect(h.onVote).toHaveBeenLastCalledWith(expect.objectContaining({ id: "5" }), []);
+  });
+
+  it("adds and removes options in a multiple-choice poll", () => {
+    const h = handlers();
+    const item = messageItem(document, { ...base, poll: { question: "Q", options, multiple: true, closed: false, canVote: true, total: 1 } }, h);
+    expect(item.querySelector(".poll-meta")!.textContent).toBe("Choose one or more · 1 vote");
+    buttons(item)[1]!.click();
+    expect(h.onVote).toHaveBeenLastCalledWith(expect.anything(), ["a", "b"]);
+    buttons(item)[0]!.click();
+    expect(h.onVote).toHaveBeenLastCalledWith(expect.anything(), []);
+  });
+
+  it("only shows closed polls, those the user may not vote in, and those without counts", () => {
+    const h = handlers();
+    const closed = messageItem(document, { ...base, poll: { question: "Q", options: [{ id: "a", text: "A", correct: true }], multiple: false, closed: true, canVote: true, total: 0 } }, h);
+    expect(buttons(closed)).toHaveLength(0);
+    expect(closed.querySelector(".poll-option.correct")).not.toBeNull();
+    expect(closed.querySelector(".poll-meta")!.textContent).toBe("Final results · 0 votes");
+    expect(closed.querySelector(".poll-retract")).toBeNull();
+    const quiet = messageItem(document, { ...base, poll: { question: "Q", options: [{ id: "a", text: "A", votes: 0 }], multiple: false, closed: false } }, h);
+    expect(buttons(quiet)).toHaveLength(0);
+    expect(quiet.querySelector(".poll-share")!.textContent).toBe("0%");
+    expect(quiet.querySelector(".poll-meta")!.textContent).toBe("Choose one");
+    const noHandler = messageItem(document, { ...base, poll: { question: "Q", options: [{ id: "a", text: "A" }], multiple: false, closed: false, canVote: true } }, { ...h, onVote: undefined });
+    expect(buttons(noHandler)).toHaveLength(0);
+    expect(messageItem(document, { ...base, poll: "junk" as never }, h).querySelector(".poll")).toBeNull();
+  });
+});
+
 describe("mention suggestions", () => {
   const base = { content: "", timestamp: "2026-10-14T12:00:00Z", edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] };
 

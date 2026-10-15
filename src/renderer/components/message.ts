@@ -1,5 +1,5 @@
 import type { FavouriteKind } from "../../shared/favourites";
-import { isShownUrl, messageEmbeds, type NativeAttachment, type NativeChannelCan, type NativeEmbed, type NativeMessage } from "../../shared/native";
+import { isShownUrl, messageEmbeds, messagePoll, type NativeAttachment, type NativeChannelCan, type NativeEmbed, type NativeMessage, type NativePoll } from "../../shared/native";
 import { avatar } from "./avatar";
 import { el, setColor } from "./dom";
 import { formatSize, formatTime } from "./format";
@@ -176,6 +176,55 @@ export function embedCard(
   return card;
 }
 
+/**
+ * A poll: its question, and each option with its share of the votes where
+ * the platform shows them. Where the user may vote, options are buttons: in
+ * a single-choice poll the one clicked becomes the vote; in a
+ * multiple-choice one it is added to or taken from the user's choice.
+ * "Take back vote" clears it.
+ */
+export function pollCard(doc: Document, poll: NativePoll, onVote?: (options: string[]) => void): HTMLElement {
+  const card = el(doc, "div", "poll");
+  card.append(el(doc, "div", "poll-question", poll.question));
+  const vote = poll.canVote === true && !poll.closed ? onVote : undefined;
+  const chosen = poll.options.filter((o) => o.chosen === true).map((o) => o.id);
+  const counted = poll.options.reduce((sum, o) => sum + (o.votes ?? 0), 0);
+  const total = poll.total ?? counted;
+  const list = el(doc, "ul", "poll-options");
+  for (const option of poll.options) {
+    const row = vote ? el(doc, "button", "poll-option") : el(doc, "div", "poll-option");
+    row.classList.toggle("chosen", option.chosen === true);
+    row.classList.toggle("correct", option.correct === true);
+    row.append(el(doc, "span", "poll-text", option.text));
+    if (option.votes !== undefined) {
+      const share = total > 0 ? Math.round((option.votes * 100) / total) : 0;
+      row.append(el(doc, "span", "poll-share", `${share}%`));
+      row.style.setProperty("--share", `${share}%`);
+    }
+    if (vote) {
+      (row as HTMLButtonElement).type = "button";
+      row.setAttribute("aria-pressed", String(option.chosen === true));
+      row.addEventListener("click", () => {
+        if (!poll.multiple) return option.chosen === true ? undefined : vote([option.id]);
+        vote(chosen.includes(option.id) ? chosen.filter((id) => id !== option.id) : [...chosen, option.id]);
+      });
+    }
+    const li = el(doc, "li");
+    li.append(row);
+    list.append(li);
+  }
+  const how = poll.closed ? "Final results" : poll.multiple ? "Choose one or more" : "Choose one";
+  const votes = poll.total !== undefined || counted > 0 ? ` · ${total === 1 ? "1 vote" : `${total} votes`}` : "";
+  card.append(list, el(doc, "div", "poll-meta", how + votes));
+  if (vote && chosen.length > 0) {
+    const retract = el(doc, "button", "poll-retract link", "Take back vote");
+    retract.type = "button";
+    retract.addEventListener("click", () => vote([]));
+    card.append(retract);
+  }
+  return card;
+}
+
 /** What a shown attachment would be as a favourite, if it can be one: a sticker, a GIF (or looping video) or a picture. */
 export function favouriteKind(file: NativeAttachment): FavouriteKind | undefined {
   // The shell keeps only what it can fetch (https) or is handed (a data: URL of a picture or video).
@@ -204,6 +253,8 @@ export interface MessageHandlers {
   onForward?(message: NativeMessage): void;
   /** Puts its text on the clipboard; the way to take it to another module, which a forward never does. */
   onCopy?(message: NativeMessage): void;
+  /** Votes in the message's poll; without it polls only show. */
+  onVote?(message: NativeMessage, options: string[]): void;
   /** Opens the author's profile (messages with an authorId); without it the author is plain text. */
   onOpenProfile?(message: NativeMessage): void;
   /** Stars or unstars a GIF, sticker or picture; without it media has no star. */
@@ -323,6 +374,8 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
     wrap.append(shown, star);
     body.append(wrap);
   }
+  const poll = messagePoll(message.poll);
+  if (poll) body.append(pollCard(doc, poll, handlers.onVote && ((chosen) => handlers.onVote!(message, chosen))));
   for (const embed of messageEmbeds(message.embeds)) body.append(embedCard(doc, embed, handlers.onLoadMedia, handlers.autoLoad, options));
 
   // Where reactions cannot be given, the ones others gave still show.
