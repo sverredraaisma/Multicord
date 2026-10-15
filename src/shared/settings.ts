@@ -481,6 +481,8 @@ export interface ServiceInfo {
   settings?: ServiceSettingField[];
   /** What the running service says about those settings, for declared keys only. */
   settingsStatus?: ServiceSettingStatus;
+  /** Its module holds media back until asked, so the limit for media that loads by itself applies (ModuleManifest.holdsMedia). */
+  holdsMedia?: boolean;
 }
 
 /** A module the user can add services (or extra accounts) from. */

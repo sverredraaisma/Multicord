@@ -69,10 +69,12 @@ describe("settings state", () => {
         account: { state: "signed-in", name: "Ana" },
       },
       expect.objectContaining({ id: "fluxer", account: { state: "unknown" } }),
-      expect.objectContaining({ id: "telegram", label: "Telegram" }),
+      expect.objectContaining({ id: "telegram", label: "Telegram", holdsMedia: true }),
       expect.objectContaining({ id: "el", enabled: false, builtIn: false, label: "Web" }),
     ]);
     expect(state.services[3]).not.toHaveProperty("account");
+    // Fluxer shows media from its own servers: no limit to choose.
+    expect(state.services[1]).not.toHaveProperty("holdsMedia");
     expect(state.modules.map((m) => [m.id, m.fixedUrl])).toEqual([
       ["discord", true],
       ["fluxer", false],

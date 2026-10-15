@@ -128,6 +128,7 @@ export class SettingsController {
         builtIn,
       };
       if (manifest?.notice) service.notice = manifest.notice;
+      if (manifest?.holdsMedia) service.holdsMedia = true;
       if (adapter) service.account = adapter.accountStatus?.() ?? { state: "unknown" };
       const health = adapter?.health?.();
       if (health) service.health = health;

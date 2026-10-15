@@ -256,6 +256,21 @@ describe("services tab", () => {
     expect(row("idle").querySelector(".setting-status")).toBeNull();
   });
 
+  it("lets a service that holds media back choose its own limit for media that loads by itself", () => {
+    const state = viewState({ services: [service({ id: "tg", holdsMedia: true }), service({ id: "mx", holdsMedia: true }), service({ id: "fx" })] });
+    state.settings = { ...state.settings, general: { ...state.settings.general, mediaAutoLoad: "10mb" }, services: { mx: { notifications: true, mediaAutoLoad: "off" } } };
+    mount(state);
+    const limit = (id: string) => q<HTMLSelectElement>('.service-setting[data-key="mediaAutoLoad"] select', row(id));
+    expect(optionTexts(limit("tg"))).toEqual(["As in General (10 MB)", "Off", "1 MB", "5 MB", "10 MB", "25 MB", "Any size"]);
+    expect([limit("tg").value, limit("mx").value]).toEqual(["inherit", "off"]);
+    expect(row("tg").textContent).toContain("Media of unknown size waits for a click.");
+    change(limit("tg"), "all");
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { tg: { mediaAutoLoad: "all" } } } });
+    change(limit("mx"), "inherit");
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { mx: { mediaAutoLoad: "inherit" } } } });
+    expect(row("fx").querySelector(".service-settings")).toBeNull();
+  });
+
   it("runs an action without a confirmation on the first click", () => {
     mount(viewState({ services: [service({ id: "mx", settings: [{ kind: "action", key: "reload", label: "Reload" }] })] }));
     button("Reload", row("mx")).click();
@@ -465,6 +480,10 @@ describe("general and about", () => {
     expect(q(".streaming-note").hidden).toBe(true);
     change(streamer, "off");
     expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { streamerMode: "off" } } });
+    const autoLoad = sel("Auto-load media up to");
+    expect([autoLoad.value, optionTexts(autoLoad).at(-1)]).toEqual(["5mb", "Any size"]);
+    change(autoLoad, "25mb");
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { mediaAutoLoad: "25mb" } } });
   });
 
   it("shows where updating stands, with the buttons that fit", () => {

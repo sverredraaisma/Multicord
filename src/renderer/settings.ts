@@ -1,6 +1,6 @@
 import type { SettingsApi } from "../preload/settings";
 import { keyNameForCode } from "../shared/keys";
-import { isAccelerator, serviceSettings, serviceSettingValues, ZOOM_LEVELS, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
+import { isAccelerator, MEDIA_AUTO_LOAD, serviceSettings, serviceSettingValues, ZOOM_LEVELS, type MediaAutoLoad, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
 import type { FavouritesSummary } from "../shared/favourites";
 import { el, initials, setColor } from "./components/dom";
 import { formatSize } from "./components/format";
@@ -15,6 +15,21 @@ export const TABS = [
   { id: "about", title: "About" },
 ] as const;
 type TabId = (typeof TABS)[number]["id"];
+
+/** The choices for media that loads by itself, as Settings names them. */
+export const MEDIA_AUTO_LOAD_LABELS: Record<MediaAutoLoad, string> = { off: "Off", "1mb": "1 MB", "5mb": "5 MB", "10mb": "10 MB", "25mb": "25 MB", all: "Any size" };
+
+/** A select of the limits for media that loads by itself, with any choices to put first. */
+function autoLoadSelect(doc: Document, label: string, first: [string, string][] = []): HTMLSelectElement {
+  const select = el(doc, "select");
+  select.setAttribute("aria-label", label);
+  for (const [value, text] of [...first, ...MEDIA_AUTO_LOAD.map((v) => [v, MEDIA_AUTO_LOAD_LABELS[v]] as [string, string])]) {
+    const option = el(doc, "option", undefined, text);
+    option.value = value;
+    select.append(option);
+  }
+  return select;
+}
 
 /** How long a "click again to confirm" button waits for the second click. */
 export const CONFIRM_MS = 4000;
@@ -204,6 +219,7 @@ export class SettingsPage {
     general: Record<"closeToTray" | "launchAtLogin" | "notifications" | "spellcheck", HTMLInputElement>;
     grouped: HTMLInputElement;
     zoom: HTMLSelectElement;
+    autoLoad: HTMLSelectElement;
     streamer: HTMLSelectElement;
     streamingNote: HTMLElement;
     links: { row: HTMLElement; input: HTMLInputElement; label: HTMLElement };
@@ -460,7 +476,20 @@ export class SettingsPage {
       "Lets games and apps show what you are doing on Discord, as the desktop app does. Any program on this computer can then set that status.",
       (on) => this.update({ general: { richPresence: on } }),
     );
-    general.append(grouping.row, links.row, autoUpdate.row, richPresence.row, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
+    const autoLoad = autoLoadSelect(doc, "Auto-load media up to");
+    autoLoad.addEventListener("change", () => this.update({ general: { mediaAutoLoad: autoLoad.value as MediaAutoLoad } }));
+    const autoLoadRow = el(doc, "div", "field");
+    autoLoadRow.append(
+      el(doc, "span", "field-label", "Auto-load media up to"),
+      autoLoad,
+      el(
+        doc,
+        "small",
+        "hint",
+        "Pictures, video and sound that Matrix and Telegram fetch on request load by themselves when the service says they are this size or smaller. Larger ones, and those of unknown size, load when you click them. Stickers always load. Each service can choose its own under Services & accounts.",
+      ),
+    );
+    general.append(grouping.row, links.row, autoUpdate.row, richPresence.row, el(doc, "h2", undefined, "Media"), autoLoadRow, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
     const launchHint = el(doc, "p", "hint", "Starting with your computer is not available on this system.");
     launchHint.hidden = true;
     const secretsNote = el(doc, "p", "notice", "This system has no secure storage for passwords, so you will need to sign in to your services again after each restart.");
@@ -531,6 +560,7 @@ export class SettingsPage {
       general: generalInputs,
       grouped: grouping.input,
       zoom,
+      autoLoad,
       streamer,
       streamingNote,
       links: { ...links, label: links.row.querySelector<HTMLElement>(".switch-label")! },
@@ -595,6 +625,7 @@ export class SettingsPage {
     for (const key of ["closeToTray", "launchAtLogin", "notifications", "spellcheck"] as const) parts.general[key].checked = general[key];
     parts.grouped.checked = general.railGrouping === "platform";
     parts.zoom.value = String(general.zoom);
+    parts.autoLoad.value = general.mediaAutoLoad;
     parts.streamer.value = general.streamerMode;
     parts.streamingNote.hidden = state.streaming !== true;
     const schemes = state.linkSchemes ?? [];
@@ -673,7 +704,7 @@ export class SettingsPage {
       info.append(title, status);
       if (service.notice) info.append(el(doc, "p", "service-notice", service.notice));
       info.append(actions);
-      if (service.enabled && service.settings?.length) info.append(this.serviceFields(service));
+      if (service.enabled && (service.settings?.length || service.holdsMedia)) info.append(this.serviceFields(service));
       const { row, input } = switchRow(doc, "On", undefined, (on) => this.api.act({ type: "setEnabled", id: service.id, enabled: on }));
       row.classList.add("service-switch");
       input.checked = service.enabled;
@@ -684,13 +715,30 @@ export class SettingsPage {
     this.parts.services.replaceChildren(...items);
   }
 
-  /** The settings the service's module declares: toggles, choices and action buttons, with what the service says about each. */
+  /**
+   * The service's own limit for media that loads by itself, where its module
+   * holds media back, and the settings its module declares: toggles, choices
+   * and action buttons, with what the service says about each.
+   */
   private serviceFields(service: ServiceInfo): HTMLElement {
     const doc = this.root.ownerDocument;
     const box = el(doc, "div", "service-settings");
-    const values = serviceSettingValues(service.settings, serviceSettings(this.state!.settings, service.id).options);
+    const settings = this.state!.settings;
+    if (service.holdsMedia) {
+      const general = MEDIA_AUTO_LOAD_LABELS[settings.general.mediaAutoLoad];
+      const select = autoLoadSelect(doc, "Auto-load media up to", [["inherit", `As in General (${general})`]]);
+      select.value = serviceSettings(settings, service.id).mediaAutoLoad ?? "inherit";
+      select.addEventListener("change", () => this.update({ services: { [service.id]: { mediaAutoLoad: select.value as MediaAutoLoad | "inherit" } } }));
+      const row = el(doc, "div", "service-setting");
+      row.dataset.key = "mediaAutoLoad";
+      const text = el(doc, "span", "switch-text");
+      text.append(el(doc, "span", "switch-label", "Auto-load media up to"), el(doc, "small", "hint", "Media of unknown size waits for a click."));
+      row.append(text, select);
+      box.append(row);
+    }
+    const values = serviceSettingValues(service.settings, serviceSettings(settings, service.id).options);
     const set = (key: string, value: boolean | string): void => this.update({ services: { [service.id]: { options: { [key]: value } } } });
-    for (const field of service.settings!) {
+    for (const field of service.settings ?? []) {
       const status = service.settingsStatus?.[field.key];
       const row = el(doc, "div", "service-setting");
       row.dataset.key = field.key;
