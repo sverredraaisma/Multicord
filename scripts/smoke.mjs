@@ -5,8 +5,11 @@
 // exception or unhandled rejection. In the main process it also checks what
 // an Electron upgrade can break outside the pages: screen capture lists a
 // screen, and push to talk's global keyboard hook (uiohook-napi) loads, starts
-// and stops. Where the OS withholds a permission these need (macOS: Screen
-// Recording, Accessibility), the check is skipped with that reason.
+// and stops. In the native views it checks media: getUserMedia gives tracks
+// from Chromium's fake camera and microphone, and getDisplayMedia reaches the
+// shell's display-media handler, whose picker it answers, and gives a video
+// track. Where the OS withholds a permission these need (macOS: Screen
+// Recording, Accessibility, camera), the check is skipped with that reason.
 //
 //   npm run build && npm run smoke        (or: node scripts/smoke.mjs [--online] [--keep])
 //
