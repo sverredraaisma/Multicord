@@ -228,22 +228,42 @@ describe("attachments", () => {
     expect((await show({ name: "old.zip", kind: "file" })).textContent).toBe("old.zip (link expired)");
   });
 
-  it("asks for held-back pictures at once, and for sound and video on a click", async () => {
+  it("marks held-back media that loads by itself for the view to ask for, and lets the rest wait for a click", async () => {
+    const { attachment } = await import("../../src/renderer/components/message");
     const onLoad = vi.fn();
-    const picture = (await show({ name: "photo.jpg", kind: "image", mediaKey: "m:1", previewUrl: "data:image/jpeg;base64,AA", width: 10, height: 5 }, onLoad)) as HTMLImageElement;
-    expect(onLoad).toHaveBeenCalledWith("m:1");
-    expect(picture.className).toBe("attachment-image loading");
-    expect((await show({ name: "s", kind: "sticker", mediaKey: "m:2" }, onLoad)).textContent).toBe("Loading s…");
+    const auto = () => true as const;
+    const picture = attachment(document, { name: "photo.jpg", kind: "image", mediaKey: "m:1", previewUrl: "data:image/jpeg;base64,AA", width: 10, height: 5 }, onLoad, auto) as HTMLImageElement;
+    expect([picture.className, picture.dataset.autoLoad]).toEqual(["attachment-image loading", "m:1"]);
+    const sticker = attachment(document, { name: "s", kind: "sticker", mediaKey: "m:2" }, onLoad, auto);
+    expect([sticker.textContent, sticker.dataset.autoLoad]).toEqual(["Loading s…", "m:2"]);
+    // A video's still is not a picture of the right kind to stand in.
+    expect(attachment(document, { name: "v", kind: "video", mediaKey: "m:6", previewUrl: "data:image/jpeg;base64,AA" }, onLoad, auto).textContent).toBe("Loading v…");
+    expect(onLoad).not.toHaveBeenCalled();
 
-    const button = (await show({ name: "clip.mp4", kind: "video", mediaKey: "m:3", size: 5 * 1024 * 1024 }, onLoad)) as HTMLButtonElement;
-    expect(button.textContent).toBe("▶ clip.mp4 (5.0 MB)");
-    expect(onLoad).not.toHaveBeenCalledWith("m:3");
+    const button = attachment(document, { name: "clip.mp4", kind: "video", mediaKey: "m:3", size: 5 * 1024 * 1024 }, onLoad, () => "It is larger than the 1.0 MB that loads by itself.") as HTMLButtonElement;
+    expect([button.textContent, button.title, button.dataset.autoLoad]).toEqual(["▶ clip.mp4 (5.0 MB)", "Load this video. It is larger than the 1.0 MB that loads by itself.", undefined]);
     button.click();
     expect(onLoad).toHaveBeenCalledWith("m:3");
     expect([button.disabled, button.textContent]).toEqual([true, "Loading clip.mp4…"]);
-    expect((await show({ name: "a.bin", kind: "file", mediaKey: "m:4" }, onLoad)).textContent).toBe("⬇ a.bin");
+    const file = await show({ name: "a.bin", kind: "file", mediaKey: "m:4" }, onLoad);
+    expect([file.textContent, file.title]).toEqual(["⬇ a.bin", "Load this file"]);
+    expect((await show({ name: "big.png", kind: "image", mediaKey: "m:7" }, onLoad)).textContent).toBe("Show big.png");
     // Without a way to ask, a held-back file reads as gone.
     expect((await show({ name: "x", kind: "video", mediaKey: "m:5" })).textContent).toBe("x (link expired)");
+  });
+
+  it("loads media by itself up to the limit, stickers always, files and media of unknown size only when asked", async () => {
+    const { autoLoads } = await import("../../src/renderer/components/message");
+    const MB = 1024 * 1024;
+    const image = { name: "p", kind: "image" as const, size: 2 * MB };
+    expect(autoLoads(image, 5 * MB)).toBe(true);
+    expect(autoLoads({ ...image, kind: "audio" }, 2 * MB)).toBe(true);
+    expect(autoLoads(image, MB)).toBe("It is larger than the 1.0 MB that loads by itself.");
+    expect(autoLoads(image, 0)).toBe("Media does not load by itself here (Settings).");
+    expect(autoLoads({ name: "p", kind: "video" }, 25 * MB)).toBe("Its size is unknown, so it does not load by itself.");
+    expect(autoLoads({ name: "p", kind: "video" }, Number.POSITIVE_INFINITY)).toBe(true);
+    expect(autoLoads({ name: "s", kind: "sticker" }, 0)).toBe(true);
+    expect(autoLoads({ name: "f", kind: "file", size: 1 }, Number.POSITIVE_INFINITY)).toBe("");
   });
 });
 

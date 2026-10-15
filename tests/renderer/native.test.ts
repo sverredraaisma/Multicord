@@ -1,9 +1,9 @@
 // @vitest-environment happy-dom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("livekit-client", () => import("../mocks/livekit"));
 
-import { formatSize, formatTime, insertAtCursor, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
+import { AUTO_LOAD_TIMEOUT_MS, formatSize, formatTime, insertAtCursor, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
 import type { NativeApi } from "../../src/preload/native";
 import type { FavouritesState } from "../../src/shared/favourites";
 import type { NativeMessage, NativeViewState } from "../../src/shared/native";
@@ -59,6 +59,11 @@ beforeEach(() => {
   root = document.getElementById("app")!;
   act = vi.fn<NativeApi["act"]>();
   view = new NativeView(root, { act });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("login and MFA screens", () => {
@@ -266,17 +271,19 @@ describe("helpers", () => {
     let pushCompact: (compact: boolean) => void = () => {};
     let voiceCommand: (command: "toggleMute" | "toggleDeafen") => void = () => {};
     let pushFavourites: (state: FavouritesState) => void = () => {};
+    let pushLimit: (limit: number) => void = () => {};
     const api: NativeApi = {
       onState: (cb) => (push = cb),
       act: vi.fn(),
       onVoiceSettings: (cb) => (pushVoice = cb),
-      onMediaAutoLoad: vi.fn(),
+      onMediaAutoLoad: (cb) => (pushLimit = cb),
       onCompact: (cb) => (pushCompact = cb),
       onVoiceCommand: (cb) => (voiceCommand = cb),
       screenAudioEnded: vi.fn(),
       onFavourites: (cb) => (pushFavourites = cb),
       favourites: vi.fn(),
     };
+    vi.stubGlobal("IntersectionObserver", undefined);
     startNative(document, api);
     expect(api.act).toHaveBeenCalledWith({ type: "ready" });
     push(login);
@@ -294,6 +301,10 @@ describe("helpers", () => {
     expect(document.body.classList.contains("compact")).toBe(false);
     document.dispatchEvent(new CustomEvent("multicord:screen-audio-end"));
     expect(api.screenAudioEnded).toHaveBeenCalled();
+    // The shell's limit lets held-back media load by itself.
+    pushLimit(Number.POSITIVE_INFINITY);
+    push(chat({ channel: { ...chat().channel!, messages: [msg("10", { attachments: [{ name: "p.jpg", kind: "image", mediaKey: "m:1" }] })] } }));
+    expect(api.act).toHaveBeenCalledWith({ type: "loadMedia", key: "m:1" });
 
     // Voice shortcuts and push to talk reach the call in progress.
     const live = { channelId: "7", channelName: "Lounge", guildName: "G", url: "wss://x", token: "t", mute: false, deaf: false, video: false, stream: false };
@@ -898,10 +909,127 @@ describe("voice shortcuts without a call", () => {
 });
 
 describe("media requests from the view", () => {
+  const MB = 1024 * 1024;
+  const withFiles = (attachments: NativeMessage["attachments"]) => chat({ channel: { ...chat().channel!, messages: [msg("10", { attachments })] } });
+  const asked = () => act.mock.calls.flatMap(([a]) => (a.type === "loadMedia" ? [a.key] : []));
+
+  /** An IntersectionObserver the test drives: what it watches, and a way to bring items into sight. */
+  class FakeObserver {
+    static last: FakeObserver | undefined;
+    watched: Element[] = [];
+    disconnected = 0;
+    constructor(readonly callback: (entries: { isIntersecting: boolean; target: Element }[]) => void) {
+      FakeObserver.last = this;
+    }
+    observe(target: Element) {
+      this.watched.push(target);
+    }
+    disconnect() {
+      this.watched = [];
+      this.disconnected++;
+    }
+    show(key: string, isIntersecting = true) {
+      this.callback(this.watched.filter((t) => (t as HTMLElement).dataset.autoLoad === key).map((target) => ({ isIntersecting, target })));
+    }
+  }
+
   it("asks the engine for held-back media once", () => {
-    view.update(chat({ channel: { ...chat().channel!, messages: [{ ...chat().channel!.messages[0]!, attachments: [{ name: "p.jpg", kind: "image", mediaKey: "m:1" }] }] } }));
-    view.update(chat({ channel: { ...chat().channel!, messages: [{ ...chat().channel!.messages[0]!, attachments: [{ name: "p.jpg", kind: "image", mediaKey: "m:1" }] }] } }));
-    expect(act.mock.calls.filter(([a]) => a.type === "loadMedia")).toEqual([[{ type: "loadMedia", key: "m:1" }]]);
+    vi.stubGlobal("IntersectionObserver", undefined);
+    const state = withFiles([{ name: "s", kind: "sticker", mediaKey: "m:1" }]);
+    view.update(state);
+    view.update(state);
+    expect(asked()).toEqual(["m:1"]);
+  });
+
+  it("loads media up to the service's limit by itself, three at a time, and the rest on a click", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("IntersectionObserver", undefined);
+    // Before the shell says, nothing loads by itself, and a limit before any chat changes nothing shown.
+    view.setMediaAutoLoad(5 * MB);
+    const files: NativeMessage["attachments"] = [
+      { name: "a.jpg", kind: "image", mediaKey: "m:1", size: MB },
+      { name: "b.jpg", kind: "image", mediaKey: "m:2" },
+      { name: "c.mp4", kind: "video", mediaKey: "m:3", size: 10 * MB },
+      { name: "d", kind: "sticker", mediaKey: "m:4" },
+      { name: "e.ogg", kind: "audio", mediaKey: "m:5", size: 2 * MB },
+      { name: "f.jpg", kind: "image", mediaKey: "m:6", size: 3 * MB },
+      { name: "g.zip", kind: "file", mediaKey: "m:7", size: 1 },
+    ];
+    view.update(withFiles(files));
+    expect(asked()).toEqual(["m:1", "m:4", "m:5"]);
+    const unknown = [...root.querySelectorAll<HTMLButtonElement>("button.load")].find((b) => b.textContent!.includes("b.jpg"))!;
+    expect(unknown.title).toBe("Load this image. Its size is unknown, so it does not load by itself.");
+
+    // The engine answers one (shown) and fails another (no key any more): two places free.
+    const answered = files.map((f) => (f.mediaKey === "m:1" ? { ...f, url: "data:image/jpeg;base64,AA", mediaKey: undefined } : f.mediaKey === "m:4" ? { ...f, mediaKey: undefined, unavailable: "failed" } : f));
+    view.update(withFiles(answered));
+    expect(asked()).toEqual(["m:1", "m:4", "m:5", "m:6"]);
+    view.update(withFiles(answered));
+    expect(asked()).toHaveLength(4);
+
+    // A click asks at once; a larger limit lets more load by itself, but a failed or answered key is never asked again.
+    unknown.click();
+    view.setMediaAutoLoad(Number.POSITIVE_INFINITY);
+    expect(asked()).toEqual(["m:1", "m:4", "m:5", "m:6", "m:2", "m:3"]);
+    view.update(withFiles(files));
+    expect(asked()).toHaveLength(6);
+  });
+
+  it("frees the place of a load the engine never answers", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("IntersectionObserver", undefined);
+    view.setMediaAutoLoad(Number.POSITIVE_INFINITY);
+    view.update(withFiles(["1", "2", "3", "4"].map((n) => ({ name: n, kind: "image" as const, mediaKey: `m:${n}` }))));
+    expect(asked()).toEqual(["m:1", "m:2", "m:3"]);
+    vi.advanceTimersByTime(AUTO_LOAD_TIMEOUT_MS);
+    expect(asked()).toEqual(["m:1", "m:2", "m:3", "m:4"]);
+    // Gone from the conversation: no longer waited for.
+    view.update(withFiles(["5", "6", "7", "8", "9"].map((n) => ({ name: n, kind: "image" as const, mediaKey: `m:${n}` }))));
+    expect(asked().slice(4)).toEqual(["m:5", "m:6", "m:7"]);
+    view.update(chat({ channel: null }));
+    vi.advanceTimersByTime(AUTO_LOAD_TIMEOUT_MS);
+    expect(asked()).toHaveLength(7);
+  });
+
+  it("asks for media that loads by itself only once it comes into sight", () => {
+    vi.stubGlobal("IntersectionObserver", FakeObserver);
+    view.setMediaAutoLoad(5 * MB);
+    const state = withFiles([
+      { name: "a.jpg", kind: "image", mediaKey: "m:1", size: MB },
+      { name: "b.jpg", kind: "image", mediaKey: "m:2", size: MB },
+    ]);
+    view.update(state);
+    const observer = FakeObserver.last!;
+    expect(observer.watched).toHaveLength(2);
+    expect(asked()).toEqual([]);
+    observer.show("m:2", false);
+    expect(asked()).toEqual([]);
+    observer.show("m:2");
+    observer.show("m:2");
+    expect(asked()).toEqual(["m:2"]);
+    // Re-rendered items are watched afresh by the same observer; a new screen gets a new one.
+    view.update(state);
+    expect([FakeObserver.last, observer.watched.length]).toEqual([observer, 2]);
+    view.update(login);
+    view.update(state);
+    expect(FakeObserver.last).not.toBe(observer);
+    expect(observer.disconnected).toBeGreaterThan(1);
+  });
+
+  it("stops waiting for a place for media the picker asked for meanwhile", () => {
+    vi.stubGlobal("IntersectionObserver", undefined);
+    view.setMediaAutoLoad(Number.POSITIVE_INFINITY);
+    const stickers = [{ id: "p", name: "Pack", stickers: [{ id: "s4", name: "Four", format: "webp" as const, mediaKey: "m:4" }] }];
+    const files = ["1", "2", "3", "4"].map((n) => ({ name: n, kind: "image" as const, mediaKey: `m:${n}` }));
+    const state = (attachments: NativeMessage["attachments"]): Chat => ({ ...chat({ channel: { ...chat().channel!, can: { ...ALL, stickers: true }, messages: [msg("10", { attachments })] } }), stickers });
+    view.update(state(files));
+    expect(asked()).toEqual(["m:1", "m:2", "m:3"]);
+    root.querySelector<HTMLButtonElement>(".emoji-button")!.click();
+    root.querySelector<HTMLButtonElement>('.picker-tab[data-tab="stickers"]')!.click();
+    expect(asked()).toEqual(["m:1", "m:2", "m:3", "m:4"]);
+    // A place frees: nothing is left waiting for it.
+    view.update(state(files.slice(1)));
+    expect(asked()).toHaveLength(4);
   });
 });
 

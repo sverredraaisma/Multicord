@@ -18,13 +18,29 @@ function sized<T extends HTMLImageElement | HTMLVideoElement>(media: T, file: Na
 }
 
 /**
+ * Whether media the engine holds back loads by itself under a limit (bytes;
+ * Infinity for any size), or why it waits for a click. Stickers always do,
+ * as every platform keeps them small; files wait until they are wanted, and
+ * so does media of unknown size unless any size may load.
+ */
+export function autoLoads(file: NativeAttachment, limit: number): true | string {
+  if (file.kind === "sticker") return true;
+  if (file.kind === "file") return "";
+  if (limit === Number.POSITIVE_INFINITY) return true;
+  if (limit <= 0) return "Media does not load by itself here (Settings).";
+  if (file.size === undefined) return "Its size is unknown, so it does not load by itself.";
+  return file.size <= limit ? true : `It is larger than the ${formatSize(limit)} that loads by itself.`;
+}
+
+/**
  * An attachment as its kind asks: pictures and stickers inline, videos and
  * sound with players, other files as links (opened in the browser, or saved
- * when the engine made them). Media the engine fetches on request: pictures
- * are asked for at once, sound and video only when the user wants them, as
- * they can be large. Expired links are greyed out.
+ * when the engine made them). Media the engine fetches on request waits for
+ * a click, unless `autoLoad` says it loads by itself: then it is marked
+ * (data-auto-load, with its key) for the view to ask for once it is in
+ * sight. Expired links are greyed out.
  */
-export function attachment(doc: Document, file: NativeAttachment, onLoad?: (key: string) => void): HTMLElement {
+export function attachment(doc: Document, file: NativeAttachment, onLoad?: (key: string) => void, autoLoad?: (file: NativeAttachment) => true | string): HTMLElement {
   if (!file.url) {
     // Animated vector stickers (Lottie) cannot be drawn here: their still stands in, said to be one, or else their name.
     if (file.kind === "sticker" && !file.mediaKey) {
@@ -39,19 +55,22 @@ export function attachment(doc: Document, file: NativeAttachment, onLoad?: (key:
     }
     if (!file.mediaKey || !onLoad) return el(doc, "span", "attachment expired", `${file.name} (${file.unavailable ?? "link expired"})`);
     const key = file.mediaKey;
-    if (file.kind === "image" || file.kind === "sticker") {
-      onLoad(key);
-      if (file.previewUrl) {
+    const auto = autoLoad?.(file) ?? "";
+    if (auto === true) {
+      let waiting: HTMLElement;
+      if (file.previewUrl && (file.kind === "image" || file.kind === "sticker")) {
         const preview = sized(el(doc, "img", `attachment-${file.kind} loading`), file);
         preview.src = file.previewUrl;
         preview.alt = file.name;
-        return preview;
-      }
-      return el(doc, "span", "attachment loading", `Loading ${file.name}…`);
+        waiting = preview;
+      } else waiting = el(doc, "span", "attachment loading", `Loading ${file.name}…`);
+      waiting.dataset.autoLoad = key;
+      return waiting;
     }
-    const load = el(doc, "button", "attachment load", `${file.kind === "file" ? "⬇" : "▶"} ${file.name}${file.size ? ` (${formatSize(file.size)})` : ""}`);
+    const verb = file.kind === "file" ? "⬇" : file.kind === "image" ? "Show" : "▶";
+    const load = el(doc, "button", "attachment load", `${verb} ${file.name}${file.size ? ` (${formatSize(file.size)})` : ""}`);
     load.type = "button";
-    load.title = `Load this ${KIND_LABEL[file.kind]}`;
+    load.title = `Load this ${KIND_LABEL[file.kind]}${auto ? `. ${auto}` : ""}`;
     load.addEventListener("click", () => {
       load.disabled = true;
       load.textContent = `Loading ${file.name}…`;
@@ -126,6 +145,8 @@ export function favouriteKind(file: NativeAttachment): FavouriteKind | undefined
 export interface MessageHandlers {
   /** Asks the engine for media it holds back (NativeAttachment.mediaKey). */
   onLoadMedia?(key: string): void;
+  /** Whether held-back media loads by itself (autoLoads()), or why not; without it, all of it waits for a click. */
+  autoLoad?(file: NativeAttachment): true | string;
   onReply(message: NativeMessage): void;
   onToggleReactionPicker(message: NativeMessage): void;
   onReact(message: NativeMessage, key: string, add: boolean): void;
@@ -212,7 +233,7 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
     body.append(content);
   }
   for (const file of message.attachments) {
-    const shown = attachment(doc, file, handlers.onLoadMedia);
+    const shown = attachment(doc, file, handlers.onLoadMedia, handlers.autoLoad);
     const kind = handlers.onFavourite && favouriteKind(file);
     if (!kind) {
       body.append(shown);

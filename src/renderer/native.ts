@@ -12,7 +12,7 @@ import { emojiPicker, type SourceBadge } from "./components/emojiPicker";
 import { MediaPicker, type MediaPickerData, type MediaPickerHandlers, type RecentMedia } from "./components/mediaPicker";
 import { typingText } from "./components/format";
 import { memberPanel, profileCard, type ProfileCardData } from "./components/members";
-import { favouriteKind, messageItem, type MessageHandlers } from "./components/message";
+import { autoLoads, favouriteKind, messageItem, type MessageHandlers } from "./components/message";
 import { forumPosts, pendingFiles, postForm, replyBar, voicePanel } from "./components/panels";
 import { isOwnReaction } from "./components/reactions";
 import { VoiceCall } from "./voice";
@@ -24,6 +24,10 @@ type ChatState = Extract<NativeViewState, { screen: "chat" }>;
 
 /** GIFs seen in a conversation that the picker offers again. */
 export const MAX_RECENT_GIFS = 24;
+/** Media that loads by itself: at most this many asked of the engine at once. */
+export const MAX_AUTO_LOADS = 3;
+/** An automatic load the engine has not answered in this long frees its place; it is not asked again. */
+export const AUTO_LOAD_TIMEOUT_MS = 60_000;
 
 /** Inserts text at the cursor of a text field, replacing any selection. */
 export function insertAtCursor(field: HTMLTextAreaElement, text: string): void {
@@ -161,6 +165,9 @@ export class NativeView {
     this.login = undefined;
     this.channelId = undefined;
     this.firstMessageId = undefined;
+    // It watched the old messages list.
+    this.observer?.disconnect();
+    this.observer = undefined;
     const doc = this.doc;
     const card = el(doc, "section", "card");
     switch (state.screen) {
@@ -469,15 +476,78 @@ export class NativeView {
     if (this.lastState) this.updateChat(this.lastState);
   }
 
-  /** Media already asked of the engine: the view re-renders often, the engine needs asking once. */
+  /** Media already asked of the engine: the view re-renders often, the engine needs asking once (and a failed load is not asked again). */
   private readonly mediaAsked = new Set<string>();
+  /** This service's limit for media that loads by itself, in bytes; nothing until the shell says. */
+  private autoLoadLimit = 0;
+  /** Media in sight that loads by itself, waiting for a place. */
+  private autoQueue: string[] = [];
+  /** Media loading by itself now, each with the timer that frees its place if the engine never answers. */
+  private readonly autoLoading = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Watches the messages for media that loads by itself coming into sight. */
+  private observer: IntersectionObserver | undefined;
+
+  /** The shell's limit for media that loads by itself changed. */
+  setMediaAutoLoad(limit: number): void {
+    this.autoLoadLimit = limit;
+    this.rerender();
+  }
+
+  private queueAutoLoad(key: string): void {
+    if (this.mediaAsked.has(key) || this.autoQueue.includes(key)) return;
+    this.autoQueue.push(key);
+    this.pumpAutoLoads();
+  }
+
+  /** Asks for waiting media, MAX_AUTO_LOADS at a time, so a conversation full of it does not ask for everything at once. */
+  private pumpAutoLoads(): void {
+    while (this.autoLoading.size < MAX_AUTO_LOADS && this.autoQueue.length > 0) {
+      const key = this.autoQueue.shift()!;
+      this.autoLoading.set(key, setTimeout(() => this.autoLoaded(key), AUTO_LOAD_TIMEOUT_MS));
+      this.messageHandlers.onLoadMedia!(key);
+    }
+  }
+
+  private autoLoaded(key: string): void {
+    clearTimeout(this.autoLoading.get(key));
+    this.autoLoading.delete(key);
+    this.pumpAutoLoads();
+  }
+
+  /**
+   * After a render: media the engine has answered (shown, or failed) or that
+   * left the conversation frees its place, and media that loads by itself
+   * is asked for once it comes into sight (all of it where nothing can tell).
+   */
+  private watchAutoLoads(scroller: HTMLElement, channel: ChatState["channel"]): void {
+    const held = new Set((channel?.messages ?? []).flatMap((m) => m.attachments.flatMap((a) => (a.mediaKey && !a.url ? [a.mediaKey] : []))));
+    this.autoQueue = this.autoQueue.filter((key) => held.has(key));
+    for (const key of [...this.autoLoading.keys()]) if (!held.has(key)) this.autoLoaded(key);
+    const waiting = [...scroller.querySelectorAll<HTMLElement>("[data-auto-load]")];
+    const Observer: typeof IntersectionObserver | undefined = this.doc.defaultView!.IntersectionObserver;
+    if (!Observer) {
+      for (const item of waiting) this.queueAutoLoad(item.dataset.autoLoad!);
+      return;
+    }
+    this.observer ??= new Observer(
+      (entries) => {
+        for (const entry of entries) if (entry.isIntersecting) this.queueAutoLoad((entry.target as HTMLElement).dataset.autoLoad!);
+      },
+      { root: scroller, rootMargin: "200px" },
+    );
+    this.observer.disconnect();
+    for (const item of waiting) this.observer.observe(item);
+  }
 
   private readonly messageHandlers: MessageHandlers = {
     onLoadMedia: (key) => {
       if (this.mediaAsked.has(key)) return;
       this.mediaAsked.add(key);
+      // Asked for now (e.g. by the picker): it no longer waits for a place.
+      this.autoQueue = this.autoQueue.filter((queued) => queued !== key);
       this.api.act({ type: "loadMedia", key });
     },
+    autoLoad: (file) => autoLoads(file, this.autoLoadLimit),
     onReply: (message) => this.setReply({ id: message.id, author: message.author }),
     onToggleReactionPicker: (message) => {
       this.pickerFor = this.pickerFor === message.id ? undefined : message.id;
@@ -672,6 +742,7 @@ export class NativeView {
     }
     items.push(...(channel?.messages ?? []).map((m) => this.messageItem(m)));
     scroller.replaceChildren(...items);
+    this.watchAutoLoads(scroller, channel);
 
     const first = channel?.messages[0]?.id;
     const switched = channel?.id !== this.channelId;
@@ -692,6 +763,7 @@ export function startNative(
   const view = new NativeView(doc.getElementById("app")!, api, denoiser, e2eeWorker);
   api.onState((state) => view.update(state));
   api.onVoiceSettings((settings) => view.setVoiceSettings(settings));
+  api.onMediaAutoLoad((limit) => view.setMediaAutoLoad(limit));
   api.onFavourites((favourites) => view.setFavourites(favourites));
   // Beside the unified Messages list, the conversation list here would repeat it.
   api.onCompact((compact) => doc.body.classList.toggle("compact", compact));
