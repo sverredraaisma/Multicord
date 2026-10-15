@@ -41,6 +41,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - HTTP through the main process with the engine's own cookie-less session: https only, never local or private addresses, only the module's declared hosts if it declares any (an engine may lock itself to its instance's hosts once it has discovered them, and a lock can only narrow. Stoat and Matrix do this. Fluxer doesn't, since its presigned uploads go to storage hosts it cannot know in advance), each redirect checked again,
   - WebSockets only to the same allowed hosts,
   - files only through handles for what the user picked for it,
+  - single sign-on (Matrix's `m.login.sso`) only right after the user submits a sign-in step in the module's own view: the shell opens the homeserver's SSO address (on a host the engine may reach) in the browser, receives the one login token that comes back on a random loopback address (127.0.0.1 only, one request, five minutes at most), and hands it to that engine alone,
   - display state only to its own view, and that view's actions only back to it.
 
   A module therefore cannot read another module's tokens, cookies, storage or messages. Code under `src/modules` and `src/engine` may not import Electron, Node or main-process code; a test enforces it. Web-view modules (Discord, generic web apps) run their pages in their own sandboxed, partitioned views, with only narrow preload bridges.

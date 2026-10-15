@@ -115,7 +115,14 @@ export type EngineRequest =
   | { type: "pickFiles" }
   | { type: "readFile"; handle: string; start: number; end: number }
   /** From now on reach only these hosts ("example.com" or "*.example.com"); a lock can only narrow. */
-  | { type: "lockHosts"; hosts: string[] };
+  | { type: "lockHosts"; hosts: string[] }
+  /**
+   * Single sign-on (Matrix's m.login.sso): the shell opens this homeserver
+   * SSO redirect address in the browser with a loopback redirectUrl of its
+   * own, and answers with the one login token that comes back. Only right
+   * after the user submitted a sign-in step in the module's view.
+   */
+  | { type: "ssoSignIn"; url: string };
 
 /** Hosts an engine may lock itself to at once. */
 export const MAX_LOCKED_HOSTS = 16;
@@ -280,6 +287,8 @@ export function isEngineRequest(value: unknown): value is EngineRequest {
       return isText(value.key, MAX_KEY, 1) && isText(value.value, MAX_SECRET);
     case "http":
       return isHttpRequest(value.request);
+    case "ssoSignIn":
+      return isText(value.url, 2048, 1);
     case "lockHosts":
       return (
         Array.isArray(value.hosts) &&

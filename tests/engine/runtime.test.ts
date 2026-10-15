@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { bridgeFetch, bridgeSecrets, engineInfo, fileSource, lockHosts, pickFiles, serveAdapter, type ServedAdapter } from "../../src/engine/runtime";
+import { bridgeFetch, bridgeSecrets, engineInfo, fileSource, lockHosts, pickFiles, serveAdapter, ssoSignIn, type ServedAdapter } from "../../src/engine/runtime";
 import { createEngineBridge, type EngineBridge, type EngineIpc } from "../../src/preload/engine";
 import type { AccountRef, DirectConversation, HomeBadge, IncomingCall, PlatformNotification, RailServer } from "../../src/shared/adapter";
 import { BaseAdapter } from "../../src/shared/baseAdapter";
@@ -73,6 +73,20 @@ describe("lockHosts", () => {
     bridge.request.mockResolvedValue(["a.example"]);
     await expect(lockHosts(bridge, ["a.example"])).resolves.toBeUndefined();
     expect(bridge.request).toHaveBeenCalledWith({ type: "lockHosts", hosts: ["a.example"] });
+  });
+});
+
+describe("ssoSignIn", () => {
+  it("asks the shell for a login token, and refuses an answer without one", async () => {
+    const { bridge } = fakeBridge();
+    const url = "https://hs.x.org/_matrix/client/v3/login/sso/redirect";
+    bridge.request.mockResolvedValueOnce({ loginToken: "syl_t" });
+    await expect(ssoSignIn(bridge, url)).resolves.toBe("syl_t");
+    expect(bridge.request).toHaveBeenCalledWith({ type: "ssoSignIn", url });
+    for (const answer of [{ loginToken: "" }, {}, undefined]) {
+      bridge.request.mockResolvedValueOnce(answer);
+      await expect(ssoSignIn(bridge, url)).rejects.toThrow("no login token");
+    }
   });
 });
 

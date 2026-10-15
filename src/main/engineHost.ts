@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
-import { dialog, ipcMain, session, WebContentsView, type BaseWindow, type Session, type WebContents } from "electron";
+import { dialog, ipcMain, session, shell, WebContentsView, type BaseWindow, type Session, type WebContents } from "electron";
 import type { DirectConversation, HealthCheck, HomeBadge, PlatformAdapter, RailServer } from "../shared/adapter";
 import { BaseAdapter } from "../shared/baseAdapter";
 import { Emitter } from "../shared/emitter";
@@ -24,6 +24,7 @@ import type { SecretStore } from "./credentials";
 import { contentTypeFor, readRange } from "./files";
 import { checkUrl, createAddressGuard, narrowHosts, performHttp, type UrlPolicy } from "./netPolicy";
 import type { PlatformDef } from "./platforms";
+import { isSsoUrl, receiveLoginToken } from "./ssoLoopback";
 
 /**
  * The main process's stand-in for a module running in an engine: it keeps
@@ -205,6 +206,10 @@ interface Running {
   readyAt: number;
   /** When the user last asked to attach files in the module's view; 0 when they have not. */
   attachAskedAt: number;
+  /** When the user last submitted a sign-in step in the module's view; 0 when they have not. */
+  signInAskedAt: number;
+  /** The single sign-on waiting for its token, if any: a new one cancels it. */
+  sso?: AbortController;
   /** The hosts the engine may reach now: the module's, or narrower once the engine locks itself. */
   allowed: { hosts?: readonly string[] };
   /** Messages for the engine, held until it has loaded. */
@@ -222,6 +227,8 @@ export function engineStoragePartition(instanceId: string, persistent: boolean):
 export const MAX_FILE_HANDLES = 200;
 /** How long after the user's attach click the engine may open the file dialog. */
 export const ATTACH_WINDOW_MS = 10_000;
+/** How long after the user submits a sign-in step the engine may start single sign-on in the browser. */
+export const SIGN_IN_WINDOW_MS = 10_000;
 const CSP = [
   "default-src 'none'",
   "script-src 'self' 'wasm-unsafe-eval'",
@@ -287,6 +294,8 @@ export class EngineHub {
       if (!running || !isNativeAction(action)) return;
       // The file dialog opens only for an attach the user just asked for in this view.
       if (action.type === "attach") running.attachAskedAt = Date.now();
+      // The browser opens for single sign-on only for a sign-in step the user just submitted in this view.
+      if (action.type === "prompt") running.signInAskedAt = Date.now();
       this.deliver(running, ENGINE_IPC.action, action);
     });
   }
@@ -357,6 +366,7 @@ export class EngineHub {
       readyAt: 0,
       allowed,
       attachAskedAt: 0,
+      signInAskedAt: 0,
       queue: [],
     };
     running.adapter = new EngineAdapter(spec.def.id, new URL(spec.def.url).host, spec.capabilities, (command) => this.deliver(running, ENGINE_IPC.command, command), spec.home);
@@ -446,6 +456,8 @@ export class EngineHub {
       }
       case "pickFiles":
         return this.pickFiles(running);
+      case "ssoSignIn":
+        return this.ssoSignIn(running, request.url);
       case "readFile": {
         const file = running.files.get(request.handle);
         if (!file) throw new Error("Unknown file");
@@ -480,6 +492,27 @@ export class EngineHub {
     running.files.set(handle, { path: filePath, size });
     if (running.files.size > MAX_FILE_HANDLES) running.files.delete(running.files.keys().next().value!);
     return handle;
+  }
+
+  /**
+   * Single sign-on for the engine: only right after the user submitted a
+   * sign-in step in its view, once per submit, to a homeserver SSO address
+   * on a host the engine may reach. The token comes back to this engine
+   * alone, as the answer to its request; a new sign-on cancels one waiting.
+   */
+  private async ssoSignIn(running: Running, url: string): Promise<{ loginToken: string }> {
+    if (Date.now() - running.signInAskedAt > SIGN_IN_WINDOW_MS) throw new Error("Single sign-on starts only when the user signs in");
+    running.signInAskedAt = 0;
+    const refused = isSsoUrl(url) ? checkUrl(url, { schemes: ["https:"], hosts: running.allowed.hosts }) : "it is no single sign-on address";
+    if (refused) throw new Error(`Single sign-on refused: ${refused}`);
+    running.sso?.abort();
+    const controller = new AbortController();
+    running.sso = controller;
+    try {
+      return { loginToken: await receiveLoginToken(url, { open: (address) => shell.openExternal(address) }, controller.signal) };
+    } finally {
+      if (running.sso === controller) running.sso = undefined;
+    }
   }
 
   private async pickFiles(running: Running): Promise<PickedFile[]> {

@@ -63,6 +63,18 @@ export async function lockHosts(bridge: EngineBridge, hosts: string[]): Promise<
   await bridge.request({ type: "lockHosts", hosts });
 }
 
+/**
+ * Signs in through the homeserver's single sign-on (Matrix's m.login.sso):
+ * the shell opens `url` (the homeserver's SSO redirect) in the browser and
+ * receives the login token that comes back. Works only right after the user
+ * submitted a sign-in step in the module's view.
+ */
+export async function ssoSignIn(bridge: EngineBridge, url: string): Promise<string> {
+  const answer = (await bridge.request({ type: "ssoSignIn", url })) as { loginToken?: unknown };
+  if (typeof answer?.loginToken !== "string" || answer.loginToken === "") throw new Error("Single sign-on brought no login token");
+  return answer.loginToken;
+}
+
 /** The files a module may send: those the user picks, and those the shell hands it (sendFile actions). */
 export interface EngineFiles {
   pick(): Promise<FileSource[]>;

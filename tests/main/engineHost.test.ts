@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("electron", () => import("../mocks/electron"));
 
 import * as electron from "../mocks/electron";
-import { EngineAdapter, EngineHub, engineStoragePartition, ATTACH_WINDOW_MS, MAX_CRASHES, MAX_FILE_HANDLES, restartDelay, serveEngine, type EngineSpec } from "../../src/main/engineHost";
+import { EngineAdapter, EngineHub, engineStoragePartition, ATTACH_WINDOW_MS, MAX_CRASHES, MAX_FILE_HANDLES, restartDelay, serveEngine, SIGN_IN_WINDOW_MS, type EngineSpec } from "../../src/main/engineHost";
 import { readRange } from "../../src/main/files";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
 import { NATIVE_IPC } from "../../src/shared/native";
@@ -330,6 +330,47 @@ describe("EngineHub", () => {
     expect(await cancelled("https://elsewhere.example/")).toBe(true);
     expect(await cancelled("https://192.168.1.1/")).toBe(true);
     expect(await cancelled("http://api.demo.example/")).toBe(true);
+  });
+
+  it("starts single sign-on only right after a sign-in step in the module's view, to an SSO address on its hosts, and hands that engine the token", async () => {
+    const { ask, view } = setup({ hosts: ["hs.demo.example"] });
+    const submit = () => ipcMain.emit(NATIVE_IPC.action, { sender: view.webContents }, { type: "prompt", id: "sso", values: {} });
+    const url = "https://hs.demo.example/_matrix/client/v3/login/sso/redirect";
+    const opened: string[] = [];
+    electron.shell.openExternal.mockImplementation(async (address: string) => void opened.push(address));
+    /** The browser coming back from the homeserver with a token. */
+    const comeBack = async (token: string) => {
+      await vi.waitFor(() => expect(opened.length).toBeGreaterThan(0));
+      const back = new URL(new URL(opened.shift()!).searchParams.get("redirectUrl")!);
+      back.searchParams.set("loginToken", token);
+      await fetch(back.href);
+    };
+    await expect(ask({ type: "ssoSignIn", url })).rejects.toThrow("only when the user signs in");
+    submit();
+    const signedIn = ask({ type: "ssoSignIn", url });
+    await comeBack("syl_ok");
+    expect(await signedIn).toEqual({ loginToken: "syl_ok" });
+    // Once per sign-in step, and only to an SSO address on the engine's hosts.
+    await expect(ask({ type: "ssoSignIn", url })).rejects.toThrow("only when the user signs in");
+    submit();
+    await expect(ask({ type: "ssoSignIn", url: "https://other.example/_matrix/client/v3/login/sso/redirect" })).rejects.toThrow("not one of this module's hosts");
+    submit();
+    await expect(ask({ type: "ssoSignIn", url: "https://hs.demo.example/elsewhere" })).rejects.toThrow("no single sign-on address");
+    // A new sign-on cancels the one still waiting.
+    submit();
+    const first = ask({ type: "ssoSignIn", url });
+    await vi.waitFor(() => expect(opened).toHaveLength(1));
+    opened.shift();
+    submit();
+    const second = ask({ type: "ssoSignIn", url });
+    await expect(first).rejects.toThrow("cancelled");
+    await comeBack("syl_second");
+    expect(await second).toEqual({ loginToken: "syl_second" });
+    // A sign-in step long ago does not count.
+    vi.useFakeTimers();
+    submit();
+    vi.advanceTimersByTime(SIGN_IN_WINDOW_MS + 1);
+    await expect(ask({ type: "ssoSignIn", url })).rejects.toThrow("only when the user signs in");
   });
 
   it("lets the engine read only files the user picked for it", async () => {

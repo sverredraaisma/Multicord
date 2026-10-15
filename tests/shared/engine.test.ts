@@ -235,6 +235,14 @@ describe("isEngineRequest", () => {
   });
 });
 
+describe("single sign-on requests", () => {
+  it("carries an address, which the shell checks further", async () => {
+    const { isEngineRequest } = await import("../../src/shared/engine");
+    expect(isEngineRequest({ type: "ssoSignIn", url: "https://hs.x.org/_matrix/client/v3/login/sso/redirect" })).toBe(true);
+    for (const url of ["", 5, "x".repeat(2049)]) expect(isEngineRequest({ type: "ssoSignIn", url })).toBe(false);
+  });
+});
+
 describe("host lock requests", () => {
   it("accepts a short list of lowercase host patterns", async () => {
     const { isEngineRequest, MAX_LOCKED_HOSTS } = await import("../../src/shared/engine");
