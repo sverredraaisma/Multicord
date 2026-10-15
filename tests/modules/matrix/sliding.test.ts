@@ -7,6 +7,7 @@ import {
   EXTENSION_LIMIT,
   FIRST_WINDOW,
   FULL_WINDOW,
+  INVITE_WINDOW,
   parseSlidingSync,
   parseSlidingToken,
   SLIDING_SYNC_PATH,
@@ -60,7 +61,9 @@ describe("sliding sync requests", () => {
   it("ask a new connection for the first rooms of DMs and other rooms, without invites, and for the device's keys", () => {
     const body = slidingRequest({}, { encryption: true, sticky: true }) as Record<string, any>;
     expect(body.conn_id).toBe(CONNECTION_ID);
-    expect(Object.keys(body.lists)).toEqual(["dms", "rooms"]);
+    expect(Object.keys(body.lists)).toEqual(["dms", "rooms", "invites"]);
+    // Invitations in a list of their own, with nothing but their stripped state and our membership.
+    expect(body.lists.invites).toEqual({ ranges: [[0, INVITE_WINDOW - 1]], timeline_limit: 0, required_state: [["m.room.member", "$ME"]], filters: { is_invite: true } });
     const { dms, rooms } = body.lists;
     expect(dms.ranges).toEqual([[0, FIRST_WINDOW - 1]]);
     expect(dms.timeline_limit).toBe(SLIDING_TIMELINE_LIMIT);
@@ -159,7 +162,7 @@ describe("sliding sync responses", () => {
     expect(dm!.unread).toBeUndefined();
     expect(sync.countUnread).toBe(true);
     expect(space!.state.space).toBe(true);
-    expect(space!.state.children!.get("!child:x.org")).toEqual({ suggested: false, ts: 5 });
+    expect(space!.state.children!.get("!child:x.org")).toEqual({ suggested: false, ts: 5, via: ["x.org"] });
     expect(space!.calls!.get("_@bo:x.org_DEV")).toBeNull();
     // A new connection sends every room in full.
     expect(space).toMatchObject({ initial: true, limited: true });
@@ -189,6 +192,16 @@ describe("sliding sync responses", () => {
     expect(c).toMatchObject({ limited: false });
     expect(c!.initial).toBeUndefined();
     expect([...known]).toEqual(["!a:x.org", "!b:x.org", "!c:x.org"]);
+  });
+
+  it("read invitations from their stripped state, all of them on a new connection", () => {
+    const invite = { type: "m.room.member", state_key: ME, sender: BO, content: { membership: "invite", is_direct: true } };
+    const fresh = parseSlidingSync({ pos: "p1", rooms: { "!inv:x.org": { invite_state: [invite, { type: "m.room.name", state_key: "", content: { name: "Plans" } }] } } }, {}, context());
+    expect(fresh.invited).toEqual([{ roomId: "!inv:x.org", name: "Plans", inviter: BO, direct: true, space: false }]);
+    expect(fresh.invitesFull).toBe(true);
+    const later = parseSlidingSync({ pos: "p2", rooms: {} }, { pos: "p1" }, context());
+    expect(later).not.toHaveProperty("invited");
+    expect(later).not.toHaveProperty("invitesFull");
   });
 
   it("take rooms we left or were banned from as left, and skip invites and knocks", () => {

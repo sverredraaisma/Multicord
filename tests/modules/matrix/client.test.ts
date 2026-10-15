@@ -142,7 +142,11 @@ describe("signing in", () => {
 describe("syncing and history", () => {
   it("syncs with the filter, timeout and token, without changing presence", async () => {
     const { client, fetchFn } = fakeFetch(() => json({ next_batch: "s2" }));
-    expect(await client.sync(SESSION, undefined, 0)).toMatchObject({ nextBatch: "s2", joined: [], left: [] });
+    // Without a token, the sync lists every invitation there is; with one, only new ones.
+    expect(await client.sync(SESSION, undefined, 0)).toMatchObject({ nextBatch: "s2", joined: [], left: [], invitesFull: true });
+    expect(await client.sync(SESSION, "s1", 0)).not.toHaveProperty("invitesFull");
+    fetchFn.mockClear();
+    await client.sync(SESSION, undefined, 0);
     let { url } = callOf(fetchFn);
     expect(url.pathname).toBe("/_matrix/client/v3/sync");
     expect(url.searchParams.get("filter")).toBe(SYNC_FILTER);

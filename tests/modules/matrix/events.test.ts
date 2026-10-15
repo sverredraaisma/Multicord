@@ -46,6 +46,9 @@ import {
   MAX_EMOTES,
   parseEmotes,
   parsePoll,
+  parseHierarchy,
+  parseInvite,
+  MAX_HIERARCHY_ROOMS,
   MAX_POLL_ANSWERS,
   MAX_PACK_IMAGES,
   MAX_PACK_ROOMS,
@@ -344,14 +347,72 @@ describe("spaces", () => {
     applyState(state, st("m.space.child", { via: ["x.org"] }, "not-a-room"));
     applyState(state, st("m.space.child", { via: ["x.org"] }, ""));
     expect([...state.children!]).toEqual([
-      ["!a:x.org", { order: "a1", suggested: true, ts: 1_700_000_000_000 }],
-      ["!b:x.org", { suggested: false, ts: 1 }],
-      ["!c:x.org", { suggested: false, ts: 1 }],
-      ["!d:x.org", { suggested: false, ts: 0 }],
+      ["!a:x.org", { order: "a1", suggested: true, ts: 1_700_000_000_000, via: ["x.org"] }],
+      ["!b:x.org", { suggested: false, ts: 1, via: ["y.org"] }],
+      ["!c:x.org", { suggested: false, ts: 1, via: ["x.org"] }],
+      ["!d:x.org", { suggested: false, ts: 0, via: ["x.org"] }],
       ["!e:x.org", null],
       ["!f:x.org", null],
       ["!g:x.org", null],
     ]);
+  });
+
+  it("keeps the first few servers a child is joined through, those that are server names", () => {
+    const state = emptyState();
+    applyState(state, st("m.space.child", { via: ["a.org", "bad server", "b.org:8448", "c.org", "d.org"] }, "!a:x.org"));
+    applyState(state, st("m.space.child", { via: ["has space"] }, "!b:x.org"));
+    expect(state.children!.get("!a:x.org")!.via).toEqual(["a.org", "b.org:8448"]);
+    expect(state.children!.get("!b:x.org")).not.toHaveProperty("via");
+  });
+
+  it("reads a space's hierarchy: its rooms, with a name or alias where they have one", () => {
+    expect(
+      parseHierarchy({
+        rooms: [
+          { room_id: "!sp:x.org", room_type: "m.space", name: "Space" },
+          { room_id: "!a:x.org", name: " Chat ", canonical_alias: "#chat:x.org" },
+          { room_id: "!b:x.org", canonical_alias: "#b:x.org" },
+          { room_id: "!c:x.org" },
+          { room_id: "bad" },
+          "junk",
+        ],
+      }),
+    ).toEqual([
+      { roomId: "!sp:x.org", space: true, name: "Space" },
+      { roomId: "!a:x.org", space: false, name: "Chat" },
+      { roomId: "!b:x.org", space: false, name: "#b:x.org" },
+      { roomId: "!c:x.org", space: false },
+    ]);
+    expect(parseHierarchy(undefined)).toEqual([]);
+    expect(parseHierarchy({ rooms: Array.from({ length: MAX_HIERARCHY_ROOMS + 5 }, (_, i) => ({ room_id: `!r${i}:x.org` })) })).toHaveLength(MAX_HIERARCHY_ROOMS);
+  });
+
+  it("reads invitations: the room's name, whether it is a space, and who invited, from the user's own invite", () => {
+    const ME = "@me:x.org";
+    const mine = (sender: string, content: Record<string, unknown>) => ({ type: "m.room.member", state_key: ME, sender, content });
+    const events = [
+      st("m.room.canonical_alias", { alias: "#plans:x.org" }),
+      st("m.room.create", { type: "m.space" }),
+      { ...st("m.room.member", { membership: "join", displayname: "Bo" }, "@bo:x.org") },
+      { type: "m.room.member", state_key: "@cy:x.org", sender: "@cy:x.org", content: { membership: "invite" } },
+      mine("@bo:x.org", { membership: "invite", is_direct: true }),
+      { type: "m.room.member", state_key: ME, sender: "@bo:x.org", content: "junk" },
+    ];
+    expect(parseInvite("!r:x.org", events, ME)).toEqual({ roomId: "!r:x.org", name: "#plans:x.org", inviter: "@bo:x.org", inviterName: "Bo", direct: true, space: true });
+    // Without the user, any invite counts; a name comes before the alias.
+    expect(parseInvite("!r:x.org", [st("m.room.name", { name: "Plans" }), st("m.room.canonical_alias", { alias: "#p:x.org" }), mine("bad", { membership: "invite" })])).toEqual({ roomId: "!r:x.org", name: "Plans", direct: false, space: false });
+    expect(parseInvite("!r:x.org", "junk", ME)).toEqual({ roomId: "!r:x.org", direct: false, space: false });
+    expect(parseInvite("!r:x.org", [{ type: "m.room.member", state_key: ME, sender: "@cy:x.org", content: { membership: "invite" } }], ME)).toEqual({ roomId: "!r:x.org", inviter: "@cy:x.org", direct: false, space: false });
+  });
+
+  it("reads a sync's invitations", () => {
+    const invite = { type: "m.room.member", state_key: "@me:x.org", sender: "@bo:x.org", content: { membership: "invite" } };
+    const sync = parseSync({ next_batch: "s", rooms: { invite: { "!i:x.org": { invite_state: { events: [invite] } }, "!j:x.org": {}, "bad": {}, "!k:x.org": "x" } } }, "@me:x.org");
+    expect(sync.invited).toEqual([
+      { roomId: "!i:x.org", inviter: "@bo:x.org", direct: false, space: false },
+      { roomId: "!j:x.org", direct: false, space: false },
+    ]);
+    expect(parseSync({ next_batch: "s" })).not.toHaveProperty("invited");
   });
 
   it("keeps at most MAX_SPACE_CHILDREN children, but still takes changes to those it has", () => {

@@ -51,12 +51,14 @@ import {
   type MxRtcTransport,
   type MxSession,
   type MxSpaceChild,
+  type MxSpaceRoom,
+  type MxInvite,
   type MxSync,
 } from "./api";
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseEmotes, parseEvent, parseFormatting, parseJoinedMembers, parseMxc, parsePowerLevels, parsePresence, parseProfile, POLL_TYPES, reactionKey, serviceUrl, userId, type MxProfile } from "./events";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseDirects, parseEmotes, parseEvent, parseFormatting, parseHierarchy, parseJoinedMembers, parseMxc, parsePowerLevels, parsePresence, parseProfile, POLL_TYPES, MAX_VIA, reactionKey, roomId as checkRoomId, serverName, serviceUrl, userId, type MxProfile } from "./events";
 import { AttachmentError, decryptAttachment, encryptAttachment, imageSize } from "./media";
 import { markdownHtml, richMarkdown } from "./format";
 import { emoticonHtml, emoticonMarkdown, escapeHtml, HTML_FORMAT, packImageId, stickerFormat, textMentions } from "./packs";
@@ -388,6 +390,30 @@ export function messageText(content: MxContent): string {
   return [text, content.media].filter(Boolean).join("\n");
 }
 
+const ALIAS = /^#[^\s:]{1,255}:[A-Za-z0-9.:[\]-]{1,255}$/;
+/** A room id: "!" and an opaque part, with the server it was made on in room versions before 12. */
+const ROOM_ID = /^![A-Za-z0-9._~=+-]{1,255}(?::[A-Za-z0-9.:[\]-]{1,255})?$/;
+
+/**
+ * What a typed room address joins: a room alias (#room:server), a room id
+ * (!id or !id:server), or a matrix.to link to either, with the servers the
+ * link names to join through (via); undefined for anything else.
+ */
+export function roomAddress(text: string): { target: string; via: string[] } | undefined {
+  let target = text;
+  let via: string[] = [];
+  const link = /^https:\/\/matrix\.to\/#\/([^/?]+)[^?]*(?:\?(.*))?$/.exec(text);
+  if (link) {
+    try {
+      target = decodeURIComponent(link[1]!);
+    } catch {
+      return undefined;
+    }
+    via = new URLSearchParams(link[2] ?? "").getAll("via").filter(serverName).slice(0, MAX_VIA);
+  }
+  return target.length <= 255 && (ALIAS.test(target) || ROOM_ID.test(target)) ? { target, via } : undefined;
+}
+
 /** A text message we sent, as shown: its text, and the custom emoji its formatted_body carries. */
 function sentContent(msgtype: string, text: string, content: Record<string, unknown>): MxContent {
   const shown: MxContent = { msgtype, text };
@@ -550,6 +576,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private slidingSync: boolean;
   /** The hosts the engine locked itself to (and so its view); undefined while it is not locked. */
   private lockedHosts: string[] | undefined;
+  /** Invitations not answered yet, by room id. */
+  private readonly invites = new Map<string, MxInvite>();
+  /** A room just joined from here, opened once a sync brings it. */
+  private opening: string | undefined;
+  /** The rooms each opened space lists, from its hierarchy (fetched once per session); undefined while it is fetched. */
+  private readonly hierarchies = new Map<string, MxSpaceRoom[] | undefined>();
   /** The open room's pinned messages, while its pins panel is open. */
   private pins: { roomId: string; list: NativeMessageList } | undefined;
   /** The open room's search results, until the search ends; and a count that drops answers to earlier searches. */
@@ -782,9 +814,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return this.directs();
   }
 
-  /** The rooms at home: DM bubbles and spaces carry their own badges. */
+  /** The rooms at home (DM bubbles and spaces carry their own badges), and each invitation waiting there. */
   homeBadge(): HomeBadge {
-    return badge(this.audible(this.homeRooms(this.spaceLayout())));
+    const rooms = badge(this.audible(this.homeRooms(this.spaceLayout())));
+    return this.invites.size ? { unread: true, mentions: rooms.mentions + this.invites.size } : rooms;
   }
 
   /** Home: DMs and the rooms in no space, with the room last open there. */
@@ -798,6 +831,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const sections = this.spaceLayout().servers.get(key);
     if (!sections) throw new Error(`Matrix has no server ${key}`);
     this.openSpace = key;
+    void this.loadHierarchy(key);
     await this.reselect(
       sections.flatMap((s) => s.rooms),
       key,
@@ -807,6 +841,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   async openConversation(key: string): Promise<void> {
     if (key === REQUEST_ENTRY) return this.select(this.local(REQUEST_ENTRY));
+    // An invitation's notification: it waits at home.
+    if (this.invites.has(key)) return this.openHome();
     const room = this.rooms.get(key);
     if (!room) return;
     // The room opens where it is listed: in the open space if that lists it, else in its first space, else at home.
@@ -878,6 +914,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.memberList = undefined;
     this.profile = undefined;
     this.pinnedEvents.clear();
+    this.invites.clear();
+    this.hierarchies.clear();
+    this.opening = undefined;
     this.directsChanged.emit([]);
     this.publishServers();
   }
@@ -993,6 +1032,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.pin(action.messageId, action.pin);
       case "vote":
         return this.vote(action.messageId, action.options);
+      case "join":
+        return this.join(action.channelId);
+      case "decline":
+        return this.decline(action.channelId);
+      case "joinAddress":
+        return this.joinAddress(action.address);
       case "members":
         return this.setMembersOpen(action.open);
       case "profile":
@@ -1691,7 +1736,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (sync.userPack) this.userPack = sync.userPack;
     if (sync.packRooms) this.packRooms = sync.packRooms;
     if (sync.mutedRooms) this.mutedRooms = new Set(sync.mutedRooms);
+    const invitedBefore = new Set(this.invites.keys());
+    if (sync.invitesFull) this.invites.clear();
+    for (const invite of sync.invited ?? []) this.invites.set(invite.roomId, invite);
     for (const id of sync.left) {
+      this.invites.delete(id);
       this.rooms.delete(id);
       if (this.selected === id) this.selected = undefined;
       // Gone as a space whose last room is remembered, and as a remembered room.
@@ -1742,7 +1791,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       }
       for (const event of update.timeline) if (event.kind !== "rtc") this.addEvent(room, event, live);
       if (sync.countUnread) this.countUnread(room);
+      // Joined, here or elsewhere: no longer an invitation.
+      this.invites.delete(room.id);
     }
+    if (!initial) for (const invite of this.invites.values()) if (!invitedBefore.has(invite.roomId)) this.notifyInvite(invite);
+    const joined = this.opening ? this.rooms.get(this.opening) : undefined;
     // Recovery and verification are screens of their own; syncs carry on behind them.
     if (this.step !== "recovery" && !isVerifyStep(this.step)) this.step = "chat";
     this.status = undefined;
@@ -1754,6 +1807,117 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (callChanged && call?.grant) void call.keys?.update(this.participants(this.rooms.get(call.roomId)!));
     this.publish();
     void this.loadAvatars();
+    // A room joined from here opens once it has arrived.
+    if (joined) {
+      this.opening = undefined;
+      void this.openConversation(joined.id);
+    }
+  }
+
+  /** An invitation that came in: a notification, as Element gives one. */
+  private notifyInvite(invite: MxInvite): void {
+    const who = invite.inviterName ?? invite.inviter ?? "Someone";
+    const what = invite.direct ? "a direct chat" : invite.name ? `${invite.space ? "the space" : ""} ${invite.name}`.trim() : invite.space ? "a space" : "a room";
+    this.notifications.emit({
+      title: "Invitation",
+      body: `${who} invited you to ${what}`.slice(0, 200),
+      target: invite.roomId,
+      railKey: "home",
+      inView: false,
+    });
+  }
+
+  /** An invitation's sidebar row: the room's name (for a direct chat without one, who sent it), and who invited. Its picture is not fetched. */
+  private inviteItem(invite: MxInvite): NativeSidebarItem {
+    const from = invite.inviterName ?? invite.inviter;
+    const name = invite.name ?? (invite.direct ? from : undefined) ?? "Unnamed room";
+    return { id: this.local(invite.roomId), name: invite.space ? `${name} (space)` : name, kind: invite.direct ? "dm" : "text", unread: true, mentions: 0, active: false, invite: from ? { from } : {} };
+  }
+
+  /** Fetches once per session which rooms a space lists (its hierarchy, one level down), so those not joined can be joined from it. */
+  private async loadHierarchy(spaceId: string): Promise<void> {
+    if (this.hierarchies.has(spaceId)) return;
+    this.hierarchies.set(spaceId, undefined);
+    const generation = this.generation;
+    const raw = await this.deps.api.request(this.session!, "GET", `/v1/rooms/${encodeURIComponent(spaceId)}/hierarchy`, undefined, { max_depth: "1", limit: "50" }).catch(() => undefined);
+    // Signed out meanwhile: it belongs to the previous account.
+    if (generation !== this.generation) return;
+    this.hierarchies.set(spaceId, parseHierarchy(raw));
+    this.render();
+  }
+
+  /** The servers to join a room through that a space lists (its hierarchy names it), or undefined when no space lists it. */
+  private listedVia(roomId: string): string[] | undefined {
+    if (![...this.hierarchies.values()].some((rooms) => rooms?.some((r) => r.roomId === roomId))) return undefined;
+    for (const space of this.rooms.values()) {
+      const via = space.children.get(roomId)?.via;
+      if (via) return via;
+    }
+    return [];
+  }
+
+  /** Accepts an invitation, or joins a room a space lists. */
+  private async join(local: string): Promise<void> {
+    const id = this.byLocal.get(local) ?? "";
+    if (this.rooms.has(id)) return;
+    const via = this.invites.has(id) ? [] : this.listedVia(id);
+    if (via) await this.joinRoom(id, via);
+  }
+
+  /**
+   * Joins a room by its id or alias (POST /join), through the servers given;
+   * the room opens once a sync brings it. An accepted invitation to a direct
+   * chat goes into m.direct, as Element does, so it shows as one.
+   */
+  private async joinRoom(target: string, via: string[]): Promise<void> {
+    const session = this.session!;
+    const invite = this.invites.get(target);
+    await this.attempt(`Could not join ${invite?.name ?? target}`, async () => {
+      const answer = await this.deps.api.request(session, "POST", `/v3/join/${encodeURIComponent(target)}`, {}, via.length ? { server_name: via[0]! } : undefined);
+      this.opening = checkRoomId(answer.room_id);
+      if (invite) {
+        this.invites.delete(target);
+        if (invite.direct && invite.inviter) await this.markDirect(session, invite.inviter, target).catch((error: unknown) => this.log(`Direct chat not listed: ${friendly(error)}`));
+      }
+      this.publish();
+    });
+    // A sync may have brought it already.
+    const joined = this.rooms.get(this.opening ?? "");
+    if (joined) {
+      this.opening = undefined;
+      await this.openConversation(joined.id);
+    }
+  }
+
+  /** Adds a room to the user's direct chats with someone (m.direct), keeping the rest as the homeserver has them. */
+  private async markDirect(session: MxSession, user: string, id: string): Promise<void> {
+    const directs = parseDirects(await this.deps.api.accountData(session, "m.direct"));
+    const rooms = directs[user] ?? [];
+    if (!rooms.includes(id)) await this.deps.api.request(session, "PUT", `/v3/user/${encodeURIComponent(session.userId)}/account_data/m.direct`, { ...directs, [user]: [...rooms, id] });
+    this.dmUsers.set(id, user);
+  }
+
+  /** Declines an invitation (POST /leave). */
+  private async decline(local: string): Promise<void> {
+    const invite = this.invites.get(this.byLocal.get(local) ?? "");
+    if (!invite) return;
+    await this.attempt("Could not decline the invitation", async () => {
+      await this.deps.api.request(this.session!, "POST", `/v3/rooms/${encodeURIComponent(invite.roomId)}/leave`, {});
+      this.invites.delete(invite.roomId);
+      this.publish();
+    });
+  }
+
+  /** Joins a room by the address typed (an alias, a room id or a matrix.to link); a room already joined opens. */
+  private async joinAddress(text: string): Promise<void> {
+    const address = roomAddress(text);
+    if (!address) {
+      this.error = `"${text.slice(0, 100)}" is not a room address. Use #room:server, !id:server or a matrix.to link.`;
+      return this.render();
+    }
+    const known = [...this.rooms.values()].find((r) => r.id === address.target || r.alias === address.target);
+    if (known) return this.openConversation(known.id);
+    await this.joinRoom(address.target, address.via);
   }
 
   private removeEvent(room: Room, id: string): void {
@@ -3411,9 +3575,14 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         const heading = space.id === this.openSpace ? category("rooms", "Rooms") : category(`space:${space.local}`, this.title(space));
         sidebar.push(heading, ...rooms.map((r) => this.sidebarItem(r, false)));
       }
+      // Its rooms not joined yet, to join from here (subspaces are not offered).
+      const unjoined = (this.hierarchies.get(this.openSpace!) ?? []).filter((r) => !r.space && !this.rooms.has(r.roomId));
+      const joinable = unjoined.map((r): NativeSidebarItem => ({ id: this.local(r.roomId), name: r.name ?? "Unnamed room", kind: "text", unread: false, mentions: 0, active: false, joinable: true }));
+      if (joinable.length) sidebar.push(category("unjoined", "Not joined"), ...joinable);
     } else {
       const dms = this.dmRooms();
       const rooms = this.homeRooms(layout);
+      if (this.invites.size) sidebar.push(category("invites", "Invitations"), ...[...this.invites.values()].map((i) => this.inviteItem(i)));
       if (dms.length) sidebar.push(category("dms", "Direct messages"), ...dms.map((r) => this.sidebarItem(r, true)));
       if (rooms.length) sidebar.push(category("rooms", "Rooms"), ...rooms.map((r) => this.sidebarItem(r, false)));
     }
@@ -3431,6 +3600,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       platform,
       title: sections ? this.title(this.rooms.get(this.openSpace!)!) : userId.slice(userId.indexOf(":") + 1),
       me: userId,
+      joinAddress: `#room:${userId.slice(userId.indexOf(":") + 1)}`,
       sidebar,
       channel: room
         ? {

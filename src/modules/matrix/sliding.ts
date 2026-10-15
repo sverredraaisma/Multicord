@@ -9,8 +9,8 @@
 // to-device messages are acknowledged (and deleted by the server) only after
 // the crypto library has them, as with classic sync's next_batch.
 
-import type { MxRoomUpdate, MxSync } from "./api";
-import { CALL_MEMBER_TYPE, eventId, isRecord, MAX_EVENTS, MAX_ROOMS, MAX_TOKEN, globalAccountData, parseCryptoSync, parseDirects, parseRoom, ROOM_PACK_TYPE, roomId } from "./events";
+import type { MxInvite, MxRoomUpdate, MxSync } from "./api";
+import { CALL_MEMBER_TYPE, eventId, isRecord, MAX_EVENTS, MAX_ROOMS, MAX_TOKEN, globalAccountData, parseCryptoSync, parseDirects, parseInvite, parseRoom, ROOM_PACK_TYPE, roomId } from "./events";
 
 /** What /versions lists (unstable_features) when the homeserver has simplified sliding sync. */
 export const SLIDING_SYNC_FEATURE = "org.matrix.simplified_msc3575";
@@ -93,11 +93,14 @@ export interface SlidingRequestOptions {
   sticky: boolean;
 }
 
+/** Invitations a connection lists: their stripped state only, which names the room and who invited. */
+export const INVITE_WINDOW = 100;
+
 /**
  * The request body. Two lists, DMs and other rooms, newest first, without
- * invites (which Multicord does not show). A new connection asks for the
- * first rooms of each, then for all; sticky events from then on, when every
- * room they can be for has been sent.
+ * invites, and a third of invitations. A new connection asks for the first
+ * rooms of each, then for all; sticky events from then on, when every room
+ * they can be for has been sent.
  */
 export function slidingRequest(position: SlidingPosition, options: SlidingRequestOptions): Record<string, unknown> {
   const end = (position.pos ? FULL_WINDOW : FIRST_WINDOW) - 1;
@@ -115,7 +118,8 @@ export function slidingRequest(position: SlidingPosition, options: SlidingReques
     extensions.to_device = { enabled: true, limit: EXTENSION_LIMIT, ...(position.toDevice ? { since: position.toDevice } : {}) };
   }
   if (options.sticky && position.pos) extensions[STICKY_EXTENSION] = { enabled: true, limit: EXTENSION_LIMIT, ...(position.sticky ? { since: position.sticky } : {}) };
-  return { conn_id: CONNECTION_ID, lists: { dms: list(true), rooms: list(false) }, extensions };
+  const invites = { ranges: [[0, INVITE_WINDOW - 1]], timeline_limit: 0, required_state: [["m.room.member", "$ME"]], filters: { is_invite: true } };
+  return { conn_id: CONNECTION_ID, lists: { dms: list(true), rooms: list(false), invites }, extensions };
 }
 
 export interface SlidingContext {
@@ -169,9 +173,10 @@ function byRoom(extension: unknown): Map<string, unknown> {
 /**
  * A sliding sync response as an MxSync, whose token continues after it.
  * `position` is what the request was sent with. Rooms we left come as
- * `left`; invites and knocks are skipped. Rooms are `initial` when the
- * connection sends them in full (all of them, on a new connection), with
- * `limited` set, as what they bring may not join up with what was known.
+ * `left`, invitations as `invited`; knocks are skipped. Rooms are
+ * `initial` when the connection sends them in full (all of them, on a new
+ * connection), with `limited` set, as what they bring may not join up with
+ * what was known.
  */
 export function parseSlidingSync(raw: unknown, position: SlidingPosition, context: SlidingContext): MxSync {
   if (!isRecord(raw) || !token(raw.pos)) throw new Error("The homeserver sent an unreadable sync response");
@@ -194,8 +199,13 @@ export function parseSlidingSync(raw: unknown, position: SlidingPosition, contex
   const seen = new Set<string>();
 
   const rooms = isRecord(raw.rooms) ? raw.rooms : {};
+  const invited: MxInvite[] = [];
   for (const [id, room] of Object.entries(rooms).slice(0, MAX_ROOMS)) {
-    if (!roomId(id) || !isRecord(room) || room.invite_state !== undefined || room.knock_state !== undefined) continue;
+    if (!roomId(id) || !isRecord(room) || room.knock_state !== undefined) continue;
+    if (room.invite_state !== undefined) {
+      invited.push(parseInvite(id, room.invite_state, context.userId));
+      continue;
+    }
     const required = events(room.required_state);
     const timeline = events(room.timeline);
     // The required state is the room's state now; the timeline says what changed on the way.
@@ -218,6 +228,9 @@ export function parseSlidingSync(raw: unknown, position: SlidingPosition, contex
     sync.joined.push(joined);
     context.known.add(id);
   }
+  if (invited.length) sync.invited = invited;
+  // A new connection lists every invitation there is: any other is gone.
+  if (fresh) sync.invitesFull = true;
   // Typing, receipts and sticky events for rooms the response did not otherwise carry, if they were sent before.
   for (const id of new Set([...typing.keys(), ...receipts.keys(), ...sticky.keys()])) {
     if (!seen.has(id) && context.known.has(id)) sync.joined.push(update(id, {}));

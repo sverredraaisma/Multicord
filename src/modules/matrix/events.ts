@@ -24,6 +24,8 @@ import type {
   MxRoomUpdate,
   MxRtcTransport,
   MxSpaceChild,
+  MxSpaceRoom,
+  MxInvite,
   MxSync,
 } from "./api";
 import { parseHtml } from "./format";
@@ -406,7 +408,59 @@ export function spaceChild(content: Record<string, unknown>, ts: unknown): MxSpa
   if (!Array.isArray(via) || !via.some((server) => typeof server === "string" && server !== "")) return null;
   const child: MxSpaceChild = { suggested: content.suggested === true, ts: typeof ts === "number" && Number.isSafeInteger(ts) && ts >= 0 ? ts : 0 };
   if (typeof content.order === "string" && SPACE_ORDER.test(content.order)) child.order = content.order;
+  const servers = list(via, MAX_VIA).filter(serverName);
+  if (servers.length) child.via = servers;
   return child;
+}
+
+/** Servers kept to join a room through. */
+export const MAX_VIA = 3;
+/** A server name as Matrix writes them (a host, perhaps with a port). */
+export const serverName = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9.:[\]-]{1,255}$/.test(value);
+
+/**
+ * An invitation from its stripped state (invite_state): the room's name (or
+ * alias), whether it is a space, and who invited the user, by the invite
+ * membership event of `me` (any invite membership without it).
+ */
+export function parseInvite(id: string, events: unknown, me?: string): MxInvite {
+  const invite: MxInvite = { roomId: id, direct: false, space: false };
+  const state = emptyState();
+  let inviter: string | undefined;
+  for (const event of list(events, MAX_EVENTS)) {
+    applyState(state, event);
+    if (!isRecord(event) || event.type !== "m.room.member" || (me !== undefined && event.state_key !== me)) continue;
+    const content = isRecord(event.content) ? event.content : {};
+    if (content.membership !== "invite") continue;
+    inviter = userId(event.sender);
+    invite.direct = content.is_direct === true;
+  }
+  const name = state.name || state.alias;
+  if (name) invite.name = name;
+  if (state.space) invite.space = true;
+  if (inviter) {
+    invite.inviter = inviter;
+    const named = state.members[inviter]?.name;
+    if (named) invite.inviterName = named;
+  }
+  return invite;
+}
+
+/** Rooms read from a space's hierarchy. */
+export const MAX_HIERARCHY_ROOMS = 100;
+
+/** A /hierarchy response: the rooms it describes, with a name (else alias) where they have one. */
+export function parseHierarchy(raw: unknown): MxSpaceRoom[] {
+  const rooms = isRecord(raw) ? raw.rooms : undefined;
+  return list(rooms, MAX_HIERARCHY_ROOMS).flatMap((room) => {
+    const id = isRecord(room) ? roomId(room.room_id) : undefined;
+    if (!id) return [];
+    const info = room as Record<string, unknown>;
+    const found: MxSpaceRoom = { roomId: id, space: info.room_type === "m.space" };
+    const name = cleanName(info.name) ?? cleanName(info.canonical_alias);
+    if (name) found.name = name;
+    return [found];
+  });
 }
 
 /**
@@ -854,7 +908,8 @@ export function parseDirects(content: unknown): Record<string, string[]> {
   return directs;
 }
 
-export function parseSync(raw: unknown): MxSync {
+/** A classic sync; `me` (the user) finds who sent each invitation. */
+export function parseSync(raw: unknown, me?: string): MxSync {
   if (!isRecord(raw) || typeof raw.next_batch !== "string" || raw.next_batch === "" || raw.next_batch.length > MAX_TOKEN) {
     throw new Error("The homeserver sent an unreadable sync response");
   }
@@ -870,6 +925,11 @@ export function parseSync(raw: unknown): MxSync {
   }
   const leave = isRecord(rooms.leave) ? rooms.leave : {};
   sync.left = Object.keys(leave).slice(0, MAX_ROOMS).filter((id) => roomId(id));
+  const invite = isRecord(rooms.invite) ? rooms.invite : {};
+  const invited = Object.entries(invite)
+    .slice(0, MAX_ROOMS)
+    .flatMap(([id, room]) => (roomId(id) && isRecord(room) ? [parseInvite(id, isRecord(room.invite_state) ? room.invite_state.events : undefined, me)] : []));
+  if (invited.length) sync.invited = invited;
   sync.crypto = parseCryptoSync(raw);
   return sync;
 }

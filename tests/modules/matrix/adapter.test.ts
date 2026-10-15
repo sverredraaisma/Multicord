@@ -20,6 +20,7 @@ import {
   type MxPackImage,
   type MxPage,
   type MxPoll,
+  type MxInvite,
   type MxRoomState,
   type MxRoomUpdate,
   type MxSession,
@@ -40,6 +41,7 @@ import {
   MatrixAdapter,
   type MatrixAdapterDeps,
   messageText,
+  roomAddress,
   MAX_MEDIA_BYTES,
   MAX_REACTIONS,
   MAX_POLL_EVENTS,
@@ -4283,6 +4285,51 @@ describe("spaces", () => {
     expect(ctx.names()).toEqual(["Rooms", "Alpha", "Beta"]);
   });
 
+  it("lists a space's rooms not joined, from its hierarchy fetched once, and joins them through the servers it names", async () => {
+    const ctx = await withSpaces();
+    await ctx.live(sync({ joined: [space(GUILD, "Guild", kids(["!gone:x.org", { via: ["y.org", "z.org"] }]))] }));
+    const hierarchy = { rooms: [{ room_id: GUILD, room_type: "m.space", name: "Guild" }, { room_id: "!a:x.org", name: "Alpha" }, { room_id: "!gone:x.org", name: "Gone" }, { room_id: "!far:x.org" }, { room_id: "!deep:x.org", room_type: "m.space" }] };
+    ctx.api.request.mockImplementation(async (_s, method, path) => (path.endsWith("/hierarchy") ? hierarchy : method === "POST" ? { room_id: path.includes("gone") ? "!gone:x.org" : "!far:x.org" } : {}));
+    await ctx.adapter.openServer(GUILD);
+    await flush();
+    expect(ctx.api.request).toHaveBeenCalledWith(SESSION, "GET", "/v1/rooms/!guild%3Ax.org/hierarchy", undefined, { max_depth: "1", limit: "50" });
+    expect(ctx.names()).toEqual(["Rooms", "Alpha", "Beta", "Sub", "Gamma", "Not joined", "Gone", "Unnamed room"]);
+    expect(ctx.item("Gone")).toMatchObject({ kind: "text", joinable: true, unread: false });
+    await ctx.act({ type: "join", channelId: ctx.item("Gone").id });
+    expect(ctx.api.request).toHaveBeenLastCalledWith(SESSION, "POST", "/v3/join/!gone%3Ax.org", {}, { server_name: "y.org" });
+    await ctx.act({ type: "join", channelId: ctx.item("Unnamed room").id });
+    expect(ctx.api.request).toHaveBeenLastCalledWith(SESSION, "POST", "/v3/join/!far%3Ax.org", {}, undefined);
+    // Joined: it moves to the space's rooms, and the last room joined opens once the sync brings it.
+    await ctx.live(sync({ joined: [named("!gone:x.org", "Gone")] }));
+    expect(ctx.names()).toEqual(["Rooms", "Alpha", "Beta", "Gone", "Sub", "Gamma", "Not joined", "Unnamed room"]);
+    await ctx.live(sync({ joined: [named("!far:x.org", "Far")] }));
+    expect(ctx.chat().channel?.name).toBe("Far");
+    expect(ctx.names()).not.toContain("Not joined");
+    await ctx.adapter.openServer(GUILD);
+    expect(ctx.api.request.mock.calls.filter(([, , path]) => path.endsWith("/hierarchy"))).toHaveLength(1);
+    // A room no space lists, or one joined, is not joined from here.
+    const calls = ctx.api.request.mock.calls.length;
+    await ctx.act({ type: "join", channelId: ctx.item("Alpha").id });
+    await ctx.act({ type: "join", channelId: "99999" });
+    expect(ctx.api.request).toHaveBeenCalledTimes(calls);
+  });
+
+  it("drops a hierarchy that arrives after signing out, and shows nothing for one that could not be fetched", async () => {
+    const ctx = await withSpaces();
+    let answer: (value: Record<string, unknown>) => void = () => {};
+    ctx.api.request.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    await ctx.adapter.openServer(GUILD);
+    await ctx.adapter.signOut();
+    answer({ rooms: [{ room_id: "!gone:x.org", name: "Gone" }] });
+    await flush();
+    expect(ctx.last().screen).not.toBe("chat");
+    const again = await withSpaces();
+    again.api.request.mockRejectedValueOnce(new Error("offline"));
+    await again.adapter.openServer(GUILD);
+    await flush();
+    expect(again.names()).not.toContain("Not joined");
+  });
+
   it("ignores children of rooms that are not spaces", async () => {
     const ctx = await withSpaces(sync({ joined: [room("!plain:x.org", { state: { name: "Plain", members: {}, children: kids(["!a:x.org"]) } }), named("!a:x.org", "Alpha")] }));
     expect(ctx.servers).toEqual([]);
@@ -4887,6 +4934,143 @@ describe("polls", () => {
     const votes = Array.from({ length: MAX_POLL_EVENTS + 1 }, (_, i) => vote(`m${i}`, `@u${i}:x.org`, 300 + i, "$h2", ["p"]));
     await ctx.live(sync({ joined: [room("!hist:x.org", { limited: true, prevBatch: "p-2", timeline: [poll("h2", ANA, 200), ...votes] })] }));
     expect(ctx.messages().map((m) => m.poll?.total)).toEqual([MAX_POLL_EVENTS]);
+  });
+});
+
+describe("invitations and joining", () => {
+  const PLANS: MxInvite = { roomId: "!plans:x.org", name: "Plans", inviter: ANA, inviterName: "Ana", direct: false, space: false };
+  const DM: MxInvite = { roomId: "!chat:x.org", inviter: BO, direct: true, space: false };
+
+  it("lists invitations at home with who sent them, badges home, and notifies new ones", async () => {
+    const ctx = await signedIn({ ...initialSync(), invited: [PLANS], invitesFull: true });
+    expect(ctx.notifications).toEqual([]);
+    expect(ctx.chat().sidebar.slice(0, 2)).toEqual([
+      { id: "invites", name: "Invitations", kind: "category", unread: false, mentions: 0, active: false },
+      { id: expect.any(String), name: "Plans", kind: "text", unread: true, mentions: 0, active: false, invite: { from: "Ana" } },
+    ]);
+    expect(ctx.adapter.homeBadge()).toEqual({ unread: true, mentions: 2 });
+    const more: MxInvite[] = [
+      DM,
+      { roomId: "!club:x.org", name: "Club", inviter: ANA, inviterName: "Ana", direct: false, space: true },
+      { roomId: "!books:x.org", name: "Books", inviter: ANA, direct: false, space: false },
+      { roomId: "!anon:x.org", direct: false, space: false },
+      { roomId: "!sp:x.org", direct: false, space: true },
+    ];
+    await ctx.live(sync({ invited: more }));
+    expect(ctx.notifications.map((n) => [n.title, n.body, n.target, n.railKey, n.inView])).toEqual([
+      ["Invitation", `${BO} invited you to a direct chat`, "!chat:x.org", "home", false],
+      ["Invitation", "Ana invited you to the space Club", "!club:x.org", "home", false],
+      ["Invitation", `${ANA} invited you to Books`, "!books:x.org", "home", false],
+      ["Invitation", "Someone invited you to a room", "!anon:x.org", "home", false],
+      ["Invitation", "Someone invited you to a space", "!sp:x.org", "home", false],
+    ]);
+    expect(ctx.chat().sidebar.filter((i) => i.invite).map((i) => [i.name, i.kind, i.invite])).toEqual([
+      ["Plans", "text", { from: "Ana" }],
+      [BO, "dm", { from: BO }],
+      ["Club (space)", "text", { from: "Ana" }],
+      ["Books", "text", { from: ANA }],
+      ["Unnamed room", "text", {}],
+      ["Unnamed room (space)", "text", {}],
+    ]);
+    // Seen again: no second notification. A full list replaces what was known.
+    await ctx.live(sync({ invited: [DM] }));
+    expect(ctx.notifications).toHaveLength(5);
+    await ctx.live(sync({ invited: [PLANS], invitesFull: true }));
+    expect(ctx.chat().sidebar.filter((i) => i.invite).map((i) => i.name)).toEqual(["Plans"]);
+    // Withdrawn (left), or joined elsewhere.
+    await ctx.live(sync({ invited: [DM], left: ["!plans:x.org"] }));
+    await ctx.live(sync({ joined: [room("!chat:x.org", { state: { name: "Chat", members: {} } })] }));
+    expect(ctx.chat().sidebar.some((i) => i.invite)).toBe(false);
+    expect(ctx.adapter.homeBadge().mentions).toBe(1);
+  });
+
+  it("opens home for an invitation's notification", async () => {
+    const ctx = await signedIn({ ...initialSync(), invited: [PLANS] });
+    await ctx.open("Lounge");
+    await ctx.adapter.openConversation("!plans:x.org");
+    expect(ctx.chat().channel?.name).toBe("Lounge");
+    expect(ctx.chat().sidebar.some((i) => i.invite)).toBe(true);
+  });
+
+  it("accepts invitations, lists accepted direct chats in m.direct, and opens the room once joined", async () => {
+    const ctx = await signedIn({ ...initialSync(), invited: [PLANS, DM] });
+    ctx.api.accountData.mockResolvedValue({ [ANA]: ["!old:x.org"], junk: 5 });
+    ctx.api.request.mockImplementation(async (_s, method, path) => (method === "POST" ? { room_id: decodeURIComponent(path.slice("/v3/join/".length)) } : {}));
+    const id = (name: string) => ctx.item(name).id;
+    await ctx.act({ type: "join", channelId: id(BO) });
+    expect(ctx.api.request).toHaveBeenCalledWith(SESSION, "POST", "/v3/join/!chat%3Ax.org", {}, undefined);
+    expect(ctx.api.accountData).toHaveBeenCalledWith(SESSION, "m.direct");
+    expect(ctx.api.request).toHaveBeenLastCalledWith(SESSION, "PUT", "/v3/user/%40me%3Ax.org/account_data/m.direct", { [ANA]: ["!old:x.org"], [BO]: ["!chat:x.org"] });
+    expect(ctx.chat().sidebar.map((i) => i.name)).not.toContain(BO);
+    await ctx.live(sync({ joined: [room("!chat:x.org", { state: { members: { [BO]: { name: "Bo B", membership: "join" } } }, timeline: [msg("c1", BO, "hi", 5000)] })] }));
+    expect(ctx.chat().channel?.name).toBe("Bo B");
+    expect(ctx.directs.at(-1)!.map((d) => d.key)).toContain("!chat:x.org");
+    // Listed already: m.direct stays as it is. A room that is no direct chat is not listed at all.
+    const puts = () => ctx.api.request.mock.calls.filter(([, method]) => method === "PUT").length;
+    await ctx.live(sync({ invited: [{ ...DM, roomId: "!again:x.org" }] }));
+    ctx.api.accountData.mockResolvedValue({ [BO]: ["!again:x.org"] });
+    await ctx.act({ type: "join", channelId: ctx.item(BO).id });
+    await ctx.act({ type: "join", channelId: id("Plans") });
+    expect(puts()).toBe(1);
+  });
+
+  it("joins even when m.direct cannot be updated, opens a room a sync brought first, and says when joining fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ctx = await signedIn({ ...initialSync(), invited: [DM, PLANS] });
+    ctx.api.accountData.mockRejectedValue(new Error("offline"));
+    ctx.api.request.mockImplementation(async (_s, method, path) => {
+      if (method !== "POST") return {};
+      if (path.includes("plans")) throw new MatrixError(403, "M_FORBIDDEN", "You are not invited");
+      // The sync with the joined room arrives before the answer.
+      ctx.api.push(sync({ joined: [room("!chat:x.org", { state: { name: "Chat", members: {} } })] }));
+      await flush();
+      return { room_id: "!chat:x.org" };
+    });
+    await ctx.act({ type: "join", channelId: ctx.item(BO).id });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("Direct chat not listed: offline"));
+    expect(ctx.chat().channel?.name).toBe("Chat");
+    await ctx.act({ type: "join", channelId: ctx.item("Plans").id });
+    expect(ctx.chat().error).toBe("Could not join Plans: You are not invited");
+    expect(ctx.item("Plans").invite).toEqual({ from: "Ana" });
+  });
+
+  it("declines invitations", async () => {
+    const ctx = await signedIn({ ...initialSync(), invited: [PLANS, DM] });
+    await ctx.act({ type: "decline", channelId: ctx.item("Plans").id });
+    expect(ctx.api.request).toHaveBeenCalledWith(SESSION, "POST", "/v3/rooms/!plans%3Ax.org/leave", {});
+    expect(ctx.chat().sidebar.map((i) => i.name)).not.toContain("Plans");
+    ctx.api.request.mockRejectedValueOnce(new MatrixError(500, "M_UNKNOWN", "Try later"));
+    await ctx.act({ type: "decline", channelId: ctx.item(BO).id });
+    expect(ctx.chat().error).toBe("Could not decline the invitation: Try later");
+    const calls = ctx.api.request.mock.calls.length;
+    await ctx.act({ type: "decline", channelId: ctx.item("Lounge").id });
+    await ctx.act({ type: "decline", channelId: "99999" });
+    expect(ctx.api.request).toHaveBeenCalledTimes(calls);
+  });
+
+  it("joins by address: rooms known open, others are joined through the servers a link names", async () => {
+    const ctx = await signedIn();
+    expect(ctx.chat().joinAddress).toBe("#room:x.org");
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { state: { alias: "#lounge:x.org", members: {} } })] }));
+    await ctx.act({ type: "joinAddress", address: "#lounge:x.org" });
+    expect(ctx.chat().channel?.name).toBe("Lounge");
+    await ctx.act({ type: "joinAddress", address: "!dm:x.org" });
+    expect(ctx.chat().channel?.name).toBe("Bo");
+    expect(ctx.api.request).not.toHaveBeenCalled();
+    ctx.api.request.mockResolvedValue({ room_id: "!new:y.org" });
+    await ctx.act({ type: "joinAddress", address: "https://matrix.to/#/%23new%3Ay.org?via=y.org&via=bad%20server" });
+    expect(ctx.api.request).toHaveBeenLastCalledWith(SESSION, "POST", "/v3/join/%23new%3Ay.org", {}, { server_name: "y.org" });
+    await ctx.act({ type: "joinAddress", address: "nope" });
+    expect(ctx.chat().error).toBe('"nope" is not a room address. Use #room:server, !id:server or a matrix.to link.');
+  });
+
+  it("reads room addresses: aliases, room ids and matrix.to links", () => {
+    expect(roomAddress("#room:x.org")).toEqual({ target: "#room:x.org", via: [] });
+    expect(roomAddress("!abc_DEF-1")).toEqual({ target: "!abc_DEF-1", via: [] });
+    expect(roomAddress("!abc:x.org:8448")).toEqual({ target: "!abc:x.org:8448", via: [] });
+    expect(roomAddress("https://matrix.to/#/!abc:x.org/$event?via=a.org&via=b.org&via=c.org&via=d.org")).toEqual({ target: "!abc:x.org", via: ["a.org", "b.org", "c.org"] });
+    expect(roomAddress("https://matrix.to/#/%23r%3Ax.org")).toEqual({ target: "#r:x.org", via: [] });
+    for (const bad of ["room", "#room", "@ana:x.org", "!a/b", `#${"r".repeat(250)}:x.org`, "https://matrix.to/#/%E0%A4%A", "https://example.org/#/#r:x.org"]) expect(roomAddress(bad)).toBeUndefined();
   });
 });
 

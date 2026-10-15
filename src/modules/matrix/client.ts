@@ -213,7 +213,7 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
     const restart = since !== undefined && state.mode === "sliding";
     const query: Record<string, string> = { filter: SYNC_FILTER, timeout: String(timeoutMs), set_presence: "offline" };
     if (since && !restart) query.since = since;
-    const sync = parseSync(await authed(session, `${CLIENT}/sync`, { query }));
+    const sync = parseSync(await authed(session, `${CLIENT}/sync`, { query }), session.userId);
     state.mode = "classic";
     if (restart) {
       for (const update of sync.joined) {
@@ -221,6 +221,8 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
         update.limited = true;
       }
     }
+    // Without a token it lists every invitation there is.
+    if (!query.since) sync.invitesFull = true;
     return sync;
   }
 

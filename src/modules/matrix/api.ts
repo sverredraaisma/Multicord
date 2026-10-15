@@ -129,6 +129,30 @@ export interface MxSpaceChild {
   suggested: boolean;
   /** When the child was added (the event's origin_server_ts), the order's tie-break. */
   ts: number;
+  /** Servers to join it through, as the space names them (the first few that are valid server names). */
+  via?: string[];
+}
+
+/** An invitation to a room, from the stripped state the homeserver shows of it. */
+export interface MxInvite {
+  roomId: string;
+  /** The room's name, else its alias, when the invitation shows one. */
+  name?: string;
+  /** Who invited the user (the sender of the invite), and their name where the invitation shows it. */
+  inviter?: string;
+  inviterName?: string;
+  /** The inviter marked it a direct chat (is_direct). */
+  direct: boolean;
+  /** The room is a space. */
+  space: boolean;
+}
+
+/** A room a space lists, as its hierarchy describes it to someone who may not have joined it. */
+export interface MxSpaceRoom {
+  roomId: string;
+  name?: string;
+  /** It is a space itself. */
+  space: boolean;
 }
 
 interface MxEventBase {
@@ -405,8 +429,12 @@ export interface MxSync {
   /** Rooms the user muted (m.push_rules), when the push rules changed. */
   mutedRooms?: string[];
   joined: MxRoomUpdate[];
-  /** Rooms the user left or was removed from. */
+  /** Rooms the user left or was removed from, invitations declined or withdrawn included. */
   left: string[];
+  /** Invitations the sync shows (classic sync: new ones and, on a first sync, all; sliding sync: those in its window). */
+  invited?: MxInvite[];
+  /** `invited` lists every pending invitation (a first sync, or one starting over): any other is gone. */
+  invitesFull?: boolean;
   /** Device keys and to-device messages, for end-to-end encryption. */
   crypto?: MxCryptoSync;
   /**
