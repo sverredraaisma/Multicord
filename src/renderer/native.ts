@@ -3,7 +3,7 @@ import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, customEmojiList, gifResults, MAX_MESSAGE_LENGTH, memberList, memberProfile, stickerPacks } from "../shared/native";
+import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_MESSAGE_LENGTH, memberList, memberProfile, stickerPacks } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
@@ -332,8 +332,12 @@ export class NativeView {
     return customEmojiList(this.lastState?.customEmoji, this.lastState?.emojiBase);
   }
 
-  private emojiUrl(id: string, animated: boolean): string {
-    return `${this.lastState?.emojiBase ?? ""}/${id}.${animated ? "gif" : "webp"}?size=48`;
+  /** A message's custom emoji picture: the module's own for it, or one under the emoji base for a snowflake id; else none. */
+  private emojiUrl(id: string, animated: boolean): string | undefined {
+    const own = emojiUrls(this.lastState?.emojiUrls).get(id);
+    if (own) return own;
+    const base = this.lastState?.emojiBase;
+    return base && /^\d{1,20}$/.test(id) ? `${base}/${id}.${animated ? "gif" : "webp"}?size=48` : undefined;
   }
 
   /** This view's module, for the badges on its own emoji and stickers. */

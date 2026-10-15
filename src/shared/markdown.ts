@@ -36,7 +36,8 @@ const INLINE_RULES: InlineRule[] = [
   // Any ASCII punctuation, underscore included, as in Discord.
   { match: /^\\([^A-Za-z0-9\s])/, build: (m) => ({ type: "text", text: m[1]! }) },
   { match: /^(`+)([\s\S]*?[^`])\1(?!`)/, build: (m) => ({ type: "code", text: m[2]!.trim() || m[2]! }) },
-  { match: /^<(a?):(\w{2,32}):(\d{1,20})>/, build: (m) => ({ type: "customEmoji", animated: m[1] === "a", name: m[2]!, id: m[3]! }) },
+  // <:name:id>, <a:name:id> when animated; ids are snowflakes, or other plain ids (ULIDs, server/media) a module names.
+  { match: /^<(a?):([^\s:<>]{1,64}):([A-Za-z0-9._=+/-]{1,200})>/, build: (m) => ({ type: "customEmoji", animated: m[1] === "a", name: m[2]!, id: m[3]! }) },
   { match: /^<(https?:\/\/[^\s>]+)>/, build: (m) => ({ type: "link", href: m[1]!, children: [{ type: "text", text: m[1]! }] }) },
   {
     match: /^\[([^\]\n]{1,256})\]\(<?(https?:\/\/[^\s)>]+)>?\)/,

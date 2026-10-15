@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createNativeApi } from "../../src/preload/native";
 import {
   customEmojiList,
+  emojiUrls,
   gifResults,
   isShownUrl,
   MAX_CUSTOM_EMOJI,
@@ -315,6 +316,16 @@ describe("stickers, emoji and GIFs", () => {
     expect(customEmojiList([{ id: "55", name: "party" }], "javascript:x")).toEqual([]);
     expect(customEmojiList("nope")).toEqual([]);
     expect(customEmojiList(Array.from({ length: MAX_CUSTOM_EMOJI + 5 }, (_, i) => ({ id: String(i), name: "e", url: "https://x/e.png" })))).toHaveLength(MAX_CUSTOM_EMOJI);
+  });
+
+  it("trusts emoji pictures only by plain id, from https or data: pictures", () => {
+    expect([...emojiUrls({ "01ARZ3NDEKTSV4RRFFQ69G5FAV": "https://cdn/a.webp", "x.org/m": "data:image/png;base64,AA", "a b": "https://x", bad: "javascript:1" })]).toEqual([
+      ["01ARZ3NDEKTSV4RRFFQ69G5FAV", "https://cdn/a.webp"],
+      ["x.org/m", "data:image/png;base64,AA"],
+    ]);
+    expect(emojiUrls(undefined).size).toBe(0);
+    const many = Object.fromEntries(Array.from({ length: MAX_CUSTOM_EMOJI + 3 }, (_, i) => [`e${i}`, "https://x/e.png"]));
+    expect(emojiUrls(many).size).toBe(MAX_CUSTOM_EMOJI);
   });
 
   it("trusts sticker packs only with whole stickers, within the caps", () => {

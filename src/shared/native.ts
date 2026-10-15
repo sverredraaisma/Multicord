@@ -465,6 +465,16 @@ export function customEmojiList(value: unknown, base?: string): PickerEmoji[] {
   return list;
 }
 
+/** Emoji pictures by id as the view trusts them: plain ids, https or data: pictures, at most MAX_CUSTOM_EMOJI. */
+export function emojiUrls(value: unknown): Map<string, string> {
+  const urls = new Map<string, string>();
+  for (const [id, url] of Object.entries(record(value) ?? {})) {
+    if (urls.size >= MAX_CUSTOM_EMOJI) break;
+    if (MEDIA_ID.test(id) && isShownUrl(url)) urls.set(id, url);
+  }
+  return urls;
+}
+
 /** Sticker packs as the view trusts them: well-formed stickers only, within the caps; empty packs dropped. */
 export function stickerPacks(value: unknown): NativeStickerPack[] {
   const packs: NativeStickerPack[] = [];
@@ -557,6 +567,12 @@ export type NativeViewState =
       voice: NativeVoiceSession | null;
       /** Base URL for custom emoji images: <base>/<id>.webp (or .gif when animated). */
       emojiBase?: string;
+      /**
+       * Pictures of custom emoji in the open conversation's messages, by the id
+       * in their `<:name:id>`, for emoji the emojiBase cannot serve (data: URLs
+       * the engine made, or addresses of their own). Read through emojiUrls().
+       */
+      emojiUrls?: Record<string, string>;
       /** Custom emoji usable in the open conversation, for the pickers; read by the view through customEmojiList(). */
       customEmoji?: NativeCustomEmoji[];
       /** Sticker packs usable in the open conversation; read through stickerPacks(). */

@@ -762,6 +762,20 @@ describe("emoji and markdown", () => {
     expect(content.querySelector(".spoiler")).not.toBeNull();
   });
 
+  it("shows emoji with pictures of their own, and names those without one", () => {
+    const ulid = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    view.update({
+      ...withEmoji([msg("11", { content: `<:cat:${ulid}> <:mx:x.org/abc> <:gone:01BX5ZZKBKACTAV9WEVGEMMVRZ> <:big:77>` })]),
+      emojiUrls: { [ulid]: "https://cdn/cat.webp", "x.org/abc": "data:image/png;base64,AA", bad: "javascript:x" },
+    });
+    const images = [...root.querySelectorAll<HTMLImageElement>(".message .content img.emoji")].map((i) => i.getAttribute("src"));
+    expect(images).toEqual(["https://cdn/cat.webp", "data:image/png;base64,AA", "https://media.fx/emojis/77.webp?size=48"]);
+    expect(root.querySelector(".message .content")!.textContent).toContain(":gone:");
+    // Without an emoji base, a snowflake emoji has no picture either.
+    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("12", { content: "<:big:77>" })], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL } }));
+    expect(root.querySelector(".message .content")!.textContent).toBe(":big:");
+  });
+
   it("disables the emoji button where the composer is disabled", () => {
     view.update(chat({ channel: null }));
     expect(root.querySelector<HTMLButtonElement>(".emoji-button")!.disabled).toBe(true);

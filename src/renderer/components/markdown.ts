@@ -4,7 +4,7 @@ import { el } from "./dom";
 
 export interface MarkdownOptions {
   /** Image URL for a platform's custom emoji; without it they show as :name:. */
-  customEmojiUrl?: (id: string, animated: boolean) => string;
+  customEmojiUrl?: (id: string, animated: boolean) => string | undefined;
 }
 
 const WRAP_TAGS = { bold: "strong", italic: "em", underline: "u", strike: "s" } as const;
@@ -54,9 +54,11 @@ function renderInline(doc: Document, nodes: Inline[], options: MarkdownOptions):
         return emoji;
       }
       case "customEmoji": {
-        if (!options.customEmojiUrl) return doc.createTextNode(`:${node.name}:`);
+        // Without a picture, its name stands in.
+        const url = options.customEmojiUrl?.(node.id, node.animated);
+        if (!url) return doc.createTextNode(`:${node.name}:`);
         const img = el(doc, "img", "emoji custom");
-        img.src = options.customEmojiUrl(node.id, node.animated);
+        img.src = url;
         img.alt = `:${node.name}:`;
         img.title = `:${node.name}:`;
         img.draggable = false;
