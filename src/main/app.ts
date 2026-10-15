@@ -43,6 +43,7 @@ import { configurableModules, findModule, MODULES } from "./modules/index";
 import type { PlatformModule, ShellServices } from "./modules/types";
 import { loadPlatforms, type PlatformDef } from "./platforms";
 import { PlatformRegistry } from "./registry";
+import { BADGE_SIZE, badgeBitmap } from "./badge";
 import { createDisplayMediaHandler } from "./screenShare";
 import { SettingsController } from "./settingsController";
 import { SettingsStore } from "./settingsStore";
@@ -413,6 +414,11 @@ export async function createShell(
     const { mentions } = registry.totals();
     window.setTitle(mentions > 0 ? `(${mentions}) ${APP_NAME}` : APP_NAME);
     app.setBadgeCount(mentions);
+    // Windows has no badge count; an overlay on the taskbar button says it there.
+    if (platform === "win32" && mentions !== lastMentions) {
+      const overlay = mentions > 0 ? nativeImage.createFromBitmap(badgeBitmap(mentions), { width: BADGE_SIZE, height: BADGE_SIZE }) : null;
+      window.setOverlayIcon(overlay, mentions > 0 ? `${mentions} unread mentions` : "");
+    }
     if (mentions > lastMentions && !window.isFocused()) window.flashFrame(true);
     lastMentions = mentions;
   };

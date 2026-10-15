@@ -61,6 +61,7 @@ export class BaseWindow extends EventEmitter {
   focus = vi.fn();
   restore = vi.fn();
   flashFrame = vi.fn();
+  setOverlayIcon = vi.fn();
   setTitle = vi.fn();
   isMaximized = vi.fn(() => false);
   isMinimized = vi.fn(() => false);
@@ -149,7 +150,10 @@ export class Tray extends EventEmitter {
 }
 
 export const Menu = { buildFromTemplate: (template: unknown[]) => ({ template }) };
-export const nativeImage = { createFromPath: (path: string) => ({ path }) };
+export const nativeImage = {
+  createFromPath: (path: string) => ({ path }),
+  createFromBitmap: (bitmap: Buffer, size: { width: number; height: number }) => ({ bitmap, size }),
+};
 export const protocol = { registerSchemesAsPrivileged: vi.fn() };
 export const clipboard = { writeText: vi.fn() };
 export const globalShortcut = {

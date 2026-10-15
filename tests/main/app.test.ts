@@ -79,6 +79,7 @@ vi.mock("../../src/main/streamer", async (importOriginal) => ({
 
 import * as electron from "../mocks/electron";
 import { APP_NAME, chromiumFeatures, createShell, findAppLink, startApp } from "../../src/main/app";
+import { badgeBitmap } from "../../src/main/badge";
 import { IPC } from "../../src/shared/ipc";
 import { NATIVE_IPC } from "../../src/shared/native";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
@@ -226,6 +227,10 @@ describe("createShell", () => {
     expect(window.setTitle).toHaveBeenLastCalledWith(`(3) ${APP_NAME}`);
     expect(app.setBadgeCount).toHaveBeenLastCalledWith(3);
     expect(window.flashFrame).toHaveBeenCalledTimes(1);
+    // Windows: the count on the taskbar button, redrawn only when it changes.
+    expect(window.setOverlayIcon).toHaveBeenLastCalledWith({ bitmap: badgeBitmap(3), size: { width: 16, height: 16 } }, "3 unread mentions");
+    update(3);
+    expect(window.setOverlayIcon).toHaveBeenCalledTimes(1);
 
     window.isFocused.mockReturnValue(true);
     update(5);
@@ -233,6 +238,14 @@ describe("createShell", () => {
 
     update(0);
     expect(window.setTitle).toHaveBeenLastCalledWith(APP_NAME);
+    expect(window.setOverlayIcon).toHaveBeenLastCalledWith(null, "");
+  });
+
+  it("leaves the taskbar overlay to Windows", async () => {
+    const { window, discordView } = await shellWith(undefined, "darwin");
+    ipcMain.emit(IPC.discordState, senderEvent(discordView), { guilds: [], badge: { unread: true, mentions: 2 } });
+    expect(app.setBadgeCount).toHaveBeenLastCalledWith(2);
+    expect(window.setOverlayIcon).not.toHaveBeenCalled();
   });
 
   it("sends rail state when the rail is ready", async () => {
