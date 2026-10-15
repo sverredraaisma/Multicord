@@ -242,7 +242,8 @@ describe.skipIf(!READY)("Matrix calls against a live homeserver, LiveKit and lk-
     mc = await multicord(ALICE);
     aliceId = mc.session.userId;
     aliceIdentity = `${aliceId}:${mc.session.deviceId}`;
-    expect(await mc.api.rtcTransports(mc.session)).toEqual([FOCUS_HTTPS]);
+    // The homeserver may also name its LiveKit server for the newer format (matrix-rtc.live.test.ts); the older one uses the service.
+    expect(await mc.api.rtcTransports(mc.session)).toEqual([expect.objectContaining({ service: FOCUS_HTTPS })]);
     expect(await mc.api.supports(mc.session, "org.matrix.msc4140")).toBe(true);
   });
 

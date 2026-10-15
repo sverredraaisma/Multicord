@@ -169,14 +169,25 @@ export type MxEvent =
     })
   | (MxEventBase & { kind: "redaction"; redacts: string })
   /** An event whose content was removed; it is dropped from view. */
-  | (MxEventBase & { kind: "redacted" });
+  | (MxEventBase & { kind: "redacted" })
+  /** A call membership as a sticky m.rtc.member event (MSC4143 with MSC4354); never shown, it changes the room's call. */
+  | (MxEventBase & {
+      kind: "rtc";
+      /** Its sender and sticky key: a later event with the same key replaces it. */
+      key: string;
+      /** When it stops being sticky (and so counting), epoch ms. */
+      expiresAt: number;
+      /** Null when the device left, or the event is no membership of the room's call. */
+      member: MxCallMember | null;
+    });
 
 export type MxEncryptedEvent = Extract<MxEvent, { kind: "encrypted" }>;
 
 /**
- * One device's membership of a room's call (MatrixRTC, the
- * org.matrix.msc3401.call.member state events Element Call sends), checked
- * and reduced to what the adapter needs.
+ * One device's membership of a room's call (MatrixRTC: the
+ * org.matrix.msc3401.call.member state events Element Call sends, or the
+ * newer sticky org.matrix.msc4143.rtc.member events), checked and reduced to
+ * what the adapter needs.
  */
 export interface MxCallMember {
   /** The event's sender: whose membership it is, whatever the state key says. */
@@ -188,8 +199,30 @@ export interface MxCallMember {
   expiresAt: number;
   /** The LiveKit service (focus) the device publishes on; absent when it named none we can use. */
   focus?: string;
+  /** The LiveKit server it publishes on, for transports that name one (MSC4195, m.rtc.member only). */
+  sfu?: string;
   /** "audio" or "video", as the caller said (m.call.intent). */
   intent?: string;
+  /** Its participant identities on LiveKit, as matrix-js-sdk computes them; media keys go under these. */
+  identities: string[];
+  /** Set for m.rtc.member memberships: the member id the device chose (its sticky key). */
+  memberId?: string;
+}
+
+/** A MatrixRTC transport with LiveKit: its service (lk-jwt-service), its LiveKit server (MSC4195), or both. */
+export interface MxRtcTransport {
+  service?: string;
+  /** The LiveKit server's wss address, for which the homeserver hands out access (rtc/livekit/get_token). */
+  sfu?: string;
+}
+
+/** Who asks the homeserver for access to a LiveKit server (MSC4195 get_token): the membership it is for. */
+export interface MxLiveKitTokenRequest {
+  sfu: string;
+  roomId: string;
+  slotId: string;
+  memberId: string;
+  deviceId: string;
 }
 
 /** An OpenID token from the homeserver, which a LiveKit service checks before granting access to a call. */
@@ -211,6 +244,11 @@ export interface MxRoomUpdate {
   state: MxRoomState;
   /** Call memberships that changed, by state key; null when one ended (or is no call of the room's). */
   calls?: Map<string, MxCallMember | null>;
+  /**
+   * Sticky events the sync carried outside the timeline (MSC4354, after a gap
+   * or on joining): call memberships, or encrypted events that may be some.
+   */
+  sticky?: MxEvent[];
   /** Timeline events, oldest first, without state events. */
   timeline: MxEvent[];
   /** Events were left out between the previous sync and this timeline. */
@@ -278,8 +316,8 @@ export interface MatrixApi {
   // --- Calls (MatrixRTC) ---
   /** The LiveKit services a server's /.well-known/matrix/client names (org.matrix.msc4143.rtc_foci); [] when none. */
   rtcFoci(serverUrl: string): Promise<string[]>;
-  /** The LiveKit services the homeserver names (MSC4143 rtc/transports); [] when it has none or no such endpoint. */
-  rtcTransports(session: MxSession): Promise<string[]>;
+  /** The LiveKit transports the homeserver names (MSC4143 rtc/transports); [] when it has none or no such endpoint. */
+  rtcTransports(session: MxSession): Promise<MxRtcTransport[]>;
   /** Whether the homeserver says it has an unstable feature, e.g. org.matrix.msc4140 (delayed events). */
   supports(session: MxSession, feature: string): Promise<boolean>;
   openIdToken(session: MxSession): Promise<MxOpenIdToken>;
@@ -287,10 +325,16 @@ export interface MatrixApi {
   sendState(session: MxSession, roomId: string, type: string, stateKey: string, content: Record<string, unknown>): Promise<string>;
   /** Schedules a state event for `delayMs` from now (MSC4140); returns its delay id. */
   sendDelayedState(session: MxSession, roomId: string, type: string, stateKey: string, content: Record<string, unknown>, delayMs: number): Promise<string>;
+  /** Sends a room event that stays sticky for `stickyMs` (MSC4354); returns its event id. */
+  sendSticky(session: MxSession, roomId: string, type: string, content: Record<string, unknown>, stickyMs: number): Promise<string>;
+  /** Schedules a sticky room event for `delayMs` from now (MSC4140 and MSC4354); returns its delay id. */
+  sendDelayedSticky(session: MxSession, roomId: string, type: string, content: Record<string, unknown>, delayMs: number, stickyMs: number): Promise<string>;
   /** Restarts the countdown of a delayed event, sends it now, or cancels it. */
   updateDelayed(session: MxSession, delayId: string, action: "restart" | "send" | "cancel"): Promise<void>;
   /** Asks a LiveKit service for access to a room's call, with an OpenID token proving who asks (lk-jwt-service's /sfu/get). */
   liveKitGrant(serviceUrl: string, roomId: string, deviceId: string, token: MxOpenIdToken): Promise<MxLiveKitGrant>;
+  /** Asks the homeserver for access to one of its LiveKit servers, for an m.rtc.member membership (MSC4195 rtc/livekit/get_token). */
+  liveKitToken(session: MxSession, request: MxLiveKitTokenRequest): Promise<MxLiveKitGrant>;
 }
 
 /** An error response from the homeserver, with its Matrix error code. */

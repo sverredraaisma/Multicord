@@ -10,17 +10,21 @@ import {
   KEY_USE_DELAY_MS,
   liveKitIdentity,
   MatrixCall,
+  MEMBERSHIP_STICKY_MS,
   membershipContent,
   membershipStateKey,
   parseCallKey,
   RENEW_MARGIN_MS,
   ringContent,
+  rtcLeaveContent,
+  rtcMembershipContent,
   slotContent,
   RING_LIFETIME_MS,
+  uuid,
   type CallKeysDeps,
   type MatrixCallDeps,
 } from "../../../src/modules/matrix/calls";
-import { CALL_MEMBERSHIP_EXPIRY_MS, CALL_MEMBER_TYPE } from "../../../src/modules/matrix/events";
+import { CALL_MEMBERSHIP_EXPIRY_MS, CALL_MEMBER_TYPE, RTC_MEMBER_TYPE } from "../../../src/modules/matrix/events";
 
 const ME = "@me:x.org";
 const ANA = "@ana:x.org";
@@ -550,5 +554,153 @@ describe("joining and leaving a call", () => {
     await c.keys!.update([]);
     const [first] = c.keys!.keys();
     expect(atob(first!.key)).toHaveLength(16);
+  });
+});
+
+describe("the newer membership (m.rtc.member)", () => {
+  const MEMBER_ID = "00000000-0000-4000-8000-000000000000";
+  /** rtcIdentity("@me:x.org", MEMBER_ID) */
+  const HASHED = "BOLGDBSIKQ/l9bTRZpoXQimMRT8j1HxGCYwfPabNEec";
+  const SFU = "wss://lk.x.org";
+
+  it("writes the membership and its leave as matrix-js-sdk's sticky membership manager does", () => {
+    expect(rtcMembershipContent({ userId: ME, deviceId: "D", memberId: "m1", focus: FOCUS, sfu: SFU, intent: "audio" })).toEqual({
+      slot_id: "m.call#ROOM",
+      application: { type: "m.call", "m.call.intent": "audio" },
+      member: { user_id: ME, device_id: "D", id: "m1" },
+      transports: { published: [{ type: "livekit", url: SFU }], can_subscribe: ["livekit"] },
+      versions: [],
+      msc4354_sticky_key: "m1",
+    });
+    expect(rtcMembershipContent({ userId: ME, deviceId: "D", memberId: "m1", focus: FOCUS, intent: "audio" }).transports).toEqual({ published: [{ type: "livekit", livekit_service_url: FOCUS }], can_subscribe: ["livekit"] });
+    expect(rtcLeaveContent("m1")).toEqual({ slot_id: "m.call#ROOM", msc4354_sticky_key: "m1" });
+    expect(uuid(new Uint8Array(16).fill(0xff))).toBe("ffffffff-ffff-4fff-bfff-ffffffffffff");
+  });
+
+  /** A call in the newer format; `seal` stands in for the room's encryption. */
+  function rtcCall(options: { sfu?: string; delayed?: boolean } = {}) {
+    const api = {
+      ...callApi({ delayed: options.delayed }),
+      liveKitToken: vi.fn(async (_s: MxSession, request: { sfu: string }) => ({ url: request.sfu, jwt: "hs-jwt" })),
+      sendSticky: vi.fn(async (..._args: unknown[]) => "$r1"),
+      sendDelayedSticky: vi.fn(async (..._args: unknown[]) => "delay-s"),
+    };
+    const seal = vi.fn(async (type: string, content: Record<string, unknown>) => ({ type: "m.room.encrypted", content: { sealed: type, ...content } }));
+    const sendToDevices = vi.fn(async () => {});
+    const made = call(api as unknown as ReturnType<typeof callApi>, { rtc: { ...(options.sfu ? { sfu: options.sfu } : {}), seal }, e2ee: { sendToDevices }, random: (n) => new Uint8Array(n) });
+    return { ...made, api, seal, sendToDevices };
+  }
+
+  it("gets access from the homeserver for its LiveKit server, and joins under the hashed identity with a sticky membership", async () => {
+    const { call: c, api, seal, deps, sendToDevices } = rtcCall({ sfu: SFU });
+    expect([c.memberId, c.identity, c.sfu, c.sticky]).toEqual([MEMBER_ID, HASHED, SFU, true]);
+    await c.join();
+    expect(api.liveKitToken).toHaveBeenCalledWith(SESSION, { sfu: SFU, roomId: ROOM, slotId: "m.call#ROOM", memberId: MEMBER_ID, deviceId: "D" });
+    expect(api.openIdToken).not.toHaveBeenCalled();
+    expect(deps.allowHost).toHaveBeenCalledWith("lk.x.org");
+    expect(c.grant).toEqual({ url: SFU, jwt: "hs-jwt" });
+    // The leave is scheduled first, then the membership: both sealed, both sticky.
+    expect(seal.mock.calls.map(([type, content]) => [type, content.transports === undefined ? "leave" : "join"])).toEqual([
+      [RTC_MEMBER_TYPE, "leave"],
+      [RTC_MEMBER_TYPE, "join"],
+    ]);
+    expect(api.sendDelayedSticky).toHaveBeenCalledWith(SESSION, ROOM, "m.room.encrypted", { sealed: RTC_MEMBER_TYPE, ...rtcLeaveContent(MEMBER_ID) }, DELAYED_LEAVE_MS, MEMBERSHIP_STICKY_MS);
+    expect(api.sendSticky).toHaveBeenCalledWith(SESSION, ROOM, "m.room.encrypted", expect.objectContaining({ member: { user_id: ME, device_id: "D", id: MEMBER_ID } }), MEMBERSHIP_STICKY_MS);
+    expect(api.sendState).not.toHaveBeenCalled();
+    expect(c.membershipEventId).toBe("$r1");
+    // Our keys go out naming our member id, and the view gets ours under the hashed identity.
+    await c.keys!.update([{ userId: ANA, deviceId: "AD", createdTs: 1, identities: ["ana-hash"] }]);
+    expect(sendToDevices).toHaveBeenCalledWith(CALL_KEYS_TYPE, [{ userId: ANA, deviceId: "AD" }], expect.objectContaining({ member_id: MEMBER_ID, member: { claimed_device_id: "D", id: MEMBER_ID } }));
+    expect(c.keys!.keys().map((k) => k.participant)).toEqual([HASHED]);
+    // The server's time of a sticky membership changes nothing: it is new with each sending.
+    c.ownMembership(5);
+    // Keep-alive, then leaving sends the scheduled leave now.
+    await vi.advanceTimersByTimeAsync(DELAYED_LEAVE_RESTART_MS);
+    expect(api.updateDelayed).toHaveBeenCalledWith(SESSION, "delay-s", "restart");
+    await c.leave();
+    expect(api.updateDelayed).toHaveBeenLastCalledWith(SESSION, "delay-s", "send");
+    expect(api.sendSticky).toHaveBeenCalledTimes(1);
+  });
+
+  it("joins through the service, as user:device, where the homeserver names no LiveKit server", async () => {
+    const { call: c, api } = rtcCall();
+    expect([c.identity, c.sfu]).toEqual(["@me:x.org:D", undefined]);
+    await c.join();
+    expect(api.liveKitGrant).toHaveBeenCalledWith(FOCUS, ROOM, "D", expect.objectContaining({ access_token: "oid" }));
+    expect(api.liveKitToken).not.toHaveBeenCalled();
+    expect(api.sendSticky.mock.calls[0]![3]).toMatchObject({ transports: { published: [{ type: "livekit", livekit_service_url: FOCUS }] } });
+  });
+
+  it("sends the leave itself without delayed events, and logs one it cannot send", async () => {
+    const { call: c, api } = rtcCall({ sfu: SFU, delayed: false });
+    await c.join();
+    expect(api.sendDelayedSticky).not.toHaveBeenCalled();
+    await c.leave();
+    expect(api.sendSticky).toHaveBeenLastCalledWith(SESSION, ROOM, "m.room.encrypted", { sealed: RTC_MEMBER_TYPE, ...rtcLeaveContent(MEMBER_ID) }, MEMBERSHIP_STICKY_MS);
+
+    const failing = rtcCall({ sfu: SFU, delayed: false });
+    await failing.call.join();
+    failing.seal.mockRejectedValueOnce(new Error("no room key"));
+    await failing.call.leave();
+    expect(failing.deps.log).toHaveBeenCalledWith("Call membership not removed: no room key");
+  });
+
+  it("carries on without a delayed leave it could not seal or schedule", async () => {
+    const { call: c, api, seal, deps } = rtcCall({ sfu: SFU });
+    seal.mockRejectedValueOnce(new Error("no room key"));
+    await c.join();
+    expect(deps.log).toHaveBeenCalledWith("Delayed leave not scheduled: no room key");
+    expect(api.sendSticky).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends the membership again before it stops being sticky, and after the server sent the leave", async () => {
+    const { call: c, api } = rtcCall({ sfu: SFU, delayed: false });
+    await c.join();
+    await vi.advanceTimersByTimeAsync(MEMBERSHIP_STICKY_MS - RENEW_MARGIN_MS - 1);
+    expect(api.sendSticky).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(api.sendSticky).toHaveBeenCalledTimes(2);
+    expect(api.sendSticky.mock.calls[1]![3]).toEqual(api.sendSticky.mock.calls[0]![3]);
+    // Counted from the new sending.
+    await vi.advanceTimersByTimeAsync(MEMBERSHIP_STICKY_MS - RENEW_MARGIN_MS);
+    expect(api.sendSticky).toHaveBeenCalledTimes(3);
+    c.abandon();
+
+    const gone = rtcCall({ sfu: SFU });
+    await gone.call.join();
+    gone.api.updateDelayed.mockRejectedValueOnce(new MatrixError(404, "M_NOT_FOUND", "gone"));
+    await vi.advanceTimersByTimeAsync(DELAYED_LEAVE_RESTART_MS);
+    expect(gone.api.sendDelayedSticky).toHaveBeenCalledTimes(2);
+    expect(gone.api.sendSticky).toHaveBeenCalledTimes(2);
+    gone.call.abandon();
+  });
+
+  it("reports a failed join for the homeserver's refusal", async () => {
+    const { call: c, api } = rtcCall({ sfu: SFU });
+    api.liveKitToken.mockRejectedValueOnce(new MatrixError(403, "M_FORBIDDEN", "not joined"));
+    await expect(c.join()).rejects.toMatchObject({ errcode: "M_FORBIDDEN" });
+    expect(api.sendSticky).not.toHaveBeenCalled();
+  });
+});
+
+describe("call keys under LiveKit identities", () => {
+  it("gives each device's keys under every identity its membership has, and ours under ours", async () => {
+    const { manager } = keys();
+    const own2 = new CallKeys({ userId: ME, deviceId: "D", memberId: "m", identities: ["mine-hash", "@me:x.org:D"] }, ROOM, { send: vi.fn(async () => {}), changed: vi.fn(), log: vi.fn(), now: () => Date.now(), random: (n) => new Uint8Array(n).fill(1) });
+    await own2.update([{ userId: ANA, deviceId: "AD", createdTs: 1, identities: ["ana-hash", "@ana:x.org:AD"] }]);
+    own2.receive({ userId: ANA, deviceId: "AD", content: { room_id: ROOM, media_key: { index: 2, key: KEY_A }, member: { claimed_device_id: "AD", id: "uuid-a" } } });
+    expect(own2.keys().map((k) => [k.participant, k.index])).toEqual([
+      ["mine-hash", 0],
+      ["@me:x.org:D", 0],
+      ["ana-hash", 2],
+      ["@ana:x.org:AD", 2],
+    ]);
+    // A new membership with other transports moves the keys to its identities.
+    await own2.update([{ userId: ANA, deviceId: "AD", createdTs: 1, identities: ["ana-hash"] }]);
+    expect(own2.keys().filter((k) => k.participant.startsWith("ana") || k.participant.startsWith("@ana")).map((k) => k.participant)).toEqual(["ana-hash"]);
+    // A device whose transports name none gets none.
+    await own2.update([{ userId: ANA, deviceId: "AD", createdTs: 1, identities: [] }]);
+    expect(own2.keys()).toHaveLength(2);
+    expect(manager.keys()).toEqual([]);
   });
 });

@@ -10,9 +10,10 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { MxSession } from "../../../src/modules/matrix/api";
 import { MatrixAdapter } from "../../../src/modules/matrix/adapter";
 import { createMatrixClient } from "../../../src/modules/matrix/client";
-import { liveKitIdentity, membershipStateKey } from "../../../src/modules/matrix/calls";
+import { computeRtcIdentityRaw, isLeftMembershipContent } from "matrix-js-sdk/lib/matrixrtc/membershipData/index.js";
+import { liveKitIdentity, membershipStateKey, rtcLeaveContent, rtcMembershipContent } from "../../../src/modules/matrix/calls";
 import { openE2ee, type MatrixE2ee } from "../../../src/modules/matrix/crypto";
-import { CALL_MEMBER_TYPE, parseCallMember } from "../../../src/modules/matrix/events";
+import { CALL_MEMBER_TYPE, parseCallMember, parseEvent, RTC_MEMBER_TYPE, rtcIdentity } from "../../../src/modules/matrix/events";
 import type { IncomingCall } from "../../../src/shared/adapter";
 import type { NativeViewState } from "../../../src/shared/native";
 import { encryptAttachment } from "./attachments";
@@ -359,6 +360,25 @@ describe("calls with Element Call's MatrixRTC (matrix-js-sdk)", { timeout: 30_00
     // Leaving: Element sees Multicord go.
     await mc.act({ type: "leaveVoice" });
     await until(() => !session.memberships.some((m) => m.userId === ALICE), "Element to see Multicord leave");
+  });
+});
+
+describe("the newer call membership (m.rtc.member) with matrix-js-sdk", () => {
+  it("is a membership matrix-js-sdk reads, on the LiveKit identity both compute", async () => {
+    const content = rtcMembershipContent({ userId: ALICE, deviceId: "MULTI", memberId: "uuid-m", focus: LIVEKIT_SERVICE, sfu: "wss://sfu.x.org", intent: "audio" });
+    const raw = { type: RTC_MEMBER_TYPE, sender: ALICE, event_id: "$m", origin_server_ts: Date.now(), room_id: ROOM, content, msc4354_sticky: { duration_ms: 3_600_000 } };
+    const member = await CallMembership.parseFromEvent(new MatrixEvent(raw));
+    expect([member.deviceId, member.memberId, member.slotId, member.callIntent]).toEqual(["MULTI", "uuid-m", "m.call#ROOM", "audio"]);
+    expect(member.backendIdentities).toEqual([rtcIdentity(ALICE, "uuid-m")]);
+    expect(await computeRtcIdentityRaw(ALICE, "uuid-m")).toBe(rtcIdentity(ALICE, "uuid-m"));
+    // And Multicord reads it back the same.
+    expect(parseEvent(raw)).toMatchObject({ kind: "rtc", member: { identities: member.backendIdentities, memberId: "uuid-m", sfu: "wss://sfu.x.org" } });
+    // A membership on the service is known by user:device on both sides.
+    const viaService = { ...raw, content: rtcMembershipContent({ userId: ALICE, deviceId: "MULTI", memberId: "uuid-m", focus: LIVEKIT_SERVICE, intent: "audio" }) };
+    expect((await CallMembership.parseFromEvent(new MatrixEvent(viaService))).backendIdentities).toEqual([liveKitIdentity(ALICE, "MULTI")]);
+    expect(parseEvent(viaService)).toMatchObject({ member: { identities: [liveKitIdentity(ALICE, "MULTI")] } });
+    // The leave is one matrix-js-sdk takes as such.
+    expect(isLeftMembershipContent(rtcLeaveContent("uuid-m"))).toBe(true);
   });
 });
 

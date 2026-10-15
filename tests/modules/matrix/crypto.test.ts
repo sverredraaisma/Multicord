@@ -170,6 +170,28 @@ describe("decrypting room events", () => {
     expect(edited).toMatchObject({ kind: "message", replaces: "$orig" });
   });
 
+  it("reads an encrypted sticky call membership, sticky from its readable part", async () => {
+    const { bob, send } = await pair();
+    const content = {
+      slot_id: "m.call#ROOM",
+      application: { type: "m.call" },
+      member: { user_id: ALICE, device_id: "ALICEDEV", id: "uuid-a" },
+      transports: { published: [{ type: "livekit", url: "wss://sfu.x.org" }], can_subscribe: ["livekit"] },
+      versions: [],
+      msc4354_sticky_key: "uuid-a",
+    };
+    const event = await send(content, "org.matrix.msc4143.rtc.member");
+    // Without stickiness it is no membership.
+    expect(await bob.decrypt(ROOM, event)).toBeUndefined();
+    const raw = { ...JSON.parse(event.raw!), msc4354_sticky: { duration_ms: 60_000 } };
+    expect(await bob.decrypt(ROOM, { ...event, raw: JSON.stringify(raw) })).toMatchObject({
+      kind: "rtc",
+      key: `${ALICE}|uuid-a`,
+      expiresAt: event.ts + 60_000,
+      member: { user: ALICE, deviceId: "ALICEDEV", memberId: "uuid-a", sfu: "wss://sfu.x.org" },
+    });
+  });
+
   it("hides event types that are not shown, and says when an event is too large", async () => {
     const { bob, send } = await pair();
     expect(await bob.decrypt(ROOM, await send({ "m.relates_to": { rel_type: "m.annotation", event_id: "$x", key: "👍" } }, "m.reaction"))).toBeUndefined();

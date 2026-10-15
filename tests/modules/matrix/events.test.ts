@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { sha256 } from "../../../src/modules/matrix/sha256";
 import {
   applyState,
   CALL_MEMBERSHIP_EXPIRY_MS,
   CALL_MEMBER_TYPE,
   liveKitServices,
+  liveKitTransports,
+  liveKitUrl,
+  RTC_MEMBER_TYPE,
+  rtcIdentity,
   MAX_CALL_MEMBERS,
   parseCallMember,
   serviceUrl,
@@ -371,11 +376,11 @@ describe("call memberships", () => {
   it("reads a device's membership: its sender, device, times and call service", () => {
     expect(parseCallMember(member(joined))).toEqual({
       stateKey: "_@ana:x.org_ANADEV_m.call",
-      member: { user: "@ana:x.org", deviceId: "ANADEV", createdTs: 5000, expiresAt: 3605_000, focus: "https://jwt.call.x.org", intent: "video" },
+      member: { user: "@ana:x.org", deviceId: "ANADEV", createdTs: 5000, expiresAt: 3605_000, focus: "https://jwt.call.x.org", intent: "video", identities: ["@ana:x.org:ANADEV"] },
     });
     // A renewal keeps the start time; without `expires` Element Call's four hours apply, and at most a week.
     const renewed = parseCallMember(member({ ...joined, created_ts: 1000, expires: undefined, foci_preferred: undefined, "m.call.intent": "" }))!.member!;
-    expect(renewed).toEqual({ user: "@ana:x.org", deviceId: "ANADEV", createdTs: 1000, expiresAt: 1000 + CALL_MEMBERSHIP_EXPIRY_MS });
+    expect(renewed).toEqual({ user: "@ana:x.org", deviceId: "ANADEV", createdTs: 1000, expiresAt: 1000 + CALL_MEMBERSHIP_EXPIRY_MS, identities: ["@ana:x.org:ANADEV"] });
     expect(parseCallMember(member({ ...joined, expires: 1e12 }))!.member!.expiresAt).toBe(5000 + 7 * 24 * 3600_000);
   });
 
@@ -441,6 +446,160 @@ describe("call memberships", () => {
     expect(calls.size).toBe(MAX_CALL_MEMBERS * 2);
     // Known keys still update.
     expect(calls.get("k0")).toBeNull();
+  });
+});
+
+describe("sticky call memberships (m.rtc.member)", () => {
+  const NOW = 10_000_000;
+  beforeEach(() => vi.useFakeTimers({ now: NOW }));
+  afterEach(() => vi.useRealTimers());
+  const HASHED = "5OWO3FyHTtPBGuwDVlk4J4WzqWJeqXInzEtSSYWiu5k"; // sha256(["@ana:x.org","uuid-a"]), as lk-jwt-service and matrix-js-sdk make it
+  const joined = {
+    slot_id: "m.call#ROOM",
+    application: { type: "m.call", "m.call.intent": "video" },
+    member: { user_id: "@ana:x.org", device_id: "ANADEV", id: "uuid-a" },
+    transports: { published: [{ type: "livekit", livekit_service_url: "https://jwt.x.org/", url: "wss://sfu.x.org" }], can_subscribe: ["livekit"] },
+    versions: [],
+    msc4354_sticky_key: "uuid-a",
+  };
+  const rtc = (content: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    type: RTC_MEMBER_TYPE,
+    sender: "@ana:x.org",
+    origin_server_ts: NOW - 1000,
+    event_id: "$r1",
+    msc4354_sticky: { duration_ms: 3_600_000 },
+    content,
+    ...extra,
+  });
+
+  it("reads a member's sticky membership: its device, member id, transports and LiveKit identities", () => {
+    expect(parseEvent(rtc(joined))).toEqual({
+      kind: "rtc",
+      id: "$r1",
+      sender: "@ana:x.org",
+      ts: NOW - 1000,
+      key: "@ana:x.org|uuid-a",
+      expiresAt: NOW - 1000 + 3_600_000,
+      member: {
+        user: "@ana:x.org",
+        deviceId: "ANADEV",
+        memberId: "uuid-a",
+        createdTs: NOW - 1000,
+        expiresAt: NOW - 1000 + 3_600_000,
+        focus: "https://jwt.x.org",
+        sfu: "wss://sfu.x.org",
+        intent: "video",
+        identities: [HASHED, "@ana:x.org:ANADEV"],
+      },
+    });
+    expect(rtcIdentity("@ana:x.org", "uuid-a")).toBe(HASHED);
+  });
+
+  it("takes the identities matrix-js-sdk takes for each kind of transport", () => {
+    const only = (published: unknown[]) => (parseEvent(rtc({ ...joined, transports: { published, can_subscribe: [] } })) as { member: { identities: string[]; focus?: string; sfu?: string } }).member;
+    expect(only([{ type: "livekit", livekit_service_url: "https://jwt.x.org" }])).toMatchObject({ identities: ["@ana:x.org:ANADEV"], focus: "https://jwt.x.org" });
+    expect(only([{ type: "livekit", url: "wss://sfu.x.org" }])).toMatchObject({ identities: [HASHED], sfu: "wss://sfu.x.org" });
+    // A LiveKit server we may not reach (plain ws) still names the identity, but is no transport for us.
+    const plain = only([{ type: "livekit", url: "ws://sfu.x.org" }]);
+    expect(plain.identities).toEqual([HASHED]);
+    expect(plain.sfu).toBeUndefined();
+    expect(only([{ type: "other" }]).identities).toEqual([]);
+    expect(parseEvent(rtc({ ...joined, application: { type: "m.call" } }))).not.toHaveProperty("member.intent");
+    // Each from its first transport that has one.
+    expect(only([{ type: "livekit", livekit_service_url: "https://a.x.org" }, { type: "livekit", url: "wss://b.x.org" }])).toMatchObject({ focus: "https://a.x.org", sfu: "wss://b.x.org" });
+  });
+
+  it("counts from the server's remaining sticky time, else from the event's time, never from the future, for an hour at most", () => {
+    const expiry = (extra: Record<string, unknown>) => (parseEvent(rtc(joined, extra)) as { expiresAt: number }).expiresAt;
+    expect(expiry({ unsigned: { msc4354_sticky_duration_ttl_ms: 5000 } })).toBe(NOW + 5000);
+    expect(expiry({ unsigned: { msc4354_sticky_duration_ttl_ms: 1e12 } })).toBe(NOW + 3_600_000);
+    expect(expiry({ unsigned: { msc4354_sticky_duration_ttl_ms: -1 } })).toBe(NOW - 1000 + 3_600_000);
+    expect(expiry({ origin_server_ts: NOW + 50_000 })).toBe(NOW + 3_600_000);
+    expect(expiry({ msc4354_sticky: { duration_ms: 1e12 } })).toBe(NOW - 1000 + 3_600_000);
+    expect(expiry({ msc4354_sticky: { duration_ms: 60_000 } })).toBe(NOW - 1000 + 60_000);
+  });
+
+  it("reads a left member, another slot or a malformed membership as no membership of the call", () => {
+    const none = (content: Record<string, unknown>, extra: Record<string, unknown> = {}) => expect(parseEvent(rtc(content, extra))).toMatchObject({ kind: "rtc", key: "@ana:x.org|uuid-a", member: null });
+    none({ slot_id: "m.call#ROOM", msc4354_sticky_key: "uuid-a" });
+    none({ ...joined, slot_id: "m.call#breakout" });
+    none({ ...joined, application: { type: "m.other" } });
+    none({ ...joined, application: "m.call" });
+    none({ ...joined, member: { ...joined.member, user_id: "@bo:x.org" } });
+    none({ ...joined, member: { ...joined.member, device_id: "" } });
+    none({ ...joined, member: { ...joined.member, id: "x".repeat(256) } });
+    none({ ...joined, member: "ana" });
+    none({ ...joined, transports: { published: "x", can_subscribe: [] } });
+    none({ ...joined, transports: { published: [{ url: "wss://sfu.x.org" }], can_subscribe: [] } });
+    none({ ...joined, transports: { published: [null], can_subscribe: [] } });
+    none({ ...joined, transports: { published: [], can_subscribe: [5] } });
+    none({ ...joined, transports: "x" });
+    none({ ...joined, versions: undefined });
+    none({ ...joined, versions: [1] });
+  });
+
+  it("ignores events that are not sticky or have no usable sticky key", () => {
+    expect(parseEvent(rtc(joined, { msc4354_sticky: undefined }))).toBeUndefined();
+    expect(parseEvent(rtc(joined, { msc4354_sticky: { duration_ms: 0 } }))).toBeUndefined();
+    expect(parseEvent(rtc({ ...joined, msc4354_sticky_key: undefined }))).toBeUndefined();
+    expect(parseEvent(rtc({ ...joined, msc4354_sticky_key: "" }))).toBeUndefined();
+    expect(parseEvent(rtc({ ...joined, msc4354_sticky_key: "k".repeat(256) }))).toBeUndefined();
+    expect(parseEvent(rtc({ ...joined, sticky_key: "other" }))).toBeUndefined();
+    // The stable field alone, or both agreeing, will do.
+    expect(parseEvent(rtc({ ...joined, msc4354_sticky_key: undefined, sticky_key: "uuid-a" }))).toMatchObject({ key: "@ana:x.org|uuid-a" });
+    expect(parseEvent(rtc({ ...joined, sticky_key: "uuid-a" }))).toMatchObject({ key: "@ana:x.org|uuid-a" });
+    // State events of the type are not memberships.
+    expect(parseEvent(rtc(joined, { state_key: "" }))).toBeUndefined();
+    expect(parseEvent(rtc(joined, { unsigned: { redacted_because: {} } }))).toMatchObject({ kind: "redacted" });
+  });
+
+  it("collects sticky events from the timeline and from beside it, once each", () => {
+    const encrypted = ev({ type: "m.room.encrypted", event_id: "$enc", content: { algorithm: "m.megolm.v1.aes-sha2", ciphertext: "x", session_id: "S" }, msc4354_sticky: { duration_ms: 1000 } });
+    const sync = parseSync({
+      next_batch: "n",
+      rooms: {
+        join: {
+          "!r:x.org": {
+            timeline: { events: [rtc(joined), ev()] },
+            msc4354_sticky: { events: [rtc(joined), rtc(joined, { event_id: "$r2", sender: "@bo:x.org", content: { ...joined, member: { ...joined.member, user_id: "@bo:x.org" } } }), encrypted, ev({ event_id: "$ring" }), "x"] },
+          },
+          "!quiet:x.org": { timeline: { events: [] }, msc4354_sticky: { events: [ev()] } },
+        },
+      },
+    });
+    const [r, quiet] = sync.joined;
+    expect(r!.timeline.map((e) => [e.kind, e.id])).toEqual([
+      ["rtc", "$r1"],
+      ["message", "$e1"],
+    ]);
+    expect(r!.sticky!.map((e) => [e.kind, e.id])).toEqual([
+      ["rtc", "$r2"],
+      ["encrypted", "$enc"],
+    ]);
+    expect(quiet!.sticky).toBeUndefined();
+  });
+
+  it("checks LiveKit transports as the homeserver names them", () => {
+    expect(
+      liveKitTransports([
+        { type: "livekit", livekit_service_url: "https://jwt.x.org/", url: "wss://sfu.x.org" },
+        { type: "livekit", livekit_service_url: "https://jwt.x.org", url: "wss://sfu.x.org" },
+        { type: "livekit", url: "ws://plain.x.org", livekit_service_url: "http://plain.x.org" },
+        { type: "livekit", url: "https://sfu2.x.org" },
+        { type: "other", url: "wss://x.org" },
+        "x",
+      ]),
+    ).toEqual([{ service: "https://jwt.x.org", sfu: "wss://sfu.x.org" }, { sfu: "https://sfu2.x.org" }]);
+    expect(liveKitTransports(undefined)).toEqual([]);
+    expect(liveKitUrl("wss://u:p@sfu.x.org")).toBeUndefined();
+    expect(liveKitUrl("not a url")).toBeUndefined();
+  });
+
+  it("hashes with SHA-256", () => {
+    const hex = (data: Uint8Array) => [...sha256(data)].map((b) => b.toString(16).padStart(2, "0")).join("");
+    expect(hex(new Uint8Array())).toBe("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    expect(hex(new TextEncoder().encode("abc"))).toBe("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    expect(hex(new Uint8Array(1000).fill(97))).toBe("41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3");
   });
 });
 

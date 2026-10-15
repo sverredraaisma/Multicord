@@ -1,5 +1,23 @@
 import { MatrixError, type MatrixApi, type MxDownload, type MxEncryption, type MxLiveKitGrant, type MxLoginFlows, type MxOpenIdToken, type MxPage, type MxSession, type MxSync } from "./api";
-import { CALL_MEMBER_TYPE, eventId, isRecord, liveKitServices, mimeType, parseEncryption, parseMembers, parseMxc, parsePage, parseSync, userId } from "./events";
+import {
+  CALL_MEMBER_TYPE,
+  eventId,
+  isRecord,
+  liveKitServices,
+  liveKitTransports,
+  liveKitUrl,
+  MAX_STICKY_MS,
+  mimeType,
+  parseEncryption,
+  parseMembers,
+  parseMxc,
+  parsePage,
+  parseSync,
+  RTC_MEMBER_TYPE,
+  userId,
+} from "./events";
+
+export { liveKitUrl };
 
 const CLIENT = "/_matrix/client/v3";
 /** Timeline events kept per room in a sync, and the event types asked for. */
@@ -20,14 +38,15 @@ const TIMELINE_TYPES = [
  * What /sync returns: members only as needed (lazy loading), no presence,
  * typing or receipts, and of the account data only the DM list. To-device
  * messages and device lists come unfiltered, for encryption. The timeline
- * also carries call memberships as they change.
+ * also carries call memberships of both kinds as they change; sticky ones
+ * also come in their own section, which no filter narrows.
  */
 export const SYNC_FILTER = JSON.stringify({
   presence: { not_types: ["*"] },
   account_data: { types: ["m.direct"] },
   room: {
     state: { lazy_load_members: true },
-    timeline: { limit: TIMELINE_LIMIT, types: [...TIMELINE_TYPES, CALL_MEMBER_TYPE], lazy_load_members: true },
+    timeline: { limit: TIMELINE_LIMIT, types: [...TIMELINE_TYPES, CALL_MEMBER_TYPE, RTC_MEMBER_TYPE], lazy_load_members: true },
     ephemeral: { not_types: ["*"] },
     account_data: { not_types: ["*"] },
   },
@@ -298,7 +317,7 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
     async rtcTransports(session) {
       try {
         const body = await authed(session, `${UNSTABLE_RTC}/rtc/transports`);
-        return liveKitServices(body.rtc_transports);
+        return liveKitTransports(body.rtc_transports);
       } catch (error) {
         // Most homeservers do not have the endpoint (yet).
         if (error instanceof MatrixError && (error.status === 404 || error.status === 400 || error.status === 405)) return [];
@@ -350,12 +369,48 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
     async liveKitGrant(serviceUrl, roomId, deviceId, token): Promise<MxLiveKitGrant> {
       const body = await call(serviceUrl, "/sfu/get", { method: "POST", body: { room: roomId, openid_token: token, device_id: deviceId } });
       const url = liveKitUrl(body.url);
-      const jwt = body.jwt;
-      if (!url || typeof jwt !== "string" || !/^[A-Za-z0-9_.-]{1,8192}$/.test(jwt)) throw new Error("The call service sent an unreadable answer");
-      return { url, jwt };
+      if (!url || !jwtText(body.jwt)) throw new Error("The call service sent an unreadable answer");
+      return { url, jwt: body.jwt };
+    },
+
+    async sendSticky(session, roomId, type, content, stickyMs) {
+      const query = { [STICKY_DURATION]: String(Math.min(stickyMs, MAX_STICKY_MS)) };
+      const body = await authed(session, `${room(roomId)}/send/${encodeURIComponent(type)}/${txnId()}`, { method: "PUT", body: content, query });
+      const id = eventId(body.event_id);
+      if (!id) throw new Error("The homeserver sent an unreadable response");
+      return id;
+    },
+
+    async sendDelayedSticky(session, roomId, type, content, delayMs, stickyMs) {
+      const query = { [`${DELAYED_EVENTS}.delay`]: String(delayMs), [STICKY_DURATION]: String(Math.min(stickyMs, MAX_STICKY_MS)) };
+      const body = await authed(session, `${room(roomId)}/send/${encodeURIComponent(type)}/${txnId()}`, { method: "PUT", body: content, query });
+      const id = body.delay_id;
+      if (typeof id !== "string" || id === "" || id.length > 255) throw new Error("The homeserver sent an unreadable response");
+      return id;
+    },
+
+    async liveKitToken(session, request): Promise<MxLiveKitGrant> {
+      // The address goes back exactly as the homeserver named it: the service compares it with its own.
+      if (!liveKitUrl(request.sfu)) throw new Error("The call server's address is not a wss address");
+      const body = await authed(session, `${UNSTABLE_LIVEKIT}/rtc/livekit/get_token`, {
+        method: "POST",
+        body: {
+          url: request.sfu,
+          room_id: request.roomId,
+          slot_id: request.slotId,
+          // lk-jwt-service reads member_id; matrix-js-sdk's type names the member as an object. Both say the same.
+          member_id: request.memberId,
+          member: { id: request.memberId, claimed_device_id: request.deviceId },
+        },
+      });
+      if (!jwtText(body.jwt)) throw new Error("The homeserver sent an unreadable call access token");
+      return { url: request.sfu, jwt: body.jwt };
     },
   };
 }
+
+/** A LiveKit access token as the call services hand them out: a JWT, nothing that could break out of a URL. */
+const jwtText = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_.-]{1,8192}$/.test(value);
 
 /** A homeserver's error response as a MatrixError, with its error code. */
 function failure(status: number, json: unknown): MatrixError {
@@ -368,14 +423,7 @@ function failure(status: number, json: unknown): MatrixError {
 const UNSTABLE_RTC = "/_matrix/client/unstable/org.matrix.msc4143";
 /** Delayed events (MSC4140): the leave Element Call schedules, sent by the server should the client vanish. */
 const DELAYED_EVENTS = "org.matrix.msc4140";
-
-/** A LiveKit server's address: wss (or https, which LiveKit turns into wss), no credentials. */
-export function liveKitUrl(value: unknown): string | undefined {
-  if (typeof value !== "string" || value.length > 2048) return undefined;
-  try {
-    const url = new URL(value);
-    return (url.protocol === "wss:" || url.protocol === "https:") && !url.username && !url.password ? url.href : undefined;
-  } catch {
-    return undefined;
-  }
-}
+/** Sticky events (MSC4354): how long an event sent with this query parameter stays sticky. */
+const STICKY_DURATION = "org.matrix.msc4354.sticky_duration_ms";
+/** The homeserver's LiveKit endpoints (MSC4195), which Synapse hands to lk-jwt-service. */
+const UNSTABLE_LIVEKIT = "/_matrix/client/unstable/io.element.msc4195";

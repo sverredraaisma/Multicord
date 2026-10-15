@@ -16,8 +16,10 @@ import type {
   MxPage,
   MxRoomState,
   MxRoomUpdate,
+  MxRtcTransport,
   MxSync,
 } from "./api";
+import { sha256 } from "./sha256";
 
 /** Room ids are used in rail keys (at most 200 characters with the instance prefix). */
 export const MAX_ROOM_ID = 150;
@@ -207,6 +209,8 @@ export function parseEvent(raw: unknown): MxEvent | undefined {
   const content = isRecord(raw.content) ? raw.content : {};
   if (isRecord(raw.unsigned) && raw.unsigned.redacted_because !== undefined) return { kind: "redacted", ...base };
   switch (raw.type) {
+    case RTC_MEMBER_TYPE:
+      return parseRtcMember(raw, content, base);
     case "m.room.encrypted": {
       const event: MxEvent = { kind: "encrypted", ...base };
       const json = JSON.stringify(raw);
@@ -307,6 +311,12 @@ export function applyState(state: MxRoomState, raw: unknown): void {
 
 /** The call membership state event Element Call sends, one per device (MSC3401/MSC4143). */
 export const CALL_MEMBER_TYPE = "org.matrix.msc3401.call.member";
+/** The newer call membership: a sticky room event per member (MSC4143 with MSC4354 sticky events). */
+export const RTC_MEMBER_TYPE = "org.matrix.msc4143.rtc.member";
+/** The room's call, as MatrixRTC names it (MSC4143): its memberships' slot, the ring's, and the state key of the slot event. */
+export const SLOT_ID = "m.call#ROOM";
+/** Sticky events stay sticky at most this long (MSC4354); Element sends its memberships for this long. */
+export const MAX_STICKY_MS = 3_600_000;
 /** A membership counts this long after it started unless its device renews it, as Element Call's default. */
 export const CALL_MEMBERSHIP_EXPIRY_MS = 4 * 3600 * 1000;
 /** Longest lifetime a membership may claim; calls renew long before this. */
@@ -333,6 +343,57 @@ export function serviceUrl(value: unknown): string | undefined {
 export function liveKitServices(value: unknown): string[] {
   const urls = list(value, MAX_FOCI).flatMap((focus) => (isRecord(focus) && focus.type === "livekit" ? (serviceUrl(focus.livekit_service_url) ?? []) : []));
   return [...new Set(urls)];
+}
+
+/** A LiveKit server's address: wss (or https, which LiveKit turns into wss), no credentials. */
+export function liveKitUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > MAX_SERVICE_URL) return undefined;
+  try {
+    const url = new URL(value);
+    return (url.protocol === "wss:" || url.protocol === "https:") && !url.username && !url.password ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The LiveKit transports in a list (MSC4195): a service (livekit_service_url),
+ * a LiveKit server (url), or both; in order, without repeats, and without
+ * parts we may not use (plain http or ws, credentials).
+ */
+export function liveKitTransports(value: unknown): MxRtcTransport[] {
+  const seen = new Set<string>();
+  const transports: MxRtcTransport[] = [];
+  for (const raw of list(value, MAX_FOCI)) {
+    if (!isRecord(raw) || raw.type !== "livekit") continue;
+    const transport: MxRtcTransport = {};
+    const service = serviceUrl(raw.livekit_service_url);
+    // Kept as given: lk-jwt-service compares it with its own address, character for character.
+    const sfu = liveKitUrl(raw.url) ? (raw.url as string) : undefined;
+    if (service) transport.service = service;
+    if (sfu) transport.sfu = sfu;
+    const id = JSON.stringify([service, sfu]);
+    if ((service || sfu) && !seen.has(id)) {
+      seen.add(id);
+      transports.push(transport);
+    }
+  }
+  return transports;
+}
+
+/** A device's participant identity on LiveKit for the older memberships and service transports, as lk-jwt-service's /sfu/get names it. */
+export function liveKitIdentity(userId: string, deviceId: string): string {
+  return `${userId}:${deviceId}`;
+}
+
+/**
+ * A member's identity on LiveKit for transports with a LiveKit server
+ * (MSC4195): the unpadded base64 SHA-256 of the JSON array [user, member id],
+ * as the homeserver's get_token and matrix-js-sdk compute it.
+ */
+export function rtcIdentity(userId: string, memberId: string): string {
+  const digest = sha256(new TextEncoder().encode(JSON.stringify([userId, memberId])));
+  return btoa(String.fromCharCode(...digest)).replace(/=+$/, "");
 }
 
 const timestamp = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
@@ -365,12 +426,84 @@ export function parseCallMember(raw: unknown): { stateKey: string; member: MxCal
     (expires === undefined || (typeof expires === "number" && Number.isFinite(expires) && expires > 0));
   if (!valid) return { stateKey, member: null };
   const createdTs = (created as number | undefined) ?? ts;
-  const member: MxCallMember = { user, deviceId, createdTs, expiresAt: createdTs + Math.min((expires as number | undefined) ?? CALL_MEMBERSHIP_EXPIRY_MS, MAX_CALL_EXPIRES_MS) };
+  const member: MxCallMember = {
+    user,
+    deviceId,
+    createdTs,
+    expiresAt: createdTs + Math.min((expires as number | undefined) ?? CALL_MEMBERSHIP_EXPIRY_MS, MAX_CALL_EXPIRES_MS),
+    identities: [liveKitIdentity(user, deviceId)],
+  };
   const [focus] = liveKitServices(content.foci_preferred);
   if (focus) member.focus = focus;
-  const intent = content["m.call.intent"];
-  if (typeof intent === "string" && intent !== "" && intent.length <= 32) member.intent = intent;
+  const intent = callIntent(content["m.call.intent"]);
+  if (intent) member.intent = intent;
   return { stateKey, member };
+}
+
+const callIntent = (value: unknown): string | undefined => (typeof value === "string" && value !== "" && value.length <= 32 ? value : undefined);
+const idText = (value: unknown): value is string => typeof value === "string" && value !== "" && value.length <= MAX_ID;
+const strings = (value: unknown): boolean => Array.isArray(value) && value.every((item) => typeof item === "string");
+
+/**
+ * When a sticky event stops being sticky: the server's remaining time when it
+ * says (immune to clock skew), else the event's own time (never from the
+ * future) plus its duration, at most an hour. Undefined for events that are
+ * not sticky.
+ */
+function stickyExpiry(raw: Record<string, unknown>, ts: number, now: number): number | undefined {
+  const sticky = isRecord(raw.msc4354_sticky) ? raw.msc4354_sticky : {};
+  const duration = positive(sticky.duration_ms);
+  if (duration === undefined) return undefined;
+  const capped = Math.min(duration, MAX_STICKY_MS);
+  const ttl = isRecord(raw.unsigned) ? positive(raw.unsigned.msc4354_sticky_duration_ttl_ms) : undefined;
+  return ttl !== undefined ? now + Math.min(ttl, capped) : Math.min(now, ts) + capped;
+}
+
+/**
+ * An m.rtc.member event, as matrix-js-sdk reads it: sticky, with a sticky key
+ * that later events of its sender replace. Its membership is null when the
+ * device left (the content keeps only the slot and key) or the event is no
+ * well-formed membership of the room's call, or one for another member.
+ */
+function parseRtcMember(raw: Record<string, unknown>, content: Record<string, unknown>, base: { id: string; sender: string; ts: number }): MxEvent | undefined {
+  const expiresAt = stickyExpiry(raw, base.ts, Date.now());
+  const { msc4354_sticky_key: unstableKey, sticky_key: stableKey } = content;
+  const key = unstableKey ?? stableKey;
+  if (expiresAt === undefined || !idText(key) || (unstableKey !== undefined && stableKey !== undefined && unstableKey !== stableKey)) return undefined;
+  const rtc = { kind: "rtc" as const, ...base, key: `${base.sender}|${key}`, expiresAt };
+  const member = isRecord(content.member) ? content.member : {};
+  const application = isRecord(content.application) ? content.application : {};
+  const transports = isRecord(content.transports) ? content.transports : {};
+  // Without a list, one entry that fails the check below.
+  const published: unknown[] = Array.isArray(transports.published) ? transports.published : [{}];
+  const { device_id: deviceId, id: memberId } = member;
+  if (
+    content.slot_id !== SLOT_ID ||
+    application.type !== "m.call" ||
+    // Nobody may announce someone else (matrix-js-sdk's rule too).
+    member.user_id !== base.sender ||
+    !idText(deviceId) ||
+    !idText(memberId) ||
+    !published.every((t) => isRecord(t) && typeof t.type === "string") ||
+    !strings(transports.can_subscribe) ||
+    !strings(content.versions)
+  ) {
+    return { ...rtc, member: null };
+  }
+  const livekit = published.filter((t): t is Record<string, unknown> => isRecord(t) && t.type === "livekit");
+  // Media keys go under the identities the device has on its transports: hashed for LiveKit servers, user:device for services.
+  const identities: string[] = [];
+  if (livekit.some((t) => typeof t.url === "string")) identities.push(rtcIdentity(base.sender, memberId));
+  if (livekit.some((t) => typeof t.livekit_service_url === "string")) identities.push(liveKitIdentity(base.sender, deviceId));
+  const call: MxCallMember = { user: base.sender, deviceId, createdTs: base.ts, expiresAt, identities, memberId };
+  const usable = liveKitTransports(livekit);
+  const focus = usable.find((t) => t.service)?.service;
+  const sfu = usable.find((t) => t.sfu)?.sfu;
+  if (focus) call.focus = focus;
+  if (sfu) call.sfu = sfu;
+  const intent = callIntent(application["m.call.intent"]);
+  if (intent) call.intent = intent;
+  return { ...rtc, member: call };
 }
 
 function parseRoom(id: string, raw: Record<string, unknown>): MxRoomUpdate {
@@ -396,6 +529,14 @@ function parseRoom(id: string, raw: Record<string, unknown>): MxRoomUpdate {
   }
   const update: MxRoomUpdate = { roomId: id, state, timeline, limited: timelineRaw.limited === true };
   if (calls.size) update.calls = calls;
+  // Sticky events the timeline did not carry (MSC4354). Only memberships matter here, and encrypted events that may be some.
+  const sticky: MxEvent[] = [];
+  const inTimeline = new Set(timeline.map((e) => e.id));
+  for (const event of list(isRecord(raw.msc4354_sticky) ? raw.msc4354_sticky.events : undefined, MAX_EVENTS)) {
+    const parsed = parseEvent(event);
+    if ((parsed?.kind === "rtc" || parsed?.kind === "encrypted") && !inTimeline.has(parsed.id)) sticky.push(parsed);
+  }
+  if (sticky.length) update.sticky = sticky;
   if (typeof timelineRaw.prev_batch === "string" && timelineRaw.prev_batch.length <= MAX_TOKEN) update.prevBatch = timelineRaw.prev_batch;
   if (isRecord(raw.unread_notifications)) {
     update.unread = { notifications: count(raw.unread_notifications.notification_count), highlights: count(raw.unread_notifications.highlight_count) };

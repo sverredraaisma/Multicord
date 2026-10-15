@@ -20,13 +20,14 @@ import {
   type MxOAuthSession,
   type MxPage,
   type MxRoomState,
+  type MxRtcTransport,
   type MxSession,
   type MxSync,
 } from "./api";
-import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, type CallParticipant } from "./calls";
+import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, MAX_CALL_MEMBERS, serviceUrl, userId } from "./events";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, serviceUrl, userId } from "./events";
 import { AttachmentError, decryptAttachment } from "./media";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 import type { Verification, VerificationState } from "./verification";
@@ -139,6 +140,9 @@ const going = (verification: Verification): boolean => !["done", "cancelled"].in
 
 type Shown = Extract<MxEvent, { kind: "message" | "encrypted" }>;
 type Message = Extract<MxEvent, { kind: "message" }>;
+type RtcEvent = Extract<MxEvent, { kind: "rtc" }>;
+/** Encrypted sticky events kept per room until their keys arrive. */
+const MAX_STICKY_WAITING = 100;
 
 interface Room {
   id: string;
@@ -166,6 +170,14 @@ interface Room {
   lastRead?: string;
   /** Call memberships by state key, expired ones included (they are filtered when read). */
   calls: Map<string, MxCallMember>;
+  /**
+   * Sticky call memberships (m.rtc.member) by sender and sticky key: the
+   * current event of each, leaves included until they expire, so an older
+   * event cannot bring a membership back.
+   */
+  rtc: Map<string, { id: string; expiresAt: number; member: MxCallMember | null }>;
+  /** Encrypted sticky events from outside the timeline whose keys have not arrived; tried again when they do. */
+  stickyWaiting: MxEncryptedEvent[];
 }
 
 /** What is stored under RTC_KEY. */
@@ -174,6 +186,11 @@ interface RtcHosts {
   foci: string[];
   /** Hosts of LiveKit servers (SFUs) the services sent us to. */
   sfu: string[];
+  /**
+   * The homeserver's LiveKit servers it hands out access to itself (MSC4195
+   * transports with a url), with the service of the same transport.
+   */
+  servers?: { url: string; focus?: string }[];
 }
 
 const HOSTNAME = /^[a-z0-9]([a-z0-9-]{0,62}\.)*[a-z0-9-]{1,63}$/;
@@ -182,16 +199,23 @@ const HOSTNAME = /^[a-z0-9]([a-z0-9-]{0,62}\.)*[a-z0-9-]{1,63}$/;
 function parseRtc(text: string | undefined): RtcHosts {
   try {
     const value: unknown = text ? JSON.parse(text) : undefined;
-    const { foci, sfu } = (value ?? {}) as Record<string, unknown>;
+    const { foci, sfu, servers } = (value ?? {}) as Record<string, unknown>;
     const strings = (list: unknown): unknown[] => (Array.isArray(list) ? list.slice(0, MAX_RTC_HOSTS) : []);
-    return {
+    const rtc: RtcHosts = {
       foci: strings(foci).flatMap((url) => serviceUrl(url) ?? []),
       sfu: strings(sfu).filter((host): host is string => typeof host === "string" && host.length <= 253 && HOSTNAME.test(host)),
     };
+    // Stored as the transports named them, so checked as transports again.
+    const known = liveKitTransports(strings(servers).map((s) => (isRecord(s) ? { type: "livekit", url: s.url, livekit_service_url: s.focus } : s)));
+    const kept = known.flatMap((t) => (t.sfu ? [serverOf(t.sfu, t.service)] : []));
+    if (kept.length) rtc.servers = kept;
+    return rtc;
   } catch {
     return { foci: [], sfu: [] };
   }
 }
+
+const serverOf = (url: string, focus: string | undefined): { url: string; focus?: string } => (focus ? { url, focus } : { url });
 
 /** What the user sees for Matrix error codes. */
 const FRIENDLY: Record<string, string> = {
@@ -377,7 +401,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
    */
   private async lockToHosts(hosts: string[]): Promise<void> {
     if (!this.deps.lockHosts) return;
-    const all = [...new Set([...hosts, ...hostsOf(...this.rtc.foci), ...this.rtc.sfu])];
+    const all = [...new Set([...hosts, ...hostsOf(...this.rtc.foci, ...(this.rtc.servers ?? []).map((s) => s.url)), ...this.rtc.sfu])];
     try {
       await this.deps.lockHosts(all);
       this.lockedHosts = all;
@@ -394,15 +418,20 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   /**
    * Looks up the call services (MatrixRTC foci) before the host lock: the
    * homeserver's own list (with a session) first, then the server's
-   * .well-known. A failed lookup keeps what was stored.
+   * .well-known. The homeserver's list may also name LiveKit servers it
+   * grants access to itself (MSC4195). A failed lookup keeps what was stored.
    */
   private async discoverFoci(session?: MxSession): Promise<void> {
     const [offered, known] = await Promise.all([
-      session ? this.deps.api.rtcTransports(session).catch((): string[] => []) : [],
+      session ? this.deps.api.rtcTransports(session).catch((): MxRtcTransport[] => []) : [],
       this.deps.api.rtcFoci(this.deps.def.url).catch((): string[] => []),
     ]);
-    const foci = [...new Set([...offered, ...known])].slice(0, MAX_RTC_HOSTS);
-    if (foci.length > 0) await this.saveRtc({ ...this.rtc, foci });
+    const foci = [...new Set([...offered.flatMap((t) => t.service ?? []), ...known])].slice(0, MAX_RTC_HOSTS);
+    const servers = offered.flatMap((t) => (t.sfu ? [serverOf(t.sfu, t.service)] : [])).slice(0, MAX_RTC_HOSTS);
+    if (foci.length === 0 && servers.length === 0) return;
+    const rtc: RtcHosts = { ...this.rtc, foci: foci.length > 0 ? foci : this.rtc.foci };
+    if (servers.length > 0) rtc.servers = servers;
+    await this.saveRtc(rtc);
   }
 
   private async saveRtc(rtc: RtcHosts): Promise<void> {
@@ -424,7 +453,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       }
       return this.showRetry(`Could not reach ${this.host()}: ${friendly(error)}`, () => this.resume(saved));
     }
-    this.signedIn(saved);
+    this.signedIn(saved, true);
   }
 
   /** Finds the homeserver and its sign-in options, then asks how to sign in. */
@@ -476,11 +505,14 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.render();
   }
 
-  private signedIn(session: MxSession): void {
+  /** Starts syncing; after signing in (not on resuming, which looked them up), also asks the homeserver for its call transports, which need a session. */
+  private signedIn(session: MxSession, resumed = false): void {
     this.session = session;
     this.hasSession = true;
     this.error = undefined;
     this.connecting("Loading your chats…");
+    // Hosts they add are allowed from the next start, as for services found late.
+    if (!resumed) void this.discoverFoci(session);
     void this.syncLoop(++this.generation, session);
   }
 
@@ -967,22 +999,37 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const crypto = this.crypto;
     if (!crypto) return;
     let changed = false;
+    const due = (e: MxEvent): e is MxEncryptedEvent => e.kind === "encrypted" && e.raw !== undefined && (!sessions || sessions.has(e.sessionId ?? ""));
     for (const room of [...this.rooms.values()]) {
-      const waiting = room.events.filter((e): e is MxEncryptedEvent => e.kind === "encrypted" && e.raw !== undefined && (!sessions || sessions.has(e.sessionId ?? "")));
-      for (const event of waiting) {
+      const rtc: RtcEvent[] = [];
+      for (const event of room.events.filter(due)) {
         const result = await crypto.decrypt(room.id, event).catch(() => event);
         if (crypto !== this.crypto) return;
         if (result?.kind === "encrypted") continue;
         changed = true;
         const index = room.events.findIndex((e) => e.id === event.id);
         if (index < 0) continue;
-        // A message takes the placeholder's place; anything else (an edit, a hidden type) removes it.
+        // A message takes the placeholder's place; anything else (an edit, a call membership, a hidden type) removes it.
         if (result?.kind === "message" && !result.replaces) room.events[index] = result;
         else {
           room.events.splice(index, 1);
-          if (result) this.addEvent(room, result, false);
+          if (result?.kind === "rtc") rtc.push(result);
+          else if (result) this.addEvent(room, result, false);
         }
       }
+      // Sticky memberships from beside the timeline, whose keys came late.
+      for (const event of room.stickyWaiting.filter(due)) {
+        const result = await crypto.decrypt(room.id, event).catch(() => event);
+        if (crypto !== this.crypto) return;
+        if (result?.kind === "encrypted") continue;
+        room.stickyWaiting = room.stickyWaiting.filter((e) => e !== event);
+        if (result?.kind === "rtc") rtc.push(result);
+      }
+      if (rtc.length === 0) continue;
+      changed = true;
+      this.applyCalls(room, new Map(), rtc, false);
+      const call = this.call;
+      if (call?.roomId === room.id && call.grant) void call.keys?.update(this.participants(room));
     }
     if (changed) this.publish();
   }
@@ -1231,7 +1278,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       await crypto.receiveSync(sync.crypto).catch((error: unknown) => this.log(`Encryption sync: ${messageOf(error)}`));
       if (initial || sync.crypto.changed.includes(session.userId)) void this.refreshCryptoStatus(crypto);
     }
-    for (const update of sync.joined) update.timeline = await this.decryptAll(update.roomId, update.timeline);
+    for (const update of sync.joined) {
+      update.timeline = await this.decryptAll(update.roomId, update.timeline);
+      if (update.sticky) update.sticky = await this.decryptAll(update.roomId, update.sticky);
+    }
   }
 
   private local(id: string): string {
@@ -1262,6 +1312,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         highlights: 0,
         lastActivity: 0,
         calls: new Map(),
+        rtc: new Map(),
+        stickyWaiting: [],
       };
       this.rooms.set(id, room);
     }
@@ -1298,8 +1350,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       const fresh = !this.rooms.has(update.roomId);
       const room = this.room(update.roomId);
       this.applyState(room, update.state);
-      if (update.calls) {
-        this.applyCalls(room, update.calls, !initial);
+      // Sticky memberships come in the timeline, or (after a gap, or on joining) beside it; those still encrypted wait for their keys.
+      const rtc = [...(update.sticky ?? []), ...update.timeline].filter((e): e is RtcEvent => e.kind === "rtc");
+      for (const event of update.sticky ?? []) {
+        if (event.kind === "encrypted" && event.raw) room.stickyWaiting = [...room.stickyWaiting, event].slice(-MAX_STICKY_WAITING);
+      }
+      if (update.calls || rtc.length > 0) {
+        this.applyCalls(room, update.calls ?? new Map(), rtc, !initial);
         callChanged ||= room.id === this.call?.roomId;
       }
       // A call joined unencrypted does not carry on once the room turns encrypted.
@@ -1316,7 +1373,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         // Membership changes may be in the gap too.
         room.memberIds = undefined;
       }
-      for (const event of update.timeline) this.addEvent(room, event, !initial);
+      for (const event of update.timeline) if (event.kind !== "rtc") this.addEvent(room, event, !initial);
     }
     // Recovery and verification are screens of their own; syncs carry on behind them.
     if (this.step !== "recovery" && !isVerifyStep(this.step)) this.step = "chat";
@@ -1333,11 +1390,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   private removeEvent(room: Room, id: string): void {
     room.events = room.events.filter((e) => e.id !== id);
+    // A redacted sticky membership no longer counts (as matrix-js-sdk has it).
+    for (const [key, entry] of room.rtc) if (entry.id === id) room.rtc.set(key, { ...entry, member: null });
     for (const [key, edit] of room.edits) if (edit.id === id || key.endsWith(`|${id}`)) room.edits.delete(key);
   }
 
   /** Adds a timeline event; `live` ones (from a sync after the first) may notify. */
-  private addEvent(room: Room, event: MxEvent, live: boolean): void {
+  private addEvent(room: Room, event: Exclude<MxEvent, RtcEvent>, live: boolean): void {
     switch (event.kind) {
       case "redacted":
         return this.removeEvent(room, event.id);
@@ -1515,7 +1574,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         room.encryption = encryption;
       }
     }
-    if (!room.encrypted) return type === "m.room.message" ? this.deps.api.send(session, room.id, content) : this.deps.api.send(session, room.id, content, type);
+    const sealed = await this.seal(session, room, type, content);
+    return sealed.type === "m.room.message" ? this.deps.api.send(session, room.id, sealed.content) : this.deps.api.send(session, room.id, sealed.content, sealed.type);
+  }
+
+  /** A room event as it may be sent: encrypted when the room (as we know it) is; nothing without working encryption. */
+  private async seal(session: MxSession, room: Room, type: string, content: Record<string, unknown>): Promise<{ type: string; content: Record<string, unknown> }> {
+    if (!room.encrypted) return { type, content };
     const lock = this.lock(room);
     if (lock) {
       this.render();
@@ -1524,7 +1589,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     // The member list (who gets the room key) is fetched in full once; lazy-loaded syncs only name some members.
     room.memberIds ??= new Set(await this.deps.api.members(session, room.id));
     const encrypted = await this.crypto!.encrypt(room.id, { encryption: room.encryption!, history: room.history }, [...room.memberIds], type, content);
-    return this.deps.api.send(session, room.id, encrypted, "m.room.encrypted");
+    return { type: "m.room.encrypted", content: encrypted };
   }
 
   private findEvent(room: Room, local: string): Shown | undefined {
@@ -1666,12 +1731,17 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   // --- Calls --------------------------------------------------------------------------
 
-  /** The devices in a room's call now: memberships not expired, of people still in the room, one per device. */
+  /**
+   * The devices in a room's call now: memberships not expired, of people
+   * still in the room, one per device; a device in both formats counts by its
+   * sticky membership, as matrix-js-sdk prefers it.
+   */
   private activeMembers(room: Room): MxCallMember[] {
     const now = Date.now();
     const seen = new Set<string>();
     const active: MxCallMember[] = [];
-    for (const member of room.calls.values()) {
+    const sticky = [...room.rtc.values()].flatMap((entry) => entry.member ?? []);
+    for (const member of [...sticky, ...room.calls.values()]) {
       const membership = room.members.get(member.user)?.membership;
       const key = `${member.user}|${member.deviceId}`;
       if (member.expiresAt <= now || (membership !== undefined && membership !== "join") || seen.has(key)) continue;
@@ -1691,11 +1761,16 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const { userId: me, deviceId } = this.session!;
     return this.activeMembers(room)
       .filter((m) => m.user !== me || m.deviceId !== deviceId)
-      .map((m) => ({ userId: m.user, deviceId: m.deviceId, createdTs: m.createdTs }));
+      .map((m) => ({ userId: m.user, deviceId: m.deviceId, createdTs: m.createdTs, identities: m.identities }));
   }
 
-  /** Applies call membership changes; a call starting in a DM rings, unless we are in it on some device. */
-  private applyCalls(room: Room, changes: Map<string, MxCallMember | null>, live: boolean): void {
+  /**
+   * Applies call membership changes, of state events and sticky events (a
+   * sticky one replaces the current event of its key only when it outlasts
+   * it, as matrix-js-sdk orders them); a call starting in a DM rings, unless
+   * we are in it on some device.
+   */
+  private applyCalls(room: Room, changes: Map<string, MxCallMember | null>, rtc: RtcEvent[], live: boolean): void {
     const { userId: me, deviceId } = this.session!;
     const before = this.othersInCall(room).length;
     for (const [key, member] of changes) {
@@ -1705,6 +1780,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       }
       room.calls.set(key, member);
       if (member.user === me && member.deviceId === deviceId && this.call?.roomId === room.id) this.call.ownMembership(member.createdTs);
+    }
+    const now = Date.now();
+    for (const [key, entry] of room.rtc) if (entry.expiresAt <= now) room.rtc.delete(key);
+    for (const event of rtc) {
+      const current = room.rtc.get(event.key);
+      const newer = current ? event.expiresAt > current.expiresAt || (event.expiresAt === current.expiresAt && event.id > current.id) : room.rtc.size < MAX_CALL_MEMBERS * 2;
+      if (newer && event.expiresAt > now) room.rtc.set(event.key, { id: event.id, expiresAt: event.expiresAt, member: event.member });
     }
     if (!this.dmUsers.has(room.id)) return;
     const others = this.othersInCall(room);
@@ -1731,8 +1813,34 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return [...used, ...this.rtc.foci].find((focus) => this.hostAllowed(new URL(focus).hostname));
   }
 
-  /** Why we cannot join a room's call, or how: encrypted or not, and through which call service. */
-  private async callReady(session: MxSession, room: Room): Promise<string | { encrypted: boolean; focus: string }> {
+  /** The homeserver's LiveKit server to publish on in the newer format: one the people in the call use, else its first; only on hosts the engine may reach. */
+  private pickServer(room: Room): { url: string; focus?: string } | undefined {
+    const servers = (this.rtc.servers ?? []).filter((s) => this.hostAllowed(new URL(s.url).hostname));
+    const used = new Set(this.othersInCall(room).flatMap((m) => m.sfu ?? []));
+    return servers.find((s) => used.has(s.url)) ?? servers[0];
+  }
+
+  /**
+   * Which format to join a room's call in: the newer one (a sticky
+   * m.rtc.member) when someone in the call uses it, or when only it is
+   * possible here, and the homeserver has sticky events; else the state
+   * event Element Call has long sent. In the newer format we publish on the
+   * homeserver's LiveKit server where it names one (hashed identity), else
+   * on the service.
+   */
+  private async callFormat(session: MxSession, room: Room): Promise<{ focus: string; rtc?: { sfu?: string } } | undefined> {
+    const { userId: me, deviceId } = session;
+    const sticky = this.activeMembers(room).some((m) => m.memberId !== undefined && (m.user !== me || m.deviceId !== deviceId));
+    const focus = this.pickFocus(room);
+    const server = this.pickServer(room);
+    if ((sticky || !focus) && (focus || server) && (await this.deps.api.supports(session, STICKY_EVENTS_FEATURE).catch(() => false))) {
+      return server ? { focus: server.focus ?? focus ?? "", rtc: { sfu: server.url } } : { focus: focus!, rtc: {} };
+    }
+    return focus ? { focus } : undefined;
+  }
+
+  /** Why we cannot join a room's call, or how: encrypted or not, in which format, and through which call service. */
+  private async callReady(session: MxSession, room: Room): Promise<string | { encrypted: boolean; focus: string; rtc?: { sfu?: string } }> {
     if (!session.ownDevice || session.deviceId === "") return TOKEN_CALL_NOTICE;
     if (!room.encrypted) {
       // As with sending, the server is asked: our state may be stale, and an encrypted room's call must not be joined unencrypted.
@@ -1751,10 +1859,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       const why = this.cryptoProblem ? ` (${this.cryptoProblem})` : "";
       return `🔒 This room is end-to-end encrypted, and so are its calls, but encryption could not start${why}. Multicord never joins an encrypted room's call unencrypted; restart Multicord to try again.`;
     }
-    const focus = this.pickFocus(room);
-    if (focus) return { encrypted: room.encrypted, focus };
-    if (this.rtc.foci.length === 0) return `${this.host()} offers no calls: its homeserver names no call service (MatrixRTC with LiveKit), which Element Call needs as well.`;
-    return `The call service ${new URL(this.rtc.foci[0]!).host} is new to Multicord, which fixes the hosts it may reach when it starts. Restart Multicord to use it.`;
+    const format = await this.callFormat(session, room);
+    if (format) return { encrypted: room.encrypted, ...format };
+    const known = [...this.rtc.foci, ...(this.rtc.servers ?? []).map((s) => s.url)];
+    if (known.length === 0) return `${this.host()} offers no calls: its homeserver names no call service (MatrixRTC with LiveKit), which Element Call needs as well.`;
+    const blocked = known.find((url) => !this.hostAllowed(new URL(url).hostname));
+    if (blocked) return `The call service ${new URL(blocked).host} is new to Multicord, which fixes the hosts it may reach when it starts. Restart Multicord to use it.`;
+    return `${this.host()} offers calls only in MatrixRTC's newer format, which needs sticky events (MSC4354), and its homeserver does not have them.`;
   }
 
   private async joinCall(local: string): Promise<void> {
@@ -1771,12 +1882,14 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       this.error = ready;
       return this.render();
     }
+    const rtc: RtcJoin | undefined = ready.rtc && { ...ready.rtc, seal: (type, content) => this.seal(session, room, type, content) };
     const call = new MatrixCall({
       api: this.deps.api,
       session,
       roomId: room.id,
       focus: ready.focus,
       intent: "audio",
+      ...(rtc ? { rtc } : {}),
       e2ee: ready.encrypted ? this.crypto : undefined,
       allowHost: (host) => this.hostAllowed(host),
       changed: () => this.render(),
@@ -1840,7 +1953,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     for (const member of this.activeMembers(room)) {
       if (shown.has(member.user)) continue;
       shown.add(member.user);
-      const elsewhere = this.call?.roomId === room.id && member.focus !== undefined && member.focus !== this.call.focus;
+      const call = this.call?.roomId === room.id ? this.call : undefined;
+      // On a transport we do not use: a service other than ours, or a LiveKit server other than ours.
+      const named = member.focus !== undefined || member.sfu !== undefined;
+      const elsewhere = call !== undefined && named && member.focus !== call.focus && (member.sfu === undefined || member.sfu !== call.sfu);
       const row: NativeVoiceMember = { name: `${this.memberName(room, member.user)}${elsewhere ? ` · ${OTHER_SERVER_LABEL}` : ""}`, muted: false, video: false };
       const avatar = this.avatars.get(room.members.get(member.user)?.avatar ?? "");
       if (avatar) row.avatarUrl = avatar;
@@ -1867,7 +1983,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       }),
     );
     const open = this.selectedRoom();
-    if (open && !rooms.includes(open) && this.rtc.foci.length > 0) {
+    if (open && !rooms.includes(open) && (this.rtc.foci.length > 0 || this.rtc.servers !== undefined)) {
       items.push({ id: this.local(CALL_ENTRY + open.id), name: `Start a call in ${this.title(open)}`, kind: "voice", unread: false, mentions: 0, active: false });
     }
     return items;

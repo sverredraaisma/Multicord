@@ -494,7 +494,8 @@ export class MatrixE2ee implements E2ee {
     const relation = isRecord(outer.content) ? outer.content["m.relates_to"] : undefined;
     if (content["m.relates_to"] === undefined && relation !== undefined) content["m.relates_to"] = relation;
     // The id, sender and time are the encrypted event's own: the library has checked the sender.
-    const parsed = parseEvent({ type: clear.type, content, event_id: event.id, sender: event.sender, origin_server_ts: event.ts });
+    // So is stickiness (MSC4354), which stays outside the encryption; its expiry then counts from the event's time.
+    const parsed = parseEvent({ type: clear.type, content, event_id: event.id, sender: event.sender, origin_server_ts: event.ts, msc4354_sticky: outer.msc4354_sticky });
     if (parsed?.kind === "message") {
       const shield = decrypted.shieldState(false);
       if (shield.color !== ShieldColor.None) parsed.unverified = shield.message ?? "unverified device";

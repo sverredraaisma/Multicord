@@ -10,6 +10,8 @@ import {
   type MxDownload,
   type MxEvent,
   type MxLiveKitGrant,
+  type MxLiveKitTokenRequest,
+  type MxRtcTransport,
   type MxOAuthSession,
   type MxOpenIdToken,
   type MxPage,
@@ -123,13 +125,16 @@ class FakeMatrixApi implements MatrixApi {
   download = vi.fn(async (_s: MxSession, _mxc: string, _max: number): Promise<MxDownload | undefined> => undefined);
   logout = vi.fn(async (_s: MxSession) => {});
   rtcFoci = vi.fn(async (_url: string): Promise<string[]> => []);
-  rtcTransports = vi.fn(async (_s: MxSession): Promise<string[]> => []);
+  rtcTransports = vi.fn(async (_s: MxSession): Promise<MxRtcTransport[]> => []);
   supports = vi.fn(async (_s: MxSession, _feature: string) => false);
   openIdToken = vi.fn(async (_s: MxSession): Promise<MxOpenIdToken> => OPENID);
   sendState = vi.fn(async (_s: MxSession, _room: string, _type: string, _key: string, _content: Record<string, unknown>) => `$state${this.sendState.mock.calls.length}`);
   sendDelayedState = vi.fn(async (_s: MxSession, _room: string, _type: string, _key: string, _content: Record<string, unknown>, _delay: number) => "delay1");
   updateDelayed = vi.fn(async (_s: MxSession, _id: string, _action: "restart" | "send" | "cancel") => {});
   liveKitGrant = vi.fn(async (_url: string, _room: string, _device: string, _token: MxOpenIdToken): Promise<MxLiveKitGrant> => ({ url: "wss://sfu.call.x.org", jwt: "jwt1" }));
+  sendSticky = vi.fn(async (_s: MxSession, _room: string, _type: string, _content: Record<string, unknown>, _sticky: number) => `$sticky${this.sendSticky.mock.calls.length}`);
+  sendDelayedSticky = vi.fn(async (_s: MxSession, _room: string, _type: string, _content: Record<string, unknown>, _delay: number, _sticky: number) => "delay-s1");
+  liveKitToken = vi.fn(async (_s: MxSession, request: MxLiveKitTokenRequest): Promise<MxLiveKitGrant> => ({ url: request.sfu, jwt: "jwt-hs" }));
 
   /** Answers the pending (or next) /sync. */
   push(next: MxSync | Error): void {
@@ -2190,17 +2195,26 @@ describe("decrypting again", () => {
 // --- Calls ------------------------------------------------------------------------------
 
 const FOCUS = "https://jwt.call.x.org";
-const callMember = (user: string, deviceId: string, extra: Partial<MxCallMember> = {}): MxCallMember => ({ user, deviceId, createdTs: Date.now(), expiresAt: Date.now() + 3_600_000, focus: FOCUS, ...extra });
+const callMember = (user: string, deviceId: string, extra: Partial<MxCallMember> = {}): MxCallMember => ({
+  user,
+  deviceId,
+  createdTs: Date.now(),
+  expiresAt: Date.now() + 3_600_000,
+  focus: FOCUS,
+  identities: [`${user}:${deviceId}`],
+  ...extra,
+});
 const BO_KEY = "_@bo:x.org_BD_m.call";
 const MY_KEY = "_@me:x.org_D_m.call";
 const callSync = (roomId: string, ...entries: [string, MxCallMember | null][]) => sync({ joined: [room(roomId, { calls: new Map(entries) })] });
 
 /** A signed-in adapter whose homeserver names a call service. */
-async function withCalls(options: { session?: MxSession; lock?: boolean; secrets?: Record<string, string>; first?: MxSync } = {}) {
+async function withCalls(options: { session?: MxSession; lock?: boolean; secrets?: Record<string, string>; first?: MxSync; foci?: string[]; transports?: MxRtcTransport[] } = {}) {
   const lockHosts = vi.fn(async (_hosts: string[]) => {});
   const log = vi.fn();
   const ctx = setup({ session: JSON.stringify(options.session ?? SESSION), ...options.secrets }, false, { log, ...(options.lock ? { lockHosts } : {}) });
-  ctx.api.rtcFoci.mockResolvedValue([FOCUS]);
+  ctx.api.rtcFoci.mockResolvedValue(options.foci ?? [FOCUS]);
+  ctx.api.rtcTransports.mockResolvedValue(options.transports ?? []);
   const calls: IncomingCall[] = [];
   ctx.adapter.onIncomingCall((call) => calls.push(call));
   ctx.api.push(options.first ?? initialSync());
@@ -2227,7 +2241,7 @@ describe("call services and the host lock", () => {
   it("looks up the call services before locking, and allows them and known LiveKit servers", async () => {
     const lockHosts = vi.fn(async (_hosts: string[]) => {});
     const ctx = setup({ session: SESSION_JSON, rtc: JSON.stringify({ foci: ["https://old.x.org"], sfu: ["sfu.call.x.org", "Bad_Host!", 5] }) }, false, { lockHosts });
-    ctx.api.rtcTransports.mockResolvedValue(["https://mrtc.x.org/livekit/jwt"]);
+    ctx.api.rtcTransports.mockResolvedValue([{ service: "https://mrtc.x.org/livekit/jwt" }]);
     ctx.api.rtcFoci.mockResolvedValue([FOCUS, "https://mrtc.x.org/livekit/jwt"]);
     ctx.api.push(initialSync());
     await ctx.adapter.start();
@@ -2248,6 +2262,18 @@ describe("call services and the host lock", () => {
     const broken = setup({ rtc: "{" }, false, { lockHosts: vi.fn(async () => {}) });
     await broken.adapter.start();
     expect(broken.secrets.get("rtc")).toBe("{");
+  });
+
+  it("asks the homeserver for its call transports once signed in, for the next start", async () => {
+    const ctx = setup();
+    ctx.api.rtcTransports.mockResolvedValue([{ service: FOCUS, sfu: SFU }]);
+    await ctx.adapter.start();
+    expect(ctx.api.rtcTransports).not.toHaveBeenCalled();
+    ctx.api.push(initialSync());
+    await ctx.answer("login", { user: "me", password: "pw" });
+    await flush();
+    expect(ctx.api.rtcTransports).toHaveBeenCalledWith(SESSION);
+    expect(JSON.parse(ctx.secrets.get("rtc")!)).toEqual({ foci: [FOCUS], sfu: [], servers: [{ url: SFU, focus: FOCUS }] });
   });
 
   it("includes the call service in the lock before signing in", async () => {
@@ -2713,6 +2739,262 @@ describe("encrypted calls", () => {
     await ctx.act({ type: "joinVoice", channelId: anyCall(ctx.last()) });
     await flush();
     expect(ctx.chat().error).toContain("but encryption could not start. Multicord never joins");
+  });
+});
+
+// --- The newer call format: sticky m.rtc.member memberships -----------------------------
+
+const SFU = "wss://lk.x.org";
+const RTC_TYPE = "org.matrix.msc4143.rtc.member";
+type RtcEvent = Extract<MxEvent, { kind: "rtc" }>;
+/** A sticky membership event of `sender`'s device, on the homeserver's LiveKit server unless said otherwise. */
+const rtcEvent = (sender: string, deviceId: string, memberId: string, extra: { member?: Partial<MxCallMember> | null; id?: string; expiresAt?: number } = {}): RtcEvent => {
+  const expiresAt = extra.expiresAt ?? Date.now() + 3_600_000;
+  return {
+    kind: "rtc",
+    id: extra.id ?? `$r-${memberId}`,
+    sender,
+    ts: Date.now(),
+    key: `${sender}|${memberId}`,
+    expiresAt,
+    member: extra.member === null ? null : callMember(sender, deviceId, { memberId, focus: undefined, sfu: SFU, expiresAt, identities: [`hash-${memberId}`], ...extra.member }),
+  };
+};
+const rtcSync = (roomId: string, timeline: MxEvent[], extra: Partial<MxRoomUpdate> = {}) => sync({ joined: [room(roomId, { timeline, ...extra })] });
+const rtcOf = (ctx: { adapter: MatrixAdapter }, roomId: string) => (ctx.adapter as unknown as { rooms: Map<string, { rtc: Map<string, unknown> }> }).rooms.get(roomId)!.rtc;
+/** A homeserver with sticky events (and delayed events), or without. */
+const sticky = (api: FakeMatrixApi, has = true) => api.supports.mockImplementation(async (_s, feature) => has || feature !== "org.matrix.msc4354");
+
+describe("reading the newer call memberships", () => {
+  it("lists sticky memberships from the timeline and beside it, preferring them to the same device's state membership", async () => {
+    const ctx = await withCalls();
+    await ctx.live(
+      rtcSync("!lounge:x.org", [rtcEvent(ANA, "A1", "a1"), msg("l2", ANA, "joining", 600)], {
+        sticky: [rtcEvent(BO, "B1", "b1")],
+        calls: new Map([["_@ana:x.org_A1_m.call", callMember(ANA, "A1", { focus: "https://other.x.org" })]]),
+      }),
+    );
+    expect(ctx.callItem("Lounge")!.members!.map((m) => m.name)).toEqual(["@bo:x.org", "Ana"]);
+    // The membership is no message.
+    await ctx.act({ type: "select", channelId: ctx.chat().sidebar.find((i) => i.kind === "text" && i.name === "Lounge")!.id });
+    expect(ctx.messages().map((m) => m.content)).toEqual(["welcome", "joining"]);
+    // The server lacks sticky events: we join in the older format, on our service (not the one Ana's state membership names), and Ana's LiveKit server is not ours.
+    await ctx.join("Lounge");
+    expect(ctx.api.supports).toHaveBeenCalledWith(SESSION, "org.matrix.msc4354");
+    expect(ctx.api.liveKitGrant).toHaveBeenCalledWith(FOCUS, "!lounge:x.org", "D", OPENID);
+    expect(ctx.api.sendState).toHaveBeenCalledWith(SESSION, "!lounge:x.org", "org.matrix.msc3401.call.member", MY_KEY, expect.objectContaining({ application: "m.call" }));
+    expect(ctx.api.sendSticky).not.toHaveBeenCalled();
+    expect(ctx.callItem("Lounge")!.members!.map((m) => m.name)).toEqual([`@bo:x.org · ${OTHER_SERVER_LABEL}`, `Ana · ${OTHER_SERVER_LABEL}`]);
+  });
+
+  it("keeps the current event per sticky key: later ones replace it, older and expired ones do not", async () => {
+    vi.useFakeTimers({ now: 5_000_000 });
+    const ctx = await withCalls();
+    const end = Date.now() + 1000;
+    await ctx.live(rtcSync("!lounge:x.org", [rtcEvent(ANA, "A1", "a1", { expiresAt: end })]));
+    expect(ctx.callItem("Lounge")).toBeDefined();
+    // The leave outlasts the join and replaces it.
+    await ctx.live(rtcSync("!lounge:x.org", [rtcEvent(ANA, "A1", "a1", { id: "$leave", member: null, expiresAt: end + 1000 })]));
+    expect(ctx.callItem("Lounge")).toBeUndefined();
+    // An older join (e.g. from beside the timeline after a gap) does not bring it back; one that outlasts it, or ties with a later id, does.
+    await ctx.live(rtcSync("!lounge:x.org", [], { sticky: [rtcEvent(ANA, "A1", "a1", { id: "$old", expiresAt: end })] }));
+    expect(ctx.callItem("Lounge")).toBeUndefined();
+    await ctx.live(rtcSync("!lounge:x.org", [rtcEvent(ANA, "A1", "a1", { id: "$aaa", expiresAt: end + 1000 })]));
+    expect(ctx.callItem("Lounge")).toBeUndefined();
+    await ctx.live(rtcSync("!lounge:x.org", [rtcEvent(ANA, "A1", "a1", { id: "$zzz", expiresAt: end + 1000 })]));
+    expect(ctx.callItem("Lounge")).toBeDefined();
+    // One that already stopped being sticky counts for nothing; and memberships that stopped being sticky go.
+    await ctx.live(rtcSync("!lounge:x.org", [rtcEvent(BO, "B1", "b1", { expiresAt: Date.now() })]));
+    expect(rtcOf(ctx, "!lounge:x.org").size).toBe(1);
+    vi.setSystemTime(end + 1000);
+    expect(ctx.callItem("Lounge")).toBeDefined(); // shown until the next change
+    await ctx.live(rtcSync("!lounge:x.org", [rtcEvent(BO, "B1", "b1")]));
+    expect([...rtcOf(ctx, "!lounge:x.org").keys()]).toEqual(["@bo:x.org|b1"]);
+  });
+
+  it("keeps a bounded number of sticky keys per room, and drops a redacted membership", async () => {
+    const ctx = await withCalls();
+    const many = Array.from({ length: 205 }, (_, i) => rtcEvent(`@u${i}:x.org`, "D", `m${i}`));
+    await ctx.live(rtcSync("!lounge:x.org", many));
+    expect(rtcOf(ctx, "!lounge:x.org").size).toBe(200);
+    await ctx.live(rtcSync("!dm:x.org", [rtcEvent(BO, "BD", "b1"), rtcEvent(BO, "B2", "b2", { member: null })]));
+    expect(ctx.callItem("Bo")).toBeDefined();
+    await ctx.live(rtcSync("!dm:x.org", [{ kind: "redaction", id: "$red", sender: BO, ts: Date.now(), redacts: "$r-b1" }]));
+    expect(ctx.callItem("Bo")).toBeUndefined();
+  });
+
+  it("rings for a DM call started in the newer format", async () => {
+    const ctx = await withCalls();
+    await ctx.live(rtcSync("!dm:x.org", [rtcEvent(BO, "BD", "b1", { member: { intent: "video" } })]));
+    expect(ctx.calls).toEqual([{ conversationKey: "!dm:x.org", from: "Bo", video: true }]);
+  });
+});
+
+describe("joining in the newer call format", () => {
+  it("joins a call that uses it on the homeserver's LiveKit server, with access from the homeserver", async () => {
+    const ctx = await withCalls({ lock: true, transports: [{ service: FOCUS, sfu: SFU }] });
+    expect(ctx.lockHosts).toHaveBeenCalledWith(["x.org", "hs.x.org", "jwt.call.x.org", "lk.x.org"]);
+    expect(JSON.parse(ctx.secrets.get("rtc")!)).toEqual({ foci: [FOCUS], sfu: [], servers: [{ url: SFU, focus: FOCUS }] });
+    sticky(ctx.api);
+    await ctx.live(rtcSync("!lounge:x.org", [rtcEvent(ANA, "A1", "a1")], { calls: new Map([["c", callMember("@cy:x.org", "C1")]]) }));
+    await ctx.join("Lounge");
+    expect(ctx.api.liveKitToken).toHaveBeenCalledWith(SESSION, { sfu: SFU, roomId: "!lounge:x.org", slotId: "m.call#ROOM", memberId: expect.stringMatching(/^[0-9a-f-]{36}$/), deviceId: "D" });
+    expect(ctx.api.openIdToken).not.toHaveBeenCalled();
+    expect(ctx.voice()).toMatchObject({ url: SFU, token: "jwt-hs" });
+    // An unencrypted room's membership goes as it is; the leave is scheduled first.
+    expect(ctx.api.sendDelayedSticky).toHaveBeenCalledWith(SESSION, "!lounge:x.org", RTC_TYPE, { slot_id: "m.call#ROOM", msc4354_sticky_key: expect.any(String) }, 18_000, 3_600_000);
+    expect(ctx.api.sendSticky).toHaveBeenCalledWith(SESSION, "!lounge:x.org", RTC_TYPE, expect.objectContaining({ transports: { published: [{ type: "livekit", url: SFU }], can_subscribe: ["livekit"] } }), 3_600_000);
+    expect(ctx.api.sendState).not.toHaveBeenCalled();
+    // Ana is on our LiveKit server; Cy's service is the one our server's transport names.
+    expect(ctx.callItem("Lounge")!.members!.map((m) => m.name)).toEqual(["Ana", "@cy:x.org"]);
+    await ctx.act({ type: "leaveVoice" });
+    await flush();
+    expect(ctx.api.updateDelayed).toHaveBeenLastCalledWith(SESSION, "delay-s1", "send");
+  });
+
+  it("joins through the service, and on a LiveKit server the people in the call use", async () => {
+    const plain = await withCalls();
+    sticky(plain.api);
+    // Our own device's old membership does not count as someone using the format.
+    await plain.live(rtcSync("!lounge:x.org", [rtcEvent(ME, "D", "mine")]));
+    await plain.join("Lounge");
+    expect(plain.api.sendState).toHaveBeenCalled();
+    await plain.act({ type: "leaveVoice" });
+    await plain.live(rtcSync("!lounge:x.org", [rtcEvent(ANA, "A1", "a1", { member: { focus: FOCUS, sfu: undefined } })]));
+    await plain.join("Lounge");
+    expect(plain.api.liveKitGrant).toHaveBeenCalledWith(FOCUS, "!lounge:x.org", "D", OPENID);
+    expect(plain.api.sendSticky.mock.calls[0]![3]).toMatchObject({ transports: { published: [{ type: "livekit", livekit_service_url: FOCUS }] } });
+
+    const two = await withCalls({ transports: [{ sfu: "wss://one.x.org" }, { sfu: SFU }] });
+    sticky(two.api);
+    await two.live(rtcSync("!lounge:x.org", [rtcEvent(ANA, "A1", "a1")]));
+    await two.join("Lounge");
+    expect(two.api.liveKitToken.mock.calls[0]![1].sfu).toBe(SFU);
+    // Without a service of its own, the call's service is none (nobody here names one).
+    expect((two.adapter as unknown as { call: { focus: string } }).call.focus).toBe(FOCUS);
+  });
+
+  it("starts a call in the newer format where only it is possible, and says so where the homeserver lacks sticky events", async () => {
+    const ctx = await withCalls({ foci: [], transports: [{ sfu: SFU }] });
+    await ctx.open("Lounge");
+    sticky(ctx.api, false);
+    await ctx.join("Start a call in Lounge");
+    expect(ctx.chat().error).toBe("x.org offers calls only in MatrixRTC's newer format, which needs sticky events (MSC4354), and its homeserver does not have them.");
+    sticky(ctx.api);
+    await ctx.join("Start a call in Lounge");
+    expect(ctx.voice()).toMatchObject({ url: SFU });
+    expect((ctx.adapter as unknown as { call: { focus: string } }).call.focus).toBe("");
+    // A homeserver that cannot say is taken to lack them.
+    await ctx.act({ type: "leaveVoice" });
+    ctx.api.supports.mockRejectedValue(new Error("offline"));
+    await ctx.join("Start a call in Lounge");
+    expect(ctx.chat().error).toContain("needs sticky events");
+  });
+
+  it("says when the homeserver's LiveKit server was found after starting", async () => {
+    const lockHosts = vi.fn(async (_hosts: string[]) => {});
+    const ctx = setup({ session: SESSION_JSON }, false, { lockHosts });
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    await flush();
+    (ctx.adapter as unknown as { rtc: object }).rtc = { foci: [], sfu: [], servers: [{ url: SFU }] };
+    await ctx.open("Lounge");
+    await ctx.act({ type: "joinVoice", channelId: anyCall(ctx.last()) });
+    await flush();
+    expect(ctx.chat().error).toBe("The call service lk.x.org is new to Multicord, which fixes the hosts it may reach when it starts. Restart Multicord to use it.");
+  });
+
+  it("reads stored LiveKit servers back only as transports", async () => {
+    const lockHosts = vi.fn(async (_hosts: string[]) => {});
+    const stored = { foci: [], sfu: [], servers: [{ url: SFU }, { url: "ws://plain.x.org" }, { url: "ws://plain.x.org", focus: FOCUS }, "x", { url: "wss://two.x.org", focus: "http://bad" }] };
+    const ctx = setup({ session: SESSION_JSON, rtc: JSON.stringify(stored) }, false, { lockHosts });
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    expect(lockHosts).toHaveBeenCalledWith(["x.org", "hs.x.org", "lk.x.org", "two.x.org"]);
+  });
+});
+
+describe("encrypted calls in the newer format", () => {
+  it("encrypts the membership, and gives keys under the identities each membership names", async () => {
+    const ctx = await withCrypto();
+    sticky(ctx.api);
+    await ctx.live(rtcSync("!dm:x.org", [rtcEvent(BO, "BD", "b1", { member: { focus: FOCUS, sfu: undefined, identities: ["hash-b1", "@bo:x.org:BD"] } })]));
+    await ctx.act({ type: "joinVoice", channelId: anyCall(ctx.last()) });
+    await flush();
+    expect(ctx.e2ee.encrypt).toHaveBeenCalledWith("!dm:x.org", { encryption: ROOM_ENCRYPTION, history: undefined }, [ME, BO], RTC_TYPE, expect.objectContaining({ slot_id: "m.call#ROOM" }));
+    expect(ctx.api.sendSticky).toHaveBeenCalledWith(SESSION, "!dm:x.org", "m.room.encrypted", { algorithm: "m.megolm.v1.aes-sha2", ciphertext: "secret" }, 3_600_000);
+    const memberId = (ctx.adapter as unknown as { call: { memberId: string } }).call.memberId;
+    expect(ctx.e2ee.sendToDevices).toHaveBeenCalledWith("io.element.call.encryption_keys", [{ userId: BO, deviceId: "BD" }], expect.objectContaining({ member: { claimed_device_id: "D", id: memberId } }));
+    const key = btoa("k".repeat(16));
+    ctx.e2ee.toDevice.get("io.element.call.encryption_keys")!({ userId: BO, deviceId: "BD", content: { room_id: "!dm:x.org", media_key: { index: 0, key }, member: { claimed_device_id: "BD", id: "b1" } } });
+    expect(ctx.chat().voice!.e2ee!.keys.filter((k) => k.key === key).map((k) => k.participant)).toEqual(["hash-b1", "@bo:x.org:BD"]);
+  });
+
+  it("decrypts sticky memberships, now or once their keys arrive", async () => {
+    const ctx = await withCrypto();
+    const calls: IncomingCall[] = [];
+    ctx.adapter.onIncomingCall((call) => calls.push(call));
+    const bo = () => ctx.chat().sidebar.find((i) => i.kind === "voice" && i.name === "Bo")!;
+    ctx.e2ee.clear.set("$now", rtcEvent(BO, "BD", "b1"));
+    await ctx.live(rtcSync("!dm:x.org", [], { sticky: [encRaw("now", BO, 5000), encRaw("late", BO, 5000, { sessionId: "S9" }), encRaw("ring", BO, 5000, { sessionId: "S9" }), encRaw("nothing", BO, 5000, { sessionId: "S9" }), enc("big", BO, 5000)] }));
+    expect(calls).toEqual([{ conversationKey: "!dm:x.org", from: "Bo", video: false }]);
+    expect(ctx.chat().voice).toBeNull();
+    // Keys for other sessions leave them waiting.
+    ctx.e2ee.clear.set("$late", rtcEvent(BO, "B2", "b2"));
+    ctx.e2ee.keys(["S8"]);
+    await flush();
+    expect(bo().members).toHaveLength(1);
+    ctx.e2ee.clear.set("$ring", msg("ring", BO, "not a membership", 5000));
+    ctx.e2ee.clear.set("$nothing", undefined);
+    ctx.e2ee.keys(["S9"]);
+    await flush();
+    const waiting = (ctx.adapter as unknown as { rooms: Map<string, { stickyWaiting: unknown[] }> }).rooms.get("!dm:x.org")!.stickyWaiting;
+    expect(waiting).toEqual([]);
+    expect(ctx.chat().sidebar.filter((i) => i.kind === "voice").map((i) => i.members?.length)).toEqual([1]);
+    expect(rtcOf(ctx, "!dm:x.org").size).toBe(2);
+
+    // In the timeline, a membership whose key came late leaves the messages.
+    await ctx.act({ type: "select", channelId: ctx.chat().sidebar.find((i) => i.kind === "dm" && i.name === "Bo")!.id });
+    await ctx.live(rtcSync("!dm:x.org", [encRaw("tl", BO, 6000, { sessionId: "S7" })]));
+    expect(ctx.messages().at(-1)!.content).toContain("Unable to decrypt");
+    const shown = ctx.messages().length;
+    ctx.e2ee.clear.set("$tl", rtcEvent(BO, "B3", "b3"));
+    ctx.e2ee.keys(["S7"]);
+    await flush();
+    expect(ctx.messages()).toHaveLength(shown - 1);
+    expect(rtcOf(ctx, "!dm:x.org").size).toBe(3);
+  });
+
+  it("keeps a sticky membership waiting while it cannot be decrypted, and stops when encryption does", async () => {
+    const ctx = await withCrypto();
+    await ctx.live(rtcSync("!dm:x.org", [], { sticky: [encRaw("w1", BO, 5000, { sessionId: "S9" })] }));
+    const waiting = () => (ctx.adapter as unknown as { rooms: Map<string, { stickyWaiting: unknown[] }> }).rooms.get("!dm:x.org")!.stickyWaiting;
+    ctx.e2ee.decrypt.mockRejectedValueOnce(new Error("broken"));
+    ctx.e2ee.keys(["S9"]);
+    await flush();
+    expect(waiting()).toHaveLength(1);
+    // Signed out while decrypting: nothing more happens.
+    ctx.e2ee.decrypt.mockImplementationOnce(async (_room, event) => {
+      (ctx.adapter as unknown as { crypto: unknown }).crypto = undefined;
+      return rtcEvent(BO, "BD", "b1", { id: event.id });
+    });
+    ctx.e2ee.keys(["S9"]);
+    await flush();
+    expect(waiting()).toHaveLength(1);
+  });
+
+  it("shares keys with whoever joins once their membership decrypts", async () => {
+    const ctx = await withCrypto();
+    sticky(ctx.api, false);
+    await ctx.live(rtcSync("!dm:x.org", [rtcEvent(BO, "BD", "b1", { member: { focus: FOCUS, sfu: undefined } })]));
+    await ctx.act({ type: "joinVoice", channelId: anyCall(ctx.last()) });
+    await flush();
+    ctx.e2ee.sendToDevices.mockClear();
+    await ctx.live(rtcSync("!dm:x.org", [], { sticky: [encRaw("ana", ANA, 5000, { sessionId: "S5" })] }));
+    ctx.e2ee.clear.set("$ana", rtcEvent(ANA, "AD", "a1"));
+    ctx.e2ee.keys(["S5"]);
+    await flush();
+    expect(ctx.e2ee.sendToDevices).toHaveBeenCalledWith("io.element.call.encryption_keys", [{ userId: ANA, deviceId: "AD" }], expect.anything());
   });
 });
 

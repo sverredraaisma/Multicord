@@ -446,8 +446,8 @@ describe("refreshing before expiry", () => {
 describe("calls", () => {
   const TOKEN = { access_token: "oid", token_type: "Bearer", matrix_server_name: "x.org", expires_in: 3600 };
 
-  it("asks for call memberships in the sync timeline", () => {
-    expect(JSON.parse(SYNC_FILTER).room.timeline.types).toContain("org.matrix.msc3401.call.member");
+  it("asks for call memberships of both kinds in the sync timeline", () => {
+    expect(JSON.parse(SYNC_FILTER).room.timeline.types).toEqual(expect.arrayContaining(["org.matrix.msc3401.call.member", "org.matrix.msc4143.rtc.member"]));
   });
 
   it("reads the call services a server's .well-known names", async () => {
@@ -472,9 +472,11 @@ describe("calls", () => {
     expect(fetchFn).not.toHaveBeenCalled();
   });
 
-  it("reads the homeserver's own call services, if it has the endpoint", async () => {
-    const { client, fetchFn } = fakeFetch(() => json({ rtc_transports: [{ type: "livekit", livekit_service_url: "https://mrtc.x.org/livekit/jwt" }] }));
-    expect(await client.rtcTransports(SESSION)).toEqual(["https://mrtc.x.org/livekit/jwt"]);
+  it("reads the homeserver's own call services and LiveKit servers, if it has the endpoint", async () => {
+    const { client, fetchFn } = fakeFetch(() =>
+      json({ rtc_transports: [{ type: "livekit", livekit_service_url: "https://mrtc.x.org/livekit/jwt" }, { type: "livekit", livekit_service_url: "https://mrtc.x.org/livekit/jwt", url: "wss://mrtc.x.org/livekit/sfu" }] }),
+    );
+    expect(await client.rtcTransports(SESSION)).toEqual([{ service: "https://mrtc.x.org/livekit/jwt" }, { service: "https://mrtc.x.org/livekit/jwt", sfu: "wss://mrtc.x.org/livekit/sfu" }]);
     const { url, init } = callOf(fetchFn);
     expect(url.href).toBe(`${BASE}/_matrix/client/unstable/org.matrix.msc4143/rtc/transports`);
     expect(init.headers.Authorization).toBe("Bearer tok");
@@ -547,6 +549,41 @@ describe("calls", () => {
       const { client: broken } = fakeFetch(() => json(bad));
       await expect(broken.liveKitGrant("https://jwt.call.x.org", "!r:x.org", "D", TOKEN)).rejects.toThrow("unreadable answer");
     }
+  });
+
+  it("sends sticky events, now or delayed, at most an hour sticky", async () => {
+    const { client, fetchFn } = fakeFetch((url) => json(url.searchParams.has("org.matrix.msc4140.delay") ? { delay_id: "d1" } : { event_id: "$s1" }));
+    expect(await client.sendSticky(SESSION, "!r:x.org", "org.matrix.msc4143.rtc.member", { a: 1 }, 3_600_000)).toBe("$s1");
+    let call = callOf(fetchFn);
+    expect(call.url.pathname).toMatch(/^\/_matrix\/client\/v3\/rooms\/!r%3Ax.org\/send\/org.matrix.msc4143.rtc.member\/mc[a-z0-9]+\.1$/);
+    expect(call.url.searchParams.get("org.matrix.msc4354.sticky_duration_ms")).toBe("3600000");
+    expect([call.init.method, call.body]).toEqual(["PUT", { a: 1 }]);
+    expect(await client.sendDelayedSticky(SESSION, "!r:x.org", "m.room.encrypted", { b: 2 }, 18000, 1e9)).toBe("d1");
+    call = callOf(fetchFn, 1);
+    expect(call.url.pathname).toContain("/send/m.room.encrypted/");
+    expect([call.url.searchParams.get("org.matrix.msc4140.delay"), call.url.searchParams.get("org.matrix.msc4354.sticky_duration_ms"), call.body]).toEqual(["18000", "3600000", { b: 2 }]);
+    const { client: broken } = fakeFetch(() => json({ event_id: "nope", delay_id: "" }));
+    await expect(broken.sendSticky(SESSION, "!r:x.org", "t", {}, 1)).rejects.toThrow("unreadable");
+    await expect(broken.sendDelayedSticky(SESSION, "!r:x.org", "t", {}, 1, 1)).rejects.toThrow("unreadable");
+  });
+
+  it("asks the homeserver for access to its LiveKit server for a membership, keeping the address as named", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({ jwt: "a.b-c_d" }));
+    const request = { sfu: "wss://sfu.x.org", roomId: "!r:x.org", slotId: "m.call#ROOM", memberId: "uuid-1", deviceId: "D" };
+    expect(await client.liveKitToken(SESSION, request)).toEqual({ url: "wss://sfu.x.org", jwt: "a.b-c_d" });
+    const { url, init, body } = callOf(fetchFn);
+    expect(url.href).toBe(`${BASE}/_matrix/client/unstable/io.element.msc4195/rtc/livekit/get_token`);
+    expect([init.method, init.headers.Authorization]).toEqual(["POST", "Bearer tok"]);
+    expect(body).toEqual({ url: "wss://sfu.x.org", room_id: "!r:x.org", slot_id: "m.call#ROOM", member_id: "uuid-1", member: { id: "uuid-1", claimed_device_id: "D" } });
+    // Never to a LiveKit server we may not use, and nothing but a JWT back.
+    await expect(client.liveKitToken(SESSION, { ...request, sfu: "ws://sfu.x.org" })).rejects.toThrow("not a wss address");
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    for (const bad of [{ jwt: "a b" }, { jwt: 5 }, {}]) {
+      const { client: broken } = fakeFetch(() => json(bad));
+      await expect(broken.liveKitToken(SESSION, request)).rejects.toThrow("unreadable call access token");
+    }
+    const refused = fakeFetch(() => json({ errcode: "M_FORBIDDEN", error: "not joined" }, 403));
+    await expect(refused.client.liveKitToken(SESSION, request)).rejects.toMatchObject({ status: 403, errcode: "M_FORBIDDEN" });
   });
 
   it("checks LiveKit server addresses", () => {
