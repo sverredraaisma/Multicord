@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TgEntity } from "../../../src/modules/telegram/api";
-import { escapeText, fromMarkdown, MAX_ENTITIES, toMarkdown } from "../../../src/modules/telegram/format";
+import { customEmojiIds, escapeText, fromMarkdown, MAX_ENTITIES, toMarkdown } from "../../../src/modules/telegram/format";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 
 const e = (type: TgEntity["type"], offset: number, length: number, extra: Partial<TgEntity> = {}): TgEntity => ({ type, offset, length, ...extra });
@@ -180,8 +180,76 @@ describe("fromMarkdown", () => {
     });
   });
 
-  it("sends emoji shortcodes as emoji, and custom emoji by name", () => {
-    expect(fromMarkdown(":smile: <:party:123>").text).toBe("😄 :party:");
+  it("sends emoji shortcodes as emoji, and other modules' custom emoji by name", () => {
+    expect(fromMarkdown(":smile: <:party:abc>")).toEqual({ text: "😄 :party:", entities: [] });
+  });
+
+  it("sends Telegram's custom emoji as the emoji they stand for, marked with their document id", () => {
+    expect(fromMarkdown("<:😀:123> hi")).toEqual({ text: "😀 hi", entities: [e("customEmoji", 0, 2, { documentId: "123" })] });
+    expect(fromMarkdown("<:party:-5>")).toEqual({ text: "party", entities: [e("customEmoji", 0, 5, { documentId: "-5" })] });
+  });
+
+  it("counts custom emoji offsets in UTF-16 units, after surrogate pairs and within other styles", () => {
+    // 😀 is two units, 👍🏽 four: the emoji starts at 3.
+    expect(fromMarkdown("😀 <:👍🏽:9> **x <:😀:8>**")).toEqual({
+      text: "😀 👍🏽 x 😀",
+      entities: [e("customEmoji", 3, 4, { documentId: "9" }), e("bold", 8, 4), e("customEmoji", 10, 2, { documentId: "8" })],
+    });
+  });
+});
+
+describe("custom emoji", () => {
+  const all = () => true;
+  const emoji = (text: string, part: string, id: string, from = 0) => e("customEmoji", text.indexOf(part, from), part.length, { documentId: id });
+
+  it("shows the custom emoji asked for as <:emoji:id>, the rest as the emoji they cover", () => {
+    const text = "a😀b";
+    const entities = [emoji(text, "😀", "5")];
+    expect(toMarkdown(text, entities, all)).toBe("a<:😀:5>b");
+    expect(toMarkdown(text, entities)).toBe("a😀b");
+    expect(toMarkdown(text, entities, (id) => id === "6")).toBe("a😀b");
+    expect(back("a<:😀:5>b")).toEqual({ text, entities });
+  });
+
+  it("keeps UTF-16 offsets right with surrogate pairs, joined emoji and mixed entities", () => {
+    const family = ["👨", "👩", "👧"].join(String.fromCharCode(0x200d));
+    const text = `hi 👍🏽 there ${family} end`;
+    const entities = [emoji(text, "👍🏽", "7"), e("bold", text.indexOf("there"), `there ${family}`.length), emoji(text, family, "8"), e("italic", text.indexOf("end"), 3)];
+    const markdown = toMarkdown(text, entities, all);
+    expect(markdown).toBe(`hi <:👍🏽:7> **there <:${family}:8>** *end*`);
+    expect(back(markdown)).toEqual({ text, entities });
+    // Only some shown: the others stay as their emoji, styles and offsets as they were.
+    expect(toMarkdown(text, entities, (id) => id === "8")).toBe(`hi 👍🏽 **there <:${family}:8>** *end*`);
+  });
+
+  it("shows emoji in code, and those that overlap another, as the emoji they cover", () => {
+    expect(toMarkdown("x😀", [e("code", 0, 3), e("customEmoji", 1, 2, { documentId: "5" })], all)).toBe("`x😀`");
+    expect(toMarkdown("a\n😀", [e("pre", 2, 2), e("customEmoji", 2, 2, { documentId: "5" })], all)).toBe("a\n```\n😀\n```");
+    expect(toMarkdown("😀😀", [e("customEmoji", 0, 4, { documentId: "5" }), e("customEmoji", 2, 2, { documentId: "6" })], all)).toBe("<:😀😀:5>");
+    expect(toMarkdown("😀😀", [e("customEmoji", 2, 2, { documentId: "6" }), e("customEmoji", 0, 2, { documentId: "5" })], all)).toBe("<:😀:5><:😀:6>");
+  });
+
+  it("leaves out emoji with ids that are not Telegram's, or text a name cannot hold", () => {
+    expect(toMarkdown("😀", [e("customEmoji", 0, 2, { documentId: "x" })], all)).toBe("😀");
+    expect(toMarkdown("😀", [e("customEmoji", 0, 2)], all)).toBe("😀");
+    expect(toMarkdown("a b", [e("customEmoji", 0, 3, { documentId: "5" })], all)).toBe("a b");
+    expect(toMarkdown("a:b", [e("customEmoji", 0, 3, { documentId: "5" })], all)).toBe("a:b");
+  });
+
+  it("closes off a link that runs into an emoji", () => {
+    const text = "https://x.org😀";
+    const markdown = toMarkdown(text, [emoji(text, "😀", "5")], all);
+    expect(markdown).toBe("<https://x.org><:😀:5>");
+    expect(back(markdown)).toEqual({ text, entities: [emoji(text, "😀", "5")] });
+  });
+
+  it("shows an emoji that a style cuts through as text", () => {
+    expect(toMarkdown("😀", [e("bold", 0, 1), e("customEmoji", 0, 2, { documentId: "5" })], all)).toBe("😀");
+  });
+
+  it("lists the custom emoji in a text's formatting, each once", () => {
+    expect(customEmojiIds([e("customEmoji", 0, 2, { documentId: "5" }), e("bold", 0, 1), e("customEmoji", 2, 2, { documentId: "5" }), e("customEmoji", 4, 2, { documentId: "6" }), e("customEmoji", 6, 2), e("customEmoji", 6, 2, { documentId: "y" })])).toEqual(["5", "6"]);
+    expect(customEmojiIds(undefined)).toEqual([]);
   });
 });
 

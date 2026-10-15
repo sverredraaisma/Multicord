@@ -15,7 +15,7 @@ const h = vi.hoisted(() => {
     "UserStatusOnline", "UserStatusRecently", "UserStatusOffline", "ChatFull", "ChatParticipants", "ChatParticipantsForbidden", "ChatParticipant", "ChatParticipantAdmin",
     "ChatParticipantCreator", "ChannelFull", "ChannelParticipant", "ChannelParticipantAdmin", "ChannelParticipantCreator", "ChannelParticipantsRecent", "ChannelParticipantsAdmins",
     "MessageEntityBold", "MessageEntityItalic", "MessageEntityUnderline", "MessageEntityStrike", "MessageEntitySpoiler", "MessageEntityCode", "MessageEntityPre",
-    "MessageEntityTextUrl", "MessageEntityBlockquote", "MessageEntityMention",
+    "MessageEntityTextUrl", "MessageEntityBlockquote", "MessageEntityMention", "MessageEntityCustomEmoji", "DocumentAttributeCustomEmoji",
     "ReactionEmoji", "ReactionCustomEmoji", "ReactionCount", "MessageReactions", "ChatReactionsNone", "ChatReactionsSome", "ChatReactionsAll", "UpdateMessageReactions",
     "UpdateUserTyping", "UpdateChatUserTyping", "UpdateChannelUserTyping", "SendMessageTypingAction", "SendMessageCancelAction", "SendMessageUploadPhotoAction",
     "SendMessageRecordVideoAction", "SendMessageUploadVideoAction", "SendMessageRecordAudioAction", "SendMessageUploadAudioAction", "SendMessageUploadDocumentAction",
@@ -1043,6 +1043,27 @@ describe("entities", () => {
       { offset: 3, length: 1, language: "" },
       { offset: 0, length: 4 },
     ]);
+  });
+
+  it("reads custom emoji with their document ids, and writes them back", () => {
+    const text = "a😀😀😀";
+    const found = entitiesOf(
+      [
+        make(Api.MessageEntityCustomEmoji, { offset: 1, length: 2, documentId: 5368324170671202286n }),
+        make(Api.MessageEntityCustomEmoji, { offset: 3, length: 2, documentId: { toString: () => "-7" } }),
+        // Without an id Telegram's, it is left out.
+        make(Api.MessageEntityCustomEmoji, { offset: 5, length: 2 }),
+        make(Api.MessageEntityCustomEmoji, { offset: 5, length: 2, documentId: "x" }),
+      ],
+      text,
+    );
+    expect(found).toEqual([
+      { type: "customEmoji", offset: 1, length: 2, documentId: "5368324170671202286" },
+      { type: "customEmoji", offset: 3, length: 2, documentId: "-7" },
+    ]);
+    const [entity] = apiEntities([found[0]!]);
+    expect(entity).toBeInstanceOf(Api.MessageEntityCustomEmoji);
+    expect({ ...entity }).toEqual({ offset: 1, length: 2, documentId: 5368324170671202286n });
   });
 
   it("gives messages their formatting", () => {

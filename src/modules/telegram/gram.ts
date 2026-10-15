@@ -15,6 +15,7 @@ import { StringSession } from "telegram/sessions/StringSession";
 import type { Dialog } from "telegram/tl/custom/dialog";
 import {
   ALL_CHATS,
+  DOCUMENT_ID,
   FAVED_STICKERS,
   GENERAL_TOPIC,
   isChannelPeer,
@@ -307,15 +308,20 @@ const ENTITY_TYPES: [new (...args: never[]) => Api.TypeMessageEntity, TgEntity["
 export function entitiesOf(entities: readonly unknown[] | undefined, text: string): TgEntity[] {
   const out: TgEntity[] = [];
   for (const entity of (entities ?? []).slice(0, MAX_ENTITIES)) {
-    const type = ENTITY_TYPES.find(([cls]) => entity instanceof cls)?.[1];
+    const type = entity instanceof Api.MessageEntityCustomEmoji ? "customEmoji" : ENTITY_TYPES.find(([cls]) => entity instanceof cls)?.[1];
     if (!type) continue;
-    const { offset, length, url, language } = entity as { offset?: unknown; length?: unknown; url?: unknown; language?: unknown };
+    const { offset, length, url, language, documentId } = entity as { offset?: unknown; length?: unknown; url?: unknown; language?: unknown; documentId?: unknown };
     if (!Number.isInteger(offset) || !Number.isInteger(length)) continue;
     const [start, size] = [offset as number, length as number];
     if (start < 0 || size <= 0 || start + size > text.length) continue;
     const found: TgEntity = { type, offset: start, length: size };
     if (type === "textUrl" && typeof url === "string") found.url = url.slice(0, 2048);
     if (type === "pre" && typeof language === "string" && language !== "") found.language = language.slice(0, 64);
+    if (type === "customEmoji") {
+      const id = String(documentId ?? "");
+      if (!DOCUMENT_ID.test(id)) continue;
+      found.documentId = id;
+    }
     out.push(found);
   }
   return out;
@@ -323,12 +329,14 @@ export function entitiesOf(entities: readonly unknown[] | undefined, text: strin
 
 /** Formatting for Telegram, from what the view's markdown said. */
 export function apiEntities(entities: readonly TgEntity[]): Api.TypeMessageEntity[] {
-  return entities.map(({ type, offset, length, url, language }) => {
+  return entities.map(({ type, offset, length, url, language, documentId }) => {
     switch (type) {
       case "textUrl":
         return new Api.MessageEntityTextUrl({ offset, length, url: url ?? "" });
       case "pre":
         return new Api.MessageEntityPre({ offset, length, language: language ?? "" });
+      case "customEmoji":
+        return new Api.MessageEntityCustomEmoji({ offset, length, documentId: returnBigInt(documentId!) });
       default:
         return new (ENTITY_TYPES.find(([, name]) => name === type)![0] as new (args: { offset: number; length: number }) => Api.TypeMessageEntity)({ offset, length });
     }

@@ -3,9 +3,11 @@
 // converts between the two through that same parser, so what the user types
 // is sent as they saw it in the preview, and what arrives shows as Telegram
 // shows it: incoming text is escaped, so a literal * or _ stays literal.
+// Custom emoji are `<:emoji:document id>` both ways, the emoji they stand
+// for being the text Telegram's entity covers.
 
 import { escapeMarkdown, parseMarkdown, type Block, type Inline } from "../../shared/markdown";
-import type { TgEntity, TgText } from "./api";
+import { DOCUMENT_ID, type TgEntity, type TgText } from "./api";
 
 /** Inline styles, outermost first: markers always nest in this order. */
 const INLINE = ["textUrl", "spoiler", "strike", "underline", "bold", "italic", "code"] as const;
@@ -67,21 +69,39 @@ const linkTarget = (url: string): string => url.replace(/[\s)>]/g, (c) => `%${c.
 /** A code block's language as a fence line can carry it. */
 const language = (value: string | undefined): string => (value && /^[A-Za-z0-9_+#.-]{1,32}$/.test(value) ? value : "");
 
-/** What the entities say, cleaned: valid ranges, styles without surrounding white space, blocks on whole lines. */
+/** A custom emoji drawn as its picture: `<:name:id>`, its name the emoji its range covers. */
+interface EmojiRange extends LineRange {
+  id: string;
+}
+
+/** What the entities say, cleaned: valid ranges, styles without surrounding white space, blocks on whole lines, custom emoji outside code. */
 interface Layout {
   inline: Range[];
   pre: (LineRange & { language: string })[];
   quote: LineRange[];
+  emoji: EmojiRange[];
 }
 
-function layout(text: string, entities: readonly TgEntity[]): Layout {
-  const out: Layout = { inline: [], pre: [], quote: [] };
+/** Which custom emoji, by document id, show as their picture; the rest show as the emoji they cover. */
+export type ShownEmoji = (id: string) => boolean;
+
+/** Text the view's `<:name:id>` takes as a name. */
+const EMOJI_NAME = /^[^\s:<>]{1,64}$/;
+
+function layout(text: string, entities: readonly TgEntity[], shown: ShownEmoji): Layout {
+  const out: Layout = { inline: [], pre: [], quote: [], emoji: [] };
   const lineStart = (i: number) => i === 0 || text[i - 1] === "\n";
   const lineEnd = (i: number) => i === text.length || text[i] === "\n";
+  const emoji: EmojiRange[] = [];
   for (const entity of entities.slice(0, MAX_ENTITIES)) {
     let start = entity.offset;
     let end = entity.offset + entity.length;
     if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end > text.length || end <= start) continue;
+    if (entity.type === "customEmoji") {
+      const id = entity.documentId ?? "";
+      if (DOCUMENT_ID.test(id) && shown(id) && EMOJI_NAME.test(text.slice(start, end))) emoji.push({ start, end, id });
+      continue;
+    }
     if (entity.type === "pre" || entity.type === "blockquote") {
       // A block keeps its lines whole; the line breaks around it belong to no one.
       if (text[start] === "\n") start++;
@@ -105,6 +125,12 @@ function layout(text: string, entities: readonly TgEntity[]): Layout {
       out.inline.push({ type: "textUrl", start, end, url: linkTarget(url) });
     } else out.inline.push({ type: entity.type === "pre" ? "code" : entity.type, start, end });
   }
+  // Code shows its text as it is; emoji that overlap code, or one another, show as the emoji they cover.
+  const code = [...out.pre, ...out.inline.filter((r) => r.type === "code")];
+  const overlaps = (a: LineRange, b: LineRange) => a.start < b.end && b.start < a.end;
+  for (const range of emoji.sort((a, b) => a.start - b.start)) {
+    if (!code.some((c) => overlaps(c, range)) && !out.emoji.some((e) => overlaps(e, range))) out.emoji.push(range);
+  }
   return out;
 }
 
@@ -116,8 +142,20 @@ interface Frame {
   parts: string[];
 }
 
-/** One stretch of lines without blocks in it, with its styles as markers. */
-function renderInline(text: string, start: number, end: number, ranges: Range[], italic: string): string {
+/** Text from `a` to `b` escaped, with the custom emoji in it as `<:name:id>`; `last`: nothing follows it. */
+function escapeWithEmoji(text: string, a: number, b: number, emoji: readonly EmojiRange[], last: boolean): string {
+  let out = "";
+  let at = a;
+  for (const e of emoji) {
+    if (e.start < a || e.end > b) continue;
+    out += escapeText(text.slice(at, e.start), false) + `<:${text.slice(e.start, e.end)}:${e.id}>`;
+    at = e.end;
+  }
+  return out + escapeText(text.slice(at, b), last);
+}
+
+/** One stretch of lines without blocks in it, with its styles as markers and its custom emoji as pictures. */
+function renderInline(text: string, start: number, end: number, ranges: Range[], italic: string, emoji: readonly EmojiRange[]): string {
   const clipped = ranges.flatMap((r) => {
     let s = Math.max(r.start, start);
     let e = Math.min(r.end, end);
@@ -176,18 +214,17 @@ function renderInline(text: string, start: number, end: number, ranges: Range[],
     while (keep < stack.length && keep < wanted.length && same(stack[keep]!, wanted[keep]!)) keep++;
     while (stack.length > keep) close();
     for (const range of wanted.slice(keep)) stack.push({ type: range.type, url: range.url, parts: [] });
-    const piece = text.slice(a, b);
     // Markers follow the stretch unless it is the last and unstyled.
     const last = i === spans.length - 1 && wanted.length === 0;
-    (stack.at(-1)?.parts ?? root).push(stack.at(-1)?.type === "code" ? piece : escapeText(piece, last));
+    (stack.at(-1)?.parts ?? root).push(stack.at(-1)?.type === "code" ? text.slice(a, b) : escapeWithEmoji(text, a, b, emoji, last));
   });
   while (stack.length > 0) close();
   return root.join("");
 }
 
 /** Text and entities as markdown, with the given italic marker; unchecked. */
-function render(text: string, entities: readonly TgEntity[], italic: string): string {
-  const { inline, pre, quote } = layout(text, entities);
+function render(text: string, entities: readonly TgEntity[], italic: string, shown: ShownEmoji): string {
+  const { inline, pre, quote, emoji } = layout(text, entities, shown);
   const lines: LineRange[] = [];
   for (let start = 0; ; ) {
     const end = text.indexOf("\n", start);
@@ -205,7 +242,7 @@ function render(text: string, entities: readonly TgEntity[], italic: string): st
     while (j < lines.length && inside(pre, lines[j]!) === code && (inside(quote, lines[j]!) !== undefined) === quoted) j++;
     const [first, final] = [lines[i]!.start, lines[j - 1]!.end];
     if (code) emit(["```" + code.language, ...text.slice(first, final).split("\n"), "```"], quoted);
-    else emit(renderInline(text, first, final, inline, italic).split("\n"), quoted);
+    else emit(renderInline(text, first, final, inline, italic, emoji).split("\n"), quoted);
     i = j;
   }
   return out.join("\n");
@@ -274,8 +311,14 @@ class Builder {
           this.text += node.unicode;
           return !this.strict;
         case "customEmoji":
-          this.text += `:${node.name}:`;
-          return !this.strict;
+          // Telegram's own (by document id) as the emoji it stands for, marked; another module's syntax by name.
+          if (!DOCUMENT_ID.test(node.id)) {
+            this.text += `:${node.name}:`;
+            return !this.strict;
+          }
+          this.text += node.name;
+          this.mark("customEmoji", start, { documentId: node.id });
+          return true;
         case "link": {
           const ok = this.inline(node.children);
           // A bare address is linked by Telegram itself.
@@ -307,30 +350,41 @@ function styles(text: string, layout: Layout): string[] {
   for (const r of layout.inline) for (let i = r.start; i < r.end; i++) if (!inPre(i)) flags[i]!.push(r.type === "textUrl" ? `L${r.url}` : r.type);
   for (const b of layout.pre) for (let i = b.start; i < b.end; i++) flags[i]!.push(`P${b.language}`);
   for (const b of layout.quote) for (let i = b.start; i < b.end; i++) flags[i]!.push("q");
+  for (const e of layout.emoji) for (let i = e.start; i < e.end; i++) flags[i]!.push(`E${e.id}`);
   return flags.map((f, i) => (isSpace(text[i]) ? "" : [...new Set(f)].sort().join(" ")));
 }
+
+const ALL_EMOJI: ShownEmoji = () => true;
+const NO_EMOJI: ShownEmoji = () => false;
 
 /** Whether markdown shows exactly this text with these styles. */
 function shows(markdown: string, text: string, expected: string[]): boolean {
   const builder = new Builder(true);
   if (!builder.blocks(parseMarkdown(markdown)) || builder.text !== text) return false;
-  const actual = styles(text, layout(text, builder.entities));
+  const actual = styles(text, layout(text, builder.entities, ALL_EMOJI));
   return actual.every((flags, i) => flags === expected[i]);
 }
 
 /**
  * Telegram text and entities as markdown for the view: bold, italic,
  * underline, strikethrough, spoilers, code, code blocks, web links and
- * quotes; everything else escaped. The result is checked by parsing it
- * back, and where markers would be read otherwise (styles pressed together),
- * the other italic marker is tried, then the text shows unstyled.
+ * quotes, and the custom emoji `shown` picks as `<:emoji:document id>`;
+ * everything else escaped. The result is checked by parsing it back, and
+ * where markers would be read otherwise (styles pressed together), the
+ * other italic marker is tried, then the text shows unstyled.
  */
-export function toMarkdown(text: string, entities: readonly TgEntity[] = []): string {
-  const expected = styles(text, layout(text, entities));
+export function toMarkdown(text: string, entities: readonly TgEntity[] = [], shown: ShownEmoji = NO_EMOJI): string {
+  const expected = styles(text, layout(text, entities, shown));
   for (const italic of ["*", "_"]) {
-    const markdown = render(text, entities, italic);
+    const markdown = render(text, entities, italic, shown);
     if (shows(markdown, text, expected)) return markdown;
   }
   const plain = escapeText(text);
-  return shows(plain, text, styles(text, layout(text, []))) ? plain : escapeMarkdown(text);
+  return shows(plain, text, styles(text, layout(text, [], NO_EMOJI))) ? plain : escapeMarkdown(text);
+}
+
+/** Every custom emoji entity in a text's formatting, by document id, at most MAX_ENTITIES. */
+export function customEmojiIds(entities: readonly TgEntity[] | undefined): string[] {
+  const ids = (entities ?? []).slice(0, MAX_ENTITIES).flatMap((e) => (e.type === "customEmoji" && e.documentId && DOCUMENT_ID.test(e.documentId) ? [e.documentId] : []));
+  return [...new Set(ids)];
 }

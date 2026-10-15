@@ -1038,6 +1038,12 @@ describe("sending", () => {
     expect(ctx.chat().channel!.messages.at(-1)).toMatchObject({ content: "*now* italic" });
   });
 
+  it("sends custom emoji as the emoji they stand for", async () => {
+    const ctx = await open();
+    await ctx.act({ type: "send", content: "**<:😀:5>** hi" });
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "😀 hi", entities: [{ type: "bold", offset: 0, length: 2 }] }, undefined, undefined);
+  });
+
   it("sends nothing for markdown without text", async () => {
     const ctx = await open();
     await ctx.act({ type: "send", content: "> " });

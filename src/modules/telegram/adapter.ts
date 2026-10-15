@@ -6,7 +6,7 @@ import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, Na
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS, MAX_FOLDERS } from "../../shared/native";
 import { TYPING_SETTING, type AccountStatus, type ServiceSettingStatus, type ServiceSettingValues } from "../../shared/settings";
-import { ALL_CHATS, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgNotifyDefaults, type TgPoll, type TgPreview, type TgProfile, type TgQrLogin, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
+import { ALL_CHATS, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgNotifyDefaults, type TgPoll, type TgPreview, type TgProfile, type TgQrLogin, type TgReaction, type TgSticker, type TgText, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /**
  * Chats listed: one-to-one chats, groups and channels together, most recent
@@ -1083,7 +1083,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private async createTopic(title: string, content: string): Promise<void> {
     const chatId = this.selected;
     const dialog = chatId ? this.dialog(chatId) : undefined;
-    const text = fromMarkdown(content);
+    const text = this.outgoing(content);
     if (!chatId || !dialog?.forum || this.topic !== undefined || !this.api || text.text.trim() === "") return;
     if (dialog.noTopics || dialog.readOnly) {
       this.error = "Only the group's admins start topics here.";
@@ -1098,6 +1098,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       this.messages.set(conversation(chatId, topic), [sent]);
       await this.select(chatId, topic);
     });
+  }
+
+  /** The user's markdown as Telegram text; custom emoji go as the emoji they stand for. */
+  private outgoing(content: string): TgText {
+    const text = fromMarkdown(content);
+    return { text: text.text, entities: text.entities.filter((e) => e.type !== "customEmoji") };
   }
 
   private async attempt(what: string, task: () => Promise<void>): Promise<void> {
@@ -1121,7 +1127,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const key = this.current();
     const dialog = chatId ? this.dialog(chatId) : undefined;
     const topic = this.topic;
-    const text = fromMarkdown(content);
+    const text = this.outgoing(content);
     const files = key ? (this.pending.get(key) ?? []) : [];
     const hasText = text.text.trim() !== "";
     // A forum takes messages in its topics only.
@@ -1204,7 +1210,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
 
   private async edit(messageId: string, content: string): Promise<void> {
     const chatId = this.selected;
-    const text = fromMarkdown(content);
+    const text = this.outgoing(content);
     if (!chatId || !this.api || text.text.trim() === "") return;
     await this.attempt("Message not edited", async () => {
       const edited = await this.api!.edit(chatId, Number(messageId), text);

@@ -29,14 +29,19 @@ export interface TgFile {
 
 /** A range of a message's text shown a certain way, counted in UTF-16 units as Telegram counts. */
 export interface TgEntity {
-  type: "bold" | "italic" | "underline" | "strike" | "spoiler" | "code" | "pre" | "textUrl" | "blockquote";
+  type: "bold" | "italic" | "underline" | "strike" | "spoiler" | "code" | "pre" | "textUrl" | "blockquote" | "customEmoji";
   offset: number;
   length: number;
   /** A text link's address. */
   url?: string;
   /** A code block's language. */
   language?: string;
+  /** A custom emoji's document id; the text it covers is the emoji it stands for. */
+  documentId?: string;
 }
+
+/** Telegram's document ids (custom emoji, stickers), as decimal strings. */
+export const DOCUMENT_ID = /^-?\d{1,20}$/;
 
 /** Formatted text, as Telegram sends and takes it. */
 export interface TgText {
