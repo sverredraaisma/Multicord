@@ -1,8 +1,41 @@
 import { build } from "esbuild";
-import { cpSync, mkdirSync, readFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { telegramBrowser } from "./telegramBrowser.mjs";
 
 const common = { bundle: true, sourcemap: true, target: "chrome140", logLevel: "info" };
+
+/**
+ * Module engines: every src/entries/engine-<id>.ts becomes dist/engines/<id>.js,
+ * served to sandboxed engine pages (see docs/modules.md). Ids follow the
+ * rule the engine host enforces (src/main/engineHost.ts).
+ */
+const ENGINE_ID = /^[a-z0-9-]{1,32}$/;
+const engineIds = readdirSync("src/entries")
+  .map((file) => /^engine-(.+)\.ts$/.exec(file)?.[1])
+  .filter((id) => id !== undefined)
+  .sort();
+for (const id of engineIds) if (!ENGINE_ID.test(id)) throw new Error(`Engine id "${id}" must be lowercase letters, digits or dashes`);
+
+/** Build options beyond the defaults, for engines that need them. */
+const engineOptions = {
+  // Matrix bundles the crypto library's WebAssembly as bytes: the engine's origin serves nothing but its script.
+  matrix: {
+    loader: { ".wasm": "binary" },
+    // The package's own loader builds a default URL from import.meta.url when imported; it is never fetched.
+    define: { "import.meta.url": JSON.stringify("multicord-engine://matrix/engine.js") },
+  },
+  telegram: {
+    plugins: [telegramBrowser()],
+    inject: ["scripts/telegramGlobals.mjs"],
+    define: {
+      // Telegram issues API credentials per app (my.telegram.org); without them users enter their own.
+      __TELEGRAM_API_ID__: JSON.stringify(process.env.MULTICORD_TELEGRAM_API_ID ?? ""),
+      __TELEGRAM_API_HASH__: JSON.stringify(process.env.MULTICORD_TELEGRAM_API_HASH ?? ""),
+      __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync("package.json", "utf8")).version),
+    },
+  },
+};
+for (const id of Object.keys(engineOptions)) if (!engineIds.includes(id)) throw new Error(`Build options for engine "${id}", which has no src/entries/engine-${id}.ts`);
 
 mkdirSync("dist", { recursive: true });
 cpSync("static", "dist", { recursive: true });
@@ -54,38 +87,15 @@ await Promise.all([
     outdir: "dist",
     loader: { ".wasm": "binary" },
   }),
-  // Module engines: sandboxed pages, served from dist/engines.
-  build({
-    ...common,
-    entryPoints: { "engines/fluxer": "src/entries/engine-fluxer.ts", "engines/stoat": "src/entries/engine-stoat.ts" },
-    platform: "browser",
-    format: "iife",
-    outdir: "dist",
-  }),
-  // Matrix bundles the crypto library's WebAssembly as bytes: the engine's origin serves nothing but its script.
-  build({
-    ...common,
-    entryPoints: { "engines/matrix": "src/entries/engine-matrix.ts" },
-    platform: "browser",
-    format: "iife",
-    outdir: "dist",
-    loader: { ".wasm": "binary" },
-    // The package's own loader builds a default URL from import.meta.url when imported; it is never fetched.
-    define: { "import.meta.url": JSON.stringify("multicord-engine://matrix/engine.js") },
-  }),
-  build({
-    ...common,
-    entryPoints: { "engines/telegram": "src/entries/engine-telegram.ts" },
-    platform: "browser",
-    format: "iife",
-    outdir: "dist",
-    plugins: [telegramBrowser()],
-    inject: ["scripts/telegramGlobals.mjs"],
-    define: {
-      // Telegram issues API credentials per app (my.telegram.org); without them users enter their own.
-      __TELEGRAM_API_ID__: JSON.stringify(process.env.MULTICORD_TELEGRAM_API_ID ?? ""),
-      __TELEGRAM_API_HASH__: JSON.stringify(process.env.MULTICORD_TELEGRAM_API_HASH ?? ""),
-      __APP_VERSION__: JSON.stringify(JSON.parse(readFileSync("package.json", "utf8")).version),
-    },
-  }),
+  // Module engines, one bundle each.
+  ...engineIds.map((id) =>
+    build({
+      ...common,
+      entryPoints: { [`engines/${id}`]: `src/entries/engine-${id}.ts` },
+      platform: "browser",
+      format: "iife",
+      outdir: "dist",
+      ...engineOptions[id],
+    }),
+  ),
 ]);

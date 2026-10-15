@@ -42,6 +42,19 @@ describe("module registry", () => {
       expect(Boolean(manifest.screenShare)).toBe(Boolean(manifest.capabilities!.screenShare));
     }
   });
+
+  it("builds an engine bundle for every native module, and none for anything else", async () => {
+    const fs = await import("node:fs");
+    // scripts/build.mjs bundles each src/entries/engine-<id>.ts as dist/engines/<id>.js.
+    const entries = fs.readdirSync("src/entries").flatMap((file) => /^engine-(.+)\.ts$/.exec(file)?.[1] ?? []).sort();
+    const engines = [...new Set(MODULES.flatMap((m) => m.manifest.engine ?? []))].sort();
+    expect(entries).toEqual(engines);
+    for (const { manifest } of MODULES.filter((m) => m.manifest.engine)) {
+      expect(manifest.engine, manifest.id).toMatch(/^[a-z0-9-]{1,32}$/);
+      // The engine's view is Multicord's own chat view, which needs the native preload.
+      expect(manifest.preload, manifest.id).toBe("preload-native.js");
+    }
+  });
 });
 
 /** Every file under these directories, however deep. */
