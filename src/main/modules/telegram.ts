@@ -21,6 +21,7 @@ export const telegramModule: PlatformModule = {
     home: true,
     // Media is downloaded over MTProto in the engine when the view asks.
     holdsMedia: true,
+    sendsTyping: true,
     capabilities: { directMessages: true, messagePreviews: true, voice: false, screenShare: false },
     settings: [
       {

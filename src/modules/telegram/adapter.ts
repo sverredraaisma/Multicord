@@ -5,7 +5,7 @@ import { escapeText, fromMarkdown, toMarkdown } from "./format";
 import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeFolder, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativePoll, NativePollOption, NativeSearchResults, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS, MAX_FOLDERS } from "../../shared/native";
-import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
+import { TYPING_SETTING, type AccountStatus, type ServiceSettingStatus, type ServiceSettingValues } from "../../shared/settings";
 import { ALL_CHATS, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgPoll, type TgPreview, type TgProfile, type TgQrLogin, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /**
@@ -103,6 +103,8 @@ export interface TelegramAdapterDeps {
   mediaBudget?: number;
   /** Bytes of stickers' pictures kept for the picker (default STICKER_CACHE_BYTES). */
   stickerBudget?: number;
+  /** This instance's settings values (TYPING_SETTING); changes come through applySettings(). */
+  settings?: ServiceSettingValues;
 }
 
 /** A sticker pack as fetched: a set, or the user's recent or favourite stickers. */
@@ -274,6 +276,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private typingTimer: ReturnType<typeof setTimeout> | undefined;
   /** The user's own typing notice: in which conversation, and when it was last sent. */
   private ownTyping: { key: string; sent: number } | undefined;
+  /** Settings' "Send typing indicators" for this service. */
+  private typingIndicators: boolean;
   /** Names of people typing, as Telegram told them; and those asked for. */
   private readonly names = new Map<string, string>();
   private readonly namesAsked = new Set<string>();
@@ -305,6 +309,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
 
   constructor(private readonly deps: TelegramAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: "telegram.org", accountId: "default" });
+    this.typingIndicators = deps.settings?.[TYPING_SETTING] !== false;
   }
 
   /** Resumes a saved session, else starts at the first sign-in step. */
@@ -364,6 +369,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.credentials = undefined;
     this.ownCredentials = false;
     this.step = "api";
+  }
+
+  /** Settings changed: whether to send typing indicators; turned off while typing, the notice is called off. */
+  applySettings(values: ServiceSettingValues): void {
+    this.typingIndicators = values[TYPING_SETTING] !== false;
+    if (!this.typingIndicators && this.ownTyping) this.stopTyping(this.ownTyping.key);
   }
 
   /** What Settings shows with "Forget API ID". Never the hash. */
@@ -1314,7 +1325,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private sendTyping(): void {
     const key = this.current();
     const dialog = this.selected ? this.dialog(this.selected) : undefined;
-    if (!key || !dialog || dialog.readOnly || (dialog.forum && this.topic === undefined) || !this.api) return;
+    if (!key || !dialog || dialog.readOnly || (dialog.forum && this.topic === undefined) || !this.api || !this.typingIndicators) return;
     const now = Date.now();
     if (this.ownTyping?.key === key && now - this.ownTyping.sent < TYPING_REPEAT_MS) return;
     this.ownTyping = { key, sent: now };
@@ -2013,7 +2024,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       ...(this.unreadAt?.key === key ? { unread: this.unreadView(key, this.unreadAt) } : {}),
       ...(this.pins?.key === key ? { pins: this.pins.list } : {}),
       ...(this.search?.key === key ? { search: this.search.results } : {}),
-      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: true, search: true, forward: true },
+      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked && this.typingIndicators, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: true, search: true, forward: true },
     };
   }
 

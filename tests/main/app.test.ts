@@ -988,7 +988,7 @@ describe("settings", () => {
     const info = (id: string) => ipcMain.invoke(ENGINE_IPC.invoke, senderEvent(engineOf(id)), { type: "info" });
     expect(((await info("mx")) as { settings: unknown }).settings).toEqual({ typing: false, slidingSync: false });
     expect(((await info("mx2")) as { settings: unknown }).settings).toEqual({ typing: true, slidingSync: true });
-    expect(await info("telegram")).toMatchObject({ settings: {} });
+    expect(((await info("telegram")) as { settings: unknown }).settings).toEqual({ typing: true });
     expect(((await info("fluxer")) as { settings: unknown }).settings).toEqual({ typing: true });
 
     // A change reaches only that service's engine.
@@ -1008,7 +1008,7 @@ describe("settings", () => {
     handle.settingsStore.update({ general: { typingIndicators: false } });
     expect(engineOf("mx2").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: false, slidingSync: true } });
     expect(engineOf("mx").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: false, slidingSync: false } });
-    expect(engineOf("telegram").webContents.send).not.toHaveBeenCalledWith(ENGINE_IPC.command, expect.objectContaining({ type: "settings" }));
+    expect(engineOf("telegram").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: false } });
     handle.settingsStore.update({ services: { mx: { typing: true } } });
     expect(engineOf("mx").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: true, slidingSync: false } });
   });

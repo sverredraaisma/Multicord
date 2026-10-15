@@ -83,6 +83,7 @@ interface Options {
   authorized?: boolean;
   /** No file picker, as where the engine offers none. */
   noFiles?: boolean;
+  settings?: Record<string, boolean | string>;
 }
 
 function setup(options: Options = {}) {
@@ -114,6 +115,7 @@ function setup(options: Options = {}) {
     mediaBudget: options.mediaBudget,
     stickerBudget: options.stickerBudget,
     files: options.noFiles ? undefined : picker,
+    settings: options.settings,
   });
   adapter.onDirectsChanged((d) => directs.push(d));
   adapter.onNotification((n) => notifications.push(n));
@@ -2273,6 +2275,26 @@ describe("typing", () => {
     await ctx.act({ type: "typing" });
     expect(ctx.chat().channel!.can.typing).toBe(false);
     expect(ctx.api.typing.mock.calls).toEqual([["1", true, undefined], ["-5", true, undefined], ["-5", false, undefined]]);
+  });
+
+  it("sends no typing while Settings turns it off, calling off a notice that still shows", async () => {
+    const off = await signedIn({ dialogs: group(), settings: { typing: false } });
+    await off.adapter.openConversation("1");
+    expect(off.chat().channel!.can.typing).toBe(false);
+    await off.act({ type: "typing" });
+    expect(off.api.typing).not.toHaveBeenCalled();
+
+    const ctx = await signedIn({ dialogs: group() });
+    await ctx.adapter.openConversation("1");
+    ctx.adapter.applySettings({ typing: false }); // nothing to call off
+    ctx.adapter.applySettings({});
+    await ctx.act({ type: "typing" });
+    ctx.adapter.applySettings({ typing: false });
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing.mock.calls).toEqual([["1", true, undefined], ["1", false, undefined]]);
+    ctx.adapter.applySettings({ typing: true });
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing).toHaveBeenCalledTimes(3);
   });
 
   it("ignores a failing typing notice", async () => {

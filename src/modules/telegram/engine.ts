@@ -26,6 +26,7 @@ export async function startTelegramEngine(bridge: EngineBridge, options: Telegra
     builtInCredentials: options.builtIn,
     createApi: (credentials, session) => createApi(credentials, session, { os: info.os, appVersion: options.appVersion }),
     files: { pick: () => pickFiles(bridge), open: (file) => fileSource(bridge, file) },
+    settings: info.settings,
   });
   served = serveAdapter(bridge, adapter);
   await adapter.start();
