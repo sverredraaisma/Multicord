@@ -23,6 +23,7 @@ const h = vi.hoisted(() => {
     "InputFile", "InputFileBig", "InputMediaUploadedPhoto", "InputMediaUploadedDocument",
     "PhotoPathSize", "VideoSize", "StickerSet", "InputStickerSetID", "InputMediaDocument", "InputDocument",
     "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings", "InputFolderPeer", "FolderPeer", "UpdateFolderPeers", "DialogFilter", "DialogFilterChatlist", "DialogFilterDefault", "InputPeerUser", "InputPeerChat", "InputPeerChannel", "InputPeerSelf", "UpdateDialogFilter", "UpdateDialogFilters", "UpdateDialogFilterOrder", "UpdateLoginToken", "InputMessagesFilterEmpty", "InputNotifyForumTopic",
+    "InputNotifyUsers", "InputNotifyChats", "InputNotifyBroadcasts", "NotifyPeer", "NotifyUsers", "NotifyChats", "NotifyBroadcasts", "NotifyForumTopic", "UpdateNotifySettings",
   ];
   const Api: Record<string, unknown> = {
     auth: {
@@ -36,7 +37,7 @@ const h = vi.hoisted(() => {
       LoginTokenMigrateTo: class extends Base {},
       LoginTokenSuccess: class extends Base {},
     },
-    account: { GetPassword: class extends Base {}, UpdateNotifySettings: class extends Base {} },
+    account: { GetPassword: class extends Base {}, UpdateNotifySettings: class extends Base {}, GetNotifySettings: class extends Base {} },
     messages: {
       ReadMentions: class extends Base {},
       GetFullChat: class extends Base {},
@@ -456,7 +457,8 @@ describe("createGramApi", () => {
       dialogs: [
         { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, readUpTo: 7, lastMessage: toMessage(last, "1") },
         { chatId: "2", kind: "user", title: "@bo", bot: false, unreadCount: 0, unreadMentions: 0, date: 90, mutedUntil: 2147483647 },
-        { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, members: true, noMedia: true, noStickers: true },
+        // Unmuted by its own setting (0), where "none" follows the defaults.
+        { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, mutedUntil: 0, members: true, noMedia: true, noStickers: true },
         { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true, left: true },
       ],
     });
@@ -595,6 +597,14 @@ describe("createGramApi", () => {
     expect((client.invoke.mock.calls[1]![0] as { settings: { muteUntil: number } }).settings.muteUntil).toBe(0);
   });
 
+  it("reads the default mutes for one-to-one chats, groups and channels", async () => {
+    client.invoke.mockImplementation(async (request: { peer: unknown }) =>
+      request.peer instanceof Api.InputNotifyUsers ? make(Api.PeerNotifySettings, { muteUntil: 2147483647 }) : request.peer instanceof Api.InputNotifyChats ? make(Api.PeerNotifySettings, {}) : {},
+    );
+    await expect(api.notifyDefaults()).resolves.toEqual({ user: 2147483647, group: 0, channel: 0 });
+    expect(client.invoke.mock.calls.map((c) => c[0])).toEqual([expect.any(Api.account.GetNotifySettings), expect.any(Api.account.GetNotifySettings), expect.any(Api.account.GetNotifySettings)]);
+  });
+
   it("moves a chat into the archive and out of it", async () => {
     await expect(api.archive("-7", true)).resolves.toBeUndefined();
     await api.archive("7", false);
@@ -664,6 +674,7 @@ describe("createGramApi", () => {
         Api.UpdatePinnedChannelMessages,
         Api.UpdateMessagePoll,
         Api.UpdateFolderPeers,
+        Api.UpdateNotifySettings,
         Api.UpdateDialogFilter,
         Api.UpdateDialogFilters,
         Api.UpdateDialogFilterOrder,
@@ -697,6 +708,21 @@ describe("createGramApi", () => {
       expect(cb.mock.calls.splice(-3)).toEqual([[{ type: "folders" }], [{ type: "folders" }], [{ type: "folders" }]]);
       rawH(make(Api.UpdateLoginToken));
       expect(cb.mock.calls.splice(-1)).toEqual([[{ type: "loginToken" }]]);
+      const notify = (peer: unknown, settings: Record<string, unknown> | undefined) => make(Api.UpdateNotifySettings, { peer, notifySettings: settings && make(Api.PeerNotifySettings, settings) });
+      rawH(notify(make(Api.NotifyPeer, { peer: make(Api.PeerUser, { userId: 8n }) }), { muteUntil: 2147483647 }));
+      rawH(notify(make(Api.NotifyPeer, { peer: make(Api.PeerChat, { chatId: 2n }) }), {}));
+      rawH(notify(make(Api.NotifyPeer, { peer: {} }), { muteUntil: 5 }));
+      rawH(notify(make(Api.NotifyUsers), { muteUntil: 2147483647 }));
+      rawH(notify(make(Api.NotifyChats), { muteUntil: -1 }));
+      rawH(notify(make(Api.NotifyBroadcasts), undefined));
+      rawH(notify(make(Api.NotifyForumTopic), { muteUntil: 5 }));
+      expect(cb.mock.calls.splice(-5)).toEqual([
+        [{ type: "notifyChat", chatId: "8", mutedUntil: 2147483647 }],
+        [{ type: "notifyChat", chatId: "-2" }],
+        [{ type: "notifyDefault", kind: "user", mutedUntil: 2147483647 }],
+        [{ type: "notifyDefault", kind: "group", mutedUntil: 0 }],
+        [{ type: "notifyDefault", kind: "channel", mutedUntil: 0 }],
+      ]);
       rawH(make(Api.UpdateUserTyping, { userId: 8n, action: make(Api.SendMessageTypingAction) }));
       expect(cb.mock.calls.at(-1)).toEqual([{ type: "typing", chatId: "8", userId: "8", active: true }]);
       cb.mock.calls.pop();

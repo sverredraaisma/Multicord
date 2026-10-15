@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgFolder, TgMember, TgQrLogin, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import type { TelegramApi, TelegramCredentials, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgFolder, TgMember, TgQrLogin, TgMemberPage, TgMessage, TgNotifyDefaults, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
 import { MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
 import { QR_REFRESH_MAX_MS, QR_REFRESH_MIN_MS } from "../../../src/modules/telegram/adapter";
 import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, DIALOG_PAGE, DIALOG_PAGE_MS, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, MUTE_FOREVER, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
@@ -48,6 +48,7 @@ class FakeTelegramApi implements TelegramApi {
   markRead = vi.fn(async (_chatId: string, _maxId: number) => {});
   mute = vi.fn(async (_chatId: string, _until: number) => {});
   archive = vi.fn(async (_chatId: string, _archived: boolean) => {});
+  notifyDefaults = vi.fn(async (): Promise<TgNotifyDefaults> => ({ user: 0, group: 0, channel: 0 }));
   folders = vi.fn(async (): Promise<TgFolder[]> => []);
   avatar = vi.fn(async (_chatId: string): Promise<string | undefined> => undefined);
   members = vi.fn(async (_chatId: string, _offset: number, _limit: number): Promise<TgMemberPage> => ({ members: [], total: 0 }));
@@ -1662,6 +1663,60 @@ describe("groups and channels", () => {
     ctx.api.mute.mockRejectedValueOnce(new Error("FLOOD_WAIT"));
     await ctx.act({ type: "mute", channelId: viewId(SUPER), mute: false });
     expect(ctx.chat().error).toBe("Could not unmute the chat: FLOOD_WAIT");
+  });
+
+  it("treats chats without a mute of their own as their kind's default says, and follows changes", async () => {
+    const own = (chatId: string, mutedUntil: number) => dlg(chatId, { kind: "group", title: `G${chatId}`, unreadCount: 2, mutedUntil });
+    const dialogs = [dlg("1", { unreadCount: 2 }), dlg(GROUP, { kind: "group", title: "Family", unreadCount: 3 }), own(SUPER, 0), dlg(NEWS, { kind: "channel", title: "News", unreadCount: 1 })];
+    const setupDefaults = (defaults: { user: number; group: number; channel: number }) => {
+      const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true, dialogs });
+      ctx.api.notifyDefaults.mockResolvedValue(defaults);
+      return ctx;
+    };
+    const ctx = setupDefaults({ user: FOREVER, group: FOREVER, channel: 0 });
+    await ctx.adapter.start();
+    await flush();
+    // One-to-one chats and groups muted by default; the group unmuted on its own is not.
+    expect(ctx.rows().map((i) => [i.name, i.muted])).toEqual([
+      ["User 1", true],
+      ["Family", true],
+      [`G${SUPER}`, false],
+      ["News", false],
+    ]);
+    expect(ctx.directs.at(-1)![0]).toMatchObject({ key: "1", mentions: 0 });
+    expect(ctx.adapter.homeBadge().unread).toBe(true); // the unmuted group and the channel
+
+    // Defaults changed in another app, and a chat's own mute.
+    ctx.api.emit({ type: "notifyDefault", kind: "user", mutedUntil: 0 });
+    expect(ctx.directs.at(-1)![0]).toMatchObject({ key: "1", mentions: 2 });
+    ctx.api.emit({ type: "notifyChat", chatId: SUPER, mutedUntil: FOREVER });
+    ctx.api.emit({ type: "notifyDefault", kind: "channel", mutedUntil: FOREVER });
+    expect(ctx.adapter.homeBadge().unread).toBe(false);
+    // Back to following the default (muted for groups), or unknown chats: nothing changes.
+    ctx.api.emit({ type: "notifyChat", chatId: SUPER });
+    ctx.api.emit({ type: "notifyChat", chatId: "404", mutedUntil: 0 });
+    expect(ctx.rows().find((i) => i.name === `G${SUPER}`)!.muted).toBe(true);
+    // Unmuting here sets the chat's own mute, so the muting default no longer applies.
+    await ctx.act({ type: "mute", channelId: viewId(GROUP), mute: false });
+    expect(ctx.api.mute).toHaveBeenLastCalledWith(GROUP, 0);
+    expect(ctx.rows().find((i) => i.name === "Family")!.muted).toBe(false);
+
+    // Defaults Telegram does not give, or that come for an earlier session, leave chats unmuted.
+    const failed = setupDefaults({ user: FOREVER, group: FOREVER, channel: FOREVER });
+    failed.api.notifyDefaults.mockRejectedValue(new Error("FLOOD_WAIT"));
+    await failed.adapter.start();
+    await flush();
+    expect(failed.rows().every((i) => !i.muted)).toBe(true);
+    const late = setupDefaults({ user: 0, group: 0, channel: 0 });
+    let answer: (defaults: { user: number; group: number; channel: number }) => void = () => {};
+    late.api.notifyDefaults.mockReturnValueOnce(new Promise((resolve) => (answer = resolve)));
+    await late.adapter.start();
+    await flush();
+    await late.adapter.signOut();
+    await flush();
+    answer({ user: FOREVER, group: FOREVER, channel: FOREVER });
+    await flush();
+    expect(late.directs.at(-1)!.find((d) => d.key === "1")).toMatchObject({ mentions: 2 });
   });
 
   it("opens a group from the view and from the shell, by its chat id", async () => {

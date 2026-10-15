@@ -39,6 +39,7 @@ function fakeApi(authorized: boolean): TelegramApi {
     me: vi.fn(async () => ({ id: "1", name: "Me", bot: false })),
     dialogs: vi.fn(async () => ({ dialogs: [] })),
     folders: vi.fn(async () => []),
+    notifyDefaults: vi.fn(async () => ({ user: 0, group: 0, channel: 0 })),
     avatar: vi.fn(async () => undefined),
     logOut: vi.fn(async () => {}),
     disconnect: vi.fn(async () => {}),

@@ -6,7 +6,7 @@ import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, Na
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS, MAX_FOLDERS } from "../../shared/native";
 import { TYPING_SETTING, type AccountStatus, type ServiceSettingStatus, type ServiceSettingValues } from "../../shared/settings";
-import { ALL_CHATS, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgPoll, type TgPreview, type TgProfile, type TgQrLogin, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
+import { ALL_CHATS, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgNotifyDefaults, type TgPoll, type TgPreview, type TgProfile, type TgQrLogin, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /**
  * Chats listed: one-to-one chats, groups and channels together, most recent
@@ -78,6 +78,8 @@ const SESSION_KEY = "session";
 const CREDENTIALS_KEY = "api";
 /** The Settings action (manifest `settings`) that forgets the API ID the user entered. */
 export const FORGET_API_ID = "forgetApiId";
+/** No kind of chat muted by default. */
+const UNMUTED: TgNotifyDefaults = { user: 0, group: 0, channel: 0 };
 const DIALOG_REFRESH_MS = 1000;
 const BAD_CREDENTIALS = new Set(["API_ID_INVALID", "API_ID_PUBLISHED_FLOOD"]);
 /** How soon and how late a QR sign-in token is replaced, whatever Telegram says of its expiry. */
@@ -302,6 +304,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   /** The user's chat folders as last fetched, and the one the sidebar shows. */
   private folders: TgFolder[] = [];
   private folder = ALL_CHATS;
+  /** The user's default mutes, for chats without one of their own; unmuted until Telegram says. */
+  private notifyDefaults: TgNotifyDefaults = { ...UNMUTED };
   private visible = false;
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   /** Counts sign-outs, so work started for one account stops for the next. */
@@ -357,6 +361,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     await this.refreshDialogs(true);
     void this.loadAvatars();
     void this.loadFolders();
+    void this.loadNotifyDefaults();
   }
 
   private async forgetSession(): Promise<void> {
@@ -455,6 +460,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.profile = undefined;
     this.folders = [];
     this.folder = ALL_CHATS;
+    this.notifyDefaults = { ...UNMUTED };
     this.allowed.clear();
     this.allowedAsked.clear();
     this.reactionList = undefined;
@@ -826,9 +832,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     return this.dialogs.find((d) => d.chatId === chatId);
   }
 
-  /** The user muted the chat's notifications in Telegram, for now. */
+  /** The user muted the chat's notifications in Telegram, for now: the chat itself, or else all chats of its kind. */
   private muted(dialog: TgDialog): boolean {
-    return (dialog.mutedUntil ?? 0) > Date.now() / 1000;
+    return (dialog.mutedUntil ?? this.notifyDefaults[dialog.kind]) > Date.now() / 1000;
   }
 
   /** A forum topic is muted by its own setting, where it has one, else as its group is. */
@@ -1288,6 +1294,16 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         // Archived chats leave the DM bubbles and the Messages page; unarchived ones come back.
         return this.publish();
       }
+      case "notifyChat": {
+        const dialog = this.dialog(update.chatId);
+        if (!dialog) return;
+        if (update.mutedUntil === undefined) delete dialog.mutedUntil;
+        else dialog.mutedUntil = update.mutedUntil;
+        return this.publish();
+      }
+      case "notifyDefault":
+        this.notifyDefaults = { ...this.notifyDefaults, [update.kind]: update.mutedUntil };
+        return this.publish();
       case "loginToken":
         if (this.step === "qr") void this.exportQr();
         return;
@@ -1463,8 +1479,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     await this.attempt(mute ? "Could not mute the chat" : "Could not unmute the chat", async () => {
       const until = mute ? MUTE_FOREVER : 0;
       await this.api!.mute(chatId, until);
-      if (mute) dialog.mutedUntil = until;
-      else delete dialog.mutedUntil;
+      // Unmuted by its own setting, so a muting default no longer applies to it.
+      dialog.mutedUntil = until;
       this.publish();
     });
   }
@@ -2040,6 +2056,15 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   // --- Folders ------------------------------------------------------------------
 
   /** Fetches the user's chat folders; the sidebar goes back to all chats if the one it shows is gone. */
+  /** Reads the user's default mutes, which chats without a mute of their own follow; unmuted while Telegram does not answer. */
+  private async loadNotifyDefaults(): Promise<void> {
+    const session = this.session;
+    const defaults = await this.api!.notifyDefaults().catch(() => undefined);
+    if (session !== this.session || !defaults) return;
+    this.notifyDefaults = defaults;
+    this.publish();
+  }
+
   private async loadFolders(): Promise<void> {
     const session = this.session;
     const folders = await this.api!.folders().catch(() => undefined);

@@ -32,6 +32,7 @@ import {
   type TgMember,
   type TgMemberPage,
   type TgMessage,
+  type TgNotifyDefaults,
   type TgPresence,
   type TgPoll,
   type TgPollResults,
@@ -222,8 +223,8 @@ export function topicsOf(topics: readonly unknown[], messages: readonly unknown[
     if (!(t instanceof Api.ForumTopic) || !Number.isInteger(t.id) || t.id <= 0) return [];
     const topic: TgTopic = { id: t.id, title: (t.title || "Topic").slice(0, 128), unreadCount: tally(t.unreadCount), unreadMentions: tally(t.unreadMentionsCount), date: dates.get(t.topMessage) ?? t.date };
     if (t.pinned) topic.pinned = true;
-    const muteUntil = t.notifySettings instanceof Api.PeerNotifySettings ? t.notifySettings.muteUntil : undefined;
-    if (Number.isInteger(muteUntil)) topic.mutedUntil = Math.max(0, muteUntil!);
+    const muteUntil = muteOf(t.notifySettings);
+    if (muteUntil !== undefined) topic.mutedUntil = muteUntil;
     if (Number.isInteger(t.readInboxMaxId) && t.readInboxMaxId > 0) topic.readUpTo = t.readInboxMaxId;
     return [topic];
   });
@@ -455,6 +456,35 @@ export function archiveOf(update: unknown): Extract<TgUpdate, { type: "archive" 
   return peers.length > 0 ? { type: "archive", peers } : undefined;
 }
 
+/**
+ * A mute as notify settings carry it: until when (a Unix time; "muted for
+ * ever" is the largest 32-bit one), 0 for unmuted, or undefined where the
+ * settings leave it unset, so the default applies.
+ */
+export function muteOf(settings: unknown): number | undefined {
+  const until = settings instanceof Api.PeerNotifySettings ? settings.muteUntil : undefined;
+  return Number.isInteger(until) ? Math.max(0, until!) : undefined;
+}
+
+/** The kinds of chat whose defaults Telegram keeps, as GetNotifySettings and UpdateNotifySettings name them. */
+const NOTIFY_KINDS = [
+  ["user", Api.InputNotifyUsers, Api.NotifyUsers],
+  ["group", Api.InputNotifyChats, Api.NotifyChats],
+  ["channel", Api.InputNotifyBroadcasts, Api.NotifyBroadcasts],
+] as const;
+
+/** A change to a chat's own notification settings, or to the defaults for a kind of chat; forum topics' are left out. */
+export function notifyOf(update: unknown): Extract<TgUpdate, { type: "notifyChat" | "notifyDefault" }> | undefined {
+  if (!(update instanceof Api.UpdateNotifySettings)) return undefined;
+  const mutedUntil = muteOf(update.notifySettings);
+  if (update.peer instanceof Api.NotifyPeer) {
+    const chatId = chatIdOf(update.peer.peer);
+    return chatId ? { type: "notifyChat", chatId, ...(mutedUntil === undefined ? {} : { mutedUntil }) } : undefined;
+  }
+  const kind = NOTIFY_KINDS.find(([, , type]) => update.peer instanceof type)?.[0];
+  return kind ? { type: "notifyDefault", kind, mutedUntil: mutedUntil ?? 0 } : undefined;
+}
+
 export function typingOf(update: unknown): Extract<TgUpdate, { type: "typing" }> | undefined {
   let chatId: string;
   let userId: string | undefined;
@@ -623,10 +653,9 @@ export function dialogsOf(found: readonly Dialog[]): TgDialog[] {
     const forum = forumOf(d.entity);
     if (forum.forum) dialog.forum = true;
     if (forum.noTopics) dialog.noTopics = true;
-    const settings = d.dialog.notifySettings;
-    // A Unix time; "muted for ever" is the largest 32-bit one.
-    const mutedUntil = settings instanceof Api.PeerNotifySettings ? settings.muteUntil : undefined;
-    if (Number.isInteger(mutedUntil) && mutedUntil! > 0) dialog.mutedUntil = mutedUntil;
+    // The chat's own mute, where it has one; else it follows the default for its kind.
+    const mutedUntil = muteOf(d.dialog.notifySettings);
+    if (mutedUntil !== undefined) dialog.mutedUntil = mutedUntil;
     const readUpTo = d.dialog.readInboxMaxId;
     if (Number.isInteger(readUpTo) && readUpTo > 0) dialog.readUpTo = readUpTo;
     if (d.message) dialog.lastMessage = toMessage(d.message, chatId);
@@ -843,6 +872,10 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       const folderPeer = new Api.InputFolderPeer({ peer: await client.getInputEntity(peer(chatId)), folderId: archived ? ARCHIVE_FOLDER : 0 });
       await client.invoke(new Api.folders.EditPeerFolders({ folderPeers: [folderPeer] }));
     },
+    notifyDefaults: async (): Promise<TgNotifyDefaults> => {
+      const mutes = await Promise.all(NOTIFY_KINDS.map(async ([, Input]) => muteOf(await client.invoke(new Api.account.GetNotifySettings({ peer: new Input() }))) ?? 0));
+      return { user: mutes[0]!, group: mutes[1]!, channel: mutes[2]! };
+    },
     mute: async (chatId, until, topicId) => {
       const input = await client.getInputEntity(peer(chatId));
       const notifyPeer = topicId === undefined ? new Api.InputNotifyPeer({ peer: input }) : new Api.InputNotifyForumTopic({ peer: input, topMsgId: topicId });
@@ -990,11 +1023,13 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         if (update instanceof Api.UpdateLoginToken) return cb({ type: "loginToken" });
         const archive = archiveOf(update);
         if (archive) return cb(archive);
+        const notify = notifyOf(update);
+        if (notify) return cb(notify);
         if (!(update instanceof Api.UpdateMessageReactions)) return;
         const chatId = chatIdOf(update.peer);
         if (!chatId || !Number.isInteger(update.msgId) || update.msgId <= 0) return;
         cb({ type: "reactions", chatId, id: update.msgId, ...reactionsOf(update.reactions) });
-      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages, Api.UpdateMessagePoll, Api.UpdateFolderPeers, Api.UpdateDialogFilter, Api.UpdateDialogFilters, Api.UpdateDialogFilterOrder, Api.UpdateLoginToken] }));
+      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages, Api.UpdateMessagePoll, Api.UpdateFolderPeers, Api.UpdateNotifySettings, Api.UpdateDialogFilter, Api.UpdateDialogFilters, Api.UpdateDialogFilterOrder, Api.UpdateLoginToken] }));
     },
     session: () => (client.session as StringSession).save(),
     logOut: async () => void (await client.invoke(new Api.auth.LogOut())),

@@ -131,7 +131,11 @@ export interface TgDialog {
   unreadCount: number;
   /** Unread messages that mention the user or answer theirs. */
   unreadMentions: number;
-  /** Until when (Unix seconds) the chat's notifications are muted, if they are. */
+  /**
+   * The chat's own mute: until when (Unix seconds), 0 where the user
+   * unmuted it. Absent, it follows the user's default for its kind of chat
+   * (TgNotifyDefaults).
+   */
   mutedUntil?: number;
   /** The last incoming message the user read (read_inbox_max_id), where Telegram says. */
   readUpTo?: number;
@@ -287,6 +291,13 @@ export type TgSignIn ={ done: true } | { password: true; hint?: string } | { sig
 /** A QR sign-in: a token to show until it expires (Unix seconds), or, once another device accepted it, signed in or a password to give. */
 export type TgQrLogin = { token: Uint8Array; expires: number } | { done: true } | { password: true; hint?: string };
 
+/**
+ * Until when (Unix seconds; 0 for unmuted) chats of each kind are muted by
+ * default: one-to-one chats, groups (basic and super) and broadcast
+ * channels, as Telegram's Settings > Notifications sets them.
+ */
+export type TgNotifyDefaults = Record<TgChatKind, number>;
+
 export type TgUpdate =
   | { type: "message"; message: TgMessage }
   | { type: "edit"; message: TgMessage }
@@ -301,6 +312,10 @@ export type TgUpdate =
   | { type: "poll"; pollId: string; results: TgPollResults; closed?: boolean }
   /** Chats moved into the archive or out of it (here or in another app, or by Telegram when an archived chat gets news). */
   | { type: "archive"; peers: { chatId: string; archived: boolean }[] }
+  /** A chat's own mute changed (in another app too): until when, 0 for unmuted; absent, it follows the default again. */
+  | { type: "notifyChat"; chatId: string; mutedUntil?: number }
+  /** The default mute for all one-to-one chats, groups or channels changed (Telegram's Settings > Notifications). */
+  | { type: "notifyDefault"; kind: TgChatKind; mutedUntil: number }
   /** The user's folders changed: they are fetched afresh. */
   | { type: "folders" }
   /** Another device accepted the QR sign-in token shown. */
@@ -345,6 +360,8 @@ export interface TelegramApi {
   mute(chatId: string, until: number, topicId?: number): Promise<void>;
   /** Moves a chat into the archive, or out of it. */
   archive(chatId: string, archived: boolean): Promise<void>;
+  /** The user's default mute for each kind of chat, for chats without a mute of their own. */
+  notifyDefaults(): Promise<TgNotifyDefaults>;
   /** The user's chat folders in their order, with ALL_CHATS where they placed it. */
   folders(): Promise<TgFolder[]>;
   /** A forum's topics, most recently active first. */
