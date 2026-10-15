@@ -296,14 +296,15 @@ export class MatrixE2ee implements E2ee {
   // --- Sync and requests -------------------------------------------------------
 
   async receiveSync(sync: MxCryptoSync): Promise<void> {
+    // A new sliding sync connection does not say whose devices changed meanwhile: ask about everyone's again, as matrix-js-sdk does.
+    if (sync.stale) await this.machine.markAllTrackedUsersAsDirty();
     const lists = new DeviceLists(userIds(sync.changed), userIds(sync.left));
-    const processed = await this.machine.receiveSyncChanges(
-      sync.toDevice,
-      lists,
-      new Map(Object.entries(sync.oneTimeKeys)),
-      sync.fallbackKeys ? new Set(sync.fallbackKeys) : undefined,
-      this.settings(),
-    );
+    const counts = new Map(Object.entries(sync.oneTimeKeys));
+    const fallback = sync.fallbackKeys ? new Set(sync.fallbackKeys) : undefined;
+    // Sliding sync leaves out key counts that did not change; classic sync's missing count means none are left.
+    const processed = sync.sliding
+      ? await this.machine.receiveSyncChangesMsc4186(sync.toDevice, lists, counts, fallback, this.settings())
+      : await this.machine.receiveSyncChanges(sync.toDevice, lists, counts, fallback, this.settings());
     for (const event of processed) {
       await this.verificationRequested(event);
       await this.encryptedToDevice(event);

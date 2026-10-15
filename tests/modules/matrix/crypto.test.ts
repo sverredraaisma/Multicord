@@ -564,6 +564,25 @@ describe("encrypted to-device messages", () => {
     expect(received).not.toHaveBeenCalled();
   });
 
+  it("reads sliding sync's missing key counts as unchanged, and asks about everyone's devices again on a new connection", async () => {
+    const server = new FakeHomeserver();
+    const alice = await device(server, ALICE, "ALICEDEV");
+    const machine = (alice as unknown as { machine: OlmMachine }).machine;
+    const dirty = vi.spyOn(machine, "markAllTrackedUsersAsDirty");
+    const uploads = () => server.calls.filter((c) => c.path === "/v3/keys/upload").length;
+    const before = uploads();
+    // Sliding sync left the counts out: unchanged, nothing to upload.
+    await alice.receiveSync({ toDevice: "[]", changed: [], left: [], oneTimeKeys: {}, sliding: true });
+    expect(uploads()).toBe(before);
+    expect(dirty).not.toHaveBeenCalled();
+    await alice.receiveSync({ toDevice: "[]", changed: [], left: [], oneTimeKeys: {}, sliding: true, stale: true });
+    expect(dirty).toHaveBeenCalledTimes(1);
+    expect(uploads()).toBe(before);
+    // Classic sync without counts means none are left on the server: new ones go up.
+    await alice.receiveSync({ toDevice: "[]", changed: [], left: [], oneTimeKeys: {} });
+    expect(uploads()).toBe(before + 1);
+  });
+
   /** A crypto state over a stand-in machine that decrypts one to-device event, naming no device. */
   function withDecrypted(rawEvent: string, devices: { deviceId: string; key?: string }[]) {
     const http = vi.fn(async (): Promise<Record<string, unknown>> => ({}));

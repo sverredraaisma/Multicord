@@ -21,6 +21,7 @@ import {
   type MxSession,
   type MxSpaceChild,
   type MxSync,
+  type MxSyncMode,
 } from "../../../src/modules/matrix/api";
 import {
   ALGORITHM_NOTICE,
@@ -119,7 +120,7 @@ class FakeMatrixApi implements MatrixApi {
   loginFlows = vi.fn(async (_base: string) => this.flows);
   login = vi.fn(async (_base: string, _user: string, _password: string): Promise<MxSession> => SESSION);
   whoami = vi.fn(async (_base: string, _token: string): Promise<{ userId: string; deviceId?: string }> => ({ userId: ME, deviceId: "D" }));
-  sync = vi.fn((_session: MxSession, _since: string | undefined, _timeout: number): Promise<MxSync> => {
+  sync = vi.fn((_session: MxSession, _since: string | undefined, _timeout: number, _mode?: MxSyncMode): Promise<MxSync> => {
     const next = this.queue.shift();
     if (next) return next instanceof Error ? Promise.reject(next) : Promise.resolve(next);
     return new Promise((resolve, reject) => (this.waiting = { resolve, reject }));
@@ -278,10 +279,10 @@ describe("starting", () => {
     expect(ctx.api.check).toHaveBeenCalledWith(SESSION);
     expect(ctx.renders.map((r) => r.screen === "connecting" && r.status)).toEqual(["Connecting to x.org…", "Loading your chats…"]);
     expect(ctx.adapter.accountStatus()).toEqual({ state: "signed-in", name: ME });
-    expect(ctx.api.sync).toHaveBeenCalledWith(SESSION, undefined, 0);
+    expect(ctx.api.sync).toHaveBeenCalledWith(SESSION, undefined, 0, "auto");
     await ctx.live(initialSync());
     expect(ctx.chat()).toMatchObject({ title: "x.org", me: ME, channel: null, voice: null });
-    expect(ctx.api.sync).toHaveBeenLastCalledWith(SESSION, `s${batch}`, SYNC_TIMEOUT_MS);
+    expect(ctx.api.sync).toHaveBeenLastCalledWith(SESSION, `s${batch}`, SYNC_TIMEOUT_MS, "auto");
   });
 
   it("signs in again when the stored session has ended", async () => {
@@ -493,6 +494,70 @@ describe("syncing", () => {
     await ctx.live(sync({ left: ["!lounge:x.org", "!unknown:x.org"] }));
     expect(ctx.chat().sidebar.map((i) => i.name)).not.toContain("Lounge");
     expect(ctx.chat().channel).toBeNull();
+  });
+
+  it("syncs classically while Settings turns sliding sync off, from the next sync on", async () => {
+    const off = setup({ session: SESSION_JSON }, false, { settings: { [SETTING.slidingSync]: false } });
+    off.api.push(initialSync());
+    await off.adapter.start();
+    await flush();
+    expect(off.api.sync.mock.calls.map((c) => c[3])).toEqual(["classic", "classic"]);
+
+    const ctx = await signedIn();
+    ctx.adapter.applySettings({ [SETTING.slidingSync]: false });
+    await ctx.live(sync());
+    ctx.adapter.applySettings({});
+    await ctx.live(sync());
+    expect(ctx.api.sync.mock.calls.map((c) => c[3])).toEqual(["auto", "auto", "classic", "auto"]);
+  });
+
+  it("takes a room sent in full as no news: no notifications, and its events replace what was shown", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Lounge");
+    // A sync that starts over sends known rooms in full, from a new point.
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { initial: true, limited: true, prevBatch: "p-again", timeline: [msg("l8", ANA, "again", 8000)] })] }));
+    expect(ctx.messages().map((m) => m.content)).toEqual(["again"]);
+    // A room joined meanwhile comes in full too.
+    await ctx.live(sync({ joined: [room("!new:x.org", { initial: true, limited: true, state: { name: "New", members: {} }, timeline: [msg("n1", ANA, "old news", 7000)] })] }));
+    expect(ctx.chat().sidebar.some((i) => i.name === "New")).toBe(true);
+    expect(ctx.notifications).toEqual([]);
+    // Its later events are news again.
+    await ctx.live(sync({ joined: [room("!new:x.org", { timeline: [msg("n2", ANA, "@me:x.org fresh", 9000, { mentions: [ME] })] })] }));
+    expect(ctx.notifications.map((n) => n.body)).toEqual(["@me:x.org fresh"]);
+  });
+
+  it("counts unread messages itself when the sync leaves that to it (sliding sync), from our read receipts", async () => {
+    const counted = (extra: Partial<MxSync>) => sync({ countUnread: true, ...extra });
+    const ctx = await signedIn(
+      counted({
+        directs: { [BO]: ["!dm:x.org"] },
+        joined: [
+          // Read up to d1: d2 is unread, our own d3 is not.
+          room("!dm:x.org", { state: { members: { [BO]: { name: "Bo", membership: "join" } } }, timeline: [msg("d1", BO, "one", 1000), msg("d2", BO, "two", 2000), msg("d3", ME, "mine", 3000)], read: { id: "$d1", ts: 1500 } }),
+          // Read at 600, up to an event not held (e.g. a reaction): what came later is unread; the earlier mention is not.
+          room("!lounge:x.org", { state: { name: "Lounge", members: {} }, timeline: [msg("l1", ANA, "hey", 500, { mentions: [ME] }), msg("l2", ANA, "later", 900)], read: { id: "$reaction", ts: 600 } }),
+          // Never read: all of it.
+          room("!new:x.org", { state: { name: "New", members: {} }, timeline: [msg("n1", ANA, "hi @me:x.org", 100, { mentions: [ME] })] }),
+        ],
+      }),
+    );
+    expect(ctx.item("Bo")).toMatchObject({ unread: true, mentions: 1 });
+    expect(ctx.item("Lounge")).toMatchObject({ unread: true, mentions: 0 });
+    expect(ctx.item("New")).toMatchObject({ unread: true, mentions: 1 });
+    // Read on another device: the receipt comes alone.
+    await ctx.live(counted({ joined: [room("!lounge:x.org", { read: { id: "$l2", ts: 1000 } })] }));
+    expect(ctx.item("Lounge")).toMatchObject({ unread: false, mentions: 0 });
+    // Shown here: read, and a read marker goes to the server.
+    ctx.adapter.setVisible(true);
+    await ctx.open("Bo");
+    expect(ctx.api.markRead).toHaveBeenCalledWith(SESSION, "!dm:x.org", "$d3");
+    await ctx.live(counted({ joined: [room("!dm:x.org", { timeline: [msg("d4", BO, "seen at once", 4000)] })] }));
+    expect(ctx.api.markRead).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", "$d4");
+    expect(ctx.item("Bo")).toMatchObject({ unread: false, mentions: 0 });
+    // Our own receipt coming back changes nothing.
+    await ctx.live(counted({ joined: [room("!dm:x.org", { read: { id: "$d4", ts: 4100 } })] }));
+    expect(ctx.item("Bo")).toMatchObject({ unread: false });
+    expect(ctx.api.markRead).toHaveBeenCalledTimes(2);
   });
 
   it("starts over after a gap in the timeline", async () => {

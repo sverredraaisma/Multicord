@@ -890,12 +890,12 @@ describe("settings", () => {
     engineOf("mx").webContents.send.mockClear();
     engineOf("mx2").webContents.send.mockClear();
     handle.settingsStore.update({ services: { mx2: { options: { typing: false } } } });
-    expect(engineOf("mx2").webContents.send).toHaveBeenCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: false } });
+    expect(engineOf("mx2").webContents.send).toHaveBeenCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: false, slidingSync: true } });
     expect(engineOf("mx").webContents.send).not.toHaveBeenCalledWith(ENGINE_IPC.command, expect.objectContaining({ type: "settings" }));
     handle.settingsStore.update({ general: { closeToTray: false } });
     expect(engineOf("mx2").webContents.send).toHaveBeenCalledTimes(1);
     handle.settingsStore.update({ services: { mx2: null } });
-    expect(engineOf("mx2").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: true } });
+    expect(engineOf("mx2").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: true, slidingSync: true } });
   });
 
   it("shows what an engine says about its settings while the page is open, and runs its actions", async () => {

@@ -149,7 +149,7 @@ export interface MatrixAdapterDeps {
 }
 
 /** The keys of the settings the manifest declares for each Matrix service. */
-export const SETTING = { typing: "typing", forgetCallServices: "forgetCallServices" } as const;
+export const SETTING = { typing: "typing", slidingSync: "slidingSync", forgetCallServices: "forgetCallServices" } as const;
 
 /** The distinct hosts of these URLs, skipping any that are missing. */
 export function hostsOf(...urls: (string | undefined)[]): string[] {
@@ -237,8 +237,10 @@ interface Room {
   notifications: number;
   highlights: number;
   lastActivity: number;
-  /** The last event we sent a read receipt for. */
+  /** The last event we sent a read receipt for, or (sliding sync) the one our latest receipt names. */
   lastRead?: string;
+  /** When we read up to there (epoch ms), for counting unread events when that event is not held. */
+  readTs?: number;
   /** Call memberships by state key, expired ones included (they are filtered when read). */
   calls: Map<string, MxCallMember>;
   /**
@@ -447,6 +449,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private rtc: RtcHosts = { foci: [], sfu: [] };
   /** Settings: others see while we type. */
   private typingNotices: boolean;
+  /** Settings: sync with sliding sync (MSC4186) when the homeserver has it; else always classic /sync. */
+  private slidingSync: boolean;
   /** The hosts the engine locked itself to (and so its view); undefined while it is not locked. */
   private lockedHosts: string[] | undefined;
   /** Our device's call, joining or joined; one at a time. */
@@ -474,12 +478,15 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.delay = deps.delay ?? defaultDelay;
     this.log = deps.log ?? ((message) => console.warn(`[matrix] ${message}`));
     this.typingNotices = deps.settings?.[SETTING.typing] !== false;
+    this.slidingSync = deps.settings?.[SETTING.slidingSync] !== false;
   }
 
   // --- Settings (the manifest's `settings`) ----------------------------------------
 
   applySettings(values: ServiceSettingValues): void {
     this.typingNotices = values[SETTING.typing] !== false;
+    // Takes effect with the next sync, which starts over in the other kind.
+    this.slidingSync = values[SETTING.slidingSync] !== false;
     // Turned off while typing: end the notice now rather than letting it run out.
     if (!this.typingNotices) this.stopTyping();
   }
@@ -1424,7 +1431,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     while (generation === this.generation) {
       try {
         // The first sync returns at once; later ones wait for news.
-        const sync = await this.deps.api.sync(session, since, since === undefined ? 0 : SYNC_TIMEOUT_MS);
+        const sync = await this.deps.api.sync(session, since, since === undefined ? 0 : SYNC_TIMEOUT_MS, this.slidingSync ? "auto" : "classic");
         if (generation !== this.generation) return;
         await this.receiveCrypto(session, sync, since === undefined);
         if (generation !== this.generation) return;
@@ -1536,6 +1543,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     for (const update of sync.joined) {
       const fresh = !this.rooms.has(update.roomId);
       const room = this.room(update.roomId);
+      // Messages of a room sent in full (on joining, or as a sync starts over) are not news. (A call in it may still ring: see applyCalls.)
+      const live = !initial && !update.initial;
       this.applyState(room, update.state);
       // Sticky memberships come in the timeline, or (after a gap, or on joining) beside it; those still encrypted wait for their keys.
       const rtc = [...(update.sticky ?? []), ...update.timeline].filter((e): e is RtcEvent => e.kind === "rtc");
@@ -1554,6 +1563,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         room.notifications = update.unread.notifications;
         room.highlights = update.unread.highlights;
       }
+      // Read here or on another device.
+      if (update.read) {
+        room.lastRead = update.read.id;
+        room.readTs = update.read.ts;
+      }
       if (fresh || (update.limited && !initial)) {
         // A gap: what we had no longer joins up with the new events (their reactions come again with them).
         if (!fresh) {
@@ -1564,7 +1578,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         // Membership changes may be in the gap too.
         room.memberIds = undefined;
       }
-      for (const event of update.timeline) if (event.kind !== "rtc") this.addEvent(room, event, !initial);
+      for (const event of update.timeline) if (event.kind !== "rtc") this.addEvent(room, event, live);
+      if (sync.countUnread) this.countUnread(room);
     }
     // Recovery and verification are screens of their own; syncs carry on behind them.
     if (this.step !== "recovery" && !isVerifyStep(this.step)) this.step = "chat";
@@ -1625,6 +1640,21 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const text = event.content.text.toLowerCase();
     const name = room.members.get(me)?.name?.toLowerCase();
     return text.includes(me.toLowerCase()) || (name !== undefined && text.includes(name));
+  }
+
+  /**
+   * Unread counts for a sync that leaves them to the client (sliding sync):
+   * others' messages after the one we read, or (when that one is not held)
+   * after when we read it; highlights are those that mention us. Unlike the
+   * server's counts, push rules are not applied (a muted room counts too).
+   */
+  private countUnread(room: Room): void {
+    const me = this.session!.userId;
+    const index = room.events.findIndex((e) => e.id === room.lastRead);
+    const after = index >= 0 ? room.events.slice(index + 1) : room.events.filter((e) => e.ts > (room.readTs ?? -1));
+    const unread = after.filter((e) => e.sender !== me);
+    room.notifications = unread.length;
+    room.highlights = unread.filter((e) => this.mentionsMe(room, e)).length;
   }
 
   private notify(room: Room, event: Shown): void {
@@ -1755,6 +1785,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.publish();
     if (!last || room.lastRead === last.id) return;
     room.lastRead = last.id;
+    room.readTs = last.ts;
     void this.deps.api.markRead(this.session!, room.id, last.id).catch(() => undefined);
   }
 

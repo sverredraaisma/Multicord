@@ -255,7 +255,7 @@ describe("settings modules declare", () => {
     });
     const services = settings.state().services;
     const mx = services.find((s) => s.id === "mx")!;
-    expect(mx.settings!.map((f) => f.key)).toEqual(["typing", "forgetCallServices"]);
+    expect(mx.settings!.map((f) => f.key)).toEqual(["typing", "slidingSync", "forgetCallServices"]);
     expect(mx.settingsStatus).toEqual({ forgetCallServices: { text: "Remembered: a.org" } });
     // Declares settings but reports nothing (or is off): no status.
     expect(services.find((s) => s.id === "telegram")!.settings!.map((f) => f.key)).toEqual(["forgetApiId"]);

@@ -28,9 +28,9 @@ const MAX_ID = 255;
 export const MAX_NAME = 100;
 /** Longest message text kept; Matrix allows 64 KiB events. */
 export const MAX_BODY = 4000;
-const MAX_TOKEN = 4096;
-const MAX_ROOMS = 2000;
-const MAX_EVENTS = 1000;
+export const MAX_TOKEN = 4096;
+export const MAX_ROOMS = 2000;
+export const MAX_EVENTS = 1000;
 const MAX_MENTIONS = 100;
 const MAX_HEROES = 5;
 /** People shown typing in a room at once. */
@@ -552,7 +552,7 @@ function parseRtcMember(raw: Record<string, unknown>, content: Record<string, un
   return { ...rtc, member: call };
 }
 
-function parseRoom(id: string, raw: Record<string, unknown>): MxRoomUpdate {
+export function parseRoom(id: string, raw: Record<string, unknown>): MxRoomUpdate {
   const state = emptyState();
   // A Map: state keys are the sender's to choose, "__proto__" included.
   const calls = new Map<string, MxCallMember | null>();
@@ -599,7 +599,7 @@ function parseRoom(id: string, raw: Record<string, unknown>): MxRoomUpdate {
 }
 
 /** The m.direct account data: user id -> their DM room ids. */
-function parseDirects(content: unknown): Record<string, string[]> {
+export function parseDirects(content: unknown): Record<string, string[]> {
   const directs: Record<string, string[]> = {};
   if (!isRecord(content)) return directs;
   for (const [user, rooms] of Object.entries(content).slice(0, MAX_ROOMS)) {

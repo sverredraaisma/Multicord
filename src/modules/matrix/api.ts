@@ -51,6 +51,16 @@ export interface MxCryptoSync {
   oneTimeKeys: Record<string, number>;
   /** Algorithms of unused fallback keys; absent when the server did not say. */
   fallbackKeys?: string[];
+  /**
+   * From sliding sync (MSC4186): a key count the server left out is
+   * unchanged, where classic sync means none are left.
+   */
+  sliding?: boolean;
+  /**
+   * The server could not say which device lists changed (a new sliding sync
+   * connection): every tracked user's devices are to be asked for again.
+   */
+  stale?: boolean;
 }
 
 export interface MxLoginFlows {
@@ -272,13 +282,29 @@ export interface MxRoomUpdate {
   limited: boolean;
   /** Token for /messages to fetch what came before this timeline. */
   prevBatch?: string;
-  /** Unread counts as the server computes them (absent when unchanged). */
+  /** Unread counts as the server computes them (absent when unchanged, and from sliding sync, which leaves them to the client). */
   unread?: { notifications: number; highlights: number };
+  /** Our latest read receipt in the room, when the sync says (sliding sync): the event, and when we read it (epoch ms; 0 when unknown). */
+  read?: { id: string; ts: number };
   /** m.heroes: members the server picked to name an unnamed room. */
   heroes?: string[];
   /** Who is typing (m.typing), when that changed: always the whole list. */
   typing?: string[];
+  /**
+   * The room came in full rather than as what changed (sliding sync sends a
+   * room in full the first time a connection names it, and classic sync
+   * after starting over): its events are not news, and `limited` is set, so
+   * they replace what was known.
+   */
+  initial?: boolean;
 }
+
+/**
+ * How to sync: "classic" is /v3/sync; "auto" uses simplified sliding sync
+ * (MSC4186) when the homeserver offers it, else classic; "sliding" uses
+ * sliding sync only (for tests against a server that has it).
+ */
+export type MxSyncMode = "auto" | "classic" | "sliding";
 
 export interface MxSync {
   nextBatch: string;
@@ -289,6 +315,11 @@ export interface MxSync {
   left: string[];
   /** Device keys and to-device messages, for end-to-end encryption. */
   crypto?: MxCryptoSync;
+  /**
+   * The server leaves unread counts to the client (sliding sync: Synapse
+   * sends zeros): count them from the events and our read receipts.
+   */
+  countUnread?: boolean;
 }
 
 export interface MxPage {
@@ -308,7 +339,14 @@ export interface MatrixApi {
   whoami(baseUrl: string, accessToken: string): Promise<{ userId: string; deviceId?: string }>;
   /** Checks that a stored session still works (refreshing an OAuth token first when it expired). */
   check(session: MxSession): Promise<void>;
-  sync(session: MxSession, since: string | undefined, timeoutMs: number): Promise<MxSync>;
+  /**
+   * The next sync after `since` (undefined for the first; "classic" unless
+   * `mode` says otherwise). Pass the returned token as the next `since` only
+   * once the sync was handled: it acknowledges the to-device messages, which
+   * the server then deletes. A token from the other kind of sync starts over,
+   * every room `initial`.
+   */
+  sync(session: MxSession, since: string | undefined, timeoutMs: number, mode?: MxSyncMode): Promise<MxSync>;
   /** History before `from`, newest page first as Matrix pages it, returned oldest first. */
   messages(session: MxSession, roomId: string, from: string, limit: number): Promise<MxPage>;
   /** Asks the server, not our cache, whether a room is encrypted, and how. */

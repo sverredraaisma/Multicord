@@ -34,6 +34,13 @@ export const matrixNativeModule: PlatformModule = {
         default: true,
       },
       {
+        kind: "toggle",
+        key: "slidingSync",
+        label: "Fast sync (sliding sync)",
+        hint: "Starts faster by loading the most recent rooms first, when your homeserver offers sliding sync (MSC4186); otherwise Multicord uses classic sync. Turn it off to always use classic sync.",
+        default: true,
+      },
+      {
         kind: "action",
         key: "forgetCallServices",
         label: "Forget call services",

@@ -1,4 +1,6 @@
-import { MatrixError, type MatrixApi, type MxDownload, type MxEncryption, type MxLiveKitGrant, type MxLoginFlows, type MxOpenIdToken, type MxPage, type MxSession, type MxSync } from "./api";
+import { MatrixError, type MatrixApi, type MxDownload, type MxEncryption, type MxLiveKitGrant, type MxLoginFlows, type MxOpenIdToken, type MxPage, type MxSession, type MxSync, type MxSyncMode } from "./api";
+import { STICKY_EVENTS_FEATURE } from "./calls";
+import { parseSlidingSync, parseSlidingToken, SLIDING_SYNC_FEATURE, SLIDING_SYNC_PATH, slidingRequest, type SlidingPosition } from "./sliding";
 import {
   CALL_MEMBER_TYPE,
   eventId,
@@ -94,7 +96,21 @@ export interface MatrixClientOptions {
    */
   refresh?(session: MxSession): Promise<void>;
   now?(): number;
+  /** Syncs this way whatever the adapter asks for (live tests force sliding sync with it). */
+  syncMode?: MxSyncMode;
 }
+
+/** How a session syncs: which kind of sync gave the last token, what the homeserver has, and the rooms its sliding sync connection sent. */
+interface SyncState {
+  mode?: "classic" | "sliding";
+  /** Once asked (/versions); `sliding` turns false when the homeserver refuses it after all. */
+  features?: { sliding: boolean; sticky: boolean };
+  known: Set<string>;
+}
+
+/** A refusal that means the homeserver does not serve sliding sync (or not as asked), rather than a passing failure. */
+const refused = (error: unknown): boolean =>
+  error instanceof MatrixError && (error.status === 400 || error.status === 404 || error.status === 405 || error.errcode === "M_UNRECOGNIZED");
 
 /**
  * The Client-Server API over plain fetch (in the engine, the shell's HTTP
@@ -166,6 +182,63 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
 
   const room = (roomId: string): string => `${CLIENT}/rooms/${encodeURIComponent(roomId)}`;
 
+  const syncStates = new WeakMap<MxSession, SyncState>();
+
+  /** Whether the homeserver has sliding sync and sticky events, asked once per session; a server without /versions has neither. */
+  async function features(session: MxSession, state: SyncState): Promise<{ sliding: boolean; sticky: boolean }> {
+    if (!state.features) {
+      let unstable: Record<string, unknown> = {};
+      try {
+        const body = await authed(session, "/_matrix/client/versions");
+        if (isRecord(body.unstable_features)) unstable = body.unstable_features;
+      } catch (error) {
+        if (!(error instanceof MatrixError && error.status === 404)) throw error;
+      }
+      state.features = { sliding: unstable[SLIDING_SYNC_FEATURE] === true, sticky: unstable[STICKY_EVENTS_FEATURE] === true };
+    }
+    return state.features;
+  }
+
+  /** /v3/sync. A token from sliding sync is no classic one: it starts over, every room initial. */
+  async function classicSync(session: MxSession, state: SyncState, since: string | undefined, timeoutMs: number): Promise<MxSync> {
+    const restart = since !== undefined && state.mode === "sliding";
+    const query: Record<string, string> = { filter: SYNC_FILTER, timeout: String(timeoutMs), set_presence: "offline" };
+    if (since && !restart) query.since = since;
+    const sync = parseSync(await authed(session, `${CLIENT}/sync`, { query }));
+    state.mode = "classic";
+    if (restart) {
+      for (const update of sync.joined) {
+        update.initial = true;
+        update.limited = true;
+      }
+    }
+    return sync;
+  }
+
+  /**
+   * Simplified sliding sync. Without a sliding sync token (the first sync,
+   * or one after classic sync) it opens a new connection; one the server
+   * forgot (M_UNKNOWN_POS) is opened again, keeping where to-device messages
+   * and sticky events got to.
+   */
+  async function slidingSync(session: MxSession, state: SyncState, since: string | undefined, timeoutMs: number, sticky: boolean): Promise<MxSync> {
+    let position: SlidingPosition = (since !== undefined && state.mode === "sliding" && parseSlidingToken(since)) || {};
+    const context = { userId: session.userId, known: state.known, encryption: session.ownDevice };
+    for (;;) {
+      const query: Record<string, string> = { timeout: String(timeoutMs) };
+      if (position.pos) query.pos = position.pos;
+      try {
+        const body = await authed(session, SLIDING_SYNC_PATH, { method: "POST", query, body: slidingRequest(position, { encryption: session.ownDevice, sticky }) });
+        const sync = parseSlidingSync(body, position, context);
+        state.mode = "sliding";
+        return sync;
+      } catch (error) {
+        if (!(position.pos && error instanceof MatrixError && error.errcode === "M_UNKNOWN_POS")) throw error;
+        position = { toDevice: position.toDevice, sticky: position.sticky };
+      }
+    }
+  }
+
   return {
     async discover(serverUrl) {
       const server = httpsBase(serverUrl);
@@ -222,10 +295,23 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
       if (body.user_id !== session.userId) throw new MatrixError(401, "M_UNKNOWN_TOKEN", "The session belongs to another account");
     },
 
-    async sync(session, since, timeoutMs): Promise<MxSync> {
-      const query: Record<string, string> = { filter: SYNC_FILTER, timeout: String(timeoutMs), set_presence: "offline" };
-      if (since) query.since = since;
-      return parseSync(await authed(session, `${CLIENT}/sync`, { query }));
+    async sync(session, since, timeoutMs, mode = "classic"): Promise<MxSync> {
+      const wanted = config.syncMode ?? mode;
+      let state = syncStates.get(session);
+      if (!state) syncStates.set(session, (state = { known: new Set() }));
+      if (wanted !== "classic") {
+        const found = await features(session, state);
+        if (wanted === "sliding" || found.sliding) {
+          try {
+            return await slidingSync(session, state, since, timeoutMs, found.sticky);
+          } catch (error) {
+            if (wanted === "sliding" || !refused(error)) throw error;
+            // Offered but not served (e.g. by a proxy in front of the homeserver): classic sync from now on.
+            found.sliding = false;
+          }
+        }
+      }
+      return classicSync(session, state, since, timeoutMs);
     },
 
     async messages(session, roomId, from, limit): Promise<MxPage> {
