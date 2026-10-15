@@ -21,13 +21,16 @@ export function discordActivityBridge(eventName: string): void {
     if (chunks[chunks.length - 1]?.[0] === marker) chunks.pop();
     const size = (r: any): number => Object.keys(r?.c ?? {}).length;
     const req = found.reduce((best, r) => (size(r) > size(best) ? r : best), undefined);
+    // The dispatcher the activity store itself listens to: Discord's stores
+    // also have dispatch and subscribe, so their shape alone misleads.
     for (const mod of Object.values<any>(req?.c ?? {})) {
       const exports = mod?.exports;
       if (!exports || typeof exports !== "object") continue;
       for (const candidate of [exports, ...Object.values<any>(exports)]) {
-        // Flux's dispatcher: dispatch and subscribe, with its handler registry.
-        if (candidate && typeof candidate.dispatch === "function" && typeof candidate.subscribe === "function" && candidate._actionHandlers) {
-          return candidate;
+        try {
+          if (candidate?.getName?.() === "LocalActivityStore" && typeof candidate._dispatcher?.dispatch === "function") return candidate._dispatcher;
+        } catch {
+          // Not a store.
         }
       }
     }

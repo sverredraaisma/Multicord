@@ -160,10 +160,14 @@ describe("discordActivityBridge", () => {
 
   it("dispatches activities through Discord's own dispatcher", () => {
     const dispatch = vi.fn();
-    const dispatcher = { dispatch, subscribe: () => {}, _actionHandlers: {} };
+    const dispatcher = { dispatch, subscribe: () => {} };
+    // Discord's stores look like dispatchers too; the activity store names the real one.
+    const lookalike = { getName: () => "ChannelStore", dispatch: vi.fn(), subscribe: () => {}, _actionHandlers: {} };
+    const activityStore = { getName: () => "LocalActivityStore", _dispatcher: dispatcher };
+    const broken = { getName: () => { throw new Error("not a store"); } };
     const chunks: unknown[] & { push(...items: unknown[]): number } = [] as never;
     chunks.push = (chunk: any) => {
-      chunk[2]({ c: { a: { exports: null }, b: { exports: { other: { dispatch() {} } } }, c: { exports: { Z: dispatcher } } } });
+      chunk[2]({ c: { a: { exports: null }, b: { exports: { other: lookalike, broken } }, c: { exports: { Z: activityStore } } } });
       // Discord's other webpack runtimes see the chunk too; the small one comes last.
       chunk[2]({ c: { x: { exports: {} } } });
       return Array.prototype.push.call(chunks, chunk);
@@ -192,7 +196,7 @@ describe("discordActivityBridge", () => {
     vi.advanceTimersByTime(1000);
     const dispatch = vi.fn();
     const chunks: any = [];
-    chunks.push = (chunk: any) => chunk[2]({ c: { m: { exports: { dispatch, subscribe() {}, _actionHandlers: {} } } } });
+    chunks.push = (chunk: any) => chunk[2]({ c: { m: { exports: { getName: () => "LocalActivityStore", _dispatcher: { dispatch } } } } });
     (window as any).webpackChunkdiscord_app = chunks;
     vi.advanceTimersByTime(1000);
     expect(dispatch.mock.calls).toEqual([
