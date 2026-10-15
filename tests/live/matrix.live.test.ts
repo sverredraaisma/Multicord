@@ -302,6 +302,35 @@ describe.skipIf(!LIVE || !SECRET)("Matrix against a live homeserver", { timeout:
     expect((await mc.adapter.listDirectConversations()).some((c) => c.key === lobby)).toBe(false);
   });
 
+  it("shows a space as a server with its rooms, and a room added to it later", async () => {
+    const via = [bobId.slice(bobId.indexOf(":") + 1)];
+    const roomNamed = async (name: string) => (await bob.createRoom({ name, preset: Preset.PublicChat, invite: [aliceId] })).room_id;
+    const hall = await roomNamed(`Hall ${run}`);
+    const garden = await roomNamed(`Garden ${run}`);
+    const { room_id: space } = await bob.createRoom({
+      name: `Space ${run}`,
+      preset: Preset.PublicChat,
+      invite: [aliceId],
+      creation_content: { type: "m.space" },
+      initial_state: [{ type: EventType.SpaceChild, state_key: hall, content: { via } }],
+    });
+    for (const id of [space, hall, garden]) await mc.raw("POST", `/v3/join/${encodeURIComponent(id)}`, {});
+    const server = await until(async () => (await mc.adapter.listServers()).find((s) => s.key === space), "the space in the rail");
+    expect(server.name).toBe(`Space ${run}`);
+    const names = () => mc.chat()?.sidebar.map((i) => i.name) ?? [];
+    // Garden is in no space yet, so it is at home; Hall is not.
+    await until(() => names().includes(`Garden ${run}`), "the second room at home");
+    expect(names()).not.toContain(`Hall ${run}`);
+    await mc.adapter.openServer(space);
+    await until(() => mc.chat()?.title === `Space ${run}` && names().includes(`Hall ${run}`), "the space's room in its sidebar");
+    // A child added later comes in an incremental sync.
+    await bob.sendStateEvent(space, EventType.SpaceChild, { via }, garden);
+    await until(() => names().includes(`Garden ${run}`), "the room added later, in the space");
+    expect(names().indexOf(`Hall ${run}`)).toBeLessThan(names().indexOf(`Garden ${run}`));
+    await mc.adapter.openHome();
+    expect(names()).not.toContain(`Garden ${run}`);
+  });
+
   it("loads an encrypted image and an unencrypted file over authenticated media", async () => {
     // A 1x1 PNG.
     const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==", "base64"));

@@ -1,5 +1,5 @@
 import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
-import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
+import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { MAX_DIRECTS, MAX_HTTP_BODY, MAX_READ } from "../../shared/engine";
 import { escapeMarkdown } from "../../shared/markdown";
@@ -34,12 +34,13 @@ import {
   type MxRoomState,
   type MxRtcTransport,
   type MxSession,
+  type MxSpaceChild,
   type MxSync,
 } from "./api";
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, mimeType, parseContent, reactionKey, serviceUrl, userId } from "./events";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_SPACE_CHILDREN, mimeType, parseContent, reactionKey, serviceUrl, userId } from "./events";
 import { AttachmentError, decryptAttachment, encryptAttachment, imageSize } from "./media";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 import type { Verification, VerificationState } from "./verification";
@@ -181,6 +182,29 @@ export const MAX_REACTIONS = 5000;
 export const TYPING_TIMEOUT_MS = 30_000;
 export const TYPING_REPEAT_MS = 20_000;
 export const TYPING_IDLE_MS = 10_000;
+/** Top-level spaces shown in the rail; the rooms of any beyond these stay at home. */
+export const MAX_SPACES = 100;
+
+/** Rooms' badge together: unread if any is, with all their mentions. */
+const badge = (rooms: Room[]): HomeBadge => ({ unread: rooms.some((r) => r.notifications > 0), mentions: rooms.reduce((sum, r) => sum + r.highlights, 0) });
+
+const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
+/** A space's children in the spec's order: those with an order first, by it; then by when they were added; then by room id. */
+const byOrder = ([a, x]: [string, MxSpaceChild], [b, y]: [string, MxSpaceChild]): number =>
+  Number(x.order === undefined) - Number(y.order === undefined) || compareText(x.order ?? "", y.order ?? "") || x.ts - y.ts || compareText(a, b);
+
+/** One heading of a space's sidebar: the space itself or one of its subspaces, with the rooms it lists. */
+interface SpaceSection {
+  space: Room;
+  rooms: Room[];
+}
+
+/** How joined spaces group the rooms: top-level spaces (the rail's servers) and their sections, and the first space each room is in. */
+interface SpaceLayout {
+  servers: Map<string, SpaceSection[]>;
+  owner: Map<string, string>;
+}
 
 interface Room {
   id: string;
@@ -220,6 +244,10 @@ interface Room {
   rtc: Map<string, { id: string; expiresAt: number; member: MxCallMember | null }>;
   /** Encrypted sticky events from outside the timeline whose keys have not arrived; tried again when they do. */
   stickyWaiting: MxEncryptedEvent[];
+  /** The room is a space (m.room.create type m.space). */
+  space: boolean;
+  /** A space's children (m.space.child) by room id, joined or not; empty for other rooms. */
+  children: Map<string, MxSpaceChild>;
 }
 
 /** What is stored under RTC_KEY. */
@@ -349,7 +377,9 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
  * Native Matrix adapter: signs in through the homeserver's account page
  * (OAuth 2.0), with a password or with an access token; lists direct chats
  * (m.direct) as direct messages in the rail and the unified Messages page,
- * and every other joined room in its view's sidebar. Runs in its sandboxed
+ * top-level spaces as servers in the rail with their rooms (and their
+ * subspaces' rooms) in its view's sidebar, and every other joined room in
+ * the sidebar at home. Runs in its sandboxed
  * engine over plain Client-Server API calls. Devices Multicord owns get
  * end-to-end encryption (crypto.ts); with an access token copied from
  * Element encrypted rooms stay locked, and nothing is ever sent unencrypted
@@ -400,6 +430,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly mediaLoading = new Set<string>();
   private readonly loading = new Set<string>();
   private selected: string | undefined;
+  /** The open top-level space (a rail server), or undefined at home. */
+  private openSpace: string | undefined;
+  /** The room last opened in each space ("" for home), to open again on going back. */
+  private readonly lastRoom = new Map<string, string>();
+  /** The rail servers last sent, as JSON, so an unchanged list is not sent again. */
+  private sentServers = "[]";
   private visible = false;
   /** Counts sign-ins and sign-outs, so a sync loop or task started for one session stops for the next. */
   private generation = 0;
@@ -592,30 +628,49 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return this.directs();
   }
 
-  /** Rooms other than DMs: DM bubbles carry their own badges. */
+  /** The rooms at home: DM bubbles and spaces carry their own badges. */
   homeBadge(): HomeBadge {
-    let unread = false;
-    let mentions = 0;
-    for (const room of this.rooms.values()) {
-      if (this.dmUsers.has(room.id)) continue;
-      unread ||= room.notifications > 0;
-      mentions += room.highlights;
-    }
-    return { unread, mentions };
+    return badge(this.homeRooms(this.spaceLayout()));
   }
 
+  /** Home: DMs and the rooms in no space, with the room last open there. */
   async openHome(): Promise<void> {
-    this.render();
+    this.openSpace = undefined;
+    await this.reselect([...this.dmRooms(), ...this.homeRooms(this.spaceLayout())], "", false);
   }
 
+  /** Opens a top-level space: its rooms in the sidebar, and the room last open there (else its first). */
   async openServer(key: string): Promise<void> {
-    throw new Error(`Matrix has no server ${key}`);
+    const sections = this.spaceLayout().servers.get(key);
+    if (!sections) throw new Error(`Matrix has no server ${key}`);
+    this.openSpace = key;
+    await this.reselect(
+      sections.flatMap((s) => s.rooms),
+      key,
+      true,
+    );
   }
 
   async openConversation(key: string): Promise<void> {
     if (key === REQUEST_ENTRY) return this.select(this.local(REQUEST_ENTRY));
     const room = this.rooms.get(key);
-    if (room) await this.select(room.local);
+    if (!room) return;
+    // The room opens where it is listed: in the open space if that lists it, else in its first space, else at home.
+    const layout = this.spaceLayout();
+    const here = layout.servers.get(this.openSpace ?? "")?.some((s) => s.rooms.includes(room)) ?? false;
+    // DMs are in no space, so they open at home.
+    if (!here) this.openSpace = layout.owner.get(room.id);
+    await this.select(room.local);
+  }
+
+  /** Keeps the open room if `rooms` lists it, else opens the one last open in this place, else (with `first`) the first. */
+  private async reselect(rooms: Room[], place: string, first: boolean): Promise<void> {
+    const open = this.selectedRoom();
+    const last = this.rooms.get(this.lastRoom.get(place) ?? "");
+    const room = open && rooms.includes(open) ? open : last && rooms.includes(last) ? last : first ? rooms[0] : undefined;
+    this.selected = room?.id;
+    this.render();
+    if (room) await this.opened(room);
   }
 
   setVisible(visible: boolean): void {
@@ -649,9 +704,17 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.avatars.clear();
     this.avatarsTried.clear();
     this.forgetMedia();
-    this.selected = undefined;
-    this.directsChanged.emit([]);
+    this.forgetRooms();
     await this.showSignIn();
+  }
+
+  /** After the session ends: nothing open, and no chats or spaces left in the rail. */
+  private forgetRooms(): void {
+    this.selected = undefined;
+    this.openSpace = undefined;
+    this.lastRoom.clear();
+    this.directsChanged.emit([]);
+    this.publishServers();
   }
 
   /** Drops loaded media: decrypted files must not outlive the session they belong to. */
@@ -674,8 +737,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.rooms.clear();
     this.dmUsers.clear();
     this.forgetMedia();
-    this.selected = undefined;
-    this.directsChanged.emit([]);
+    this.forgetRooms();
     await this.showSignIn("Your Matrix session has ended. Sign in again.");
   }
 
@@ -1391,6 +1453,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         calls: new Map(),
         rtc: new Map(),
         stickyWaiting: [],
+        space: false,
+        children: new Map(),
       };
       this.rooms.set(id, room);
     }
@@ -1404,6 +1468,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (state.encrypted) room.encrypted = true;
     if (state.encryption) room.encryption = state.encryption;
     if (state.history !== undefined) room.history = state.history;
+    if (state.space) room.space = true;
+    // Only spaces list children; other rooms' m.space.child events mean nothing.
+    for (const [id, child] of room.space ? (state.children ?? []) : []) {
+      if (!child) room.children.delete(id);
+      else if (room.children.has(id) || room.children.size < MAX_SPACE_CHILDREN) room.children.set(id, child);
+    }
     for (const [user, member] of Object.entries(state.members)) {
       room.members.set(user, member);
       // Whoever joins or is invited gets the keys of the next encrypted message; whoever leaves does not.
@@ -1419,6 +1489,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     for (const id of sync.left) {
       this.rooms.delete(id);
       if (this.selected === id) this.selected = undefined;
+      // Gone as a space whose last room is remembered, and as a remembered room.
+      this.lastRoom.delete(id);
+      for (const [place, last] of this.lastRoom) if (last === id) this.lastRoom.delete(place);
       if (this.ringing === id) this.ringing = undefined;
       if (this.call?.roomId === id) void this.leaveCall("You left the room, so you left its call too.");
     }
@@ -1525,7 +1598,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       title: dm ? title : `${this.memberName(room, event.sender)} in ${title}`.slice(0, 200),
       body: this.eventText(room, event).slice(0, 200),
       target: room.id,
-      railKey: dm ? `dm:${room.id}` : "home",
+      railKey: dm ? `dm:${room.id}` : (this.spaceLayout().owner.get(room.id) ?? "home"),
       inView: this.visible && this.selected === room.id,
     });
   }
@@ -1537,7 +1610,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const session = this.session!;
     let found = false;
     try {
-      for (const room of this.dmRooms().slice(0, AVATAR_LIMIT)) {
+      const spaces = [...this.spaceLayout().servers.keys()].map((id) => this.rooms.get(id)!);
+      for (const room of [...this.dmRooms().slice(0, AVATAR_LIMIT), ...spaces]) {
         const mxc = this.avatarOf(room);
         if (!mxc || this.avatarsTried.has(mxc)) continue;
         this.avatarsTried.add(mxc);
@@ -1555,9 +1629,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (found) this.publish();
   }
 
-  /** A DM's picture: the room's own, else the other person's. */
+  /** A DM's or space's picture: the room's own, else (for a DM) the other person's. */
   private avatarOf(room: Room): string | undefined {
-    return room.avatar || room.members.get(this.dmUsers.get(room.id)!)?.avatar;
+    return room.avatar || room.members.get(this.dmUsers.get(room.id) ?? "")?.avatar;
   }
 
   // --- Rooms and messages -------------------------------------------------------
@@ -1585,7 +1659,13 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const room = this.rooms.get(this.byLocal.get(local) ?? "");
     if (!room) return;
     this.selected = room.id;
+    this.lastRoom.set(this.openSpace ?? "", room.id);
     this.render();
+    await this.opened(room);
+  }
+
+  /** A room just opened: its first messages if none came yet, and a read receipt if it is in view. */
+  private async opened(room: Room): Promise<void> {
     if (room.events.length === 0 && room.prevBatch) await this.fetchHistory(room);
     if (this.visible) this.markRead(room);
   }
@@ -2303,8 +2383,95 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return [...this.rooms.values()].filter((r) => this.dmUsers.has(r.id)).sort((a, b) => b.lastActivity - a.lastActivity);
   }
 
-  private otherRooms(): Room[] {
-    return [...this.rooms.values()].filter((r) => !this.dmUsers.has(r.id)).sort((a, b) => b.lastActivity - a.lastActivity);
+  /** Rooms at home: neither DMs nor spaces, nor in a space shown in the rail; latest first. */
+  private homeRooms(layout: SpaceLayout): Room[] {
+    return [...this.rooms.values()]
+      .filter((r) => !this.dmUsers.has(r.id) && !r.space && !layout.owner.has(r.id))
+      .sort((a, b) => b.lastActivity - a.lastActivity);
+  }
+
+  // --- Spaces -------------------------------------------------------------------
+
+  /** A space's joined children in its order, as subspaces and rooms; DMs stay at home, and children not joined are not shown. */
+  private spaceChildren(space: Room): { spaces: Room[]; rooms: Room[] } {
+    const spaces: Room[] = [];
+    const rooms: Room[] = [];
+    for (const [id] of [...space.children].sort(byOrder)) {
+      const child = this.rooms.get(id);
+      if (!child || child === space || this.dmUsers.has(id)) continue;
+      (child.space ? spaces : rooms).push(child);
+    }
+    return { spaces, rooms };
+  }
+
+  /**
+   * The rail's spaces: those no other joined space lists, each with its own
+   * rooms and then, depth first, those of its subspaces at any depth (each
+   * subspace and room once). Spaces that only list each other (a cycle with
+   * no way in from the top) would be lost, so the first of them by id counts
+   * as top-level. Every walk keeps a set of spaces seen, so cycles end.
+   */
+  private spaceLayout(): SpaceLayout {
+    const spaces = [...this.rooms.values()].filter((r) => r.space).sort((a, b) => compareText(a.id, b.id));
+    const children = new Map(spaces.map((s) => [s.id, this.spaceChildren(s)]));
+    const nested = new Set(spaces.flatMap((s) => children.get(s.id)!.spaces.map((c) => c.id)));
+    const reached = new Set<string>();
+    const top: Room[] = [];
+    for (const space of [...spaces.filter((s) => !nested.has(s.id)), ...spaces]) {
+      if (reached.has(space.id)) continue;
+      top.push(space);
+      const stack = [space];
+      reached.add(space.id);
+      while (stack.length) {
+        for (const child of children.get(stack.pop()!.id)!.spaces) {
+          if (reached.has(child.id)) continue;
+          reached.add(child.id);
+          stack.push(child);
+        }
+      }
+    }
+    const layout: SpaceLayout = { servers: new Map(), owner: new Map() };
+    for (const space of top.slice(0, MAX_SPACES)) {
+      const sections: SpaceSection[] = [];
+      const seen = new Set([space.id]);
+      const listed = new Set<Room>();
+      const stack = [space];
+      while (stack.length) {
+        const current = stack.pop()!;
+        const { spaces: subspaces, rooms } = children.get(current.id)!;
+        const fresh = rooms.filter((r) => !listed.has(r));
+        for (const room of fresh) {
+          listed.add(room);
+          if (!layout.owner.has(room.id)) layout.owner.set(room.id, space.id);
+        }
+        if (fresh.length) sections.push({ space: current, rooms: fresh });
+        const next = subspaces.filter((s) => !seen.has(s.id));
+        for (const s of next) seen.add(s.id);
+        // Reversed onto the stack, so they come off in the space's order.
+        stack.push(...next.reverse());
+      }
+      layout.servers.set(space.id, sections);
+    }
+    return layout;
+  }
+
+  railServers(): RailServer[] {
+    return [...this.spaceLayout().servers].map(([id, sections]) => {
+      const space = this.rooms.get(id)!;
+      const server: RailServer = { key: id, account: this.account, name: this.title(space), ...badge(sections.flatMap((s) => s.rooms)) };
+      const icon = this.avatars.get(this.avatarOf(space) ?? "");
+      if (icon) server.iconUrl = icon;
+      return server;
+    });
+  }
+
+  /** Sends the rail's spaces when they changed. */
+  private publishServers(): void {
+    const servers = this.railServers();
+    const json = JSON.stringify(servers);
+    if (json === this.sentServers) return;
+    this.sentServers = json;
+    this.setServers(servers);
   }
 
   directs(): DirectConversation[] {
@@ -2329,6 +2496,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   private publish(): void {
     this.directsChanged.emit(this.directs());
+    this.publishServers();
     this.render();
   }
 
@@ -2402,8 +2570,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       const waiting = this.step === "verify-wait" || this.step === "verify-confirmed";
       return { screen: "prompt", platform, prompt: this.prompt(), busy: this.busy || waiting, status: this.promptStatus(), error: this.error };
     }
-    const dms = this.dmRooms();
-    const rooms = this.otherRooms();
+    const layout = this.spaceLayout();
+    // A space that is gone (left, or now inside another) leaves for home.
+    const sections = layout.servers.get(this.openSpace ?? "");
+    if (!sections) this.openSpace = undefined;
     const sidebar: NativeSidebarItem[] = [];
     const category = (id: string, name: string): NativeSidebarItem => ({ id, name, kind: "category", unread: false, mentions: 0, active: false });
     const entry = (id: string, name: string, attention = false): NativeSidebarItem => ({ id: this.local(id), name, kind: "text", unread: attention, mentions: attention ? 1 : 0, active: false });
@@ -2416,8 +2586,18 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (security.length) sidebar.push(category("security", "Encryption"), ...security);
     const calls = this.callItems();
     if (calls.length) sidebar.push(category("calls", "Calls"), ...calls);
-    if (dms.length) sidebar.push(category("dms", "Direct messages"), ...dms.map((r) => this.sidebarItem(r, true)));
-    if (rooms.length) sidebar.push(category("rooms", "Rooms"), ...rooms.map((r) => this.sidebarItem(r, false)));
+    if (sections) {
+      // A space: its own rooms, then each subspace's under its name (as server categories show).
+      for (const { space, rooms } of sections) {
+        const heading = space.id === this.openSpace ? category("rooms", "Rooms") : category(`space:${space.local}`, this.title(space));
+        sidebar.push(heading, ...rooms.map((r) => this.sidebarItem(r, false)));
+      }
+    } else {
+      const dms = this.dmRooms();
+      const rooms = this.homeRooms(layout);
+      if (dms.length) sidebar.push(category("dms", "Direct messages"), ...dms.map((r) => this.sidebarItem(r, true)));
+      if (rooms.length) sidebar.push(category("rooms", "Rooms"), ...rooms.map((r) => this.sidebarItem(r, false)));
+    }
     const room = this.selectedRoom();
     const userId = this.session!.userId;
     const locked = room ? this.lock(room)?.notice : undefined;
@@ -2425,7 +2605,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return {
       screen: "chat",
       platform,
-      title: userId.slice(userId.indexOf(":") + 1),
+      title: sections ? this.title(this.rooms.get(this.openSpace!)!) : userId.slice(userId.indexOf(":") + 1),
       me: userId,
       sidebar,
       channel: room

@@ -85,6 +85,7 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 
   It covers:
   - direct chats as DM bubbles and in the unified Messages page, with previews, unread counts and profile pictures, plus your other rooms in its sidebar;
+  - spaces as servers in the rail: each top-level space you have joined gets an entry with its picture and unread/mention badge, and opening it lists its rooms, with each subspace's rooms under the subspace's name. Only rooms you have joined are listed; direct messages, and rooms in no space, stay under Home;
   - history, sending, replying, and editing and deleting your own messages;
   - reactions, typing indicators, files and pictures (one message per file, up to the homeserver's upload limit and at most 50 MB);
   - notifications for DMs and mentions.

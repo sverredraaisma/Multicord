@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { DirectConversation, IncomingCall, PlatformNotification } from "../../../src/shared/adapter";
+import type { DirectConversation, IncomingCall, PlatformNotification, RailServer } from "../../../src/shared/adapter";
 import {
   MatrixError,
   type MatrixApi,
@@ -16,8 +16,10 @@ import {
   type MxOAuthSession,
   type MxOpenIdToken,
   type MxPage,
+  type MxRoomState,
   type MxRoomUpdate,
   type MxSession,
+  type MxSpaceChild,
   type MxSync,
 } from "../../../src/modules/matrix/api";
 import {
@@ -35,6 +37,7 @@ import {
   messageText,
   MAX_MEDIA_BYTES,
   MAX_REACTIONS,
+  MAX_SPACES,
   PAGE_SIZE,
   TYPING_IDLE_MS,
   TYPING_REPEAT_MS,
@@ -49,7 +52,7 @@ import {
 import type { DeviceRef, E2ee, E2eeOptions, E2eeStatus, RecoveryResult, RoomEncryption, SecureToDevice } from "../../../src/modules/matrix/crypto";
 import type { Verification, VerificationState } from "../../../src/modules/matrix/verification";
 import { OAuthError, type DeviceGrant, type DevicePoll, type OAuthServer, type OAuthTokens } from "../../../src/modules/matrix/oauth";
-import { parseEncryptedFile, parseEvent } from "../../../src/modules/matrix/events";
+import { MAX_SPACE_CHILDREN, parseEncryptedFile, parseEvent } from "../../../src/modules/matrix/events";
 import { decryptAttachment } from "../../../src/modules/matrix/media";
 import { MAX_DIRECTS, MAX_HTTP_BODY, MAX_READ } from "../../../src/shared/engine";
 import type { FileSource } from "../../../src/engine/runtime";
@@ -3742,5 +3745,241 @@ describe("media", () => {
     // The original's key no longer loads anything.
     await ctx.load(ctx.key(shown.id));
     expect(ctx.api.download).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("spaces", () => {
+  const GUILD = "!guild:x.org";
+  const SUB = "!sub:x.org";
+  const ICON = "data:image/png;base64,AAAA";
+  const ACCOUNT = { platform: "matrix-native", instance: "x.org", accountId: "default" };
+  const kids = (...entries: [string, Partial<MxSpaceChild>?][]): Map<string, MxSpaceChild | null> =>
+    new Map(entries.map(([id, extra], i) => [id, { suggested: false, ts: i, ...extra }]));
+  const space = (id: string, name: string, children: Map<string, MxSpaceChild | null>, extra: Partial<MxRoomState> = {}): MxRoomUpdate =>
+    room(id, { state: { name, members: {}, space: true, children, ...extra } });
+  const named = (id: string, name: string, extra: Partial<MxRoomUpdate> = {}): MxRoomUpdate => room(id, { state: { name, members: {} }, ...extra });
+
+  /** Guild lists Beta and Alpha (ordered Alpha first), its subspace Sub (with Gamma), a room not joined and the DM; Lounge is in no space. */
+  const spacesSync = (): MxSync =>
+    sync({
+      directs: { [BO]: ["!dm:x.org"] },
+      joined: [
+        room("!dm:x.org", { state: { members: { [BO]: { name: "Bo", membership: "join" } } } }),
+        space(GUILD, "Guild", kids(["!b:x.org", { order: "b" }], ["!a:x.org", { order: "a" }], [SUB], ["!gone:x.org"], ["!dm:x.org"]), { avatar: "mxc://x.org/guild" }),
+        space(SUB, "Sub", kids(["!c:x.org"])),
+        named("!a:x.org", "Alpha"),
+        named("!b:x.org", "Beta"),
+        named("!c:x.org", "Gamma", { unread: { notifications: 2, highlights: 1 } }),
+        named("!lounge:x.org", "Lounge", { unread: { notifications: 1, highlights: 0 } }),
+      ],
+    });
+
+  async function withSpaces(first: MxSync = spacesSync()) {
+    const ctx = setup({ session: SESSION_JSON });
+    const servers: RailServer[][] = [];
+    ctx.adapter.onServersChanged((s) => servers.push(s));
+    ctx.api.thumbnail.mockImplementation(async (_s, mxc) => (mxc === "mxc://x.org/guild" ? ICON : undefined));
+    ctx.api.push(first);
+    await ctx.adapter.start();
+    await flush();
+    const names = () => ctx.chat().sidebar.map((i) => i.name);
+    const keys = () => servers.at(-1)!.map((s) => s.key);
+    return { ...ctx, servers, names, keys };
+  }
+
+  it("shows top-level spaces in the rail, with their picture and their rooms' badges", async () => {
+    const ctx = await withSpaces();
+    expect(ctx.servers.at(-1)).toEqual([{ key: GUILD, account: ACCOUNT, name: "Guild", unread: true, mentions: 1, iconUrl: ICON }]);
+    // Home keeps the DMs and the rooms in no space; its badge counts only those rooms.
+    expect(ctx.chat().title).toBe("x.org");
+    expect(ctx.names()).toEqual(["Direct messages", "Bo", "Rooms", "Lounge"]);
+    expect(ctx.adapter.homeBadge()).toEqual({ unread: true, mentions: 0 });
+  });
+
+  it("opens a space: its rooms in order, then each subspace's under its name", async () => {
+    const ctx = await withSpaces();
+    await ctx.adapter.openServer(GUILD);
+    expect(ctx.chat().title).toBe("Guild");
+    const categories = ctx.chat().sidebar.filter((i) => i.kind === "category").map((i) => i.id);
+    expect(categories[0]).toBe("rooms");
+    expect(categories[1]).toMatch(/^space:[0-9]+$/);
+    expect(ctx.names()).toEqual(["Rooms", "Alpha", "Beta", "Sub", "Gamma"]);
+    expect(ctx.item("Gamma")).toMatchObject({ kind: "text", unread: true, mentions: 1 });
+    // The first room opens; then the one last open there.
+    expect(ctx.chat().channel?.name).toBe("Alpha");
+    await ctx.open("Gamma");
+    await ctx.adapter.openHome();
+    expect(ctx.chat().channel).toBeNull();
+    expect(ctx.names()).toContain("Lounge");
+    await ctx.open("Lounge");
+    await ctx.adapter.openServer(GUILD);
+    expect(ctx.chat().channel?.name).toBe("Gamma");
+    await ctx.adapter.openHome();
+    expect(ctx.chat().channel?.name).toBe("Lounge");
+    await expect(ctx.adapter.openServer(SUB)).rejects.toThrow(`Matrix has no server ${SUB}`);
+  });
+
+  it("opens a conversation in its space, and a DM at home", async () => {
+    const ctx = await withSpaces();
+    await ctx.adapter.openConversation("!c:x.org");
+    expect(ctx.chat()).toMatchObject({ title: "Guild", channel: { name: "Gamma" } });
+    // Already open there, so opening the space keeps it.
+    await ctx.adapter.openServer(GUILD);
+    expect(ctx.chat().channel?.name).toBe("Gamma");
+    await ctx.adapter.openConversation("!dm:x.org");
+    expect(ctx.chat()).toMatchObject({ title: "x.org", channel: { name: "Bo" } });
+  });
+
+  it("names the space in a notification's rail key", async () => {
+    const ctx = await withSpaces();
+    await ctx.live(
+      sync({
+        joined: [
+          named("!a:x.org", "Alpha", { timeline: [msg("n1", ANA, "hey you", 5000, { mentions: [ME] })] }),
+          named("!lounge:x.org", "Lounge", { timeline: [msg("n2", ANA, "and you", 5001, { mentions: [ME] })] }),
+        ],
+      }),
+    );
+    expect(ctx.notifications.map((n) => n.railKey)).toEqual([GUILD, "home"]);
+  });
+
+  it("does not send an unchanged rail again", async () => {
+    const ctx = await withSpaces();
+    const sent = ctx.servers.length;
+    // A space's update without its structure keeps the structure.
+    await ctx.live(sync({ joined: [room(GUILD), named("!a:x.org", "Alpha", { timeline: [msg("q", ANA, "quiet", 6000)] })] }));
+    expect(ctx.servers).toHaveLength(sent);
+    await ctx.adapter.openServer(GUILD);
+    expect(ctx.names()).toEqual(["Rooms", "Alpha", "Beta", "Sub", "Gamma"]);
+  });
+
+  it("puts a room in every space that lists it, and opens it where it is listed", async () => {
+    const ctx = await withSpaces(
+      sync({
+        joined: [
+          space("!sa:x.org", "A", kids(["!shared:x.org"], ["!a1:x.org"])),
+          space("!sb:x.org", "B", kids(["!shared:x.org"])),
+          named("!shared:x.org", "Shared", { unread: { notifications: 1, highlights: 2 } }),
+          named("!a1:x.org", "A1"),
+        ],
+      }),
+    );
+    expect(ctx.servers.at(-1)!.map(({ key, mentions }) => [key, mentions])).toEqual([
+      ["!sa:x.org", 2],
+      ["!sb:x.org", 2],
+    ]);
+    expect(ctx.servers.at(-1)![0]!.iconUrl).toBeUndefined();
+    await ctx.adapter.openServer("!sb:x.org");
+    await ctx.adapter.openConversation("!shared:x.org");
+    expect(ctx.chat().title).toBe("B");
+    await ctx.adapter.openHome();
+    await ctx.adapter.openConversation("!shared:x.org");
+    expect(ctx.chat().title).toBe("A");
+    expect(ctx.adapter.homeBadge()).toEqual({ unread: false, mentions: 0 });
+  });
+
+  it("ends cycles: spaces that only list each other show once, and a space listing itself is top-level", async () => {
+    const ctx = await withSpaces(
+      sync({
+        joined: [
+          // X lists Y and Q, Q lists Y, Y lists X back: no way in from the top, so Q (first by id) stands for them all.
+          space("!x:x.org", "X", kids(["!y:x.org"], ["!q:x.org"])),
+          space("!y:x.org", "Y", kids(["!x:x.org"], ["!r1:x.org"])),
+          space("!q:x.org", "Q", kids(["!y:x.org"], ["!r1:x.org"])),
+          space("!z:x.org", "Z", kids(["!z:x.org"], ["!r2:x.org"])),
+          named("!r1:x.org", "R1"),
+          named("!r2:x.org", "R2"),
+        ],
+      }),
+    );
+    expect(ctx.keys()).toEqual(["!z:x.org", "!q:x.org"]);
+    // R1, listed by Q and by Y, shows once.
+    await ctx.adapter.openServer("!q:x.org");
+    expect(ctx.names()).toEqual(["Rooms", "R1"]);
+    await ctx.adapter.openServer("!z:x.org");
+    expect(ctx.names()).toEqual(["Rooms", "R2"]);
+  });
+
+  it("orders children by order, then by when they were added, then by id", async () => {
+    const ctx = await withSpaces(
+      sync({
+        joined: [
+          space(
+            "!s:x.org",
+            "S",
+            new Map<string, MxSpaceChild>([
+              ["!e:x.org", { suggested: false, ts: 9 }],
+              ["!d:x.org", { suggested: false, ts: 5 }],
+              ["!c:x.org", { suggested: false, ts: 5 }],
+              ["!b:x.org", { order: "m", suggested: false, ts: 7 }],
+              ["!a:x.org", { order: "m", suggested: false, ts: 3 }],
+              ["!f:x.org", { order: "z", suggested: false, ts: 1 }],
+            ]),
+          ),
+          ...["a", "b", "c", "d", "e", "f"].map((n) => named(`!${n}:x.org`, n.toUpperCase())),
+        ],
+      }),
+    );
+    await ctx.adapter.openServer("!s:x.org");
+    expect(ctx.names()).toEqual(["Rooms", "A", "B", "F", "C", "D", "E"]);
+  });
+
+  it("shows a subspace as a server once the space above it is left, and forgets what was open in the left space", async () => {
+    const ctx = await withSpaces();
+    await ctx.adapter.openServer(GUILD);
+    await ctx.open("Beta");
+    await ctx.adapter.openHome();
+    await ctx.open("Lounge");
+    await ctx.adapter.openServer(GUILD);
+    await ctx.live(sync({ left: [GUILD, "!lounge:x.org"] }));
+    expect(ctx.keys()).toEqual([SUB]);
+    // The open space is gone: the view is home, where Alpha and Beta are back.
+    expect(ctx.chat().title).toBe("x.org");
+    expect(ctx.names()).toEqual(["Direct messages", "Bo", "Rooms", "Alpha", "Beta"]);
+    // Beta stays open, now at home.
+    await ctx.adapter.openHome();
+    expect(ctx.chat().channel?.name).toBe("Beta");
+  });
+
+  it("moves a room home when its space removes it", async () => {
+    const ctx = await withSpaces();
+    await ctx.live(sync({ joined: [space(SUB, "Sub", new Map([["!c:x.org", null]]))] }));
+    expect(ctx.servers.at(-1)![0]).toMatchObject({ unread: false, mentions: 0 });
+    expect(ctx.names()).toContain("Gamma");
+    await ctx.adapter.openServer(GUILD);
+    expect(ctx.names()).toEqual(["Rooms", "Alpha", "Beta"]);
+  });
+
+  it("ignores children of rooms that are not spaces", async () => {
+    const ctx = await withSpaces(sync({ joined: [room("!plain:x.org", { state: { name: "Plain", members: {}, children: kids(["!a:x.org"]) } }), named("!a:x.org", "Alpha")] }));
+    expect(ctx.servers).toEqual([]);
+    expect(ctx.names()).toEqual(["Rooms", "Plain", "Alpha"]);
+  });
+
+  it("shows at most MAX_SPACES spaces; the rooms of the rest stay at home", async () => {
+    const id = (i: number) => String(i).padStart(3, "0");
+    const ctx = await withSpaces(
+      sync({
+        joined: Array.from({ length: MAX_SPACES + 1 }, (_, i) => [space(`!s${id(i)}:x.org`, `S${i}`, kids([`!r${id(i)}:x.org`])), named(`!r${id(i)}:x.org`, `R${i}`)]).flat(),
+      }),
+    );
+    expect(ctx.servers.at(-1)).toHaveLength(MAX_SPACES);
+    expect(ctx.names()).toEqual(["Rooms", `R${MAX_SPACES}`]);
+  });
+
+  it("keeps at most MAX_SPACE_CHILDREN children per space, but takes removals", async () => {
+    const many = kids(...Array.from({ length: MAX_SPACE_CHILDREN }, (_, i): [string] => [`!c${i}:x.org`]));
+    const ctx = await withSpaces(sync({ joined: [space("!s:x.org", "S", many), named("!c0:x.org", "Zero"), named("!new:x.org", "New")] }));
+    await ctx.live(sync({ joined: [space("!s:x.org", "S", new Map([["!new:x.org", { suggested: false, ts: 1 }], ["!c0:x.org", null]]))] }));
+    expect(ctx.names()).toEqual(expect.arrayContaining(["Zero", "New"]));
+    await ctx.live(sync({ joined: [space("!s:x.org", "S", kids(["!new:x.org"]))] }));
+    await ctx.adapter.openServer("!s:x.org");
+    expect(ctx.names()).toEqual(["Rooms", "New"]);
+  });
+
+  it("empties the rail on signing out", async () => {
+    const ctx = await withSpaces();
+    await ctx.adapter.signOut();
+    expect(ctx.servers.at(-1)).toEqual([]);
   });
 });
