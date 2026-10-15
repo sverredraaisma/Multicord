@@ -26,6 +26,35 @@ describe("StoatState from Ready", () => {
     expect(state.mentions(GENERAL)).toBe(2);
   });
 
+  it("counts mentions of roles the user has in the message's server, following role changes", () => {
+    const [ROLE, OTHER] = [ulid(60), ulid(61)];
+    const state = ready({
+      members: [
+        { _id: { server: ALPHA, user: ME_ID }, roles: [ROLE] },
+        { _id: { server: BETA, user: ANA_ID }, roles: [OTHER] },
+        { _id: { server: "nope", user: ME_ID }, roles: [OTHER] },
+        { bad: true },
+      ],
+    });
+    expect([...state.ownRoles]).toEqual([[ALPHA, [ROLE]]]);
+    const mentioning = (channel: string, roles: string[]) => state.mentionsMe(msg(470, channel, { role_mentions: roles }));
+    expect(mentioning(GENERAL, [ROLE])).toBe(true);
+    expect(mentioning(GENERAL, [OTHER])).toBe(false);
+    // The role is the server's own: not in another server, nor outside servers.
+    expect(mentioning(CHAT, [ROLE])).toBe(false);
+    expect(mentioning(DM, [ROLE])).toBe(false);
+    expect(msg(470, GENERAL)).not.toHaveProperty("roleMentionIds");
+    state.apply("ServerMemberUpdate", { id: { server: ALPHA, user: ME_ID }, data: { roles: [OTHER] }, clear: [] });
+    expect(mentioning(GENERAL, [OTHER])).toBe(true);
+    state.apply("ServerMemberUpdate", { id: { server: ALPHA, user: ME_ID }, data: {}, clear: ["Roles"] });
+    expect(mentioning(GENERAL, [OTHER])).toBe(false);
+    // Someone else's changes are not ours.
+    state.apply("ServerMemberUpdate", { id: { server: BETA, user: ANA_ID }, data: { roles: [ROLE] } });
+    expect(state.ownRoles.has(BETA)).toBe(false);
+    state.apply("ServerDelete", { id: ALPHA });
+    expect(state.ownRoles.has(ALPHA)).toBe(false);
+  });
+
   it("keeps the signed-in id from login when Ready does not mark it", () => {
     const state = new StoatState();
     state.meId = ME_ID;

@@ -124,6 +124,8 @@ export interface StoatMessage {
   system?: string;
   edited: boolean;
   mentionIds: string[];
+  /** Roles it mentions (as <%id>), where it mentions any. */
+  roleMentionIds?: string[];
   flags: number;
   attachments: StoatFile[];
   replies: string[];
@@ -330,6 +332,7 @@ export function parseMessage(value: unknown): StoatMessage | undefined {
     system: systemText(value.system),
     edited: typeof value.edited === "string",
     mentionIds: ids(value.mentions),
+    ...(ids(value.role_mentions).length > 0 ? { roleMentionIds: ids(value.role_mentions) } : {}),
     flags: typeof value.flags === "number" && Number.isInteger(value.flags) && value.flags >= 0 ? value.flags : 0,
     attachments: list(value.attachments).flatMap((a) => parseFile(a) ?? []),
     replies: ids(value.replies),

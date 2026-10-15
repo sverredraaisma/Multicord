@@ -57,6 +57,8 @@ export class StoatState {
   notifySettings: StoatNotifySettings = { servers: new Map(), channels: new Map() };
   /** Members of servers whose member list the user opened, by server and user id; kept current by member events. */
   readonly members = new Map<string, Map<string, StoatMember>>();
+  /** The user's own roles in each server, for role mentions: from Ready's members, kept current by member events. */
+  readonly ownRoles = new Map<string, string[]>();
   /** Whether Ready carried unread state (older instances need /sync/unreads). */
   unreadsLoaded = false;
 
@@ -72,7 +74,7 @@ export class StoatState {
     this.meId = undefined;
     this.unreadsLoaded = false;
     this.notifySettings = { servers: new Map(), channels: new Map() };
-    for (const map of [this.users, this.servers, this.channels, this.unreads, this.messages, this.latest, this.emojis, this.typing, this.members]) map.clear();
+    for (const map of [this.users, this.servers, this.channels, this.unreads, this.messages, this.latest, this.emojis, this.typing, this.members, this.ownRoles]) map.clear();
   }
 
   apply(type: string, d: Record<string, unknown>): void {
@@ -86,6 +88,12 @@ export class StoatState {
         for (const s of list(d.servers)) this.addServer(parseServer(s));
         for (const c of list(d.channels)) this.addChannel(parseChannel(c));
         for (const e of list(d.emojis)) this.addEmoji(parseEmoji(e));
+        // Ready's members are the user's own, one per server.
+        for (const raw of list(d.members)) {
+          const member = parseMember(raw);
+          const server = isRecord(raw) && isRecord(raw._id) ? raw._id.server : undefined;
+          if (member && member.userId === this.meId && isId(server)) this.ownRoles.set(server, member.roles);
+        }
         if (Array.isArray(d.channel_unreads)) this.loadUnreads(d.channel_unreads.flatMap((u) => parseUnread(u) ?? []));
         break;
       }
@@ -351,9 +359,13 @@ export class StoatState {
     );
   }
 
+  /** By name, through a role the user has in the message's server, or as everyone (online). */
   mentionsMe(message: StoatMessage): boolean {
+    const serverId = this.channels.get(message.channelId)?.serverId;
+    const roles = serverId ? (this.ownRoles.get(serverId) ?? []) : [];
     return (
       (this.meId !== undefined && message.mentionIds.includes(this.meId)) ||
+      (message.roleMentionIds ?? []).some((r) => roles.includes(r)) ||
       (message.flags & (MessageFlag.MentionsEveryone | MessageFlag.MentionsOnline)) !== 0
     );
   }
@@ -398,6 +410,7 @@ export class StoatState {
     // Its emoji stay known, so messages with them keep their names, but are no longer offered.
     this.servers.delete(serverId);
     this.members.delete(serverId);
+    this.ownRoles.delete(serverId);
     for (const channel of this.serverChannels(serverId)) this.removeChannel(channel.id);
   }
 
@@ -493,6 +506,11 @@ export class StoatState {
 
   private updateMember(d: Record<string, unknown>): void {
     const key = isRecord(d.id) ? d.id : {};
+    if (isId(key.server) && key.user === this.meId) {
+      const data = isRecord(d.data) ? d.data : {};
+      if ("roles" in data) this.ownRoles.set(key.server, list(data.roles).filter(isId));
+      if (cleared(d, "Roles")) this.ownRoles.set(key.server, []);
+    }
     const member = isId(key.server) && isId(key.user) ? this.members.get(key.server)?.get(key.user) : undefined;
     if (!member) return;
     const data = isRecord(d.data) ? d.data : {};

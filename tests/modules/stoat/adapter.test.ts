@@ -1200,6 +1200,22 @@ describe("StoatAdapter forwarding", () => {
   });
 });
 
+describe("StoatAdapter role mentions", () => {
+  it("names mentioned roles, highlights mentions of the user's own, and forwards them without pinging", async () => {
+    const ROLE = ulid(60);
+    const servers = readyPayload().servers.map((s) => (s._id === ALPHA ? { ...s, roles: { [ROLE]: { name: "Mods" } } } : s));
+    const history = message(460, GENERAL, { content: `hi <%${ROLE}> and <%${ulid(61)}>`, role_mentions: [ROLE] });
+    const { adapter, chat, goOnline, requests, routes } = setup({ token: "saved" });
+    routes.push((url) => (url.includes(`/channels/${GENERAL}/messages?`) ? { status: 200, body: { messages: [history], users: [ANA] } } : undefined));
+    await adapter.start();
+    await goOnline(readyPayload({ servers, members: [{ _id: { server: ALPHA, user: ME_ID }, roles: [ROLE] }] }));
+    await adapter.openConversation(GENERAL);
+    expect(chat().channel!.messages[0]).toMatchObject({ content: `hi @Mods and <%${ulid(61)}>`, mentionsMe: true });
+    await adapter.handleAction({ type: "forward", messageId: ulid(460), channelId: DM });
+    expect(JSON.parse(requests(`/channels/${DM}/messages`).at(-1)!.init.body as string).content).toBe("Forwarded from Ana:\n> hi @Mods and @a role");
+  });
+});
+
 describe("StoatAdapter Saved Notes", () => {
   const NOTES = ulid(903);
   const withoutNotes = () => readyPayload({ channels: readyPayload().channels.filter((c) => c.channel_type !== "SavedMessages") });

@@ -502,6 +502,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     const quiet = String.fromCharCode(0x200b);
     const text = this.renderContent(message.content)
       .replace(new RegExp(`<@(${ULID})>`, "g"), "@someone")
+      .replace(new RegExp(`<%(${ULID})>`, "g"), "@a role")
       .replace(/@(everyone|online)\b/g, `@${quiet}$1`);
     const quoted = text === "" ? [] : text.split("\n").map((line) => `> ${line}`);
     const files = message.attachments.flatMap((a) => this.fileUrl(a) ?? []);
@@ -1036,13 +1037,17 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   /**
-   * Message text with user and channel mentions resolved to names, and
+   * Message text with user, role and channel mentions resolved to names, and
    * custom emoji to their names, or, given `shown`, to <:name:id> for the
    * view to draw, noting each such emoji in `shown`.
    */
   private renderContent(content: string, shown?: Set<string>): string {
     return content
       .replace(new RegExp(`<@(${ULID})>`, "g"), (match, id: string) => (this.state.users.has(id) ? `@${this.userName(id)}` : match))
+      .replace(new RegExp(`<%(${ULID})>`, "g"), (match, id: string) => {
+        const role = [...this.state.servers.values()].flatMap((s) => s.roles).find((r) => r.id === id);
+        return role ? `@${role.name}` : match;
+      })
       .replace(new RegExp(`<#(${ULID})>`, "g"), (match, id: string) => {
         const channel = this.state.channels.get(id);
         return channel?.name ? `#${channel.name}` : match;
