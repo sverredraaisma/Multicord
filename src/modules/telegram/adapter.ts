@@ -255,6 +255,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   /** The user's sticker packs as fetched this session, in the order offered; whether they were asked for. */
   private stickerPacks: StickerPack[] = [];
   private stickersAsked = false;
+  /** The view's picker is open: only then are the packs in its state. */
+  private pickerOpen = false;
   /** Stickers' pictures for the picker, by sticker id, as data: URLs; those that could not be loaded or kept; and those waiting or loading. */
   private readonly stickerMedia = new Map<string, string>();
   private stickerBytes = 0;
@@ -426,6 +428,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     // The next account has stickers of its own.
     this.stickerPacks = [];
     this.stickersAsked = false;
+    this.pickerOpen = false;
     this.stickerMedia.clear();
     this.stickerBytes = 0;
     this.stickerFailed.clear();
@@ -446,7 +449,11 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   async handleAction(action: NativeAction): Promise<void> {
     switch (action.type) {
       case "ready":
+        // A view (re)loaded has its picker closed.
+        this.pickerOpen = false;
         return this.render();
+      case "picker":
+        return this.setPickerOpen(action.open);
       case "prompt":
         return this.answer(action.id, action.values);
       case "cancelPrompt":
@@ -676,7 +683,6 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.selected = chatId;
     this.topic = topic;
     this.render();
-    void this.loadStickers();
     if (this.membersOpen && !this.memberLists.has(chatId)) void this.fetchMembers(chatId);
     void this.fetchAllowedReactions(chatId);
     // A forum shows its topic list; topics are opened from it, so it is listed by then.
@@ -1142,9 +1148,21 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   /**
-   * Fetches the user's sticker packs once a session, in the background: their
-   * favourite and recent stickers, then their installed sets, a few at once.
-   * Packs show as they arrive; one that fails is left out.
+   * The composer's picker opened or closed. Sticker packs, with their
+   * pictures as data: URLs, are in the view's state only while it is open,
+   * so they do not travel with every update; they are fetched when it first
+   * opens.
+   */
+  private setPickerOpen(open: boolean): void {
+    this.pickerOpen = open;
+    if (open && this.step === "chat") void this.loadStickers();
+    this.render();
+  }
+
+  /**
+   * Fetches the user's sticker packs once a session: their favourite and
+   * recent stickers, then their installed sets, a few at once. Packs show as
+   * they arrive; one that fails is left out.
    */
   private async loadStickers(): Promise<void> {
     if (this.stickersAsked) return;
@@ -1153,7 +1171,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const session = this.session;
     const sets = await api.stickerSets().catch(() => undefined);
     if (session !== this.session) return;
-    // Asked again when a chat is opened next.
+    // Asked again when the picker opens next.
     if (!sets) {
       this.stickersAsked = false;
       return;
@@ -1225,10 +1243,15 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     return this.stickerPacks.flatMap((p) => p.stickers).find((s) => STICKER_ID + s.id === id);
   }
 
-  /** Queues a sticker's picture for the picker, once; the id comes from the view's media key, so it must be one offered. */
+  /**
+   * Queues a sticker's picture for the open picker, once; the id comes from
+   * the view's media key, so it must be one offered. Pictures are never
+   * evicted (past the budget, stickers are no longer offered), so the
+   * picker's requests cannot loop.
+   */
   private loadSticker(id: string): void {
-    const sticker = this.offeredSticker(STICKER_ID + id);
-    if (!sticker || this.stickerMedia.has(id) || this.stickerQueued.has(id)) return;
+    const sticker = this.pickerOpen ? this.offeredSticker(STICKER_ID + id) : undefined;
+    if (!sticker ||this.stickerMedia.has(id) || this.stickerQueued.has(id)) return;
     this.stickerQueued.add(id);
     this.stickerQueue.push(sticker);
     this.pumpStickers();
@@ -1609,8 +1632,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       }
     }
     const dialog = this.selected ? this.dialog(this.selected) : undefined;
-    // Stickers only where they go as stickers: elsewhere the shell would send them as files, round a chat's rules.
-    const stickers = dialog && this.canSendStickers(dialog) ? this.offeredStickers() : [];
+    // Stickers only while the picker is open, and only where they go as stickers: elsewhere the shell would send them as files, round a chat's rules.
+    const stickers = this.pickerOpen && dialog && this.canSendStickers(dialog) ? this.offeredStickers() : [];
     return {
       screen: "chat",
       platform,

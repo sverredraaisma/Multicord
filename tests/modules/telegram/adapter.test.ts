@@ -2333,7 +2333,7 @@ describe("stickers", () => {
     premium?: boolean;
   }
 
-  /** Signed in with these packs (set ids are digits; "faved" and "recent" the user's own), a chat open and the packs fetched. */
+  /** Signed in with these packs (set ids are digits; "faved" and "recent" the user's own), a chat open, the picker open and the packs fetched. */
   async function stickerChat(packs: Record<string, TgSticker[]>, options: StickerOptions = {}, chat = "1") {
     vi.useFakeTimers();
     const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true, ...options });
@@ -2343,6 +2343,7 @@ describe("stickers", () => {
     await ctx.adapter.start();
     await flush();
     await ctx.act({ type: "select", channelId: viewId(chat) });
+    await ctx.act({ type: "picker", open: true });
     await settle();
     return ctx;
   }
@@ -2354,7 +2355,41 @@ describe("stickers", () => {
   const packs = (ctx: Ctx) => ctx.chat().stickers ?? [];
   const offered = (ctx: Ctx) => packs(ctx).flatMap((p) => p.stickers);
 
-  it("offers the user's favourite and recent stickers, then their sets, once a chat is opened", async () => {
+  it("fetches packs when the picker first opens, and keeps them out of the state while it is closed", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    ctx.api.stickers.mockImplementation(async (id: string) => (id === "faved" ? [stk("1"), stk("2")] : []));
+    // Not signed in yet: nothing to fetch.
+    await ctx.act({ type: "picker", open: true });
+    await ctx.adapter.start();
+    await flush();
+    await ctx.act({ type: "select", channelId: "1" });
+    await settle();
+    expect(ctx.api.stickerSets).not.toHaveBeenCalled();
+    expect(ctx.chat().stickers).toBeUndefined();
+    await ctx.act({ type: "picker", open: true });
+    await settle();
+    expect(ctx.api.stickerSets).toHaveBeenCalledTimes(1);
+    expect(offered(ctx).map((s) => s.id)).toEqual(["tg:1", "tg:2"]);
+    await ctx.act({ type: "loadMedia", key: "tgsticker:1" });
+    await settle();
+    expect(offered(ctx)[0]!.url).toBe("data:image/webp;base64,aGk=");
+    // Closed: the packs and their pictures stay out of the state, and no picture is loaded.
+    await ctx.act({ type: "picker", open: false });
+    expect(ctx.chat().stickers).toBeUndefined();
+    await ctx.act({ type: "loadMedia", key: "tgsticker:2" });
+    await settle();
+    expect(ctx.api.stickerFile).toHaveBeenCalledTimes(1);
+    // Opened again: fetched already, the picture kept.
+    await ctx.act({ type: "picker", open: true });
+    expect(offered(ctx)[0]!.url).toBe("data:image/webp;base64,aGk=");
+    // A view reloaded has its picker closed.
+    await ctx.act({ type: "ready" });
+    expect(ctx.chat().stickers).toBeUndefined();
+    expect(ctx.api.stickerSets).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers the user's favourite and recent stickers, then their sets", async () => {
     const ctx = await stickerChat({ faved: [stk("1")], recent: [], "11": [stk("2", { emoji: "" })], "12": [stk("3")] });
     expect(ctx.api.stickers.mock.calls.map((c) => c[0])).toEqual(["faved", "recent", "11", "12"]);
     expect(packs(ctx).map((p) => [p.id, p.name])).toEqual([["faved", "Favourite stickers"], ["set:11", "Set 11"], ["set:12", "Set 12"]]);
@@ -2363,7 +2398,9 @@ describe("stickers", () => {
     expect(ctx.chat().channel!.can.stickers).toBe(true);
     // Fetched once a session.
     await ctx.act({ type: "select", channelId: "2" });
+    await ctx.act({ type: "picker", open: true });
     await settle();
+    expect(packs(ctx)).toHaveLength(3);
     expect(ctx.api.stickerSets).toHaveBeenCalledTimes(1);
     // Neither GIF search nor custom emoji is offered.
     expect(ctx.chat().channel!.can.gifs).toBeUndefined();
@@ -2377,13 +2414,14 @@ describe("stickers", () => {
     await flush();
     ctx.api.stickerSets.mockRejectedValueOnce(new Error("offline"));
     await ctx.act({ type: "select", channelId: "1" });
+    await ctx.act({ type: "picker", open: true });
     await settle();
     expect(ctx.api.stickers).not.toHaveBeenCalled();
-    // Asked again on the next chat.
+    // Asked again when the picker opens next.
     const answers: ((stickers: TgSticker[]) => void)[] = [];
     ctx.api.stickerSets.mockResolvedValue([{ id: "11", title: "Cats" }, { id: "12", title: "Dogs" }, { id: "13", title: "Owls" }]);
     ctx.api.stickers.mockImplementation((id: string) => (id === "12" ? Promise.reject(new Error("gone")) : new Promise((resolve) => answers.push(resolve))));
-    await ctx.act({ type: "select", channelId: "2" });
+    await ctx.act({ type: "picker", open: true });
     await flush();
     expect(ctx.api.stickers.mock.calls.map((c) => c[0])).toEqual(["faved", "recent", "11"]);
     answers[2]!([stk("1")]);
@@ -2529,7 +2567,10 @@ describe("stickers", () => {
     await ctx.answer("phone", { phone: "+31612345678" });
     await ctx.answer("code", { code: "1" });
     await flush();
-    const opening = ctx.act({ type: "select", channelId: "1" });
+    await ctx.act({ type: "select", channelId: "1" });
+    // The picker counts as closed after signing in again.
+    expect(ctx.api.stickerSets).toHaveBeenCalledTimes(1);
+    const opening = ctx.act({ type: "picker", open: true });
     await flush();
     expect(ctx.chat().stickers).toBeUndefined();
     await ctx.act({ type: "logout" });
@@ -2548,6 +2589,7 @@ describe("stickers", () => {
     const answers: ((stickers: TgSticker[]) => void)[] = [];
     ctx.api.stickers.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
     await ctx.act({ type: "select", channelId: "1" });
+    await ctx.act({ type: "picker", open: true });
     await flush();
     await ctx.act({ type: "logout" });
     for (const answer of answers) answer([stk("1")]);
