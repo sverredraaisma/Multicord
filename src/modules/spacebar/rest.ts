@@ -179,6 +179,15 @@ export class SpacebarRest {
     await this.request(add ? "PUT" : "DELETE", `/channels/${channelId}/messages/${messageId}/reactions/${encodeURIComponent(emoji)}/@me`);
   }
 
+  /** A channel's pinned messages, newest pin first (GET /channels/{id}/pins, which lists them all at once). */
+  async pins(channelId: string): Promise<SpacebarMessage[]> {
+    return list(await this.request("GET", `/channels/${channelId}/pins`)).flatMap((m) => parseMessage(m) ?? []);
+  }
+
+  async pin(channelId: string, messageId: string, pin: boolean): Promise<void> {
+    await this.request(pin ? "PUT" : "DELETE", `/channels/${channelId}/pins/${messageId}`);
+  }
+
   async typing(channelId: string): Promise<void> {
     await this.request("POST", `/channels/${channelId}/typing`);
   }

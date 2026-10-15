@@ -101,6 +101,8 @@ describe("Spacebar types", () => {
     const bare = parseMessage({ id: "10", channel_id: "5", author: ANA })!;
     expect(bare).toMatchObject({ content: "", timestamp: "", edited: false, type: 0, reactions: [], attachments: [] });
     expect(bare).not.toHaveProperty("replyTo");
+    expect(bare).not.toHaveProperty("pinned");
+    expect(parseMessage(message("10", "5", { pinned: true }))!.pinned).toBe(true);
     expect(parseMessage({ id: "10", channel_id: "5" })).toBeUndefined();
     expect(parseMessage({ id: "10" })).toBeUndefined();
   });

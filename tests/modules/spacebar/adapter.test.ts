@@ -534,6 +534,7 @@ describe("SpacebarAdapter messages", () => {
       mine: false,
       canEdit: false,
       canDelete: false,
+      canPin: true,
       mentionsMe: true,
       reactions: [
         { key: "👍", label: "👍", imageUrl: undefined, count: 1, me: true },
@@ -561,6 +562,74 @@ describe("SpacebarAdapter messages", () => {
     // Embeds the instance adds later arrive as an update of the whole message.
     await ctx.dispatch("MESSAGE_UPDATE", message("450", "111", { embeds: [] }));
     expect(ctx.channel().messages[0]).not.toHaveProperty("embeds");
+  });
+
+  it("lists pins while the panel is open, follows them live, and pins from a message", async () => {
+    let pins: Reply = {
+      status: 200,
+      body: [message("450", "111", { pinned: true, content: "<@1> look" }), message("440", "111", { content: "", attachments: [{ id: "5", filename: "a.png" }] }), message("430", "111", { author: ME, content: "" }), { bad: true }],
+    };
+    const ctx = await opened({ routes: [(url) => (url === `${API}/channels/111/pins` ? pins : undefined)] });
+    expect(ctx.channel().can.pins).toBe(true);
+    expect(ctx.channel()).not.toHaveProperty("pins");
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(ctx.channel().pins).toEqual({
+      messages: [
+        { id: "450", author: "Ana", avatarUrl: "https://cdn.sb/avatars/2/abc123.png?size=64", content: "@me look", timestamp: "2026-10-14T12:00:00Z" },
+        { id: "440", author: "Ana", avatarUrl: "https://cdn.sb/avatars/2/abc123.png?size=64", content: "📎 a.png", timestamp: "2026-10-14T12:00:00Z" },
+        { id: "430", author: "me", content: "", timestamp: "2026-10-14T12:00:00Z" },
+      ],
+      loading: false,
+    });
+    // Pinning from the message menu: the message shows pinned, and the list is fetched again.
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
+    expect(ctx.calls.at(-2)).toMatchObject({ url: `${API}/channels/111/pins/450`, init: { method: "PUT" } });
+    expect(ctx.channel().messages[0]).toMatchObject({ pinned: true, canPin: true });
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: false });
+    expect(ctx.calls.at(-2)).toMatchObject({ url: `${API}/channels/111/pins/450`, init: { method: "DELETE" } });
+    expect(ctx.channel().messages[0]).not.toHaveProperty("pinned");
+    // Someone else pins: the list follows; events for other channels are left alone.
+    pins = { status: 200, body: Array.from({ length: 101 }, (_, i) => message(String(1000 + i), "111")) };
+    const fetched = () => ctx.calls.filter((c) => c.url === `${API}/channels/111/pins`).length;
+    const before = fetched();
+    await ctx.dispatch("CHANNEL_PINS_UPDATE", { channel_id: "113" });
+    await ctx.dispatch("CHANNEL_PINS_UPDATE", null);
+    expect(fetched()).toBe(before);
+    await ctx.dispatch("CHANNEL_PINS_UPDATE", { channel_id: "111" });
+    expect(ctx.channel().pins).toMatchObject({ loading: false, note: "Only the latest 100 pins are listed." });
+    expect(ctx.channel().pins!.messages).toHaveLength(100);
+    // A failure shows in the panel; Spacebar's pin line says what happened.
+    pins = { status: 403, body: { message: "Missing Access" } };
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(ctx.channel().pins).toEqual({ messages: [], loading: false, error: "Could not load pinned messages: Missing Access" });
+    await ctx.dispatch("MESSAGE_CREATE", message("1200", "111", { type: 6, content: "" }));
+    expect(ctx.channel().messages.at(-1)).toMatchObject({ content: "*pinned a message.*", canPin: false });
+    // Closed, or another channel opened: no list, and late answers are dropped.
+    const late = ctx.adapter.handleAction({ type: "pins", open: true });
+    await ctx.adapter.handleAction({ type: "pins", open: false });
+    await late;
+    expect(ctx.channel()).not.toHaveProperty("pins");
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    await ctx.adapter.handleAction({ type: "select", channelId: "113" });
+    expect(ctx.channel()).not.toHaveProperty("pins");
+    await ctx.dispatch("CHANNEL_PINS_UPDATE", { channel_id: "111" });
+    expect(fetched()).toBe(before + 4);
+  });
+
+  it("shows when pinning is refused, and pins nothing without a channel", async () => {
+    const ctx = setup({ token: "saved", routes: [(url) => (url.includes("/pins/") ? { status: 403, body: { message: "Missing Permissions" } } : undefined)] });
+    await ctx.online();
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(ctx.calls.some((c) => c.url.includes("/pins"))).toBe(false);
+    await ctx.adapter.openConversation("111");
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
+    expect(ctx.last()).toMatchObject({ error: "Message not pinned: Missing Permissions" });
+    await ctx.adapter.handleAction({ type: "pin", messageId: "999", pin: false });
+    expect(ctx.last()).toMatchObject({ error: "Message not unpinned: Missing Permissions" });
+    ctx.routes.unshift((url) => (url.includes("/pins/") ? { status: 204 } : undefined));
+    await ctx.adapter.handleAction({ type: "pin", messageId: "999", pin: true });
+    expect(ctx.channel()).not.toHaveProperty("pins");
   });
 
   it("sends, replies, edits and deletes", async () => {
@@ -712,7 +781,7 @@ describe("SpacebarAdapter messages", () => {
     const shown = ctx.renders.length;
     await ctx.adapter.handleAction({ type: "ready" });
     expect(ctx.renders.length).toBe(shown + 1);
-    await ctx.adapter.handleAction({ type: "pins", open: true });
+    await ctx.adapter.handleAction({ type: "thread", rootId: "450" });
     expect(ctx.renders.length).toBe(shown + 1);
   });
 });

@@ -110,9 +110,11 @@ export interface SpacebarMessage {
   /** The message this one replies to; null when it no longer exists. */
   replyTo?: { id: string; author: SpacebarUser; content: string; timestamp: string } | null;
   reactions: SpacebarReaction[];
+  pinned?: boolean;
 }
 
-export const MessageType = { Default: 0, Reply: 19 } as const;
+/** 6 is the line Spacebar adds when someone pins a message. */
+export const MessageType = { Default: 0, PinnedMessage: 6, Reply: 19 } as const;
 
 export interface SpacebarReadState {
   channelId: string;
@@ -250,6 +252,7 @@ export function parseMessage(value: unknown): SpacebarMessage | undefined {
       const count = isRecord(r) ? dimension(r.count) : undefined;
       return emoji && count ? [{ emoji, count, me: (r as Json).me === true }] : [];
     }),
+    ...(value.pinned === true ? { pinned: true } : {}),
   };
 }
 

@@ -1,13 +1,16 @@
 import type { DirectConversation, HealthCheck, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
 import {
   MAX_ATTACHMENTS,
+  MAX_LISTED_MESSAGES,
   type NativeAction,
   type NativeAttachment,
   type NativeCustomEmoji,
   type NativeEmbed,
+  type NativeListedMessage,
   type NativeMember,
   type NativeMemberList,
   type NativeMessage,
+  type NativeMessageList,
   type NativeProfile,
   type NativeSidebarItem,
   type NativeUnread,
@@ -28,6 +31,7 @@ import {
   compareIds,
   displayName,
   emojiKey,
+  isRecord,
   roleColor,
   timestampOf,
   type ReactionEmoji,
@@ -136,6 +140,8 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
   private profile: NativeProfile | undefined;
   private checks: HealthCheck[] = [];
   private healthTimer: ReturnType<typeof setInterval> | undefined;
+  /** The open channel's pinned messages, while its pins panel is open. */
+  private pins: { channelId: string; list: NativeMessageList } | undefined;
 
   constructor(private readonly deps: SpacebarAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -213,6 +219,10 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
         return this.loadMembers(action.offset);
       case "profile":
         return this.showProfile(action.id);
+      case "pins":
+        return this.showPins(action.open);
+      case "pin":
+        return this.pin(action.messageId, action.pin);
       case "logout":
         return this.logout();
       default:
@@ -400,6 +410,8 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
       {
         dispatch: (event, data) => {
           this.state.apply(event, data);
+          // Someone pinned or unpinned in the channel whose pins are listed.
+          if (event === "CHANNEL_PINS_UPDATE" && this.pins && isRecord(data) && data.channel_id === this.pins.channelId) void this.loadPins(this.pins.channelId);
           if (event === "READY") {
             this.screen = "chat";
             this.render();
@@ -432,6 +444,7 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
     this.membersOpen = false;
     this.members = undefined;
     this.profile = undefined;
+    this.pins = undefined;
     this.pending.clear();
     this.selection = { kind: "home" };
     this.selectedChannelId = undefined;
@@ -452,6 +465,7 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
       // Noted before it is read: where its news began.
       this.unreadAt = this.state.isUnread(channel) ? { channelId, after: this.state.readStates.get(channelId)?.lastMessageId } : undefined;
       this.profile = undefined;
+      this.pins = undefined;
     }
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.guildId ?? "home", channelId);
@@ -574,6 +588,42 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
     await this.attempt("Reaction failed", async () => {
       await this.rest!.react(channelId, messageId, key, add);
       this.state.applyReaction(channelId, messageId, emoji, true, add);
+    });
+  }
+
+  /** Opens the open channel's pins panel and fetches its pins, or closes it. */
+  private async showPins(open: boolean): Promise<void> {
+    const channelId = this.selectedChannelId;
+    this.pins = open && channelId ? { channelId, list: { messages: [], loading: true } } : undefined;
+    this.render();
+    if (this.pins) await this.loadPins(this.pins.channelId);
+  }
+
+  /** Fetches the pins of a channel whose pins panel is open; a reply for a panel since closed is dropped. */
+  private async loadPins(channelId: string): Promise<void> {
+    let list: NativeMessageList;
+    try {
+      const pinned = await this.rest!.pins(channelId);
+      list = { messages: pinned.slice(0, MAX_LISTED_MESSAGES).map((m) => this.listedMessage(m)), loading: false };
+      if (pinned.length > MAX_LISTED_MESSAGES) list.note = `Only the latest ${MAX_LISTED_MESSAGES} pins are listed.`;
+    } catch (error) {
+      list = { messages: [], loading: false, error: `Could not load pinned messages: ${messageOf(error)}` };
+    }
+    if (this.pins?.channelId !== channelId) return;
+    this.pins = { channelId, list };
+    this.render();
+  }
+
+  /** Pins or unpins a message; Spacebar decides whether the user may (anyone in a DM, Manage Messages in a guild). */
+  private async pin(messageId: string, pin: boolean): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.rest) return;
+    await this.attempt(pin ? "Message not pinned" : "Message not unpinned", async () => {
+      await this.rest!.pin(channelId, messageId, pin);
+      const message = this.state.findMessage(channelId, messageId);
+      if (message) message.pinned = pin;
+      this.render();
+      if (this.pins?.channelId === channelId) await this.loadPins(channelId);
     });
   }
 
@@ -815,21 +865,42 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
       });
   }
 
+  /** A message's text for the view; the line Spacebar adds for a pin says what happened. */
+  private messageText(message: SpacebarMessage): string {
+    return message.type === MessageType.PinnedMessage ? "*pinned a message.*" : this.renderContent(message.content);
+  }
+
+  /** A message as the pins list shows it: its text, or its first file's name when it has none. */
+  private listedMessage(message: SpacebarMessage): NativeListedMessage {
+    const listed: NativeListedMessage = {
+      id: message.id,
+      author: this.nameOf(message.author),
+      content: this.messageText(message) || (message.attachments[0] ? `📎 ${message.attachments[0].filename}` : ""),
+      timestamp: message.timestamp,
+    };
+    const avatar = this.avatarUrl(message.author);
+    if (avatar) listed.avatarUrl = avatar;
+    return listed;
+  }
+
   private viewMessage(message: SpacebarMessage): NativeMessage {
     const mine = message.author.id === this.state.me?.id;
-    const editable = mine && (message.type === MessageType.Default || message.type === MessageType.Reply);
+    const ordinary = message.type === MessageType.Default || message.type === MessageType.Reply;
+    const editable = mine && ordinary;
     const reply = message.replyTo;
     const view: NativeMessage = {
       id: message.id,
       author: this.nameOf(message.author),
       authorId: message.author.id,
       authorMention: `<@${message.author.id}>`,
-      content: this.renderContent(message.content),
+      content: this.messageText(message),
       timestamp: message.timestamp,
       edited: message.edited,
       mine,
       canEdit: editable,
       canDelete: mine,
+      // Spacebar pins ordinary messages and replies; whether this user may is the server's to say.
+      canPin: ordinary,
       reactions: message.reactions.map((r) => ({
         key: emojiKey(r.emoji),
         label: r.emoji.id ? `:${r.emoji.name}:` : r.emoji.name,
@@ -845,6 +916,7 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
     if (avatar) view.avatarUrl = avatar;
     if (editable) view.source = message.content;
     if (!mine && this.state.mentionsMe(message)) view.mentionsMe = true;
+    if (message.pinned) view.pinned = true;
     if (reply !== undefined)
       view.reply = reply && { id: reply.id, author: this.nameOf(reply.author), content: this.renderContent(reply.content), ...(reply.timestamp ? { timestamp: reply.timestamp } : {}) };
     return view;
@@ -934,7 +1006,8 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
                 uploading: this.uploading.has(channel.id),
                 ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt.after) } : {}),
                 ...(members ? { members } : {}),
-                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true },
+                ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
+                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true },
               }
             : null,
           voice: null,
