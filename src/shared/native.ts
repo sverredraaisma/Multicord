@@ -26,6 +26,13 @@ export interface NativeSidebarItem {
   invite?: NativeInvite;
   /** Not joined, but open to the user (e.g. a room its space lists): the row offers Join (a `join` action). */
   joinable?: boolean;
+  /**
+   * Categories: the user may fold its rows away. The view remembers what the
+   * user chose while it is open; until then `collapsed` says how it starts.
+   * `unread` and `mentions` sum up its rows, shown while it is folded.
+   */
+  collapsible?: boolean;
+  collapsed?: boolean;
 }
 
 /** An invitation to a conversation, as far as the platform says who sent it. */

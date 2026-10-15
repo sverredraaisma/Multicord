@@ -104,6 +104,8 @@ export class NativeView {
   private threadRoot: string | undefined;
   /** The mention being typed in the composer, while it has suggestions: where its "@" is, who fits, and the highlighted one. */
   private mention: { start: number; options: MentionCandidate[]; active: number } | undefined;
+  /** Sidebar categories the user folded away (true) or opened (false), by id; the rest start as the module says. */
+  private readonly folded = new Map<string, boolean>();
 
   constructor(
     private readonly root: HTMLElement,
@@ -1202,6 +1204,25 @@ export class NativeView {
     if (focus) card.querySelector<HTMLButtonElement>(".profile-close")!.focus();
   }
 
+  /** The sidebar's rows, with the categories the user folded or opened as they chose. */
+  private renderSidebar(list: HTMLElement, state: ChatState): void {
+    const items = state.sidebar.map((item) => (item.kind === "category" && this.folded.has(item.id) ? { ...item, collapsed: this.folded.get(item.id) } : item));
+    list.replaceChildren(
+      ...channelList(this.doc, items, {
+        onSelect: (channelId) => this.api.act({ type: "select", channelId }),
+        onJoinVoice: (channelId) => this.api.act({ type: "joinVoice", channelId }),
+        onMute: (channelId, mute) => this.api.act({ type: "mute", channelId, mute }),
+        onJoin: (channelId) => this.api.act({ type: "join", channelId }),
+        onDecline: (channelId) => this.api.act({ type: "decline", channelId }),
+        onFold: (categoryId, collapsed) => {
+          this.folded.set(categoryId, collapsed);
+          this.renderSidebar(list, this.lastState!);
+          list.querySelector<HTMLButtonElement>(`.category-toggle[data-id="${CSS.escape(categoryId)}"]`)!.focus();
+        },
+      }),
+    );
+  }
+
   private updateChat(state: ChatState): void {
     this.lastState = state;
     const { title, list, me, heading, messages, composer, attach } = this.parts as Record<string, HTMLElement>;
@@ -1225,15 +1246,7 @@ export class NativeView {
     }
     title!.textContent = state.title;
     me!.textContent = state.me;
-    list!.replaceChildren(
-      ...channelList(this.doc, state.sidebar, {
-        onSelect: (channelId) => this.api.act({ type: "select", channelId }),
-        onJoinVoice: (channelId) => this.api.act({ type: "joinVoice", channelId }),
-        onMute: (channelId, mute) => this.api.act({ type: "mute", channelId, mute }),
-        onJoin: (channelId) => this.api.act({ type: "join", channelId }),
-        onDecline: (channelId) => this.api.act({ type: "decline", channelId }),
-      }),
-    );
+    this.renderSidebar(list!, state);
     const joinable = typeof state.joinAddress === "string" && state.joinAddress.trim() !== "";
     this.parts.joinForm!.hidden = !joinable;
     (this.parts.joinInput as HTMLInputElement).placeholder = joinable ? state.joinAddress!.slice(0, 100) : "";

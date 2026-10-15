@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { avatar } from "../../src/renderer/components/avatar";
-import { channelItem } from "../../src/renderer/components/channels";
+import { channelItem, channelList } from "../../src/renderer/components/channels";
 import { countBadge, icon, initials, setColor } from "../../src/renderer/components/dom";
 import { emojiPicker } from "../../src/renderer/components/emojiPicker";
 import { memberPanel, memberRow, presenceAvatar, profileCard } from "../../src/renderer/components/members";
@@ -54,6 +54,38 @@ describe("server icons", () => {
 });
 
 describe("channel items", () => {
+  it("shows categories as headings, or as buttons that fold their rows away where collapsible", () => {
+    const category = { id: "c", name: "Archive", kind: "category" as const, unread: true, mentions: 4, active: false };
+    const row = (id: string, active = false) => ({ id, name: id, kind: "dm" as const, unread: false, mentions: 0, active });
+    const onFold = vi.fn();
+    const handlers = { onSelect: vi.fn(), onJoinVoice: vi.fn(), onFold };
+    const plain = channelItem(document, category, handlers);
+    expect(plain.textContent).toBe("Archive");
+    expect(plain.querySelector("button")).toBeNull();
+    // Without a way to fold it, a collapsible category is a plain heading, and hides nothing.
+    const items = [{ ...category, collapsible: true, collapsed: true }, row("a"), row("b", true), { ...category, id: "d", name: "Groups" }, row("c")];
+    expect(channelItem(document, items[0]!, { onSelect: vi.fn(), onJoinVoice: vi.fn() }).querySelector("button")).toBeNull();
+    expect(channelList(document, items, { onSelect: vi.fn(), onJoinVoice: vi.fn() })).toHaveLength(5);
+
+    const open = channelItem(document, { ...category, collapsible: true }, handlers).querySelector<HTMLButtonElement>(".category-toggle")!;
+    expect(open.getAttribute("aria-expanded")).toBe("true");
+    expect(open.dataset.id).toBe("c");
+    expect(open.querySelector(".badge")).toBeNull();
+    expect(open.classList.contains("unread")).toBe(false);
+    open.click();
+    expect(onFold).toHaveBeenCalledWith("c", true);
+
+    const shut = channelItem(document, { ...category, collapsible: true, collapsed: true }, handlers).querySelector<HTMLButtonElement>(".category-toggle")!;
+    expect(shut.getAttribute("aria-expanded")).toBe("false");
+    expect(shut.querySelector(".badge")!.textContent).toBe("4");
+    expect(shut.classList.contains("unread")).toBe(true);
+    shut.click();
+    expect(onFold).toHaveBeenLastCalledWith("c", false);
+    // Folded rows go, except the open conversation, until the next category.
+    const listed = channelList(document, items, handlers).map((li) => li.textContent);
+    expect(listed).toEqual(["Archive4", "Bb", "Groups", "Cc"]);
+  });
+
   it("selects text channels and joins voice channels", () => {
     const onSelect = vi.fn();
     const onJoinVoice = vi.fn();

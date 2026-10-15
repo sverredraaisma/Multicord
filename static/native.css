@@ -72,6 +72,11 @@
 .sidebar-title { margin: 0; padding: 14px 16px; border-bottom: 1px solid var(--bg); font-size: 15px; }
 .channels { flex: 1; margin: 0; padding: 8px; overflow-y: auto; list-style: none; }
 .category { padding: 16px 8px 4px; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
+.category-toggle { display: flex; align-items: center; gap: 4px; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-transform: inherit; text-align: left; cursor: pointer; }
+.category-toggle::before { content: ""; width: 0; height: 0; border-left: 4px solid transparent; border-right: 4px solid transparent; border-top: 5px solid currentColor; transition: transform 0.1s; }
+.category-toggle[aria-expanded="false"]::before { transform: rotate(-90deg); }
+.category-toggle:hover, .category-toggle.unread { color: var(--text); }
+.category-toggle .name { flex: 1; }
 .channel {
   display: flex;
   align-items: center;

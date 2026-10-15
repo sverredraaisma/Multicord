@@ -33,6 +33,34 @@ export interface ChannelHandlers {
   onJoin?(channelId: string): void;
   /** Declines an invitation; without it, invitations offer no Decline. */
   onDecline?(channelId: string): void;
+  /** Folds a collapsible category's rows away, or shows them again; without it, categories do not fold. */
+  onFold?(categoryId: string, collapsed: boolean): void;
+}
+
+/**
+ * A category heading. A collapsible one is a button that folds its rows
+ * away; folded, it shows whether they hold unread messages and mentions.
+ */
+function categoryItem(doc: Document, item: NativeSidebarItem, handlers: ChannelHandlers): HTMLElement {
+  const li = el(doc, "li", "category");
+  if (item.collapsible !== true || !handlers.onFold) {
+    li.textContent = item.name;
+    return li;
+  }
+  const collapsed = item.collapsed === true;
+  const button = el(doc, "button", "category-toggle");
+  button.type = "button";
+  button.dataset.id = item.id;
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.append(el(doc, "span", "name", item.name));
+  if (collapsed) {
+    button.classList.toggle("unread", item.unread);
+    const badge = countBadge(doc, item.mentions);
+    if (badge) button.append(badge);
+  }
+  button.addEventListener("click", () => handlers.onFold!(item.id, !collapsed));
+  li.append(button);
+  return li;
 }
 
 /**
@@ -70,7 +98,7 @@ function offerItem(doc: Document, item: NativeSidebarItem, handlers: ChannelHand
  * invitation or a conversation open to join gets buttons instead.
  */
 export function channelItem(doc: Document, item: NativeSidebarItem, handlers: ChannelHandlers): HTMLElement {
-  if (item.kind === "category") return el(doc, "li", "category", item.name);
+  if (item.kind === "category") return categoryItem(doc, item, handlers);
   if (item.invite || item.joinable === true) return offerItem(doc, item, handlers);
   const li = el(doc, "li");
   const button = el(doc, "button", "channel");
@@ -110,7 +138,14 @@ export function channelItem(doc: Document, item: NativeSidebarItem, handlers: Ch
   return li;
 }
 
-/** A whole channel list. */
+/** A whole channel list; a folded category hides the rows under it, except the open conversation. */
 export function channelList(doc: Document, items: NativeSidebarItem[], handlers: ChannelHandlers): HTMLElement[] {
-  return items.map((item) => channelItem(doc, item, handlers));
+  const rows: HTMLElement[] = [];
+  let folded = false;
+  for (const item of items) {
+    if (item.kind === "category") folded = item.collapsible === true && item.collapsed === true && handlers.onFold !== undefined;
+    else if (folded && !item.active) continue;
+    rows.push(channelItem(doc, item, handlers));
+  }
+  return rows;
 }

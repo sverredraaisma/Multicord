@@ -141,6 +141,37 @@ describe("chat screen", () => {
     expect(act).toHaveBeenCalledWith({ type: "logout" });
   });
 
+  it("folds collapsible categories as the user chooses, keeping the choice across updates", () => {
+    const state = (collapsed: boolean) =>
+      chat({
+        sidebar: [
+          { id: "s1", name: "Chats", kind: "category", unread: false, mentions: 0, active: false, collapsible: true },
+          { id: "2", name: "general", kind: "text", unread: false, mentions: 0, active: true },
+          { id: "s2", name: "Archive", kind: "category", unread: true, mentions: 2, active: false, collapsible: true, collapsed },
+          { id: "3", name: "Ana", kind: "dm", unread: true, mentions: 2, active: false },
+        ],
+      });
+    const names = () => [...root.querySelectorAll(".channel .name")].map((n) => n.textContent);
+    view.update(state(true));
+    expect(names()).toEqual(["# general"]);
+    const archive = () => root.querySelector<HTMLButtonElement>('.category-toggle[data-id="s2"]')!;
+    expect(archive().querySelector(".badge")!.textContent).toBe("2");
+    archive().click();
+    expect(names()).toEqual(["# general", "Ana"]);
+    expect(archive().getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(archive());
+    // The module still says it starts folded; the user's choice stands.
+    view.update(state(true));
+    expect(names()).toEqual(["# general", "Ana"]);
+    root.querySelector<HTMLButtonElement>('.category-toggle[data-id="s1"]')!.click();
+    // The open conversation stays in sight.
+    expect(names()).toEqual(["# general", "Ana"]);
+    archive().click();
+    view.update(state(false));
+    expect(names()).toEqual(["# general"]);
+    expect(act).not.toHaveBeenCalled();
+  });
+
   it("renders messages as text only, with attachments and edits", () => {
     view.update(
       chat({
