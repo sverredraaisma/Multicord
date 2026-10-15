@@ -932,6 +932,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       canEdit: mine && editable,
       source: mine && editable ? message.content : undefined,
       canDelete: mine,
+      ...(!mine && this.state.mentionsMe(message) ? { mentionsMe: true } : {}),
       reply:
         reply === undefined
           ? undefined

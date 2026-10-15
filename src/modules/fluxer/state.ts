@@ -338,6 +338,11 @@ export class FluxerState {
     return slots;
   }
 
+  /** Whether a message mentions the user, by name or as @everyone/@here. Role mentions are not known here (the user's roles are not tracked). */
+  mentionsMe(message: FluxerMessage): boolean {
+    return message.mentionEveryone || (this.me !== undefined && message.mentionIds.includes(this.me.id));
+  }
+
   /**
    * Whether a message from someone else should raise a desktop notification,
    * following the user's settings: channel override, then guild, then the
@@ -463,8 +468,7 @@ export class FluxerState {
       return;
     }
     const isDm = channel?.type === ChannelType.Dm || channel?.type === ChannelType.GroupDm;
-    const mentioned = message.mentionEveryone || (this.me !== undefined && message.mentionIds.includes(this.me.id));
-    if (isDm || mentioned) {
+    if (isDm || this.mentionsMe(message)) {
       const current = this.readStates.get(message.channelId);
       this.readStates.set(message.channelId, {
         channelId: message.channelId,

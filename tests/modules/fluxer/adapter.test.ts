@@ -583,6 +583,19 @@ describe("FluxerAdapter notifications", () => {
     ]);
   });
 
+  it("marks messages that mention the user or everyone, never their own", async () => {
+    const { adapter, chat } = await online();
+    await adapter.openConversation("900");
+    await vi.advanceTimersByTimeAsync(100);
+    adapter.state.apply("MESSAGE_CREATE", message("801", "900", { mentions: [{ id: "1" }] }));
+    adapter.state.apply("MESSAGE_CREATE", message("802", "900", { mention_everyone: true }));
+    adapter.state.apply("MESSAGE_CREATE", message("803", "900"));
+    adapter.state.apply("MESSAGE_CREATE", message("804", "900", { author: ME, mention_everyone: true }));
+    await vi.advanceTimersByTimeAsync(100);
+    const shown = chat().channel!.messages.filter((m) => Number(m.id) > 800);
+    expect(shown.map((m) => [m.id, m.mentionsMe === true])).toEqual([["801", true], ["802", true], ["803", false], ["804", false]]);
+  });
+
   it("marks notifications for the open, visible conversation", async () => {
     const { adapter, notes } = await online();
     await adapter.openConversation("900");
