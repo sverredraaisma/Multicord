@@ -656,9 +656,11 @@ export interface NativeChannelCan {
   forward?: boolean;
   /** Open a message's thread and reply in it (`thread` actions, send's `thread`, NativeChannelView.thread). */
   threads?: boolean;
+  /** Start or join a call in it: the header's call button sends a `joinVoice` action with the conversation's id. */
+  call?: boolean;
 }
 
-export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins", "search", "forward", "threads"] as const satisfies readonly (keyof NativeChannelCan)[];
+export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins", "search", "forward", "threads", "call"] as const satisfies readonly (keyof NativeChannelCan)[];
 
 /** A conversation's flags as the view trusts them: each on only when it is exactly `true`. */
 export function channelCan(value: unknown): Required<NativeChannelCan> {
@@ -954,6 +956,8 @@ export type NativeViewState =
       gifs?: NativeGifResults;
       /** The profile last asked for (a `profile` action), read by the view through memberProfile(). */
       profile?: NativeProfile;
+      /** A call ringing for the user: the view offers Accept (a `joinVoice` action) and Decline (`declineCall`). Read through incomingCall(). */
+      incomingCall?: NativeIncomingCall;
       /**
        * The sidebar offers to join a conversation by its address: this is the
        * field's example (e.g. "#room:example.org"). It sends `joinAddress`.
@@ -961,6 +965,23 @@ export type NativeViewState =
       joinAddress?: string;
       error?: string;
     };
+
+/** A call ringing for the user. */
+export interface NativeIncomingCall {
+  /** The conversation the call is in, which Accept joins. */
+  channelId: string;
+  /** Who is calling, by name. */
+  from: string;
+  video?: boolean;
+}
+
+/** A ringing call as the view trusts it: a usable conversation id and a caller's name cut short; undefined without one. */
+export function incomingCall(value: unknown): NativeIncomingCall | undefined {
+  const v = record(value);
+  const from = shortText(v?.from);
+  if (!v || !id(v.channelId) || !from) return undefined;
+  return { channelId: v.channelId as string, from, ...(v.video === true ? { video: true } : {}) };
+}
 
 /** A call feature that may fail to start on its own. */
 export type VoiceNoticeFlag = "video" | "stream";
@@ -1037,6 +1058,8 @@ export type NativeAction =
   | { type: "join"; channelId: string }
   /** Declines an invitation. */
   | { type: "decline"; channelId: string }
+  /** Declines a call ringing for the user (the chat state's incomingCall). */
+  | { type: "declineCall"; channelId: string }
   /** Joins a conversation by an address the user typed (the chat state's joinAddress); the module checks its form. */
   | { type: "joinAddress"; address: string }
   | { type: "logout" };
@@ -1098,6 +1121,7 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return id(v.messageId) && id(v.channelId);
     case "join":
     case "decline":
+    case "declineCall":
       return id(v.channelId);
     case "joinAddress":
       // One word of printable characters: the module reads it as an address of its own kind.

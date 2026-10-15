@@ -330,6 +330,48 @@ describe("helpers", () => {
   });
 });
 
+describe("calls in conversations", () => {
+  const callButton = () => root.querySelector<HTMLButtonElement>(".call-button")!;
+  const bar = () => root.querySelector<HTMLElement>(".call-bar")!;
+  const withCall = (extra: Partial<Chat> = {}) => chat({ channel: { ...chat().channel!, can: { ...ALL, call: true } }, ...extra });
+  const session = { channelId: "2", channelName: "general", guildName: "", mute: false, deaf: false, video: false, stream: false };
+
+  it("offers a call where the conversation takes one and the user is not in it already", () => {
+    view.update(chat());
+    expect(callButton().hidden).toBe(true);
+    view.update(withCall());
+    expect(callButton().hidden).toBe(false);
+    callButton().click();
+    expect(act).toHaveBeenLastCalledWith({ type: "joinVoice", channelId: "2" });
+    view.update(withCall({ voice: session }));
+    expect(callButton().hidden).toBe(true);
+    view.update(withCall({ voice: { ...session, channelId: "9" } }));
+    expect(callButton().hidden).toBe(false);
+    view.update(chat({ channel: null }));
+    expect(callButton().hidden).toBe(true);
+    callButton().click();
+    expect(act).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a ringing call with Accept and Decline", () => {
+    view.update(chat());
+    expect(bar().hidden).toBe(true);
+    view.update(chat({ incomingCall: { channelId: "3", from: "Ana", video: true } }));
+    expect(bar().hidden).toBe(false);
+    expect(bar().querySelector(".call-from")!.textContent).toBe("Ana is calling with video");
+    bar().querySelector<HTMLButtonElement>(".call-accept")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "joinVoice", channelId: "3" });
+    bar().querySelector<HTMLButtonElement>(".call-decline")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "declineCall", channelId: "3" });
+    view.update(chat({ incomingCall: { channelId: "3", from: "Bo" } }));
+    expect(bar().querySelector(".call-from")!.textContent).toBe("Bo is calling");
+    // A malformed one shows nothing.
+    view.update(chat({ incomingCall: { channelId: "nope", from: "Bo" } }));
+    expect(bar().hidden).toBe(true);
+    expect(bar().children).toHaveLength(0);
+  });
+});
+
 describe("message actions", () => {
   const ownMessage = msg("10", { mine: true, canEdit: true, canDelete: true, source: "raw <@2>", content: "raw @Ana" });
   const withMessages = (...messages: NativeMessage[]) =>

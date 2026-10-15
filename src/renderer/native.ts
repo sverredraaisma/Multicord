@@ -3,7 +3,7 @@ import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
+import { channelCan, customEmojiList, emojiUrls, gifResults, incomingCall, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
@@ -307,7 +307,17 @@ export class NativeView {
     searchToggle.setAttribute("aria-controls", "message-panel");
     searchToggle.append(icon(doc, "members-icon", ICONS.search));
     searchToggle.addEventListener("click", () => this.toggleSearch());
-    header.append(heading, searchToggle, pinsToggle, membersToggle);
+    // Starts or joins a call in the conversation, where the module can.
+    const callButton = el(doc, "button", "call-button");
+    callButton.type = "button";
+    callButton.title = "Call";
+    callButton.setAttribute("aria-label", "Start or join a call here");
+    callButton.append(icon(doc, "members-icon", ICONS.call));
+    callButton.addEventListener("click", () => {
+      const channelId = this.lastState?.channel?.id;
+      if (channelId) this.api.act({ type: "joinVoice", channelId });
+    });
+    header.append(heading, callButton, searchToggle, pinsToggle, membersToggle);
     // The search field, kept across updates so typing is never lost; shown in the side panel.
     const searchForm = el(doc, "form", "search-form");
     searchForm.setAttribute("role", "search");
@@ -326,6 +336,10 @@ export class NativeView {
       this.api.act({ type: "search", query });
     });
     const banner = el(doc, "div", "banner");
+    // A call ringing for the user, with Accept and Decline.
+    const callBar = el(doc, "div", "call-bar");
+    callBar.setAttribute("role", "alert");
+    callBar.hidden = true;
     // Where the news starts, while it is out of sight: a bar above the messages.
     const unreadBar = el(doc, "div", "unread-bar");
     unreadBar.hidden = true;
@@ -416,7 +430,7 @@ export class NativeView {
     // Why the composer is off in a conversation that takes no messages from here.
     const notice = el(doc, "div", "locked-notice");
     notice.hidden = true;
-    main.append(header, banner, stage, messageArea, typing, reply, pending, notice, composerRow, speakers);
+    main.append(header, banner, callBar, stage, messageArea, typing, reply, pending, notice, composerRow, speakers);
 
     // One edit box, reused across renders so an edit in progress survives updates.
     const editBox = el(doc, "textarea", "edit-box");
@@ -510,6 +524,8 @@ export class NativeView {
       profile,
       forward,
       banner,
+      callBar,
+      callButton,
       unreadBar,
       unreadText,
       jumpPresent,
@@ -747,6 +763,31 @@ export class NativeView {
     this.jumpNote = undefined;
     this.seeking = { pages: 0, from: undefined, target: message };
     this.rerender();
+  }
+
+  /**
+   * The call button, where the conversation takes calls and the user is not
+   * in its call already; and the bar for a call ringing for the user.
+   */
+  private updateCall(): void {
+    const state = this.lastState!;
+    const channel = state.channel;
+    this.parts.callButton!.hidden = !channel || !this.can.call || state.voice?.channelId === channel.id;
+    const ringing = incomingCall(state.incomingCall);
+    const bar = this.parts.callBar!;
+    bar.hidden = !ringing;
+    if (!ringing) return bar.replaceChildren();
+    const button = (label: string, className: string, act: () => void) => {
+      const b = el(this.doc, "button", className, label);
+      b.type = "button";
+      b.addEventListener("click", act);
+      return b;
+    };
+    bar.replaceChildren(
+      el(this.doc, "span", "call-from", `${ringing.from} is calling${ringing.video ? " with video" : ""}`),
+      button("Accept", "call-accept", () => this.api.act({ type: "joinVoice", channelId: ringing.channelId })),
+      button("Decline", "call-decline", () => this.api.act({ type: "declineCall", channelId: ringing.channelId })),
+    );
   }
 
   /** The module's error; else, with no side panel to say it in, why the last jump (from a reply's quote) did not arrive. */
@@ -1202,6 +1243,7 @@ export class NativeView {
     this.updateMembers();
     this.updateMessagePanel();
     this.updateBanner();
+    this.updateCall();
     this.updateThread();
     this.updateForward();
     this.updateProfile();

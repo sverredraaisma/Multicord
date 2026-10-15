@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_THREAD_MESSAGES, threadSummary, threadView, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
+import { channelCan, incomingCall, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_THREAD_MESSAGES, threadSummary, threadView, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -179,11 +179,25 @@ describe("media requests", () => {
 
 describe("conversation capability flags", () => {
   it("turns a flag on only when it is exactly true", () => {
-    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false, pins: false, search: false, forward: false, threads: false };
-    const all = { reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true, forward: true, threads: true };
+    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false, pins: false, search: false, forward: false, threads: false, call: false };
+    const all = { reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true, forward: true, threads: true, call: true };
     expect(channelCan(all)).toEqual(all);
     expect(channelCan({ reply: true, react: "yes", attach: 1, members: "true", stickers: "yes", extra: true })).toEqual({ ...none, reply: true });
     for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual(none);
+  });
+});
+
+describe("ringing calls", () => {
+  it("reads a ringing call with a usable conversation and caller", () => {
+    expect(incomingCall({ channelId: "5", from: "Ana", video: true, extra: 1 })).toEqual({ channelId: "5", from: "Ana", video: true });
+    expect(incomingCall({ channelId: "5", from: "Ana", video: "yes" })).toEqual({ channelId: "5", from: "Ana" });
+    for (const value of [undefined, { channelId: "x", from: "Ana" }, { channelId: "5", from: " " }, { channelId: "5" }]) expect(incomingCall(value)).toBeUndefined();
+  });
+
+  it("validates declining one", () => {
+    expect(isNativeAction({ type: "declineCall", channelId: "5" })).toBe(true);
+    expect(isNativeAction({ type: "declineCall", channelId: "x" })).toBe(false);
+    expect(isNativeAction({ type: "declineCall" })).toBe(false);
   });
 });
 

@@ -138,7 +138,7 @@ The view sends `{ type: "picker", open }` when the picker opens and closes. Heav
 
 Favourites belong to the shell. A module never sees them: when the user sends one, the module gets a `sendFile` action like any other file.
 
-Calls: a module with `voice` puts a `NativeVoiceSession` (LiveKit URL and token, and media keys for encrypted calls) in the chat state. The view runs the call (`src/renderer/voice.ts`) with the user's voice settings. Fluxer and Matrix show how.
+Calls: a module with `voice` puts a `NativeVoiceSession` (LiveKit URL and token, and media keys for encrypted calls) in the chat state. The view runs the call (`src/renderer/voice.ts`) with the user's voice settings. Fluxer and Matrix show how. Voice rows in the sidebar join their call with `{ type: "joinVoice", channelId }`; a conversation that takes calls itself (a DM, or a text channel that is also a voice channel) sets `can.call`, and its header gets a call button that sends the same for its own id (hidden while the user is in that call). A call ringing for the user goes in the chat state as `incomingCall` (`channelId`, who it is `from`, `video`): the view shows it above the conversation with Accept, which sends `joinVoice`, and Decline, which sends `{ type: "declineCall", channelId }`. Emit it to the shell as an incoming call too (`incomingCalls`), so it rings while the view is not in front.
 
 ## What the sandbox guarantees
 
