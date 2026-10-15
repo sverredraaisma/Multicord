@@ -2,7 +2,7 @@ import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/run
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
-import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativeSearchResults, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
@@ -32,6 +32,8 @@ const PREMIUM_CAPTION_LIMIT = 4096;
 export const TOPIC_LIMIT = 50;
 /** Pinned messages listed at most, newest first. */
 export const PINS_LIMIT = 50;
+/** Search results listed at most, newest first. */
+export const SEARCH_LIMIT = 50;
 /** Members fetched per page, and at most for one chat: big groups list their first ones and count the rest. */
 export const MEMBER_PAGE = 50;
 export const MEMBER_LIMIT = 200;
@@ -238,6 +240,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private membersOpen = false;
   /** The selected chat's pinned messages, while its pins panel is open. */
   private pins: { chatId: string; list: NativeMessageList } | undefined;
+  /** The selected chat's search results, until the search ends; and a count that drops answers to earlier searches. */
+  private search: { chatId: string; results: NativeSearchResults } | undefined;
+  private searchCount = 0;
   private readonly memberLists = new Map<string, MemberList>();
   /** Chats whose members Telegram turned out not to show the user. */
   private readonly membersHidden = new Set<string>();
@@ -491,6 +496,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.sendSticker(action.stickerId, action.replyTo);
       case "pins":
         return this.showPins(action.open);
+      case "search":
+        return this.searchMessages(action.query);
       case "pin":
         return this.pin(Number(action.messageId), action.pin);
       case "members":
@@ -696,6 +703,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (!dialog || (topic !== undefined && !dialog.forum)) return;
     if (conversation(chatId, topic) !== this.current()) this.noteUnread(dialog, topic);
     if (this.pins?.chatId !== chatId) this.pins = undefined;
+    if (this.search?.chatId !== chatId) this.search = undefined;
     this.selected = chatId;
     this.topic = topic;
     this.render();
@@ -747,6 +755,25 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     }
     if (this.pins?.chatId !== chatId) return;
     this.pins = { chatId, list };
+    this.render();
+  }
+
+  /** Searches the selected chat with Telegram's search, or ends the search with an empty query. Forums are not searched. */
+  private async searchMessages(query: string): Promise<void> {
+    const dialog = this.selected ? this.dialog(this.selected) : undefined;
+    const count = ++this.searchCount;
+    const trimmed = query.trim();
+    this.search = dialog && !dialog.forum && trimmed !== "" ? { chatId: dialog.chatId, results: { query: trimmed, messages: [], loading: true } } : undefined;
+    this.render();
+    if (!this.search || !dialog) return;
+    let results: NativeSearchResults;
+    try {
+      results = { query: trimmed, messages: (await this.api!.search(dialog.chatId, trimmed, SEARCH_LIMIT)).map((m) => this.listedMessage(m, dialog)), loading: false };
+    } catch (error) {
+      results = { query: trimmed, messages: [], loading: false, error: `Search failed: ${friendly(error)}` };
+    }
+    if (count !== this.searchCount || this.search?.chatId !== dialog.chatId) return;
+    this.search = { chatId: dialog.chatId, results };
     this.render();
   }
 
@@ -1727,7 +1754,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       ...shared,
       ...(this.unreadAt?.key === key ? { unread: this.unreadView(key, this.unreadAt) } : {}),
       ...(this.pins && this.pins.chatId === dialog.chatId && !dialog.forum ? { pins: this.pins.list } : {}),
-      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: !dialog.forum },
+      ...(this.search && this.search.chatId === dialog.chatId && !dialog.forum ? { search: this.search.results } : {}),
+      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: !dialog.forum, search: !dialog.forum },
     };
   }
 

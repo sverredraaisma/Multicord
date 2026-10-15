@@ -642,6 +642,10 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       const found = await client.getMessages(peer(chatId), { limit, filter: new Api.InputMessagesFilterPinned() });
       return found.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId));
     },
+    search: async (chatId, query, limit) => {
+      const found = await client.getMessages(peer(chatId), { limit, search: query });
+      return found.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId));
+    },
     pin: async (chatId, id, pin) => {
       await client.invoke(new Api.messages.UpdatePinnedMessage({ peer: peer(chatId), id, unpin: !pin, silent: true }));
     },

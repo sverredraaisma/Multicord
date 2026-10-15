@@ -237,6 +237,8 @@ export interface TelegramApi {
   history(chatId: string, beforeId: number | undefined, limit: number, topicId?: number): Promise<TgMessage[]>;
   /** A chat's pinned messages, newest first. */
   pinned(chatId: string, limit: number): Promise<TgMessage[]>;
+  /** A chat's messages that match a search, newest first (Telegram's own search). */
+  search(chatId: string, query: string, limit: number): Promise<TgMessage[]>;
   /** Pins a message quietly (no notification), or unpins it. */
   pin(chatId: string, id: number, pin: boolean): Promise<void>;
   /** Sends text, in a forum into a topic. */

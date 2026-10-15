@@ -35,6 +35,7 @@ class FakeTelegramApi implements TelegramApi {
   history = vi.fn(async (chatId: string, _before: number | undefined, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1), msg(chatId, 2)]);
   pinned = vi.fn(async (chatId: string, _limit: number): Promise<TgMessage[]> => [msg(chatId, 2, { pinned: true })]);
   pin = vi.fn(async (_chatId: string, _id: number, _pin: boolean) => {});
+  search = vi.fn(async (chatId: string, _query: string, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1)]);
   send = vi.fn(async (chatId: string, text: TgText, _replyTo?: number) => msg(chatId, 200, { out: true, ...text }));
   sentFiles = 300;
   sendFile = vi.fn(async (chatId: string, file: FileSource, caption: TgText, _replyTo?: number) => msg(chatId, this.sentFiles++, { out: true, ...caption, media: file.filename }));
@@ -590,7 +591,7 @@ describe("chat view", () => {
     await Promise.all([first, second]);
     expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE, undefined);
     expect(ctx.chat().channel).toMatchObject({ loading: false, hasOlder: false });
-    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false, stickers: true, pins: true });
+    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false, stickers: true, pins: true, search: true });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
 
     await ctx.adapter.openConversation("1");
@@ -2768,5 +2769,50 @@ describe("pinned messages", () => {
     ctx.api.pin.mockRejectedValueOnce(tgError("CHAT_ADMIN_REQUIRED"));
     await ctx.act({ type: "pin", messageId: "2", pin: false });
     expect(ctx.chat().error).toMatch(/^Message not unpinned: /);
+  });
+});
+
+describe("search", () => {
+  it("searches the selected chat with Telegram's search", async () => {
+    const ctx = await signedIn({ dialogs: [...defaultDialogs(), dlg("-5", { kind: "group", forum: true })] });
+    await ctx.act({ type: "search", query: "nowhere" });
+    expect(ctx.api.search).not.toHaveBeenCalled();
+    await ctx.act({ type: "select", channelId: "1" });
+    expect(ctx.chat().channel!.can.search).toBe(true);
+    const pending = ctx.act({ type: "search", query: " m1 " });
+    expect(ctx.chat().channel!.search).toEqual({ query: "m1", messages: [], loading: true });
+    await pending;
+    expect(ctx.api.search).toHaveBeenCalledWith("1", "m1", 50);
+    expect(ctx.chat().channel!.search).toEqual({ query: "m1", messages: [{ id: "1", author: "User 1", content: "m1", timestamp: new Date(101_000).toISOString() }], loading: false });
+    await ctx.act({ type: "search", query: "" });
+    expect(ctx.chat().channel!.search).toBeUndefined();
+    await ctx.act({ type: "search", query: "x" });
+    await ctx.act({ type: "select", channelId: "1" });
+    expect(ctx.chat().channel!.search).toBeDefined();
+    await ctx.act({ type: "select", channelId: "2" });
+    expect(ctx.chat().channel!.search).toBeUndefined();
+    // Forums are not searched.
+    await ctx.act({ type: "select", channelId: "-5" });
+    await ctx.act({ type: "search", query: "x" });
+    expect(ctx.api.search).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows failures, and drops answers to earlier searches", async () => {
+    const ctx = await signedIn();
+    await ctx.act({ type: "select", channelId: "1" });
+    ctx.api.search.mockRejectedValueOnce(tgError("SEARCH_QUERY_EMPTY"));
+    await ctx.act({ type: "search", query: "a" });
+    expect(ctx.chat().channel!.search).toEqual({ query: "a", messages: [], loading: false, error: expect.stringMatching(/^Search failed: /) });
+    let release: (found: TgMessage[]) => void = () => {};
+    ctx.api.search.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    const first = ctx.act({ type: "search", query: "first" });
+    await ctx.act({ type: "search", query: "second" });
+    release([msg("1", 2)]);
+    await first;
+    expect(ctx.chat().channel!.search).toMatchObject({ query: "second", loading: false, messages: [expect.objectContaining({ id: "1" })] });
+    const ending = ctx.act({ type: "search", query: "third" });
+    await ctx.act({ type: "search", query: "" });
+    await ending;
+    expect(ctx.chat().channel!.search).toBeUndefined();
   });
 });

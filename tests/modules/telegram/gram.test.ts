@@ -395,6 +395,9 @@ describe("createGramApi", () => {
     const options = client.getMessages.mock.calls[0]![1] as { limit: number; filter: unknown };
     expect(options.limit).toBe(50);
     expect(options.filter).toBeInstanceOf(Api.InputMessagesFilterPinned);
+    const found = await api.search("7", "hello", 50);
+    expect(found.map((m) => m.id)).toEqual([3, 2]);
+    expect(client.getMessages).toHaveBeenLastCalledWith(7n, { limit: 50, search: "hello" });
     client.invoke.mockResolvedValue({});
     await api.pin("-7", 5, true);
     await api.pin("-7", 5, false);
