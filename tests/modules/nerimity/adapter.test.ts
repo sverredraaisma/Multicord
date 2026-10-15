@@ -587,6 +587,21 @@ describe("NerimityAdapter messages", () => {
     expect([0, 1, 2, 3, 4, undefined].map(presenceOf)).toEqual(["offline", "online", "online", "idle", "dnd", "offline"]);
   });
 
+  it("shows link previews, their pictures through the CDN's proxy, as they arrive", async () => {
+    const embed = { type: "website", url: "https://example.org/a", siteName: "Example", title: "A page", imageUrl: "https://example.org/i.png?x=1", imageMime: "image/png" };
+    const ctx = await opened({ routes: [(url) => (url === `${API}/channels/111/messages?limit=50` ? { status: 200, body: [message("450", "111", { embed })] } : undefined)] });
+    expect(ctx.channel().messages[0]!.embeds).toEqual([
+      { url: "https://example.org/a", site: "Example", title: "A page", image: { url: `${CDN}/proxy/https%3A%2F%2Fexample.org%2Fi.png%3Fx%3D1/embed.png`, width: undefined, height: undefined, thumbnail: true } },
+    ]);
+    // The server adds a preview once it has read the page, or takes it away.
+    await ctx.dispatch("message:updated", { channelId: "111", messageId: "450", updated: { embed: null } });
+    expect(ctx.channel().messages[0]).not.toHaveProperty("embeds");
+    await ctx.dispatch("message:updated", { channelId: "111", messageId: "450", updated: { embed: { title: "Later" } } });
+    expect(ctx.channel().messages[0]!.embeds).toEqual([{ title: "Later" }]);
+    await ctx.dispatch("message:updated", { channelId: "111", messageId: "450", updated: { content: "edited" } });
+    expect(ctx.channel().messages[0]).toMatchObject({ content: "edited", embeds: [{ title: "Later" }] });
+  });
+
   it("sends, replies, edits and deletes", async () => {
     let edit: Reply = { status: 200, body: message("450", "111", { content: "edited", editedAt: at(500) }) };
     const ctx = await opened({ routes: [(url, init) => (url === `${API}/channels/111/messages/450` && init.method === "PATCH" ? edit : undefined)] });

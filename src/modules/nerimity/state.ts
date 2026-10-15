@@ -11,6 +11,7 @@ import {
   isRecord,
   list,
   parseChannel,
+  parseEmbed,
   parseEmoji,
   parseInbox,
   parseMember,
@@ -384,6 +385,12 @@ export class NerimityState {
     if (typeof updated.content === "string") message.content = updated.content;
     if (time(updated.editedAt) !== undefined) message.edited = true;
     if (Array.isArray(updated.mentions)) message.mentionIds = updated.mentions.flatMap((m) => (isRecord(m) && isId(m.id) ? [m.id] : []));
+    // The server adds a link preview once it has read the linked page.
+    if ("embed" in updated) {
+      const embed = parseEmbed(updated.embed);
+      if (embed) message.embed = embed;
+      else delete message.embed;
+    }
     const latest = this.latest.get(message.channelId);
     if (latest?.id === message.id) this.latest.set(message.channelId, message);
     return true;

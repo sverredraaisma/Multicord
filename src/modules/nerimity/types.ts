@@ -112,6 +112,18 @@ export interface NerimityReply {
   createdAt?: number;
 }
 
+/** A link preview the server made from a link's page (its Open Graph tags), or a picture link's own picture. */
+export interface NerimityLinkEmbed {
+  url?: string;
+  site?: string;
+  title?: string;
+  description?: string;
+  /** "#rrggbb". */
+  color?: string;
+  /** The picture: its original address and file type, which the CDN's proxy serves it by. */
+  image?: { source: string; type: string; width?: number; height?: number; thumbnail: boolean };
+}
+
 export interface NerimityMessage {
   id: string;
   channelId: string;
@@ -131,6 +143,7 @@ export interface NerimityMessage {
   replyTo?: NerimityReply;
   /** Messages quoted inline with [q:id]. */
   quotes: NerimityReply[];
+  embed?: NerimityLinkEmbed;
 }
 
 /** A DM: the conversation with one other user, as the inbox lists it. */
@@ -317,7 +330,41 @@ export function parseMessage(value: unknown): NerimityMessage | undefined {
     .map((r) => (isRecord(r) ? parseReply(r.replyToMessage) : undefined))
     .find((r) => r !== undefined);
   if (replyTo) message.replyTo = replyTo;
+  const embed = parseEmbed(value.embed);
+  if (embed) message.embed = embed;
   return message;
+}
+
+const https = (value: unknown): string | undefined => (typeof value === "string" && value.length <= 2048 && value.startsWith("https://") ? value : undefined);
+
+/**
+ * A message's link preview (embed), as the server's Open Graph reader
+ * makes it: a card with words, or for a picture link ("image") the picture
+ * alone. A picture needs its https address and file type, which the CDN's
+ * proxy serves it by. HTML embeds (htmlEmbed) are not read.
+ */
+export function parseEmbed(value: unknown): NerimityLinkEmbed | undefined {
+  if (!isRecord(value)) return undefined;
+  const text = (v: unknown, max: number): string | undefined => (typeof v === "string" && v.trim() !== "" ? v.slice(0, max) : undefined);
+  const embed: NerimityLinkEmbed = {};
+  const source = https(value.imageUrl);
+  const type = typeof value.imageMime === "string" ? /^image\/([a-z0-9.+-]{1,20})$/.exec(value.imageMime)?.[1] : undefined;
+  const picture = value.type === "image";
+  if (source && type) embed.image = { source, type, width: dimension(value.imageWidth), height: dimension(value.imageHeight), thumbnail: !picture && value.largeImage !== true };
+  if (!picture) {
+    const url = https(value.url);
+    if (url) embed.url = url;
+    // YouTube's cards name the channel rather than the site.
+    const site = text(value.siteName, 100) ?? text(value.channelName, 100);
+    if (site) embed.site = site;
+    const title = text(value.title, 256);
+    if (title) embed.title = title;
+    const description = text(value.description, 1000);
+    if (description) embed.description = description;
+    const color = hexColor(value.themeColor);
+    if (color) embed.color = color;
+  }
+  return embed.title || embed.description || embed.image ? embed : undefined;
 }
 
 /** An inbox entry (a DM), with its channel when the payload carries it. */

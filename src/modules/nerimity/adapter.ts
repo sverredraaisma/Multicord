@@ -4,6 +4,7 @@ import {
   type NativeAction,
   type NativeAttachment,
   type NativeCustomEmoji,
+  type NativeEmbed,
   type NativeMember,
   type NativeMemberList,
   type NativeMessage,
@@ -31,6 +32,7 @@ import {
   isRecord,
   reactionKey,
   type NerimityChannel,
+  type NerimityLinkEmbed,
   type NerimityMember,
   type NerimityMessage,
   type NerimityRole,
@@ -830,6 +832,13 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     return view;
   }
 
+  /** A link preview as a card; its picture comes through the CDN's proxy, as in Nerimity's own client, so it never loads from the linked site. */
+  private linkPreview({ image, ...card }: NerimityLinkEmbed): NativeEmbed {
+    const embed: NativeEmbed = card;
+    if (image) embed.image = { url: `${this.cdn}/proxy/${encodeURIComponent(image.source)}/embed.${image.type}`, width: image.width, height: image.height, thumbnail: image.thumbnail };
+    return embed;
+  }
+
   private viewMessage(message: NerimityMessage): NativeMessage {
     const serverId = this.state.channels.get(message.channelId)?.serverId;
     const author = message.author;
@@ -854,6 +863,7 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
       })),
       attachments: message.attachments.map((a) => this.attachmentView(a)),
     };
+    if (message.embed) view.embeds = [this.linkPreview(message.embed)];
     if (author) {
       view.authorId = author.id;
       view.authorMention = `[@:${author.id}]`;

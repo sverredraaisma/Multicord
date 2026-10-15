@@ -6,6 +6,7 @@ import {
   hexColor,
   isCdnPath,
   parseChannel,
+  parseEmbed,
   parseEmoji,
   parseInbox,
   parseMember,
@@ -18,6 +19,44 @@ import {
   time,
 } from "../../../src/modules/nerimity/types";
 import { ANA, at, message } from "./fixtures";
+
+describe("Nerimity link previews", () => {
+  it("reads cards with words, and picture links as their picture alone", () => {
+    expect(
+      parseEmbed({
+        type: "website",
+        url: "https://example.org/a",
+        siteName: "Example",
+        title: "A page",
+        description: "About it",
+        themeColor: "#00FF00",
+        imageUrl: "https://example.org/i.png",
+        imageMime: "image/png",
+        imageWidth: 80,
+        imageHeight: 60,
+        largeImage: true,
+        domain: "example.org",
+      }),
+    ).toEqual({ url: "https://example.org/a", site: "Example", title: "A page", description: "About it", color: "#00ff00", image: { source: "https://example.org/i.png", type: "png", width: 80, height: 60, thumbnail: false } });
+    // YouTube's cards name the channel; a small picture sits beside the words.
+    expect(parseEmbed({ title: "T".repeat(300), channelName: "Chan", url: "http://x", imageUrl: "https://i.ytimg.com/a.jpg", imageMime: "image/jpeg" })).toEqual({
+      site: "Chan",
+      title: "T".repeat(256),
+      image: { source: "https://i.ytimg.com/a.jpg", type: "jpeg", width: undefined, height: undefined, thumbnail: true },
+    });
+    expect(parseEmbed({ type: "image", imageUrl: "https://example.org/p.gif", imageMime: "image/gif", imageWidth: 4, imageHeight: 3, title: "ignored" })).toEqual({
+      image: { source: "https://example.org/p.gif", type: "gif", width: 4, height: 3, thumbnail: false },
+    });
+    // Pictures need an https address and a picture type; cards need something to show.
+    expect(parseEmbed({ description: "words", imageUrl: "http://example.org/i.png", imageMime: "image/png" })).toEqual({ description: "words" });
+    expect(parseEmbed({ type: "image", imageUrl: "https://example.org/i.png", imageMime: "text/html" })).toBeUndefined();
+    expect(parseEmbed({ type: "image", imageUrl: "https://example.org/i.png" })).toBeUndefined();
+    expect(parseEmbed({ siteName: "Only a site", title: " " })).toBeUndefined();
+    expect(parseEmbed("x")).toBeUndefined();
+    expect(parseMessage(message("1", "2", { embed: { title: "T" } }))!.embed).toEqual({ title: "T" });
+    expect(parseMessage(message("1", "2", { embed: null }))).not.toHaveProperty("embed");
+  });
+});
 
 describe("Nerimity payload parsers", () => {
   it("reads users, keeping CDN paths only when they stay on the CDN", () => {
