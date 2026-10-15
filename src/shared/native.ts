@@ -1,6 +1,8 @@
 // Contract between a native adapter (main process) and its chat view. The view
 // only receives display data; tokens and API access stay in the main process.
 
+import type { PickedFile } from "./engine";
+
 export const NATIVE_IPC = {
   state: "native:state",
   action: "native:action",
@@ -418,6 +420,13 @@ export type NativeAction =
   | { type: "loadMembers"; offset: number }
   /** Someone's profile card opened: the module answers with `profile` in the chat state. */
   | { type: "profile"; id: string }
+  /**
+   * Made by the shell only, never accepted from a view (isNativeAction
+   * refuses it): send this file into the open conversation as an upload,
+   * read through its handle like a picked file. The shell sends favourites
+   * and stickers that cannot go natively this way.
+   */
+  | { type: "sendFile"; file: PickedFile; replyTo?: string }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;

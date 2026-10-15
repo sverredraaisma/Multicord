@@ -17,7 +17,8 @@ import {
   type EngineServer,
   type PickedFile,
 } from "../shared/engine";
-import { isNativeAction, NATIVE_IPC } from "../shared/native";
+import { MEDIA_SCHEME } from "../shared/favourites";
+import { isNativeAction, NATIVE_IPC, type NativeAction } from "../shared/native";
 import type { AccountStatus, ServiceSettingStatus, ServiceSettingValues } from "../shared/settings";
 import type { SecretStore } from "./credentials";
 import { contentTypeFor, readRange } from "./files";
@@ -340,7 +341,8 @@ export class EngineHub {
     };
     spec.view.webContents.session.webRequest.onBeforeRequest((details, callback) => {
       const { protocol } = new URL(details.url);
-      const local = protocol === "file:" || protocol === "data:" || protocol === "blob:" || protocol === "devtools:";
+      // Our own page and its data, and favourites the shell serves to this view (never to the engine).
+      const local = protocol === "file:" || protocol === "data:" || protocol === "blob:" || protocol === "devtools:" || protocol === `${MEDIA_SCHEME}:`;
       decide(details.url, viewPolicy, local, callback);
     });
     const running: Running = {
@@ -452,6 +454,34 @@ export class EngineHub {
     }
   }
 
+  /** The hosts a module's view may load from, as its engine may reach them now; undefined for any public host. */
+  hostsFor(view: WebContents): readonly string[] | undefined {
+    return this.byView.get(view)?.allowed.hosts;
+  }
+
+  /**
+   * Hands the engine behind `view` a file of the shell's (a favourite, or a
+   * sticker sent as a picture) to send into its open conversation. It reads
+   * it through a handle, as it reads picked files; false when `view` is no
+   * engine's view.
+   */
+  shareFile(view: WebContents, file: { path: string; size: number; name: string; type: string }, replyTo?: string): boolean {
+    const running = this.byView.get(view);
+    if (!running) return false;
+    const handle = this.addFile(running, file.path, file.size);
+    const action: NativeAction = { type: "sendFile", file: { handle, name: file.name, size: file.size, type: file.type } };
+    if (replyTo) action.replyTo = replyTo;
+    this.deliver(running, ENGINE_IPC.action, action);
+    return true;
+  }
+
+  private addFile(running: Running, filePath: string, size: number): string {
+    const handle = randomUUID();
+    running.files.set(handle, { path: filePath, size });
+    if (running.files.size > MAX_FILE_HANDLES) running.files.delete(running.files.keys().next().value!);
+    return handle;
+  }
+
   private async pickFiles(running: Running): Promise<PickedFile[]> {
     // Only right after the user asked, once per ask: an engine cannot pop file dialogs on its own.
     if (Date.now() - running.attachAskedAt > ATTACH_WINDOW_MS) throw new Error("Files can only be picked when the user asks to attach");
@@ -461,9 +491,7 @@ export class EngineHub {
     const picked: PickedFile[] = [];
     for (const filePath of result.filePaths) {
       const { size } = await stat(filePath);
-      const handle = randomUUID();
-      running.files.set(handle, { path: filePath, size });
-      if (running.files.size > MAX_FILE_HANDLES) running.files.delete(running.files.keys().next().value!);
+      const handle = this.addFile(running, filePath, size);
       const name = path.basename(filePath);
       picked.push({ handle, name, size, type: contentTypeFor(name) });
     }

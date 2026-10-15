@@ -34,9 +34,12 @@ import {
 } from "../shared/ipc";
 import type { ActivityUpdate, HealthCheck, PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
+import { FAVOURITES_IPC, isFavouritesAction, MEDIA_SCHEME, type FavouritesState } from "../shared/favourites";
 import { isSettingsAction, serviceSettings, serviceSettingValues, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import { EngineHub, engineStoragePartition } from "./engineHost";
+import { downloadMedia, FavouritesStore } from "./favourites";
+import { checkUrl, createAddressGuard } from "./netPolicy";
 import { filterShellRequests, installHardening } from "./hardening";
 import { computeLayout, splitContent, tooltipBounds } from "./layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
@@ -64,6 +67,8 @@ export const APP_NAME = "Multicord";
 /** In memory only: the shell's own pages keep nothing. */
 const SETTINGS_PARTITION = "multicord-settings";
 const MESSAGES_PARTITION = "multicord-messages";
+/** Downloads for the favourites: in memory, cookie-less, and nothing else uses it. */
+const FAVOURITES_PARTITION = "multicord-favourites";
 
 export interface ShellPaths {
   /** Directory holding the built JS, HTML and icon. */
@@ -208,6 +213,7 @@ export async function createShell(
   const adapters = new Map<string, PlatformAdapter>();
   const credentials = new CredentialStore(path.join(paths.userData, "credentials.json"), services.secrets);
   const settingsStore = new SettingsStore(path.join(paths.userData, "settings.json"));
+  const favourites = createFavourites(paths.userData);
   const general = () => settingsStore.get().general;
   /** Notifications from this service: on in general and not turned off for it. */
   const notificationsOn = (id: string): boolean => general().notifications && serviceSettings(settingsStore.get(), id).notifications;
@@ -285,6 +291,31 @@ export async function createShell(
 
   /** Each running platform's module manifest. */
   const manifests = new Map<string, PlatformModule["manifest"]>();
+  /** The module of a native view, as its favourites say where things come from. */
+  const moduleOf = (id: string): FavouritesState["module"] | undefined => {
+    const manifest = manifests.get(id);
+    return manifest?.engine ? { name: manifest.name, label: manifest.label, color: manifest.color } : undefined;
+  };
+  const sendFavourites = (id: string, view: WebContentsView): void => {
+    const module = moduleOf(id);
+    if (module) view.webContents.send(FAVOURITES_IPC.state, favourites.state(module));
+  };
+  favourites.changed.on(() => {
+    for (const [id, view] of views) sendFavourites(id, view);
+  });
+  // A native view's favourites actions; the view must be one of ours, and it may send only into its own engine.
+  ipcMain.on(FAVOURITES_IPC.action, (event, action) => {
+    const id = [...views].find(([, view]) => view.webContents === event.sender)?.[0];
+    const module = id === undefined ? undefined : moduleOf(id);
+    if (!module || !isFavouritesAction(action)) return;
+    // A native view exists only once its engine does.
+    const hub = engines!;
+    void favourites.handle(action, {
+      source: { platform: module.name, label: module.label, color: module.color },
+      hosts: hub.hostsFor(event.sender),
+      share: (file, replyTo) => void hub.shareFile(event.sender, { path: file.path, size: file.size, name: file.name, type: file.mime }, replyTo),
+    });
+  });
   let engines: EngineHub | undefined;
   /** A native module: its logic runs in a sandboxed engine and renders in our chat view. */
   const startEngineModule = (manifest: PlatformModule["manifest"], def: PlatformDef, view: WebContentsView, ses: Session) => {
@@ -302,6 +333,9 @@ export async function createShell(
       return { action: "deny" };
     });
     if (manifest.screenShare) handleScreenShare(ses);
+    // Favourites reach this view, our own page, and never its engine (whose session has no such scheme).
+    ses.protocol.handle(MEDIA_SCHEME, (request) => favourites.serve(request.url));
+    view.webContents.on("did-finish-load", () => sendFavourites(def.id, view));
     const engine = engines.add({
       def,
       engine: manifest.engine!,
@@ -820,6 +854,25 @@ export async function createShell(
   };
 }
 
+/**
+ * The favourites store, downloading through a session of its own: https
+ * only, every hop's address public (names checked by what they resolve to),
+ * no cookies and no permissions.
+ */
+function createFavourites(userData: string): FavouritesStore {
+  const ses = session.fromPartition(FAVOURITES_PARTITION);
+  ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+  ses.setPermissionCheckHandler(() => false);
+  const publicAddress = createAddressGuard(async (host) => (await ses.resolveHost(host)).endpoints.map((e) => e.address));
+  ses.webRequest.onBeforeRequest((details, callback) => {
+    if (checkUrl(details.url, { schemes: ["https:"] }) !== undefined) return callback({ cancel: true });
+    void publicAddress(details.url).then((ok) => callback({ cancel: !ok }));
+  });
+  return new FavouritesStore(path.join(userData, "favourites"), {
+    download: (url, hosts) => downloadMedia((target, init) => ses.fetch(target, init), url, { schemes: ["https:"], hosts }),
+  });
+}
+
 /** An app link (scheme://...) among command-line arguments; web links and file paths are not. */
 export function findAppLink(argv: readonly string[]): string | undefined {
   return argv.find((arg) => /^[a-z][a-z0-9+.-]*:\/\//i.test(arg) && !/^(https?|file):/i.test(arg));
@@ -843,7 +896,11 @@ export function startApp(dist: string): void {
   const features = chromiumFeatures(process.platform);
   if (features.length > 0) app.commandLine.appendSwitch("enable-features", features.join(","));
   // Engine pages get a standard, secure origin of their own; this must happen before the app is ready.
-  protocol.registerSchemesAsPrivileged([{ scheme: ENGINE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
+  // Favourites are served to native views under a scheme of their own; stream lets videos play from it.
+  protocol.registerSchemesAsPrivileged([
+    { scheme: ENGINE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
+    { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  ]);
 
   let handle: ShellHandle | undefined;
   /** An app link that arrived before the shell was ready. */

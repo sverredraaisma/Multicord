@@ -83,6 +83,7 @@ import { badgeBitmap } from "../../src/main/badge";
 import { IPC } from "../../src/shared/ipc";
 import { NATIVE_IPC } from "../../src/shared/native";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
+import { FAVOURITES_IPC, MEDIA_SCHEME, mediaUrl } from "../../src/shared/favourites";
 import { SETTINGS_IPC } from "../../src/shared/settings";
 import { GenericWebAdapter } from "../../src/main/adapters/genericWebAdapter";
 import type { PlatformModule } from "../../src/main/modules/types";
@@ -453,6 +454,70 @@ describe("native Fluxer platform", () => {
     expect(view.webContents.send).toHaveBeenCalledWith(NATIVE_IPC.state, { screen: "login", platform: "Fluxer" });
   });
 
+  it("keeps favourites in the shell, for native views only", async () => {
+    const { handle, railView, discordView } = await shellWith();
+    const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    const engine = engineOf("fluxer");
+    // Served to the view's session, never the engine's.
+    const serve = session.fromPartition("persist:fluxer").protocolHandlers.get(MEDIA_SCHEME)!;
+    expect(serve).toBeTypeOf("function");
+    expect(session.fromPartition("engine_fluxer").protocolHandlers.has(MEDIA_SCHEME)).toBe(false);
+    const module = { name: "Fluxer", label: "Fluxer", color: "#4f8cf7" };
+    view.webContents.emit("did-finish-load");
+    expect(view.webContents.send).toHaveBeenCalledWith(FAVOURITES_IPC.state, { categories: [], items: [], module, saving: [] });
+    discordView.webContents.emit("did-finish-load");
+    expect(discordView.webContents.send.mock.calls.some(([channel]) => channel === FAVOURITES_IPC.state)).toBe(false);
+    expect(engine.webContents.send.mock.calls.some(([channel]) => channel === FAVOURITES_IPC.state)).toBe(false);
+
+    const latest = () => view.webContents.send.mock.calls.filter(([channel]) => channel === FAVOURITES_IPC.state).at(-1)![1] as { items: { id: string; source: unknown }[]; categories: unknown[] };
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+    const add = { type: "add", url: `data:image/png;base64,${png.toString("base64")}`, kind: "image", name: "Cat" };
+    // Only native views may change them, and only with well-formed actions.
+    ipcMain.emit(FAVOURITES_IPC.action, senderEvent(railView), add);
+    ipcMain.emit(FAVOURITES_IPC.action, senderEvent(discordView), add);
+    ipcMain.emit(FAVOURITES_IPC.action, senderEvent(engine), add);
+    ipcMain.emit(FAVOURITES_IPC.action, senderEvent(view), { ...add, url: "file:///etc/passwd" });
+    await flush();
+    expect(latest().items).toEqual([]);
+    ipcMain.emit(FAVOURITES_IPC.action, senderEvent(view), add);
+    await flush();
+    const [item] = latest().items;
+    expect(item!.source).toEqual({ platform: "Fluxer", label: "Fluxer", color: "#4f8cf7" });
+    expect(fs.existsSync(path.join(userData, "favourites", "files", item!.id))).toBe(true);
+    const served = (await serve({ url: mediaUrl(item!.id) })) as Response;
+    expect(served.headers.get("content-type")).toBe("image/png");
+
+    // Sending hands the engine the file to upload.
+    await ipcMain.invoke(ENGINE_IPC.invoke, senderEvent(engine), { type: "info" });
+    ipcMain.emit(FAVOURITES_IPC.action, senderEvent(view), { type: "send", id: item!.id, replyTo: "7" });
+    await flush();
+    expect(engine.webContents.send).toHaveBeenCalledWith(ENGINE_IPC.action, { type: "sendFile", file: { handle: expect.any(String), name: "Cat.png", size: png.length, type: "image/png" }, replyTo: "7" });
+  });
+
+  it("downloads favourites only over https from public addresses", async () => {
+    const { handle } = await shellWith();
+    const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    const ses = session.fromPartition("multicord-favourites");
+    expect(ses.permissionCheckHandler!()).toBe(false);
+    const callback = vi.fn();
+    (ses.permissionRequestHandler as (...a: unknown[]) => void)(null, "media", callback);
+    expect(callback).toHaveBeenCalledWith(false);
+    const cancelled = (url: string) => new Promise<boolean>((resolve) => ses.beforeRequest!({ url }, (r) => resolve(r.cancel)));
+    expect(await cancelled("http://cdn.example/a.gif")).toBe(true);
+    expect(await cancelled("https://cdn.example/a.gif")).toBe(false);
+    ses.resolveHost.mockResolvedValueOnce({ endpoints: [{ address: "10.0.0.2", family: "ipv4" }] });
+    expect(await cancelled("https://inside.example/a.gif")).toBe(true);
+
+    const gif = Buffer.from("GIF89a NETSCAPE2.0");
+    ses.fetch.mockResolvedValueOnce(new Response(gif, { headers: { "content-type": "image/gif" } }));
+    ipcMain.emit(FAVOURITES_IPC.action, senderEvent(view), { type: "add", url: "https://cdn.example/a.gif", kind: "gif", name: "A" });
+    await flush();
+    await flush();
+    expect(ses.fetch).toHaveBeenCalledWith("https://cdn.example/a.gif", { method: "GET", redirect: "follow", credentials: "omit" });
+    const states = view.webContents.send.mock.calls.filter(([channel]) => channel === FAVOURITES_IPC.state);
+    expect((states.at(-1)![1] as { items: { kind: string; origin: string }[] }).items[0]).toMatchObject({ kind: "gif", origin: "https://cdn.example/a.gif" });
+  });
+
   it("gives the engine only its own instance's secrets", async () => {
     // Stored as the mocked safeStorage encrypts it (byte-reversed).
     const encrypt = (text: string) => Buffer.from(text).reverse().toString("base64");
@@ -658,6 +723,7 @@ describe("startApp", () => {
     expect(app.setName).toHaveBeenCalledWith(APP_NAME);
     expect(electron.protocol.registerSchemesAsPrivileged).toHaveBeenCalledWith([
       { scheme: ENGINE_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
+      { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
     ]);
 
     app.emit("activate"); // before ready: nothing to show

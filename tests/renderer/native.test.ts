@@ -271,6 +271,8 @@ describe("helpers", () => {
       onCompact: (cb) => (pushCompact = cb),
       onVoiceCommand: (cb) => (voiceCommand = cb),
       screenAudioEnded: vi.fn(),
+      onFavourites: vi.fn(),
+      favourites: vi.fn(),
     };
     startNative(document, api);
     expect(api.act).toHaveBeenCalledWith({ type: "ready" });

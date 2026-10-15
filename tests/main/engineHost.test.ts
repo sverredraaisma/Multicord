@@ -218,6 +218,7 @@ describe("EngineHub", () => {
     expect(await cancelled("file:///C:/app/dist/native.js")).toBe(false);
     expect(await cancelled("data:image/png;base64,AA")).toBe(false);
     expect(await cancelled("blob:file:///1")).toBe(false);
+    expect(await cancelled("multicord-media://media/abc")).toBe(false);
     expect(await cancelled("https://cdn.anywhere.example/a.png")).toBe(false);
     expect(await cancelled("https://192.168.1.1/admin")).toBe(true);
     expect(await cancelled("http://cdn.anywhere.example/a.png")).toBe(true);
@@ -363,6 +364,31 @@ describe("EngineHub", () => {
     await expect(ask({ type: "pickFiles" })).rejects.toThrow("only be picked when the user asks");
     vi.useRealTimers();
     await expect(ask({ type: "readFile", handle: picked!.handle, start: 0, end: 1 })).rejects.toThrow("Unknown file");
+  });
+
+  it("hands the engine the shell's files to send, read through handles like picked ones", async () => {
+    const { hub, ask, view, engine, start } = setup();
+    const file = path.join(dist, "dance.gif");
+    fs.writeFileSync(file, "GIF89a");
+    start();
+    await ask({ type: "info" });
+    expect(hub.shareFile(view.webContents as never, { path: file, size: 6, name: "dance.gif", type: "image/gif" }, "42")).toBe(true);
+    const [channel, action] = engine.webContents.send.mock.calls.at(-1)! as [string, { type: string; file: { handle: string }; replyTo?: string }];
+    expect(channel).toBe(ENGINE_IPC.action);
+    expect(action).toEqual({ type: "sendFile", file: { handle: expect.any(String), name: "dance.gif", size: 6, type: "image/gif" }, replyTo: "42" });
+    expect(new TextDecoder().decode((await ask({ type: "readFile", handle: action.file.handle, start: 0, end: 3 })) as Uint8Array)).toBe("GIF");
+    hub.shareFile(view.webContents as never, { path: file, size: 6, name: "dance.gif", type: "image/gif" });
+    expect(engine.webContents.send.mock.calls.at(-1)![1]).not.toHaveProperty("replyTo");
+    // Only into an engine's own view.
+    expect(hub.shareFile(engine.webContents as never, { path: file, size: 6, name: "x", type: "image/gif" })).toBe(false);
+  });
+
+  it("tells the shell which hosts a module's view may reach", async () => {
+    const { hub, ask, view, engine } = setup({ hosts: ["*.demo.example"] });
+    expect(hub.hostsFor(view.webContents as never)).toEqual(["*.demo.example"]);
+    await ask({ type: "lockHosts", hosts: ["cdn.demo.example"] });
+    expect(hub.hostsFor(view.webContents as never)).toEqual(["cdn.demo.example"]);
+    expect(hub.hostsFor(engine.webContents as never)).toBeUndefined();
   });
 
   it("restarts an engine whose renderer stopped", () => {
