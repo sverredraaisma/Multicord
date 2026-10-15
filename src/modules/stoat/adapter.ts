@@ -443,8 +443,10 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     if (!channelId || !this.events) return;
     const current = this.ownTyping?.channelId === channelId ? this.ownTyping : undefined;
     if (!current) this.stopTyping();
-    const sent = current && now - current.sent < TYPING_REPEAT_MS ? current.sent : now;
-    if (sent === now) this.events.command({ type: "BeginTyping", channel: channelId });
+    // Said again once the last notice is old enough; a keystroke in the same millisecond is no reason.
+    const renew = !current || now - current.sent >= TYPING_REPEAT_MS;
+    const sent = renew ? now : current.sent;
+    if (renew) this.events.command({ type: "BeginTyping", channel: channelId });
     clearTimeout(current?.stop);
     this.ownTyping = { channelId, sent, stop: setTimeout(() => this.stopTyping(), TYPING_IDLE_MS) };
   }

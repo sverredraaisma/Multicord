@@ -680,6 +680,7 @@ describe("StoatAdapter live updates", () => {
     await adapter.openConversation(DM);
     const typing = () => socket().sent.filter((m) => m.type === "BeginTyping" || m.type === "EndTyping");
     await adapter.handleAction({ type: "typing" });
+    await adapter.handleAction({ type: "typing" }); // the same millisecond: no second notice
     await vi.advanceTimersByTimeAsync(3000);
     await adapter.handleAction({ type: "typing" });
     expect(typing()).toEqual([{ type: "BeginTyping", channel: DM }]);
