@@ -122,7 +122,7 @@ export function keyField(
 export function updateText(status: UpdateStatus): string {
   switch (status.state) {
     case "unavailable":
-      return "Updates are installed with Multicord's installer; this copy runs from source.";
+      return "Updates are installed with Multicord's installer; this copy runs from source or in a Flatpak and does not update itself.";
     case "idle":
       return "";
     case "checking":

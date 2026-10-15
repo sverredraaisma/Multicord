@@ -223,7 +223,8 @@ export async function createShell(
   const front = (): string | undefined => (mode === "platform" ? activePlatform : mode === "messages" ? messagesTarget : undefined);
   let quitting = false;
   registry.setGrouping(general().railGrouping);
-  const updater = new Updater(autoUpdater, app.isPackaged);
+  // A Flatpak cannot replace itself; it updates by installing a newer bundle.
+  const updater = new Updater(autoUpdater, app.isPackaged && !process.env.FLATPAK_ID);
   const streamer = new StreamerWatch(() => listProcesses(platform));
   /** Streamer mode: message content stays out of notifications and previews. */
   const streaming = (): boolean => general().streamerMode === "on" || (general().streamerMode === "auto" && streamer.active);
