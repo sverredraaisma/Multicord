@@ -769,8 +769,12 @@ describe("threads", () => {
     view.update(withThread({ rootId: "10", messages: replies, loading: true, note: "Only the latest replies are listed.", error: "Some could not be loaded." }));
     expect(panel().hidden).toBe(false);
     expect([...panel().querySelectorAll("li.message")].map((li) => (li as HTMLElement).dataset.id)).toEqual(["10", "11"]);
-    // Not edited or answered one by one here; media waits for a click.
-    expect([...panel().querySelectorAll(".message-actions button")].map((b) => b.textContent)).not.toContain("Edit");
+    // The conversation's menu, without forwarding or another thread; media that does not load by itself waits for a click.
+    const actions = [...panel().querySelectorAll("li.message")].map((li) => [...li.querySelectorAll(".message-actions button")].map((b) => b.textContent));
+    expect(actions).toEqual([
+      ["Reply", "React", "Edit", "Copy text"],
+      ["Reply", "React", "Copy text"],
+    ]);
     expect(panel().querySelector("button.attachment.load")).not.toBeNull();
     expect(panel().querySelector(".older-row")!.textContent).toBe("Loading…");
     expect(panel().querySelector(".panel-note")!.textContent).toBe("Only the latest replies are listed.");
@@ -806,6 +810,129 @@ describe("threads", () => {
     expect(act).toHaveBeenLastCalledWith({ type: "thread" });
     panel().querySelector<HTMLButtonElement>('[aria-label="Close thread"]')!.click();
     expect(act).toHaveBeenLastCalledWith({ type: "thread" });
+  });
+
+  it("replies to a message within the thread, until the reply is cancelled, sent or its thread left", () => {
+    const replies = [msg("10"), msg("11", { author: "Bo" })];
+    view.update(withThread({ rootId: "10", messages: replies }));
+    const reply = (id: string) => [...panel().querySelectorAll<HTMLButtonElement>(`li.message[data-id="${id}"] .message-actions button`)].find((b) => b.textContent === "Reply")!.click();
+    const bar = () => panel().querySelector<HTMLElement>(".reply-bar")!;
+    reply("11");
+    expect(bar().hidden).toBe(false);
+    expect(bar().textContent).toContain("Replying to Bo");
+    expect(document.activeElement).toBe(composer());
+    // The conversation's own reply is untouched.
+    expect([...root.querySelectorAll<HTMLElement>(".reply-bar")].filter((b) => !b.hidden)).toEqual([bar()]);
+    const field = composer();
+    field.value = "answer";
+    key(field, "Enter");
+    expect(act).toHaveBeenLastCalledWith({ type: "send", content: "answer", thread: "10", replyTo: "11" });
+    expect(bar().hidden).toBe(true);
+    // Escape drops the reply first, then closes the thread.
+    reply("11");
+    key(field, "Escape");
+    expect(bar().hidden).toBe(true);
+    expect(act).not.toHaveBeenLastCalledWith({ type: "thread" });
+    reply("11");
+    bar().querySelector<HTMLButtonElement>("button")!.click();
+    expect(bar().hidden).toBe(true);
+    // The message answered left the thread, nothing may be sent, or another thread opened: the reply goes.
+    reply("11");
+    view.update(withThread({ rootId: "10", messages: [msg("10")] }));
+    expect(bar().hidden).toBe(true);
+    reply("10");
+    view.update(withThread({ rootId: "10", messages: replies, locked: "Encrypted" }));
+    expect(bar().hidden).toBe(true);
+    view.update(withThread({ rootId: "10", messages: replies }));
+    reply("10");
+    view.update(withThread({ rootId: "12", messages: [msg("12")] }));
+    expect(bar().hidden).toBe(true);
+    reply("12");
+    view.update(withThread(undefined));
+    expect(bar().hidden).toBe(true);
+  });
+
+  it("reacts to, edits and deletes messages in the thread apart from the conversation", () => {
+    const mine = msg("10", { mine: true, canEdit: true, canDelete: true, source: "raw", reactions: [{ key: "👍", label: "👍", count: 1, me: false }] });
+    const state = (thread: unknown = { rootId: "10", messages: [mine, msg("11")] }) => ({ ...withThread(thread), channel: { ...withThread(thread).channel!, messages: [mine] } });
+    view.update(state());
+    const inPanel = (id: string, label: string) => [...panel().querySelectorAll<HTMLButtonElement>(`li.message[data-id="${id}"] .message-actions button`)].find((b) => b.textContent === label)!;
+    const inMain = (selector: string) => root.querySelector(`.messages:not(.thread-messages) ${selector}`);
+    // The root shows in both: its palette opens in the panel only.
+    inPanel("10", "React").click();
+    expect(panel().querySelector(".quick-reactions")).not.toBeNull();
+    expect(inMain(".quick-reactions")).toBeNull();
+    inPanel("10", "React").click();
+    expect(panel().querySelector(".quick-reactions")).toBeNull();
+    inPanel("10", "React").click();
+    panel().querySelector<HTMLButtonElement>(".quick-reactions button")!.click();
+    expect(act).toHaveBeenLastCalledWith(expect.objectContaining({ type: "react", messageId: "10" }));
+    inPanel("10", "React").click();
+    panel().querySelector<HTMLButtonElement>(".quick-reactions .reaction.more")!.click();
+    expect(panel().querySelector(".emoji-picker")).not.toBeNull();
+    expect(inMain(".emoji-picker")).toBeNull();
+    panel().querySelector<HTMLButtonElement>(".emoji-picker .emoji-option")!.click();
+    expect(act).toHaveBeenLastCalledWith(expect.objectContaining({ type: "react", messageId: "10" }));
+    // Editing in the panel: the box shows there, and the edit goes for the message itself.
+    inPanel("10", "Edit").click();
+    const box = panel().querySelector<HTMLTextAreaElement>(".edit-box")!;
+    expect(box.value).toBe("raw");
+    expect(inMain(".edit-box")).toBeNull();
+    box.value = "fixed";
+    box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(act).toHaveBeenLastCalledWith({ type: "edit", messageId: "10", content: "fixed" });
+    expect(panel().querySelector(".edit-box")).toBeNull();
+    // An edit begun in the panel ends with its thread.
+    inPanel("10", "Edit").click();
+    view.update(state({ rootId: "12", messages: [msg("12")] }));
+    view.update(state());
+    expect(panel().querySelector(".edit-box")).toBeNull();
+    const confirm = vi.fn(() => true);
+    Object.defineProperty(window, "confirm", { value: confirm, configurable: true, writable: true });
+    inPanel("10", "Delete").click();
+    expect(act).toHaveBeenLastCalledWith({ type: "delete", messageId: "10" });
+    delete (window as { confirm?: unknown }).confirm;
+    // Without its source, the edit starts from the text shown.
+    view.update(state({ rootId: "10", messages: [{ ...mine, source: undefined }] }));
+    inPanel("10", "Edit").click();
+    expect(panel().querySelector<HTMLTextAreaElement>(".edit-box")!.value).toBe("text 10");
+    panel().querySelector<HTMLTextAreaElement>(".edit-box")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    // Where the conversation takes no reactions or replies, neither does the thread.
+    view.update({ ...state(), channel: { ...state().channel!, can: { ...THREADS, reply: false, react: false } } });
+    expect([...panel().querySelectorAll('li.message[data-id="11"] .message-actions button')].map((b) => b.textContent)).toEqual(["Copy text"]);
+  });
+
+  it("loads media in the thread by itself as in the conversation", () => {
+    class Observer {
+      static made: Observer[] = [];
+      watched: Element[] = [];
+      constructor(
+        readonly callback: (entries: { isIntersecting: boolean; target: Element }[]) => void,
+        readonly options: { root: Element },
+      ) {
+        Observer.made.push(this);
+      }
+      observe(target: Element) {
+        this.watched.push(target);
+      }
+      disconnect() {
+        this.watched = [];
+      }
+    }
+    vi.stubGlobal("IntersectionObserver", Observer);
+    view.setMediaAutoLoad(Number.POSITIVE_INFINITY);
+    const picture = (key: string) => ({ name: `${key}.png`, kind: "image" as const, mediaKey: key, size: 10 });
+    view.update(withThread({ rootId: "10", messages: [msg("10"), msg("11", { attachments: [picture("t1")] })] }));
+    // Only the thread has media waiting: one observer, over the thread's list.
+    expect(Observer.made).toHaveLength(1);
+    const [observer] = Observer.made;
+    expect(observer!.options.root).toBe(panel().querySelector(".thread-messages"));
+    expect(observer!.watched).toHaveLength(1);
+    observer!.callback([{ isIntersecting: true, target: observer!.watched[0]! }]);
+    expect(act).toHaveBeenLastCalledWith({ type: "loadMedia", key: "t1" });
+    // Closed, its media no longer waits.
+    view.update(withThread(undefined));
+    expect(observer!.watched).toHaveLength(0);
   });
 
   it("shows custom emoji and favourite stars in a thread where the view has them", () => {

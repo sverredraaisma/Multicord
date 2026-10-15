@@ -31,6 +31,8 @@ export const MAX_AUTO_LOADS = 3;
 export const AUTO_LOAD_TIMEOUT_MS = 60_000;
 /** Pages of older messages "Jump to unread" loads at most, looking for the first unread one. */
 export const MAX_UNREAD_PAGES = 10;
+/** Marks the thread panel's messages in the view's per-message state (editing, reaction pickers), apart from the conversation's. */
+const THREAD_KEY = "t:";
 /** Pages of older messages a jump to a pinned message or search result loads at most. */
 export const MAX_JUMP_PAGES = 20;
 
@@ -62,6 +64,7 @@ export class NativeView {
   private channelId: string | undefined;
   private firstMessageId: string | undefined;
   private replyTo: { id: string; author: string } | undefined;
+  /** The message being edited, and the reaction palette and full picker open, by message id; in the thread panel, prefixed with THREAD_KEY. */
   private editingId: string | undefined;
   private pickerFor: string | undefined;
   private fullPickerFor: string | undefined;
@@ -102,6 +105,8 @@ export class NativeView {
   private searched = false;
   /** The thread the side panel shows, by its root message. */
   private threadRoot: string | undefined;
+  /** The message in the thread that its composer's reply answers. */
+  private threadReplyTo: { id: string; author: string } | undefined;
   /** The new poll form is open, for the open conversation. */
   private pollOpen = false;
   /** The mention being typed in the composer, while it has suggestions: where its "@" is, who fits, and the highlighted one. */
@@ -210,9 +215,11 @@ export class NativeView {
     this.channelId = undefined;
     this.firstMessageId = undefined;
     this.mention = undefined;
-    // It watched the old messages list.
+    // They watched the old messages lists.
     this.observer?.disconnect();
     this.observer = undefined;
+    this.threadObserver?.disconnect();
+    this.threadObserver = undefined;
     const doc = this.doc;
     const card = el(doc, "section", "card");
     switch (state.screen) {
@@ -458,7 +465,7 @@ export class NativeView {
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
       const content = editBox.value;
-      if (this.editingId && content.trim() !== "") this.api.act({ type: "edit", messageId: this.editingId, content });
+      if (this.editingId && content.trim() !== "") this.api.act({ type: "edit", messageId: this.editingId.replace(THREAD_KEY, ""), content });
       this.setEditing(undefined);
     });
 
@@ -500,21 +507,25 @@ export class NativeView {
     const threadStatus = el(doc, "div", "thread-status");
     const threadMessages = el(doc, "ol", "messages thread-messages");
     const threadNotice = el(doc, "div", "locked-notice");
+    const threadReply = el(doc, "div", "reply-bar");
+    threadReply.hidden = true;
     const threadComposer = el(doc, "textarea", "composer thread-composer");
     threadComposer.maxLength = MAX_MESSAGE_LENGTH;
     threadComposer.rows = 1;
     threadComposer.placeholder = "Reply in thread";
     threadComposer.setAttribute("aria-label", "Reply in thread");
     threadComposer.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") return this.api.act({ type: "thread" });
+      if (event.key === "Escape") return this.threadReplyTo ? this.setThreadReply(undefined) : this.api.act({ type: "thread" });
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
       const content = threadComposer.value;
       if (content.trim() === "" || !this.threadRoot) return;
-      this.api.act({ type: "send", content, thread: this.threadRoot });
+      const replyTo = this.threadReplyTo?.id;
+      this.api.act(replyTo ? { type: "send", content, thread: this.threadRoot, replyTo } : { type: "send", content, thread: this.threadRoot });
       threadComposer.value = "";
+      this.setThreadReply(undefined);
     });
-    threadPanel.append(threadClose, el(doc, "h3", "member-section", "Thread"), threadStatus, threadMessages, threadNotice, threadComposer);
+    threadPanel.append(threadClose, el(doc, "h3", "member-section", "Thread"), threadStatus, threadMessages, threadNotice, threadReply, threadComposer);
     // The new poll form, over the conversation like the forward dialog.
     const pollDialog = el(doc, "section", "profile-card poll-dialog");
     pollDialog.setAttribute("role", "dialog");
@@ -544,6 +555,7 @@ export class NativeView {
       threadStatus,
       threadMessages,
       threadNotice,
+      threadReply,
       threadComposer,
       profile,
       forward,
@@ -882,6 +894,23 @@ export class NativeView {
     this.parts.composer!.focus();
   }
 
+  /** Opens or closes a message's reaction palette, by its key (messageItem). */
+  private togglePicker(key: string): void {
+    this.pickerFor = this.pickerFor === key ? undefined : key;
+    this.fullPickerFor = undefined;
+    this.rerender();
+  }
+
+  /** The thread composer's reply: which message of the thread it answers, shown above it. */
+  private setThreadReply(target: { id: string; author: string } | undefined): void {
+    this.threadReplyTo = target;
+    const bar = this.parts.threadReply!;
+    bar.hidden = !target;
+    if (!target) return bar.replaceChildren();
+    bar.replaceChildren(...replyBar(this.doc, target.author, () => this.setThreadReply(undefined)));
+    this.parts.threadComposer!.focus();
+  }
+
   private setEditing(messageId: string | undefined, source = ""): void {
     this.editingId = messageId;
     (this.parts.editBox as HTMLTextAreaElement).value = source;
@@ -900,8 +929,9 @@ export class NativeView {
   private autoQueue: string[] = [];
   /** Media loading by itself now, each with the timer that frees its place if the engine never answers. */
   private readonly autoLoading = new Map<string, ReturnType<typeof setTimeout>>();
-  /** Watches the messages for media that loads by itself coming into sight. */
+  /** Watch the messages, and the thread panel's, for media that loads by itself coming into sight. */
   private observer: IntersectionObserver | undefined;
+  private threadObserver: IntersectionObserver | undefined;
 
   /** The shell's limit for media that loads by itself changed. */
   setMediaAutoLoad(limit: number): void {
@@ -936,25 +966,35 @@ export class NativeView {
    * is asked for once it comes into sight (all of it where nothing can tell).
    */
   private watchAutoLoads(scroller: HTMLElement, channel: ChatState["channel"]): void {
+    // The panel shows only with a thread to show.
+    const thread = this.parts.threadPanel!.hidden ? [] : threadView(channel!.thread)!.messages;
     const held = new Set(
-      (channel?.messages ?? []).flatMap((m) => [...m.attachments, ...messageEmbeds(m.embeds).flatMap((e) => (e.image ? [e.image] : []))].flatMap((a) => (a.mediaKey && !a.url ? [a.mediaKey] : []))),
+      [...(channel?.messages ?? []), ...thread].flatMap((m) => [...m.attachments, ...messageEmbeds(m.embeds).flatMap((e) => (e.image ? [e.image] : []))].flatMap((a) => (a.mediaKey && !a.url ? [a.mediaKey] : []))),
     );
     this.autoQueue = this.autoQueue.filter((key) => held.has(key));
     for (const key of [...this.autoLoading.keys()]) if (!held.has(key)) this.autoLoaded(key);
+    this.observeAutoLoads(scroller, "observer");
+    this.observeAutoLoads(this.parts.threadMessages!, "threadObserver");
+  }
+
+  /** Asks for a list's media that loads by itself once it comes into sight there (all of it where nothing can tell). */
+  private observeAutoLoads(scroller: HTMLElement, slot: "observer" | "threadObserver"): void {
     const waiting = [...scroller.querySelectorAll<HTMLElement>("[data-auto-load]")];
     const Observer: typeof IntersectionObserver | undefined = this.doc.defaultView!.IntersectionObserver;
     if (!Observer) {
       for (const item of waiting) this.queueAutoLoad(item.dataset.autoLoad!);
       return;
     }
-    this.observer ??= new Observer(
+    // Made once something waits in this list.
+    if (waiting.length === 0 && !this[slot]) return;
+    const observer = (this[slot] ??= new Observer(
       (entries) => {
         for (const entry of entries) if (entry.isIntersecting) this.queueAutoLoad((entry.target as HTMLElement).dataset.autoLoad!);
       },
       { root: scroller, rootMargin: "200px" },
-    );
-    this.observer.disconnect();
-    for (const item of waiting) this.observer.observe(item);
+    ));
+    observer.disconnect();
+    for (const item of waiting) observer.observe(item);
   }
 
   private readonly messageHandlers: MessageHandlers = {
@@ -967,11 +1007,7 @@ export class NativeView {
     },
     autoLoad: (file) => autoLoads(file, this.autoLoadLimit),
     onReply: (message) => this.setReply({ id: message.id, author: message.author }),
-    onToggleReactionPicker: (message) => {
-      this.pickerFor = this.pickerFor === message.id ? undefined : message.id;
-      this.fullPickerFor = undefined;
-      this.rerender();
-    },
+    onToggleReactionPicker: (message) => this.togglePicker(message.id),
     onReact: (message, key, add) => {
       const pickerOpen = this.pickerFor !== undefined || this.fullPickerFor !== undefined;
       this.pickerFor = undefined;
@@ -1018,19 +1054,39 @@ export class NativeView {
     return channelCan(this.lastState?.channel?.can);
   }
 
-  private messageItem(message: NativeMessage): HTMLElement {
-    const editing = message.id === this.editingId;
+  /**
+   * A message of the conversation, or of the thread panel (`inThread`): the
+   * same menu, reactions and editing in both, kept apart by key (the root
+   * shows in both). In the panel a reply answers within the thread, and
+   * nothing is forwarded or opens another thread.
+   */
+  private messageItem(message: NativeMessage, inThread = false): HTMLElement {
+    const key = inThread ? THREAD_KEY + message.id : message.id;
+    const editing = key === this.editingId;
     const editBox = this.parts.editBox as HTMLTextAreaElement;
     if (editing) queueMicrotask(() => editBox.focus());
-    const handlers = this.favouritesOn ? this.messageHandlers : { ...this.messageHandlers, onFavourite: undefined };
+    let handlers = this.favouritesOn ? this.messageHandlers : { ...this.messageHandlers, onFavourite: undefined };
+    if (inThread) {
+      handlers = {
+        ...handlers,
+        onReply: (m) => this.setThreadReply({ id: m.id, author: m.author }),
+        onToggleReactionPicker: () => this.togglePicker(key),
+        onMoreReactions: () => {
+          this.fullPickerFor = key;
+          this.rerender();
+        },
+        onEdit: (m) => this.setEditing(key, m.source ?? m.content),
+      };
+    }
+    const can = this.can;
     return messageItem(this.doc, message, handlers, {
       customEmojiUrl: (id, animated) => this.emojiUrl(id, animated),
       editor: editing ? [editBox, el(this.doc, "p", "edit-hint", "Enter to save, Escape to cancel")] : undefined,
-      can: this.can,
-      highlighted: message.id === this.jumpedId,
-      reacting: this.pickerFor === message.id,
+      can: inThread ? { reply: can.reply, react: can.react, forward: false, threads: false } : can,
+      highlighted: !inThread && message.id === this.jumpedId,
+      reacting: this.pickerFor === key,
       reactionPicker:
-        this.fullPickerFor === message.id
+        this.fullPickerFor === key
           ? emojiPicker(
               this.doc,
               (picked) => this.messageHandlers.onReact(message, picked.key, !isOwnReaction(message.reactions, picked.key)),
@@ -1209,9 +1265,10 @@ export class NativeView {
   }
 
   /**
-   * The thread panel: the open thread's messages (not editable or answerable
-   * one by one here, which the conversation is for) and its composer, or why
-   * nothing may be sent; shown while the module lists the thread.
+   * The thread panel: the open thread's messages, with the conversation's
+   * menu (reply within the thread, react, edit and delete the user's own),
+   * media that loads by itself as in the conversation, and its composer, or
+   * why nothing may be sent; shown while the module lists the thread.
    */
   private updateThread(): void {
     const panel = this.parts.threadPanel!;
@@ -1219,6 +1276,11 @@ export class NativeView {
     const channel = this.lastState?.channel;
     const thread = channel && this.can.threads ? threadView(channel.thread) : undefined;
     panel.hidden = !thread;
+    // Another thread, or none: a reply or edit begun in the last one is dropped.
+    if (thread?.rootId !== this.threadRoot) {
+      if (this.threadReplyTo) this.setThreadReply(undefined);
+      if (this.editingId?.startsWith(THREAD_KEY)) this.editingId = undefined;
+    }
     if (!thread) {
       this.threadRoot = undefined;
       return list.replaceChildren();
@@ -1227,10 +1289,7 @@ export class NativeView {
     const status = this.parts.threadStatus!;
     status.replaceChildren(...[thread.note && el(doc, "p", "panel-note", thread.note), thread.error && el(doc, "p", "member-error", thread.error)].filter((n): n is HTMLParagraphElement => Boolean(n)));
     const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40;
-    const can = { reply: false, react: false, forward: false, threads: false };
-    // Media here loads when clicked: what loads by itself is watched in the conversation only.
-    const handlers = { ...this.messageHandlers, autoLoad: undefined, ...(this.favouritesOn ? {} : { onFavourite: undefined }) };
-    const items = thread.messages.map((message) => messageItem(doc, { ...message, canEdit: false }, handlers, { customEmojiUrl: (id, animated) => this.emojiUrl(id, animated), can }));
+    const items = thread.messages.map((message) => this.messageItem(message, true));
     if (thread.loading) items.push(el(doc, "li", "older-row", "Loading…"));
     list.replaceChildren(...items);
     const notice = this.parts.threadNotice!;
@@ -1238,6 +1297,8 @@ export class NativeView {
     notice.hidden = !thread.locked;
     const composer = this.parts.threadComposer as HTMLTextAreaElement;
     composer.hidden = Boolean(thread.locked);
+    // The message answered left the thread, or nothing may be sent: the reply goes.
+    if (this.threadReplyTo && (thread.locked || !thread.messages.some((m) => m.id === this.threadReplyTo!.id))) this.setThreadReply(undefined);
     // Another thread: the reply being written was for the last one.
     if (thread.rootId !== this.threadRoot) composer.value = "";
     if (thread.rootId !== this.threadRoot || atBottom) list.scrollTop = list.scrollHeight;
