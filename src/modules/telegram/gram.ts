@@ -36,6 +36,7 @@ import {
   type TgPoll,
   type TgPollResults,
   type TgPreview,
+  type TgQrLogin,
   type TgProfile,
   type TgReaction,
   type TgSignIn,
@@ -701,6 +702,12 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
     }
   };
 
+  /** The password step after a sign-in Telegram accepted, with the account's hint where it has one. */
+  const passwordStep = async (): Promise<{ password: true; hint?: string }> => {
+    const password = await client.invoke(new Api.account.GetPassword());
+    return password.hint ? { password: true, hint: password.hint } : { password: true };
+  };
+
   return {
     connect: async () => void (await client.connect()),
     authorized: () => client.checkAuthorization(),
@@ -714,8 +721,23 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         return result instanceof Api.auth.AuthorizationSignUpRequired ? { signUp: true } : { done: true };
       } catch (error) {
         if (telegramError(error) !== "SESSION_PASSWORD_NEEDED") throw error;
-        const password = await client.invoke(new Api.account.GetPassword());
-        return password.hint ? { password: true, hint: password.hint } : { password: true };
+        return passwordStep();
+      }
+    },
+    qrLogin: async (): Promise<TgQrLogin> => {
+      try {
+        let result = await client.invoke(new Api.auth.ExportLoginToken({ apiId: api.apiId, apiHash: api.apiHash, exceptIds: [] }));
+        // Accepted by an account on another data centre: sign in there, with the token it gives.
+        if (result instanceof Api.auth.LoginTokenMigrateTo) {
+          await client._switchDC(result.dcId);
+          result = await client.invoke(new Api.auth.ImportLoginToken({ token: result.token }));
+        }
+        if (result instanceof Api.auth.LoginToken) return { token: new Uint8Array(result.token), expires: result.expires };
+        if (result instanceof Api.auth.LoginTokenSuccess) return { done: true };
+        throw new Error("Telegram did not answer the QR sign-in as expected");
+      } catch (error) {
+        if (telegramError(error) !== "SESSION_PASSWORD_NEEDED") throw error;
+        return passwordStep();
       }
     },
     checkPassword: async (password) => {
@@ -935,13 +957,14 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         const pins = pinsOf(update);
         if (pins) return cb(pins);
         if (update instanceof Api.UpdateDialogFilter || update instanceof Api.UpdateDialogFilters || update instanceof Api.UpdateDialogFilterOrder) return cb({ type: "folders" });
+        if (update instanceof Api.UpdateLoginToken) return cb({ type: "loginToken" });
         const archive = archiveOf(update);
         if (archive) return cb(archive);
         if (!(update instanceof Api.UpdateMessageReactions)) return;
         const chatId = chatIdOf(update.peer);
         if (!chatId || !Number.isInteger(update.msgId) || update.msgId <= 0) return;
         cb({ type: "reactions", chatId, id: update.msgId, ...reactionsOf(update.reactions) });
-      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages, Api.UpdateMessagePoll, Api.UpdateFolderPeers, Api.UpdateDialogFilter, Api.UpdateDialogFilters, Api.UpdateDialogFilterOrder] }));
+      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages, Api.UpdateMessagePoll, Api.UpdateFolderPeers, Api.UpdateDialogFilter, Api.UpdateDialogFilters, Api.UpdateDialogFilterOrder, Api.UpdateLoginToken] }));
     },
     session: () => (client.session as StringSession).save(),
     logOut: async () => void (await client.invoke(new Api.auth.LogOut())),

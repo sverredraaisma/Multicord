@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgFolder, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import type { TelegramApi, TelegramCredentials, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgFolder, TgMember, TgQrLogin, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
 import { MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
+import { QR_REFRESH_MAX_MS, QR_REFRESH_MIN_MS } from "../../../src/modules/telegram/adapter";
 import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, DIALOG_PAGE, DIALOG_PAGE_MS, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, MUTE_FOREVER, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import { MAX_ATTACHMENTS, type NativeAction, type NativeViewState } from "../../../src/shared/native";
@@ -30,6 +31,7 @@ class FakeTelegramApi implements TelegramApi {
   sendCode = vi.fn(async (_phone: string) => ({ hash: "H", viaApp: false }));
   signIn = vi.fn(async (_phone: string, _hash: string, _code: string): Promise<TgSignIn> => ({ done: true }));
   checkPassword = vi.fn(async (_password: string) => {});
+  qrLogin = vi.fn(async (): Promise<TgQrLogin> => ({ token: new Uint8Array([251, 255, 1]), expires: Math.floor(Date.now() / 1000) + 30 }));
   me = vi.fn(async (): Promise<TgUser> => ({ id: "9", name: "Me", bot: false }));
   dialogs = vi.fn(async (_limit: number, _after?: TgDialogCursor): Promise<TgDialogPage> => ({ dialogs: this.dialogList.map((d) => ({ ...d })) }));
   history = vi.fn(async (chatId: string, _before: number | undefined, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1), msg(chatId, 2)]);
@@ -520,8 +522,146 @@ describe("prompt handling", () => {
     const ctx = setup({ builtIn: CREDS });
     await ctx.adapter.start();
     const renders = ctx.renders.length;
+    await ctx.act({ type: "cancelPrompt", id: "api" });
+    // The phone step's other button only works at the phone step.
+    await ctx.answer("phone", { phone: "+31612345678" });
+    const atCode = ctx.renders.length;
     await ctx.act({ type: "cancelPrompt", id: "phone" });
-    expect(ctx.renders).toHaveLength(renders);
+    expect(ctx.renders).toHaveLength(atCode);
+    expect(ctx.renders.slice(0, renders + 1).at(-1)).toBe(ctx.renders[renders]);
+    expect(ctx.api.qrLogin).not.toHaveBeenCalled();
+  });
+
+  describe("signing in with a QR code", () => {
+    /** At the QR step, its first token shown. */
+    async function atQrStep() {
+      vi.useFakeTimers({ now: 1_000_000_000_000 });
+      const ctx = setup({ builtIn: CREDS });
+      await ctx.adapter.start();
+      expect(ctx.prompt().prompt.cancel).toBe("Sign in with a QR code");
+      await ctx.act({ type: "cancelPrompt", id: "phone" });
+      return ctx;
+    }
+
+    it("shows Telegram's sign-in link as the step's QR code, base64url, renewing it as it runs out", async () => {
+      const ctx = await atQrStep();
+      expect(ctx.renders.some((r) => r.screen === "prompt" && r.prompt.id === "qr" && r.status === "Getting a code…" && r.prompt.qr === undefined)).toBe(true);
+      expect(ctx.prompt().prompt).toMatchObject({ id: "qr", fields: [], submit: "Show a new code", cancel: "Use my phone number", qr: "tg://login?token=-_8B" });
+      expect(ctx.prompt().status).toBeUndefined();
+      ctx.api.qrLogin.mockResolvedValue({ token: new Uint8Array([1, 2, 3]), expires: 1_000_000_000 + 1000 });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(ctx.prompt().prompt.qr).toBe("tg://login?token=AQID");
+      // Asked again no sooner than QR_REFRESH_MIN_MS, and no later than QR_REFRESH_MAX_MS, whatever the expiry says.
+      expect(ctx.api.qrLogin).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(QR_REFRESH_MAX_MS);
+      expect(ctx.api.qrLogin).toHaveBeenCalledTimes(3);
+      ctx.api.qrLogin.mockResolvedValue({ token: new Uint8Array([1]), expires: 0 });
+      await vi.advanceTimersByTimeAsync(QR_REFRESH_MAX_MS);
+      expect(ctx.api.qrLogin).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(QR_REFRESH_MIN_MS);
+      expect(ctx.api.qrLogin).toHaveBeenCalledTimes(5);
+      // A new code on request.
+      await ctx.answer("qr", {});
+      expect(ctx.api.qrLogin).toHaveBeenCalledTimes(6);
+    });
+
+    it("drops the code and stops renewing it on going back to the phone step", async () => {
+      const ctx = await atQrStep();
+      await ctx.act({ type: "cancelPrompt", id: "qr" });
+      expect(ctx.prompt().prompt.id).toBe("phone");
+      expect(JSON.stringify(ctx.last())).not.toContain("tg://login");
+      await vi.advanceTimersByTimeAsync(QR_REFRESH_MAX_MS * 2);
+      expect(ctx.api.qrLogin).toHaveBeenCalledTimes(1);
+      // An answer that comes after the step ended changes nothing.
+      let release: (value: TgQrLogin) => void = () => {};
+      ctx.api.qrLogin.mockImplementation(() => new Promise((resolve) => (release = resolve)));
+      const asking = ctx.act({ type: "cancelPrompt", id: "phone" });
+      await ctx.act({ type: "cancelPrompt", id: "qr" });
+      release({ done: true });
+      await flush();
+      await asking;
+      expect(ctx.prompt().prompt.id).toBe("phone");
+      expect(ctx.api.me).not.toHaveBeenCalled();
+    });
+
+    it("signs in once another device accepts the code, as Telegram's update says", async () => {
+      const ctx = await atQrStep();
+      ctx.api.isAuthorized = true;
+      ctx.api.qrLogin.mockResolvedValue({ done: true });
+      ctx.api.emit({ type: "loginToken" });
+      await flush();
+      expect(ctx.renders.some((r) => r.screen === "connecting" && r.status === "Signing in…")).toBe(true);
+      expect(ctx.chat().me).toBe("Me");
+      expect(ctx.secrets.get("session")).toBe("sess");
+      expect(JSON.stringify(ctx.renders.at(-1))).not.toContain("tg://login");
+      // No longer at the QR step: the update changes nothing.
+      ctx.api.emit({ type: "loginToken" });
+      await flush();
+      expect(ctx.api.qrLogin).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(QR_REFRESH_MAX_MS);
+      expect(ctx.api.qrLogin).toHaveBeenCalledTimes(2);
+    });
+
+    it("asks for the two-step password after the code, where the account has one", async () => {
+      const ctx = await atQrStep();
+      ctx.api.qrLogin.mockResolvedValue({ password: true, hint: "pet" });
+      ctx.api.emit({ type: "loginToken" });
+      await flush();
+      expect(ctx.prompt().prompt).toMatchObject({ id: "password", description: "Your account has a password. Hint: pet" });
+      await ctx.answer("password", { password: "pw" });
+      expect(ctx.api.checkPassword).toHaveBeenCalledWith("pw");
+      expect(ctx.chat().me).toBe("Me");
+    });
+
+    it("says why there is no code, and starts over where Telegram refuses the API ID", async () => {
+      const ctx = await atQrStep();
+      ctx.api.qrLogin.mockRejectedValue(tgError("AUTH_TOKEN_EXPIRED"));
+      await ctx.answer("qr", {});
+      expect(ctx.prompt()).toMatchObject({ prompt: { id: "qr" }, error: "Could not get a code: AUTH_TOKEN_EXPIRED" });
+      expect(ctx.prompt().prompt.qr).toBeUndefined();
+      ctx.api.qrLogin.mockRejectedValue(tgError("API_ID_INVALID"));
+      await ctx.answer("qr", {});
+      expect(ctx.prompt().prompt.id).toBe("api");
+      // A failure that comes after the step ended is not shown.
+      const late = await atQrStep();
+      let fail: (error: unknown) => void = () => {};
+      late.api.qrLogin.mockImplementation(() => new Promise((_resolve, reject) => (fail = reject)));
+      late.api.emit({ type: "loginToken" });
+      await late.act({ type: "cancelPrompt", id: "qr" });
+      fail(tgError("AUTH_TOKEN_EXPIRED"));
+      await flush();
+      expect(late.prompt().error).toBeUndefined();
+    });
+
+    it("goes back to the phone step when signing in fails after the code was accepted", async () => {
+      const ctx = await atQrStep();
+      ctx.api.me.mockRejectedValue(tgError("AUTH_KEY_UNREGISTERED"));
+      ctx.api.qrLogin.mockResolvedValue({ done: true });
+      ctx.api.emit({ type: "loginToken" });
+      await flush();
+      expect(ctx.prompt()).toMatchObject({ prompt: { id: "phone" }, error: "Could not sign in: AUTH_KEY_UNREGISTERED" });
+    });
+
+    it("drops the code on signing out of the QR step", async () => {
+      const ctx = await atQrStep();
+      await ctx.act({ type: "logout" });
+      expect(JSON.stringify(ctx.last())).not.toContain("tg://login");
+      await vi.advanceTimersByTimeAsync(QR_REFRESH_MAX_MS * 2);
+      expect(ctx.api.qrLogin).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not start while a step is being answered", async () => {
+      const ctx = setup({ builtIn: CREDS });
+      await ctx.adapter.start();
+      let release: (value: { hash: string; viaApp: boolean }) => void = () => {};
+      ctx.api.sendCode.mockImplementation(() => new Promise((resolve) => (release = resolve)));
+      const sending = ctx.answer("phone", { phone: "+31612345678" });
+      await ctx.act({ type: "cancelPrompt", id: "phone" });
+      expect(ctx.api.qrLogin).not.toHaveBeenCalled();
+      release({ hash: "H", viaApp: false });
+      await sending;
+      expect(ctx.prompt().prompt.id).toBe("code");
+    });
   });
 
   it("ignores answers for a step that is not current", async () => {

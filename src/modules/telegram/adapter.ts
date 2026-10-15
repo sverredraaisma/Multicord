@@ -6,7 +6,7 @@ import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, Na
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS, MAX_FOLDERS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
-import { ALL_CHATS, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgPoll, type TgPreview, type TgProfile, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
+import { ALL_CHATS, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgPoll, type TgPreview, type TgProfile, type TgQrLogin, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /**
  * Chats listed: one-to-one chats, groups and channels together, most recent
@@ -80,6 +80,9 @@ const CREDENTIALS_KEY = "api";
 export const FORGET_API_ID = "forgetApiId";
 const DIALOG_REFRESH_MS = 1000;
 const BAD_CREDENTIALS = new Set(["API_ID_INVALID", "API_ID_PUBLISHED_FLOOD"]);
+/** How soon and how late a QR sign-in token is replaced, whatever Telegram says of its expiry. */
+export const QR_REFRESH_MIN_MS = 5000;
+export const QR_REFRESH_MAX_MS = 60_000;
 
 export interface TelegramInstanceDef {
   id: string;
@@ -109,7 +112,7 @@ interface StickerPack {
   stickers: TgSticker[];
 }
 
-type Step = "api" | "phone" | "code" | "password" | "connecting" | "chat";
+type Step = "api" | "phone" | "code" | "password" | "qr" | "connecting" | "chat";
 
 /** A chat's members as fetched so far. */
 interface MemberList {
@@ -144,6 +147,9 @@ export function toBase64(bytes: Uint8Array): string {
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(binary);
 }
+
+/** Bytes as base64url without padding, as Telegram's sign-in links carry their token. */
+export const base64Url = (bytes: Uint8Array): string => toBase64(bytes).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 
 /** "📷 Photo" and such after the text, so media-only messages still say something. */
 export function messageText(message: TgMessage): string {
@@ -217,6 +223,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private codeHash = "";
   private codeViaApp = false;
   private passwordHint: string | undefined;
+  /** The QR sign-in link shown (a credential), and when the next token is asked for. */
+  private qr: string | undefined;
+  private qrTimer: ReturnType<typeof setTimeout> | undefined;
   private me: TgUser | undefined;
   private hasSession = false;
   private dialogs: TgDialog[] = [];
@@ -442,6 +451,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     clearTimeout(this.typingTimer);
     this.typingTimer = undefined;
     this.ownTyping = undefined;
+    this.endQr();
     this.names.clear();
     this.namesAsked.clear();
     this.pending.clear();
@@ -482,7 +492,10 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       case "prompt":
         return this.answer(action.id, action.values);
       case "cancelPrompt":
-        if (action.id === "code" || action.id === "password") {
+        // The phone step's other button signs in with a QR code instead.
+        if (action.id === "phone" && this.step === "phone") return this.startQr();
+        if (action.id === "code" || action.id === "password" || action.id === "qr") {
+          this.endQr();
           this.step = "phone";
           this.error = undefined;
           this.render();
@@ -594,6 +607,10 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
           await this.api!.checkPassword(values.password ?? "");
           await this.signedIn();
           break;
+        case "qr":
+          // A new code, where the one shown would not scan.
+          await this.exportQr();
+          break;
       }
     } catch (error) {
       this.error = friendly(error);
@@ -643,6 +660,16 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
           submit: "Sign in",
           cancel: "Use another number",
         };
+      case "qr":
+        return {
+          id: "qr",
+          title: "Sign in with a QR code",
+          description: "On your phone, open Telegram, go to Settings > Devices > Link Desktop Device, and scan this code.",
+          fields: [],
+          submit: "Show a new code",
+          cancel: "Use my phone number",
+          ...(this.qr ? { qr: this.qr } : {}),
+        };
       default:
         return {
           id: "phone",
@@ -650,8 +677,75 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
           description: "Multicord is a third-party Telegram client. Your number and code go only to Telegram, and your session is stored encrypted on this device.",
           fields: [{ name: "phone", label: "Phone number", type: "tel", autocomplete: "tel", placeholder: "+31 6 12345678" }],
           submit: "Send code",
+          cancel: "Sign in with a QR code",
         };
     }
+  }
+
+  /** Signs in with a QR code instead of the phone number: the step shows one once Telegram gives a token. */
+  private async startQr(): Promise<void> {
+    if (this.busy) return;
+    this.step = "qr";
+    this.error = undefined;
+    this.status = "Getting a code…";
+    this.render();
+    await this.exportQr();
+  }
+
+  /** Drops the QR code: its token is a credential, kept no longer than the step that shows it. */
+  private endQr(): void {
+    clearTimeout(this.qrTimer);
+    this.qrTimer = undefined;
+    this.qr = undefined;
+  }
+
+  /**
+   * Asks Telegram for a sign-in token to show as a QR code, or, once another
+   * device has accepted the one shown, signs in (after the password, where
+   * the account has one). Tokens last about half a minute: a fresh one is
+   * asked for as each runs out.
+   */
+  private async exportQr(): Promise<void> {
+    clearTimeout(this.qrTimer);
+    const session = this.session;
+    let result: TgQrLogin;
+    try {
+      result = await this.api!.qrLogin();
+    } catch (error) {
+      if (this.step !== "qr" || session !== this.session) return;
+      this.qr = undefined;
+      this.status = undefined;
+      this.error = `Could not get a code: ${friendly(error)}`;
+      if (BAD_CREDENTIALS.has(telegramError(error))) await this.resetCredentials();
+      return this.render();
+    }
+    // The user went back to the phone step, or this answer came after another that ended the step.
+    if (this.step !== "qr" || session !== this.session) return;
+    if ("token" in result) {
+      this.qr = `tg://login?token=${base64Url(result.token)}`;
+      this.status = undefined;
+      const wait = Math.min(Math.max(result.expires * 1000 - Date.now(), QR_REFRESH_MIN_MS), QR_REFRESH_MAX_MS);
+      this.qrTimer = setTimeout(() => void this.exportQr(), wait);
+      return this.render();
+    }
+    this.endQr();
+    if ("password" in result) {
+      this.passwordHint = result.hint;
+      this.step = "password";
+      this.status = undefined;
+      return this.render();
+    }
+    this.step = "connecting";
+    this.status = "Signing in…";
+    this.render();
+    try {
+      await this.signedIn();
+    } catch (error) {
+      this.step = "phone";
+      this.error = `Could not sign in: ${friendly(error)}`;
+    }
+    this.status = undefined;
+    this.render();
   }
 
   // --- Chats --------------------------------------------------------------------
@@ -1170,6 +1264,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         }
         return this.render();
       }
+      case "loginToken":
+        if (this.step === "qr") void this.exportQr();
+        return;
       case "folders":
         return void this.loadFolders();
       case "pins": {

@@ -22,10 +22,20 @@ const h = vi.hoisted(() => {
     "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
     "InputFile", "InputFileBig", "InputMediaUploadedPhoto", "InputMediaUploadedDocument",
     "PhotoPathSize", "VideoSize", "StickerSet", "InputStickerSetID", "InputMediaDocument", "InputDocument",
-    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings", "InputFolderPeer", "FolderPeer", "UpdateFolderPeers", "DialogFilter", "DialogFilterChatlist", "DialogFilterDefault", "InputPeerUser", "InputPeerChat", "InputPeerChannel", "InputPeerSelf", "UpdateDialogFilter", "UpdateDialogFilters", "UpdateDialogFilterOrder",
+    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings", "InputFolderPeer", "FolderPeer", "UpdateFolderPeers", "DialogFilter", "DialogFilterChatlist", "DialogFilterDefault", "InputPeerUser", "InputPeerChat", "InputPeerChannel", "InputPeerSelf", "UpdateDialogFilter", "UpdateDialogFilters", "UpdateDialogFilterOrder", "UpdateLoginToken",
   ];
   const Api: Record<string, unknown> = {
-    auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
+    auth: {
+      SignIn: class extends Base {},
+      AuthorizationSignUpRequired: class extends Base {},
+      CheckPassword: class extends Base {},
+      LogOut: class extends Base {},
+      ExportLoginToken: class extends Base {},
+      ImportLoginToken: class extends Base {},
+      LoginToken: class extends Base {},
+      LoginTokenMigrateTo: class extends Base {},
+      LoginTokenSuccess: class extends Base {},
+    },
     account: { GetPassword: class extends Base {}, UpdateNotifySettings: class extends Base {} },
     messages: {
       ReadMentions: class extends Base {},
@@ -83,6 +93,7 @@ const h = vi.hoisted(() => {
     addEventHandler = vi.fn();
     setLogLevel = vi.fn();
     destroy = vi.fn(async () => undefined);
+    _switchDC = vi.fn(async () => true);
     constructor(
       public session: { save(): string },
       public apiId: number,
@@ -347,6 +358,35 @@ describe("createGramApi", () => {
     expect(client.sendCode).toHaveBeenCalledWith({ apiId: 12, apiHash: credentials.apiHash }, "+31600000000");
   });
 
+  describe("qrLogin", () => {
+    it("gives a token to show, until it is accepted", async () => {
+      client.invoke.mockResolvedValue(make(Api.auth.LoginToken, { token: Buffer.from([1, 2]), expires: 99 }));
+      await expect(api.qrLogin()).resolves.toEqual({ token: new Uint8Array([1, 2]), expires: 99 });
+      expect(client.invoke.mock.calls[0]![0]).toBeInstanceOf(Api.auth.ExportLoginToken);
+      expect(client.invoke.mock.calls[0]![0]).toMatchObject({ apiId: 12, apiHash: credentials.apiHash, exceptIds: [] });
+      client.invoke.mockResolvedValue(make(Api.auth.LoginTokenSuccess, {}));
+      await expect(api.qrLogin()).resolves.toEqual({ done: true });
+    });
+
+    it("follows the account to its data centre, and signs in there with the token it gives", async () => {
+      client.invoke.mockResolvedValueOnce(make(Api.auth.LoginTokenMigrateTo, { dcId: 4, token: Buffer.from([7]) })).mockResolvedValueOnce(make(Api.auth.LoginTokenSuccess, {}));
+      await expect(api.qrLogin()).resolves.toEqual({ done: true });
+      expect(client._switchDC).toHaveBeenCalledWith(4);
+      const imported = client.invoke.mock.calls[1]![0] as { token: Buffer };
+      expect(imported).toBeInstanceOf(Api.auth.ImportLoginToken);
+      expect(imported.token).toEqual(Buffer.from([7]));
+    });
+
+    it("asks for the password where the account has one, and refuses answers it does not know", async () => {
+      client.invoke.mockRejectedValueOnce({ errorMessage: "SESSION_PASSWORD_NEEDED" }).mockResolvedValueOnce({ hint: "pet" });
+      await expect(api.qrLogin()).resolves.toEqual({ password: true, hint: "pet" });
+      client.invoke.mockResolvedValue({});
+      await expect(api.qrLogin()).rejects.toThrow("Telegram did not answer the QR sign-in as expected");
+      client.invoke.mockRejectedValue({ errorMessage: "AUTH_TOKEN_EXPIRED" });
+      await expect(api.qrLogin()).rejects.toEqual({ errorMessage: "AUTH_TOKEN_EXPIRED" });
+    });
+  });
+
   describe("signIn", () => {
     it("is done after a normal authorization", async () => {
       client.invoke.mockResolvedValue({});
@@ -593,6 +633,7 @@ describe("createGramApi", () => {
         Api.UpdateDialogFilter,
         Api.UpdateDialogFilters,
         Api.UpdateDialogFilterOrder,
+        Api.UpdateLoginToken,
       ]);
     });
 
@@ -620,6 +661,8 @@ describe("createGramApi", () => {
       rawH(make(Api.UpdateDialogFilters));
       rawH(make(Api.UpdateDialogFilterOrder, { order: [2] }));
       expect(cb.mock.calls.splice(-3)).toEqual([[{ type: "folders" }], [{ type: "folders" }], [{ type: "folders" }]]);
+      rawH(make(Api.UpdateLoginToken));
+      expect(cb.mock.calls.splice(-1)).toEqual([[{ type: "loginToken" }]]);
       rawH(make(Api.UpdateUserTyping, { userId: 8n, action: make(Api.SendMessageTypingAction) }));
       expect(cb.mock.calls.at(-1)).toEqual([{ type: "typing", chatId: "8", userId: "8", active: true }]);
       cb.mock.calls.pop();

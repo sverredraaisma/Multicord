@@ -282,6 +282,9 @@ export const FAVED_STICKERS = "faved";
 
 export type TgSignIn ={ done: true } | { password: true; hint?: string } | { signUp: true };
 
+/** A QR sign-in: a token to show until it expires (Unix seconds), or, once another device accepted it, signed in or a password to give. */
+export type TgQrLogin = { token: Uint8Array; expires: number } | { done: true } | { password: true; hint?: string };
+
 export type TgUpdate =
   | { type: "message"; message: TgMessage }
   | { type: "edit"; message: TgMessage }
@@ -297,7 +300,9 @@ export type TgUpdate =
   /** Chats moved into the archive or out of it (here or in another app, or by Telegram when an archived chat gets news). */
   | { type: "archive"; peers: { chatId: string; archived: boolean }[] }
   /** The user's folders changed: they are fetched afresh. */
-  | { type: "folders" };
+  | { type: "folders" }
+  /** Another device accepted the QR sign-in token shown. */
+  | { type: "loginToken" };
 
 export interface TelegramApi {
   connect(): Promise<void>;
@@ -305,6 +310,12 @@ export interface TelegramApi {
   sendCode(phone: string): Promise<{ hash: string; viaApp: boolean }>;
   signIn(phone: string, hash: string, code: string): Promise<TgSignIn>;
   checkPassword(password: string): Promise<void>;
+  /**
+   * Asks for a QR sign-in token (exportLoginToken), following the account to
+   * its data centre once another device accepted one. Asked again on each
+   * `loginToken` update and as tokens run out.
+   */
+  qrLogin(): Promise<TgQrLogin>;
   me(): Promise<TgUser>;
   /** A page of dialogs: the first (pinned chats, then the most recent), or the one after a cursor. */
   dialogs(limit: number, after?: TgDialogCursor): Promise<TgDialogPage>;
