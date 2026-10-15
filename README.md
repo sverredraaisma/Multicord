@@ -120,6 +120,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - DMs and groups as DM bubbles and in the Messages page, with previews;
   - channel history, sending, replies, reactions, and editing and deleting your own messages;
   - typing indicators, read state, and attachments uploaded to the instance's file server;
+  - where the news begins: opening a channel with unread messages marks the first after your read position (Stoat gives no count, so the divider says "New messages");
   - mentions: messages that mention you, everyone or everyone online are highlighted, and `@name` in the composer inserts a real Stoat mention of someone who wrote recently;
   - custom emoji from your servers in the emoji picker, for messages and reactions. A server channel offers its own server's emoji, since another server's need a permission there that Multicord does not work out; DMs and groups offer every server's. Messages and reactions show custom emoji with their picture (by name where the instance has no file server). Stoat has no stickers, and its GIF search (Gifbox) needs a key of its own, so neither is offered;
   - notifications that follow your Stoat notification settings. Channels, DMs and groups muted there (or in a muted server) show as muted, and the bell beside one mutes or unmutes it in those settings, which Stoat's own apps share.

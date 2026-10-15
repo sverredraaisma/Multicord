@@ -1,5 +1,5 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
-import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeMessage, type NativeSidebarItem, type NativeViewState } from "../../shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeMessage, type NativeSidebarItem, type NativeUnread, type NativeViewState } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
 import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
@@ -7,7 +7,7 @@ import { BaseAdapter } from "../../shared/baseAdapter";
 import { StoatEvents, type EventsStatus, type SocketFactory } from "./events";
 import { discoverInstance, instanceHosts, StoatRest, type LoginResult, type RestOptions, type StoatInstance } from "./rest";
 import { StoatState, TYPING_MS } from "./state";
-import { ChannelType, TEXT_CHANNEL_TYPES, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatFile, type StoatMessage } from "./types";
+import { ChannelType, TEXT_CHANNEL_TYPES, compareIds, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatFile, type StoatMessage } from "./types";
 
 const PAGE_SIZE = 50;
 const PUBLISH_DELAY_MS = 100;
@@ -74,6 +74,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   private selectedChannelId: string | undefined;
   private readonly lastChannel = new Map<string, string>();
   private readonly hasOlder = new Map<string, boolean>();
+  /** Where the open channel's news began when it was opened: the last message read then, if any. */
+  private unreadAt: { channelId: string; after?: string } | undefined;
   private readonly loading = new Set<string>();
   private readonly ackTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
@@ -335,12 +337,30 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   private async selectChannel(channelId: string): Promise<void> {
     const channel = this.state.channels.get(channelId);
     if (!channel || !TEXT_CHANNEL_TYPES.has(channel.type)) return;
+    // Noted before it is read: where its news began.
+    if (channelId !== this.selectedChannelId) this.unreadAt = this.state.isUnread(channel) ? { channelId, after: this.state.unreads.get(channelId)?.lastId } : undefined;
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.serverId ?? "home", channelId);
     this.error = undefined;
     this.render();
     if (!this.state.messages.has(channelId)) await this.fetchHistory(channelId, undefined);
     this.ackSoon(channelId);
+  }
+
+  /**
+   * The open channel's unread marker: the first message from someone else
+   * after the last one read when it was opened, once the loaded messages
+   * reach back that far (or there are no older ones); none when they do and
+   * hold nothing new from others after all. Stoat gives no count.
+   */
+  private unreadView(channelId: string, at: NonNullable<StoatAdapter["unreadAt"]>): NativeUnread | undefined {
+    const messages = this.state.messages.get(channelId) ?? [];
+    // ULIDs sort as text, so an empty one comes before them all.
+    const after = at.after ?? "";
+    const reach = !(this.hasOlder.get(channelId) ?? false) || messages.some((m) => compareIds(m.id, after) <= 0);
+    if (!reach) return {};
+    const first = messages.find((m) => compareIds(m.id, after) > 0 && m.authorId !== this.state.meId);
+    return first && { firstId: first.id };
   }
 
   private async fetchHistory(channelId: string, before: string | undefined): Promise<void> {
@@ -763,6 +783,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 typing: this.state.typingIn(channel.id).map((u) => displayName(u)),
                 pending: (this.pending.get(channel.id) ?? []).map((f) => ({ name: f.filename, size: f.size })),
                 uploading: this.uploading.has(channel.id),
+                ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt) } : {}),
                 // Files need the instance's file server (Autumn).
                 can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: false },
               }

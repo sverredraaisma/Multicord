@@ -453,6 +453,35 @@ describe("StoatAdapter messages", () => {
     expect(chat().emojiUrls).toEqual({});
   });
 
+  it("marks where a channel's news began when it was opened, from its read position", async () => {
+    const { adapter, chat, online } = setup({ token: "saved" });
+    await online();
+    await adapter.openConversation(GENERAL);
+    expect(chat().channel!.unread).toEqual({ firstId: ulid(450) });
+    // A channel without news has no marker.
+    await adapter.openConversation(CHAT);
+    expect(chat().channel).not.toHaveProperty("unread");
+    // The DM was read past what is loaded, and nothing older is left: no marker.
+    await adapter.openConversation(DM);
+    expect(chat().channel!.unread).toBeUndefined();
+
+    // A full page of news: it began above the loaded messages.
+    const full = setup({ token: "saved" });
+    full.routes.push((url) =>
+      url.includes(`/channels/${GENERAL}/messages?`) ? { status: 200, body: { messages: Array.from({ length: 50 }, (_, i) => message(1000 - i, GENERAL)), users: [ANA] } } : undefined,
+    );
+    await full.online();
+    await full.adapter.openConversation(GENERAL);
+    expect(full.chat().channel!.unread).toEqual({});
+
+    // Never read, but mentioned in: from its first message on.
+    const fresh = setup({ token: "saved" });
+    await fresh.adapter.start();
+    await fresh.goOnline(readyPayload({ channel_unreads: [{ _id: { channel: GENERAL, user: ME_ID }, mentions: [ulid(450)] }] }));
+    await fresh.adapter.openConversation(GENERAL);
+    expect(fresh.chat().channel!.unread).toEqual({ firstId: ulid(450) });
+  });
+
   it("renders authors, mentions, emoji, replies, reactions and attachments", async () => {
     const { adapter, chat, event, online, routes } = setup({ token: "saved" });
     routes.push((url) =>
