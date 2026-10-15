@@ -7,7 +7,7 @@ const h = vi.hoisted(() => {
     }
   }
   const names = [
-    "MessageMediaEmpty", "MessageMediaWebPage", "WebPage", "UpdatePinnedMessages", "UpdatePinnedChannelMessages", "InputMessagesFilterPinned", "MessageMediaPhoto", "MessageMediaDocument", "Document",
+    "MessageMediaEmpty", "MessageMediaWebPage", "WebPage", "UpdatePinnedMessages", "UpdatePinnedChannelMessages", "InputMessagesFilterPinned", "Poll", "PollAnswer", "PollResults", "PollAnswerVoters", "UpdateMessagePoll", "MessageMediaPhoto", "MessageMediaDocument", "Document",
     "DocumentAttributeSticker", "DocumentAttributeAudio", "DocumentAttributeVideo", "DocumentAttributeFilename",
     "MessageMediaGeo", "MessageMediaGeoLive", "MessageMediaVenue", "MessageMediaContact", "MessageMediaPoll",
     "PeerUser", "PeerChat", "PeerChannel", "Message", "MessageReplyHeader", "User", "Chat", "Channel", "ChatForbidden", "PeerNotifySettings",
@@ -45,6 +45,7 @@ const h = vi.hoisted(() => {
       FavedStickers: class extends Base {},
       UpdatePinnedMessage: class extends Base {},
       ForwardMessages: class extends Base {},
+      SendVote: class extends Base {},
     },
     channels: {
       GetFullChannel: class extends Base {},
@@ -113,7 +114,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview, pollOf, pollResultsOf } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -155,6 +156,33 @@ describe("mediaLabel", () => {
 
   it("falls back to a generic label", () => {
     expect(mediaLabel({} as never)).toBe("Attachment");
+  });
+});
+
+describe("polls", () => {
+  const answer = (text: unknown, option: number) => make(Api.PollAnswer, { text, option: Buffer.from([option]) });
+  const voters = (option: number, count: number, extra: Record<string, unknown> = {}) => make(Api.PollAnswerVoters, { option: Buffer.from([option]), voters: count, ...extra });
+
+  it("reads a poll's question, answers and results", () => {
+    const media = make(Api.MessageMediaPoll, {
+      poll: make(Api.Poll, { id: 77n, question: { text: "Lunch?" }, answers: [answer({ text: "Pizza" }, 48), answer("Soup", 49), {}], multipleChoice: true }),
+      results: make(Api.PollResults, { results: [voters(48, 3, { chosen: true }), voters(49, -2, { correct: true }), {}], totalVoters: 4 }),
+    });
+    expect(pollOf(media)).toEqual({
+      id: "77",
+      question: "Lunch?",
+      answers: [{ option: "MA==", text: "Pizza" }, { option: "MQ==", text: "Soup" }],
+      multiple: true,
+      closed: false,
+      quiz: false,
+      results: { voters: [{ option: "MA==", votes: 3, chosen: true }, { option: "MQ==", votes: 0, correct: true }], total: 4, min: false },
+    });
+    expect(pollOf(make(Api.MessageMediaPoll, { poll: make(Api.Poll, { id: 1n, question: 5, answers: [], closed: true, quiz: true }) }))).toEqual({ id: "1", question: "", answers: [], multiple: false, closed: true, quiz: true });
+    expect(pollOf(make(Api.MessageMediaPoll, { poll: {} }))).toBeUndefined();
+    expect(pollOf(undefined)).toBeUndefined();
+    expect(pollResultsOf(make(Api.PollResults, { min: true }))).toEqual({ voters: [], min: true });
+    expect(pollResultsOf({})).toBeUndefined();
+    expect(toMessage(make(Api.Message, { id: 1, date: 2, media }), "9").poll).toMatchObject({ id: "77" });
   });
 });
 
@@ -415,6 +443,11 @@ describe("createGramApi", () => {
       expect.not.objectContaining({ topMsgId: expect.anything() }),
     ]);
     expect(client.invoke.mock.calls[0]![0]).toBeInstanceOf(Api.messages.ForwardMessages);
+    client.invoke.mockClear();
+    await api.vote("7", 3, ["MA==", "AQI="]);
+    const vote = client.invoke.mock.calls[0]![0] as { peer: unknown; msgId: number; options: Buffer[] };
+    expect(vote).toBeInstanceOf(Api.messages.SendVote);
+    expect([vote.peer, vote.msgId, vote.options.map((o) => [...o])]).toEqual([7n, 3, [[48], [1, 2]]]);
   });
 
   it("returns history oldest first, skipping service messages", async () => {
@@ -502,6 +535,7 @@ describe("createGramApi", () => {
         Api.UpdateChannelUserTyping,
         Api.UpdatePinnedMessages,
         Api.UpdatePinnedChannelMessages,
+        Api.UpdateMessagePoll,
       ]);
     });
 
@@ -516,6 +550,10 @@ describe("createGramApi", () => {
       rawH(make(Api.UpdatePinnedMessages, { peer: make(Api.PeerChat, { chatId: 1n }), messages: [4, 0, 1.5], pinned: true }));
       rawH(make(Api.UpdatePinnedChannelMessages, { channelId: 1234567890n, messages: [5] }));
       rawH(make(Api.UpdatePinnedMessages, { peer: {}, messages: [4] }));
+      rawH(make(Api.UpdateMessagePoll, { pollId: 77n, results: make(Api.PollResults, { totalVoters: 2 }), poll: make(Api.Poll, { closed: true }) }));
+      rawH(make(Api.UpdateMessagePoll, { pollId: 78n, results: make(Api.PollResults, {}), poll: {} }));
+      rawH(make(Api.UpdateMessagePoll, { pollId: 79n, results: {} }));
+      expect(cb.mock.calls.splice(-2)).toEqual([[{ type: "poll", pollId: "77", results: { voters: [], total: 2, min: false }, closed: true }], [{ type: "poll", pollId: "78", results: { voters: [], min: false } }]]);
       expect(cb.mock.calls.splice(-2)).toEqual([[{ type: "pins", chatId: "-1", ids: [4], pinned: true }], [{ type: "pins", chatId: "-1001234567890", ids: [5], pinned: false }]]);
       rawH(make(Api.UpdateUserTyping, { userId: 8n, action: make(Api.SendMessageTypingAction) }));
       expect(cb.mock.calls.at(-1)).toEqual([{ type: "typing", chatId: "8", userId: "8", active: true }]);

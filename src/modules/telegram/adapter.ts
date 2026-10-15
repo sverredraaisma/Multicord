@@ -2,11 +2,11 @@ import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/run
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
-import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativeSearchResults, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativePoll, NativePollOption, NativeSearchResults, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
-import { FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgPreview, type TgProfile, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
+import { FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgPoll, type TgPreview, type TgProfile, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /** Chats listed: one-to-one chats, groups and channels together, most recent first. */
 export const DIALOG_LIMIT = 200;
@@ -496,6 +496,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.sendSticker(action.stickerId, action.replyTo);
       case "pins":
         return this.showPins(action.open);
+      case "vote":
+        return this.vote(Number(action.messageId), action.options);
       case "forward":
         return this.forward(Number(action.messageId), action.channelId);
       case "search":
@@ -1099,6 +1101,19 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       }
       case "typing":
         return this.onTyping(update.chatId, update.userId, update.active, update.topicId);
+      case "poll": {
+        for (const list of this.messages.values()) {
+          for (const [index, message] of list.entries()) {
+            const poll = message.poll;
+            if (poll?.id !== update.pollId) continue;
+            // Results without the user's own choice keep the choice they had.
+            const chosen = new Set(update.results.min ? (poll.results?.voters ?? []).filter((v) => v.chosen).map((v) => v.option) : []);
+            const voters = update.results.voters.map((v) => (chosen.has(v.option) ? { ...v, chosen: true } : v));
+            list[index] = { ...message, poll: { ...poll, closed: poll.closed || update.closed === true, results: { ...update.results, voters } } };
+          }
+        }
+        return this.render();
+      }
       case "pins": {
         const ids = new Set(update.ids);
         for (const list of this.loaded(update.chatId)) for (const [index, message] of list.entries()) if (ids.has(message.id)) list[index] = { ...message, pinned: update.pinned };
@@ -1642,7 +1657,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       id: String(message.id),
       author: message.out ? (this.me?.name ?? "You") : (message.sender ?? dialog.title),
       // Shown media speaks for itself; a label stays for what is not shown (locations, polls…).
-      content: message.file || !message.media ? markdown : [markdown, escapeText(message.media)].filter(Boolean).join("\n"),
+      content: message.file || message.poll || !message.media ? markdown : [markdown, escapeText(message.media)].filter(Boolean).join("\n"),
       timestamp: new Date(message.date * 1000).toISOString(),
       edited: message.edited,
       mine: message.out,
@@ -1654,6 +1669,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     // Edited as the markdown it shows, so formatting survives the edit.
     if (native.canEdit) native.source = markdown;
     if (message.pinned) native.pinned = true;
+    if (message.poll) native.poll = this.pollView(message.poll, dialog);
     // Who may pin in a group is up to its admins, and Telegram refuses where the user may not; not in forums, whose pins are not listed here.
     if (!dialog.readOnly && !dialog.forum) native.canPin = true;
     // Telegram's own flag: it mentions the user, or answers one of their messages.
@@ -1674,6 +1690,39 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const shown = photo && this.attachment(message, photo);
     if (shown && (shown.url || shown.mediaKey)) embed.image = { url: shown.url, mediaKey: shown.mediaKey, width: shown.width, height: shown.height, size: shown.size, thumbnail: true };
     return embed;
+  }
+
+  /** A poll as the view shows it: its answers by their place, with votes where Telegram shows them. Voting needs a chat the user is still in. */
+  private pollView(poll: TgPoll, dialog: TgDialog): NativePoll {
+    const results = new Map((poll.results?.voters ?? []).map((v) => [v.option, v]));
+    const options = poll.answers.map((answer, index): NativePollOption => {
+      const option: NativePollOption = { id: String(index), text: answer.text };
+      const counted = results.get(answer.option);
+      if (counted) option.votes = counted.votes;
+      if (counted?.chosen) option.chosen = true;
+      if (counted?.correct) option.correct = true;
+      return option;
+    });
+    const view: NativePoll = { question: poll.question, options, multiple: poll.multiple, closed: poll.closed };
+    if (poll.results?.total !== undefined) view.total = poll.results.total;
+    if (!poll.closed && !dialog.left) view.canVote = true;
+    return view;
+  }
+
+  /** Votes in a poll of the open conversation; Telegram's update then shows the new results. */
+  private async vote(messageId: number, ids: string[]): Promise<void> {
+    const key = this.current();
+    const message = key ? this.messages.get(key)?.find((m) => m.id === messageId) : undefined;
+    const poll = message?.poll;
+    if (!poll || poll.closed) return;
+    const options = ids.flatMap((id) => poll.answers[Number(id)]?.option ?? []);
+    if (options.length !== ids.length || (!poll.multiple && options.length > 1)) return;
+    try {
+      await this.api!.vote(message.chatId, message.id, options);
+    } catch (error) {
+      this.error = `Vote not counted: ${friendly(error)}`;
+      this.render();
+    }
   }
 
   /** A message's text as markdown for the view, worked out once per message. */

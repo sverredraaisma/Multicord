@@ -29,6 +29,8 @@ import {
   type TgMemberPage,
   type TgMessage,
   type TgPresence,
+  type TgPoll,
+  type TgPollResults,
   type TgPreview,
   type TgProfile,
   type TgReaction,
@@ -355,6 +357,41 @@ const TYPING_ACTIONS = [
  * stops it). Undefined for other updates, for chats posting as themselves,
  * and for other actions (emoji interactions, voice chat speaking).
  */
+/** A text Telegram sends either plain or with entities (TextWithEntities), as plain text. */
+function plainText(value: unknown): string {
+  if (typeof value === "string") return value;
+  const text = typeof value === "object" && value !== null ? (value as { text?: unknown }).text : undefined;
+  return typeof text === "string" ? text : "";
+}
+
+const base64Of = (bytes: Uint8Array): string => Buffer.from(bytes).toString("base64");
+
+/** A poll's results, as far as Telegram shows them. */
+export function pollResultsOf(results: unknown): TgPollResults | undefined {
+  if (!(results instanceof Api.PollResults)) return undefined;
+  const voters = (results.results ?? []).flatMap((r) => {
+    if (!(r instanceof Api.PollAnswerVoters)) return [];
+    const entry: TgPollResults["voters"][number] = { option: base64Of(r.option), votes: Math.max(0, r.voters) };
+    if (r.chosen === true) entry.chosen = true;
+    if (r.correct === true) entry.correct = true;
+    return [entry];
+  });
+  const out: TgPollResults = { voters, min: results.min === true };
+  if (typeof results.totalVoters === "number") out.total = results.totalVoters;
+  return out;
+}
+
+/** The poll in a message, with its results where Telegram sent them. */
+export function pollOf(media: Api.TypeMessageMedia | undefined): TgPoll | undefined {
+  if (!(media instanceof Api.MessageMediaPoll) || !(media.poll instanceof Api.Poll)) return undefined;
+  const poll = media.poll;
+  const answers = poll.answers.flatMap((a) => (a instanceof Api.PollAnswer ? [{ option: base64Of(a.option), text: plainText(a.text) }] : []));
+  const out: TgPoll = { id: poll.id.toString(), question: plainText(poll.question), answers, multiple: poll.multipleChoice === true, closed: poll.closed === true, quiz: poll.quiz === true };
+  const results = pollResultsOf(media.results);
+  if (results) out.results = results;
+  return out;
+}
+
 /** Messages pinned or unpinned somewhere, as Telegram announces it (per chat; a channel's or supergroup's by its id). */
 export function pinsOf(update: unknown): Extract<TgUpdate, { type: "pins" }> | undefined {
   const chatId =
@@ -500,6 +537,8 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
   const file = mediaFile(message.media);
   if (file) out.file = file;
   if (message.pinned === true) out.pinned = true;
+  const poll = pollOf(message.media);
+  if (poll) out.poll = poll;
   const preview = webPreview(message.media);
   if (preview) out.preview = preview;
   const header = message.replyTo instanceof Api.MessageReplyHeader ? message.replyTo : undefined;
@@ -645,6 +684,9 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
     forward: async (fromChatId, id, toChatId, topicId) => {
       const topic = topicId === undefined || topicId === GENERAL_TOPIC ? {} : { topMsgId: topicId };
       await client.invoke(new Api.messages.ForwardMessages({ fromPeer: peer(fromChatId), id: [id], randomId: [readBigIntFromBuffer(generateRandomBytes(8), true, true)], toPeer: peer(toChatId), ...topic }));
+    },
+    vote: async (chatId, messageId, options) => {
+      await client.invoke(new Api.messages.SendVote({ peer: peer(chatId), msgId: messageId, options: options.map((option) => Buffer.from(option, "base64")) }));
     },
     search: async (chatId, query, limit) => {
       const found = await client.getMessages(peer(chatId), { limit, search: query });
@@ -809,13 +851,18 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       client.addEventHandler((update: Api.TypeUpdate) => {
         const typing = typingOf(update);
         if (typing) return cb(typing);
+        if (update instanceof Api.UpdateMessagePoll) {
+          const results = pollResultsOf(update.results);
+          if (results) cb({ type: "poll", pollId: update.pollId.toString(), results, ...(update.poll instanceof Api.Poll && update.poll.closed === true ? { closed: true } : {}) });
+          return;
+        }
         const pins = pinsOf(update);
         if (pins) return cb(pins);
         if (!(update instanceof Api.UpdateMessageReactions)) return;
         const chatId = chatIdOf(update.peer);
         if (!chatId || !Number.isInteger(update.msgId) || update.msgId <= 0) return;
         cb({ type: "reactions", chatId, id: update.msgId, ...reactionsOf(update.reactions) });
-      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages] }));
+      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages, Api.UpdateMessagePoll] }));
     },
     session: () => (client.session as StringSession).save(),
     logOut: async () => void (await client.invoke(new Api.auth.LogOut())),

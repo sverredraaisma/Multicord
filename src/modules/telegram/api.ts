@@ -72,8 +72,31 @@ export interface TgMessage {
   reactions?: TgReaction[];
   /** The link preview Telegram made for its link. */
   preview?: TgPreview;
+  /** A poll it carries. */
+  poll?: TgPoll;
   /** It is pinned in its chat. */
   pinned?: boolean;
+}
+
+/** A poll in a message. */
+export interface TgPoll {
+  /** Telegram's poll id, which its updates name. */
+  id: string;
+  question: string;
+  /** The answers in order, each with its option bytes as base64, which votes name. */
+  answers: { option: string; text: string }[];
+  multiple: boolean;
+  closed: boolean;
+  quiz: boolean;
+  results?: TgPollResults;
+}
+
+/** How a poll stands, as far as Telegram shows the user (often only after they voted). */
+export interface TgPollResults {
+  voters: { option: string; votes: number; chosen?: boolean; correct?: boolean }[];
+  total?: number;
+  /** Sent without the user's own choice, which then stays as it was. */
+  min: boolean;
 }
 
 /** A link preview as Telegram made it; its photo downloads as the message's media. */
@@ -223,7 +246,9 @@ export type TgUpdate =
   /** A message's reactions now; `chosen` is only known when `own` is set (Telegram leaves it out of some updates). */
   | { type: "reactions"; chatId: string; id: number; reactions: TgReaction[]; own: boolean }
   /** Messages in a chat were pinned or unpinned. */
-  | { type: "pins"; chatId: string; ids: number[]; pinned: boolean };
+  | { type: "pins"; chatId: string; ids: number[]; pinned: boolean }
+  /** A poll's results changed, or it closed; Telegram names only the poll. */
+  | { type: "poll"; pollId: string; results: TgPollResults; closed?: boolean };
 
 export interface TelegramApi {
   connect(): Promise<void>;
@@ -241,6 +266,8 @@ export interface TelegramApi {
   forward(fromChatId: string, id: number, toChatId: string, topicId?: number): Promise<void>;
   /** A chat's messages that match a search, newest first (Telegram's own search). */
   search(chatId: string, query: string, limit: number): Promise<TgMessage[]>;
+  /** Votes in a poll: the options (base64) chosen, replacing earlier ones; none takes the vote back. */
+  vote(chatId: string, messageId: number, options: string[]): Promise<void>;
   /** Pins a message quietly (no notification), or unpins it. */
   pin(chatId: string, id: number, pin: boolean): Promise<void>;
   /** Sends text, in a forum into a topic. */

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import type { TelegramApi, TelegramCredentials, TgPoll, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
 import { MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
 import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, MUTE_FOREVER, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
@@ -37,6 +37,7 @@ class FakeTelegramApi implements TelegramApi {
   pin = vi.fn(async (_chatId: string, _id: number, _pin: boolean) => {});
   search = vi.fn(async (chatId: string, _query: string, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1)]);
   forward = vi.fn(async (_from: string, _id: number, _to: string, _topic?: number) => {});
+  vote = vi.fn(async (_chatId: string, _id: number, _options: string[]) => {});
   send = vi.fn(async (chatId: string, text: TgText, _replyTo?: number) => msg(chatId, 200, { out: true, ...text }));
   sentFiles = 300;
   sendFile = vi.fn(async (chatId: string, file: FileSource, caption: TgText, _replyTo?: number) => msg(chatId, this.sentFiles++, { out: true, ...caption, media: file.filename }));
@@ -2840,5 +2841,74 @@ describe("forwarding", () => {
     ctx.api.forward.mockRejectedValueOnce(tgError("CHAT_FORWARDS_RESTRICTED"));
     await ctx.act({ type: "forward", messageId: "2", channelId: "2" });
     expect(ctx.chat().error).toMatch(/^Message not forwarded: /);
+  });
+});
+
+describe("polls", () => {
+  const poll = (extra: Partial<TgPoll> = {}): TgPoll => ({
+    id: "77",
+    question: "Lunch?",
+    answers: [{ option: "MA==", text: "Pizza" }, { option: "MQ==", text: "Soup" }],
+    multiple: false,
+    closed: false,
+    quiz: false,
+    ...extra,
+  });
+
+  it("shows a poll with its results, votes, and follows Telegram's updates", async () => {
+    const ctx = await signedIn();
+    ctx.api.history.mockResolvedValueOnce([
+      msg("1", 1, { text: "", media: "📊 Poll", poll: poll({ results: { voters: [{ option: "MA==", votes: 3, chosen: true }, { option: "MQ==", votes: 1, correct: true }], total: 4, min: false } }) }),
+      msg("1", 2, { text: "", media: "📊 Poll", poll: poll({ id: "78", multiple: true }) }),
+    ]);
+    await ctx.act({ type: "select", channelId: "1" });
+    const [first, second] = ctx.chat().channel!.messages;
+    expect(first!.content).toBe("");
+    expect(first!.poll).toEqual({
+      question: "Lunch?",
+      options: [{ id: "0", text: "Pizza", votes: 3, chosen: true }, { id: "1", text: "Soup", votes: 1, correct: true }],
+      multiple: false,
+      closed: false,
+      total: 4,
+      canVote: true,
+    });
+    expect(second!.poll).toEqual({ question: "Lunch?", options: [{ id: "0", text: "Pizza" }, { id: "1", text: "Soup" }], multiple: true, closed: false, canVote: true });
+    await ctx.act({ type: "vote", messageId: "1", options: ["1"] });
+    expect(ctx.api.vote).toHaveBeenLastCalledWith("1", 1, ["MQ=="]);
+    await ctx.act({ type: "vote", messageId: "2", options: ["0", "1"] });
+    expect(ctx.api.vote).toHaveBeenLastCalledWith("1", 2, ["MA==", "MQ=="]);
+    await ctx.act({ type: "vote", messageId: "1", options: [] });
+    expect(ctx.api.vote).toHaveBeenLastCalledWith("1", 1, []);
+    // Several answers where one is allowed, unknown answers or messages: nothing is sent.
+    await ctx.act({ type: "vote", messageId: "1", options: ["0", "1"] });
+    await ctx.act({ type: "vote", messageId: "1", options: ["5"] });
+    await ctx.act({ type: "vote", messageId: "9", options: ["0"] });
+    expect(ctx.api.vote).toHaveBeenCalledTimes(3);
+    // Results without the user's choice keep it; a closed poll takes no votes.
+    ctx.api.emit({ type: "poll", pollId: "77", results: { voters: [{ option: "MA==", votes: 5 }, { option: "MQ==", votes: 2 }], total: 7, min: true }, closed: true });
+    expect(ctx.chat().channel!.messages[0]!.poll).toEqual({
+      question: "Lunch?",
+      options: [{ id: "0", text: "Pizza", votes: 5, chosen: true }, { id: "1", text: "Soup", votes: 2 }],
+      multiple: false,
+      closed: true,
+      total: 7,
+    });
+    await ctx.act({ type: "vote", messageId: "1", options: ["1"] });
+    expect(ctx.api.vote).toHaveBeenCalledTimes(3);
+    ctx.api.emit({ type: "poll", pollId: "78", results: { voters: [], min: true } });
+    ctx.api.emit({ type: "poll", pollId: "78", results: { voters: [{ option: "MA==", votes: 1, chosen: true }], min: false } });
+    expect(ctx.chat().channel!.messages[1]!.poll!.options[0]).toEqual({ id: "0", text: "Pizza", votes: 1, chosen: true });
+    ctx.api.vote.mockRejectedValueOnce(tgError("POLL_VOTE_REQUIRED"));
+    await ctx.act({ type: "vote", messageId: "2", options: ["0"] });
+    expect(ctx.chat().error).toMatch(/^Vote not counted: /);
+  });
+
+  it("takes no votes where the user left, or with no conversation open", async () => {
+    const ctx = await signedIn({ dialogs: [dlg("-6", { kind: "group", left: true, readOnly: true }), ...defaultDialogs()] });
+    await ctx.act({ type: "vote", messageId: "1", options: ["0"] });
+    ctx.api.history.mockResolvedValueOnce([msg("-6", 1, { text: "", poll: poll() })]);
+    await ctx.act({ type: "select", channelId: viewId("-6") });
+    expect(ctx.chat().channel!.messages[0]!.poll!.canVote).toBeUndefined();
+    expect(ctx.api.vote).not.toHaveBeenCalled();
   });
 });
