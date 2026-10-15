@@ -123,6 +123,8 @@ export interface DiscordDm {
   unread: boolean;
   mentions: number;
   lastActivity: number; // epoch ms
+  /** The last message as one line of plain text, when Discord's client has it loaded. */
+  preview?: string;
 }
 
 /**
@@ -284,6 +286,13 @@ const SNOWFLAKE = /^\d{1,20}$/;
 const COLOR = /^#[0-9a-f]{6}$/i;
 const MAX_PREVIEWS = 4;
 const MAX_FOLDER_GUILDS = 200;
+/** Control, line-separator and bidirectional characters: page text must not carry them (the store bridge strips the same set). */
+const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
+
+/** Message text from Discord's page: one non-empty line, capped, with nothing that could reorder or break the text around it. */
+export function isPreviewText(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_TEXT && !UNSAFE_TEXT.test(value);
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -343,7 +352,8 @@ export function isDiscordDm(value: unknown): value is DiscordDm {
     (value.avatarUrl === undefined || isHttpsUrl(value.avatarUrl)) &&
     typeof value.unread === "boolean" &&
     isCount(value.mentions) &&
-    isCount(value.lastActivity)
+    isCount(value.lastActivity) &&
+    (value.preview === undefined || isPreviewText(value.preview))
   );
 }
 

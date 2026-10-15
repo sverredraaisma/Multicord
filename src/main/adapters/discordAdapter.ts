@@ -42,7 +42,7 @@ export function discordLinkTarget(url: string): DiscordTarget | undefined {
  * reports its guild bar and DMs, and we send navigation back.
  */
 export class DiscordAdapter extends BaseAdapter {
-  readonly capabilities = { directMessages: true, messagePreviews: false, voice: true, screenShare: true };
+  readonly capabilities = { directMessages: true, messagePreviews: true, voice: true, screenShare: true };
   private badge: TitleBadge = { unread: false, mentions: 0 };
   private directs: DirectConversation[] | undefined;
   private user: DiscordUser | null | undefined;
@@ -76,15 +76,20 @@ export class DiscordAdapter extends BaseAdapter {
       this.ringing = now;
     }
     if (state.dms) {
-      this.directs = state.dms.map((dm) => ({
-        key: dm.id,
-        account: this.account,
-        title: dm.title,
-        avatarUrl: dm.avatarUrl,
-        lastActivity: dm.lastActivity,
-        unread: dm.unread,
-        mentions: dm.mentions,
-      }));
+      this.directs = state.dms.map((dm) => {
+        const direct: DirectConversation = {
+          key: dm.id,
+          account: this.account,
+          title: dm.title,
+          avatarUrl: dm.avatarUrl,
+          lastActivity: dm.lastActivity,
+          unread: dm.unread,
+          mentions: dm.mentions,
+        };
+        // Streamer mode drops it on the way to the Messages page, as for every service.
+        if (dm.preview) direct.preview = dm.preview;
+        return direct;
+      });
       this.directsChanged.emit(this.directs);
     }
     this.setServers(this.toServers(state));
@@ -169,6 +174,8 @@ export class DiscordAdapter extends BaseAdapter {
       store("SortedGuildStore", "Server folders", "Folders in the rail"),
       store("GuildReadStateStore", "Server unread state", "Badges for servers inside collapsed folders"),
       store("CallStore", "Calls", "Ringing for incoming calls"),
+      store("MessageStore", "Message previews", "The last message of each DM in the Messages list"),
+      store("StreamerModeStore", "Discord's streamer mode", "Hiding DM previews while Discord's own streamer mode is on"),
     ];
   }
 

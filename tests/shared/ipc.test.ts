@@ -18,6 +18,7 @@ import {
   isRailOrder,
   isSnowflake,
   isTitleBadge,
+  isPreviewText,
   parseTitleBadge,
 } from "../../src/shared/ipc";
 
@@ -114,6 +115,16 @@ describe("parseTitleBadge", () => {
   });
 });
 
+describe("preview text from Discord's page", () => {
+  it("refuses control, line-separator and bidirectional characters", () => {
+    expect(isPreviewText("Ana: hi")).toBe(true);
+    for (const bad of ["\u0000", "\n", "\t", "\u007f", "\u0085", "\u061c", "\u200e", "\u200f", "\u2028", "\u2029", "\u202a", "\u202e", "\u2066", "\u2069"]) {
+      expect(isPreviewText(`a${bad}b`), JSON.stringify(bad)).toBe(false);
+    }
+    expect(isPreviewText(undefined)).toBe(false);
+  });
+});
+
 describe("DM and tooltip validators", () => {
   const dm = { id: "9", title: "Ana", unread: true, mentions: 1, lastActivity: 5 };
 
@@ -128,6 +139,11 @@ describe("DM and tooltip validators", () => {
     expect(isDiscordDm({ ...dm, mentions: -1 })).toBe(false);
     expect(isDiscordDm({ ...dm, lastActivity: 1.5 })).toBe(false);
     expect(isDiscordDm(null)).toBe(false);
+    expect(isDiscordDm({ ...dm, preview: "Ana: see you at eight 📎" })).toBe(true);
+    expect(isDiscordDm({ ...dm, preview: "x".repeat(200) })).toBe(true);
+    expect(isDiscordDm({ ...dm, preview: "x".repeat(201) })).toBe(false);
+    expect(isDiscordDm({ ...dm, preview: "" })).toBe(false);
+    expect(isDiscordDm({ ...dm, preview: 5 })).toBe(false);
     expect(isDiscordDmList([dm])).toBe(true);
     expect(isDiscordDmList(Array(MAX_DMS + 1).fill(dm))).toBe(false);
     expect(isDiscordDmList("x")).toBe(false);

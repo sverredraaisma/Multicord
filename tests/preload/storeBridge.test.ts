@@ -22,6 +22,7 @@ function discordStores() {
     u1: { username: "ana", globalName: "Ana", getAvatarURL: () => "https://cdn.discordapp.com/avatars/u1/a.png?size=64" },
     u2: { username: "bo", getAvatarURL: () => "/assets/default.png" },
     u3: { username: "cy" },
+    "42": { username: "ana42", globalName: "Ana" },
   };
   const channels = [
     { id: "100", type: 1, recipients: ["u1"], lastMessageId: snowflakeAt(2_000_000_000_000) },
@@ -273,6 +274,133 @@ describe("discordStoreBridge", () => {
     const serialized = new Function(`return (${discordStoreBridge.toString()})`)() as typeof discordStoreBridge;
     serialized(EVENT, 1000, 1);
     expect(received).toHaveLength(1);
+  });
+
+  describe("message previews", () => {
+    const LAST: Record<string, string> = { "100": snowflakeAt(2_000_000_000_000), "200": snowflakeAt(1_900_000_000_000) };
+    /** A MessageStore holding the given last messages; only a lookup by the channel's lastMessageId finds them. */
+    const messageStore = (byChannel: Record<string, unknown>, lookups: string[][] = []) =>
+      store("MessageStore", {
+        getMessage: (channelId: string, messageId: string) => {
+          lookups.push([channelId, messageId]);
+          return messageId === LAST[channelId] ? byChannel[channelId] : undefined;
+        },
+      });
+
+    /** Runs the bridge with these extra stores; returns each DM's preview by channel id, per emit. */
+    function previews(extra: unknown[], change?: (stores: ReturnType<typeof discordStores>) => void) {
+      const stores = discordStores();
+      Object.assign(stores.UserStore, { getCurrentUser: () => ({ id: "me", username: "me" }) });
+      Object.assign(stores.ChannelStore, { getChannel: (id: string) => (id === "99" ? { id: "99", name: "general" } : undefined) });
+      installWebpack([stores.ChannelStore, stores.ReadStateStore, stores.UserStore, ...extra]);
+      const received = listen();
+      discordStoreBridge(EVENT, 1000, 1);
+      if (change) {
+        change(stores);
+        stores.ChannelStore.change();
+        vi.advanceTimersByTime(300);
+      }
+      return (received as { id: string; preview?: string }[][]).map((dms) => Object.fromEntries(dms.map((d) => [d.id, d.preview])));
+    }
+
+    it("reads only loaded last messages, by the channel's lastMessageId", () => {
+      const lookups: string[][] = [];
+      const [result] = previews([messageStore({ "100": { content: "hi there" } }, lookups)]);
+      expect(result).toEqual({ "100": "hi there", "200": undefined, "300": undefined, "500": undefined });
+      // Channel 300 has no last message to look up at all.
+      expect(lookups).toEqual([["100", LAST["100"]], ["200", LAST["200"]], ["500", "junk"]]);
+    });
+
+    it("turns Discord's markup into plain text, keeping spoilers hidden", () => {
+      const content =
+        "# **Hi** <@42>, see <#99> and <#5> at `8` ||secret plans|| <:wave:123> <a:dance:456> [link](https://x.y) <https://a.b/c>\n" +
+        "> ~~old~~ _it_ snake_case_name *em* ***both*** __under__ <@&7> </ping:1> <@!9>\n- item\n-# small\n```js\ncode()\n```";
+      const [result] = previews([messageStore({ "100": { content } })]);
+      expect(result!["100"]).toBe(
+        "Hi @Ana, see #general and #channel at 8 ▒▒▒ :wave: :dance: link https://a.b/c old it snake_case_name em both under @role /ping @Unknown user item small code()",
+      );
+    });
+
+    it("shows Discord timestamps as dates", () => {
+      const [result] = previews([messageStore({ "100": { content: "due <t:1700000000:R>, not <t:9999999999999>" } })]);
+      expect(result!["100"]).toBe(`due ${new Date(1_700_000_000_000).toLocaleDateString()}, not <t:9999999999999>`);
+    });
+
+    it("names the author in group DMs, and you as You", () => {
+      const author = { id: "u2", username: "bo" };
+      const [first, second] = previews([messageStore({ "100": { content: "one", author }, "200": { content: "two", author } })], (stores) => {
+        Object.assign(stores.UserStore, { getCurrentUser: () => ({ id: "u2" }) });
+      });
+      expect(first).toMatchObject({ "100": "one", "200": "bo: two" });
+      expect(second).toMatchObject({ "100": "one", "200": "You: two" });
+    });
+
+    it("labels messages without text by what they hold", () => {
+      const cases: [unknown, string | undefined][] = [
+        [{ content: "", stickerItems: [{ name: "Wave" }] }, "Sticker"],
+        [{ content: "", sticker_items: [{ name: "Wave" }] }, "Sticker"],
+        [{ content: "", attachments: [{ filename: "plan.pdf" }] }, "📎 plan.pdf"],
+        [{ content: "", attachments: [{}] }, "📎 Attachment"],
+        [{ content: "", attachments: [{ filename: "a" }, { filename: "b" }] }, "📎 2 attachments"],
+        [{ content: "", embeds: [{ title: "A video" }] }, "🔗 A video"],
+        [{ content: "", embeds: [{}] }, "Embed"],
+        [{ content: "", type: 3 }, "📞 Call"],
+        [{ content: "   " }, undefined],
+        [{}, undefined],
+        ["not a message", undefined],
+      ];
+      for (const [message, expected] of cases) {
+        const [result] = previews([messageStore({ "100": message })]);
+        expect(result!["100"], JSON.stringify(message)).toBe(expected);
+      }
+      const [group] = previews([messageStore({ "200": { content: "", attachments: [{ filename: "x.png" }], author: { username: "cy" } } })]);
+      expect(group!["200"]).toBe("cy: 📎 x.png");
+    });
+
+    it("strips control and bidirectional characters and caps the length", () => {
+      const [result] = previews([
+        messageStore({
+          "100": { content: "a\u202eb\u0000c\u2066d\u200f\u0085e\tf" },
+          "200": { content: "x".repeat(500), author: { username: "bo" } },
+        }),
+      ]);
+      expect(result!["100"]).toBe("abcde f");
+      expect(result!["200"]).toHaveLength(200);
+      expect(result!["200"]).toMatch(/^bo: x+…$/);
+    });
+
+    it("falls back to the cached message list, never fetching", () => {
+      const list = (last: unknown) => ({ last: () => last });
+      const byChannel: Record<string, unknown> = { "100": list({ id: LAST["100"], content: "from the list" }), "200": list({ id: "1", content: "older" }) };
+      const [result] = previews([store("MessageStore", { getMessages: (id: string) => byChannel[id] })]);
+      expect(result).toMatchObject({ "100": "from the list", "200": undefined });
+    });
+
+    it("shows no previews while Discord's own streamer mode is on", () => {
+      const streamer = store("StreamerModeStore", { enabled: true });
+      const [on, off] = previews([messageStore({ "100": { content: "secret" } }), streamer], () => {
+        Object.assign(streamer, { enabled: false });
+      });
+      expect(on!["100"]).toBeUndefined();
+      expect(off!["100"]).toBe("secret");
+    });
+
+    it("leaves previews out, and reports it, when MessageStore is missing or broken", () => {
+      const stores = listen("stores");
+      const [missing] = previews([]);
+      expect(Object.values(missing!)).toEqual([undefined, undefined, undefined, undefined]);
+      expect(stores[0]).not.toContain("MessageStore");
+
+      const throwing = store("MessageStore", {
+        getMessage: () => {
+          throw new Error("changed shape");
+        },
+      });
+      const [broken] = previews([throwing]);
+      expect(Object.keys(broken!)).toEqual(["100", "200", "300", "500"]);
+      expect(Object.values(broken!)).toEqual([undefined, undefined, undefined, undefined]);
+      expect(stores.at(-1)).toContain("MessageStore");
+    });
   });
 
   describe("guild names", () => {

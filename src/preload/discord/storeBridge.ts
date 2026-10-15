@@ -12,7 +12,10 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
   const MAX_DMS = 200;
   const MAX_GUILDS = 1000;
   const MAX_TITLE = 200;
+  const MAX_PREVIEW = 200;
   const DEBOUNCE_MS = 250;
+  // Control, line-separator and bidirectional characters; kept in step with UNSAFE_TEXT in shared/ipc.ts.
+  const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
   let stores: Record<string, any> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
@@ -83,6 +86,89 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
     return { title: userName(user), avatarUrl: absolute(user?.getAvatarURL?.(undefined, 64)) };
   };
 
+  /** One line of plain text: whitespace collapsed, unsafe characters gone, cut to length. */
+  const oneLine = (text: string, max: number): string => {
+    const line = text.replace(/\s+/g, " ").replace(UNSAFE, "").trim();
+    return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+  };
+
+  /** Discord's markup as plain text: mentions resolved, markdown dropped, spoilers kept hidden. */
+  const plainText = (content: string): string => {
+    const { ChannelStore, UserStore } = stores!;
+    const date = (seconds: string): string | undefined => {
+      const at = new Date(Number(seconds) * 1000);
+      return Number.isNaN(at.getTime()) ? undefined : at.toLocaleDateString();
+    };
+    let text = content
+      .replace(/```(?:[\w+-]*\n)?([\s\S]*?)```/g, "$1")
+      .replace(/`([^`\n]+)`/g, "$1")
+      .replace(/\|\|[\s\S]+?\|\|/g, "▒▒▒")
+      .replace(/<a?:(\w{1,32}):\d{1,20}>/g, ":$1:")
+      .replace(/<@!?(\d{1,20})>/g, (_m, id: string) => `@${userName(UserStore.getUser?.(id))}`)
+      .replace(/<@&\d{1,20}>/g, "@role")
+      .replace(/<#(\d{1,20})>/g, (_m, id: string) => `#${ChannelStore.getChannel?.(id)?.name || "channel"}`)
+      .replace(/<\/([\w -]{1,64}):\d{1,20}>/g, "/$1")
+      .replace(/<t:(-?\d{1,13})(?::[tTdDfFR])?>/g, (m, s: string) => date(s) ?? m)
+      .replace(/\[([^\]\n]{1,200})\]\(<?https?:\/\/[^)\s]+>?\)/g, "$1")
+      .replace(/<(https?:\/\/[^>\s]+)>/g, "$1")
+      .replace(/^ {0,3}(?:#{1,3}|-#|>{1,3}) +/gm, "")
+      .replace(/^ *[-*] +/gm, "");
+    // Emphasis, twice for nesting such as ***bold italic*** inside ~~struck~~.
+    for (let pass = 0; pass < 2; pass++) {
+      text = text
+        .replace(/(\*{1,3}|~~)(?=\S)([^\n]*?\S)\1/g, "$2")
+        .replace(/(^|\W)(_{1,2})(?=\S)([^\n]*?\S)\2(?!\w)/g, "$1$3");
+    }
+    return text;
+  };
+
+  /** What a message without text holds, as a short label. */
+  const placeholder = (message: any): string | undefined => {
+    const stickers: any[] = message.stickerItems ?? message.sticker_items ?? [];
+    if (Array.isArray(stickers) && stickers.length > 0) return "Sticker";
+    const attachments: any[] = Array.isArray(message.attachments) ? message.attachments : [];
+    if (attachments.length === 1) return `📎 ${typeof attachments[0]?.filename === "string" ? attachments[0].filename : "Attachment"}`;
+    if (attachments.length > 1) return `📎 ${attachments.length} attachments`;
+    const embeds: any[] = Array.isArray(message.embeds) ? message.embeds : [];
+    if (embeds.length > 0) return typeof embeds[0]?.title === "string" && embeds[0].title ? `🔗 ${embeds[0].title}` : "Embed";
+    if (message.type === 3) return "📞 Call";
+    return undefined;
+  };
+
+  /**
+   * The channel's last message, if Discord's client has it loaded already.
+   * Only cached messages are read: nothing here makes Discord fetch.
+   */
+  const lastMessage = (channel: any): any => {
+    const { MessageStore } = stores!;
+    const id = channel.lastMessageId;
+    if (!MessageStore || typeof id !== "string") return undefined;
+    if (typeof MessageStore.getMessage === "function") return MessageStore.getMessage(channel.id, id);
+    const last = MessageStore.getMessages?.(channel.id)?.last?.();
+    return last?.id === id ? last : undefined;
+  };
+
+  /** The Messages list's line for a DM: "Ana: hi" in groups, the text (or what it holds) alone. */
+  const preview = (channel: any): string | undefined => {
+    try {
+      // Discord's own streamer mode hides previews too.
+      if (stores!.StreamerModeStore?.enabled === true) return undefined;
+      const message = lastMessage(channel);
+      if (!message || typeof message !== "object") return undefined;
+      const text = typeof message.content === "string" ? oneLine(plainText(message.content), MAX_PREVIEW) : "";
+      const body = text || placeholder(message);
+      if (!body) return undefined;
+      let line = body;
+      if (channel.type === 3 && message.author) {
+        const mine = message.author.id !== undefined && message.author.id === stores!.UserStore.getCurrentUser?.()?.id;
+        line = `${mine ? "You" : userName(message.author)}: ${body}`;
+      }
+      return oneLine(line, MAX_PREVIEW); // never empty: the body is not
+    } catch {
+      return undefined; // MessageStore changed shape: no preview, the rest still works
+    }
+  };
+
   const collectDms = () => {
     const { ChannelStore, ReadStateStore } = stores!;
     const channels: any[] =
@@ -99,6 +185,7 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
           unread: mentions > 0 || Boolean(ReadStateStore.hasUnread(c.id)),
           mentions,
           lastActivity: timestamp(c.lastMessageId),
+          preview: preview(c),
         };
       })
       .sort((a, b) => b.lastActivity - a.lastActivity)
@@ -210,7 +297,7 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
     try {
       stores = findStores(
         ["ChannelStore", "ReadStateStore", "UserStore"],
-        ["GuildStore", "GuildReadStateStore", "SortedGuildStore", "ExpandedGuildFolderStore", "CallStore"],
+        ["GuildStore", "GuildReadStateStore", "SortedGuildStore", "ExpandedGuildFolderStore", "CallStore", "MessageStore", "StreamerModeStore"],
       );
     } catch {
       stores = undefined;

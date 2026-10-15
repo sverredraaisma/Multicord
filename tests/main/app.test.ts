@@ -1196,6 +1196,23 @@ describe("streamer mode", () => {
     expect(after.conversations[0]!.preview).toBe("secret plans");
   });
 
+  it("hides Discord's DM previews the same way", async () => {
+    fs.writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ general: { streamerMode: "on" } }));
+    const { handle, discordView } = await shellWith();
+    const dm = { id: "7", title: "Ana", unread: false, mentions: 0, lastActivity: 5, preview: "Ana: secret plans" };
+    ipcMain.emit(IPC.discordState, senderEvent(discordView), { guilds: [], badge: { unread: false, mentions: 0 }, dms: [dm] });
+    handle.setMessagesOpen(true);
+    const view = handle.messagesView() as unknown as InstanceType<typeof WebContentsView>;
+    const sent = view.webContents.send.mock.calls.at(-1)![1] as { conversations: { key: string; title: string; preview?: string }[] };
+    const discord = sent.conversations.find((c) => c.title === "Ana")!;
+    expect(discord).toBeDefined();
+    expect(discord).not.toHaveProperty("preview");
+
+    handle.settingsStore.update({ general: { streamerMode: "off" } });
+    const after = view.webContents.send.mock.calls.at(-1)![1] as { conversations: { title: string; preview?: string }[] };
+    expect(after.conversations.find((c) => c.title === "Ana")!.preview).toBe("Ana: secret plans");
+  });
+
   it("turns on by itself while streaming software runs", async () => {
     vi.useFakeTimers();
     try {

@@ -79,7 +79,13 @@ describe("DiscordAdapter", () => {
       "Server names (GuildStore)",
       "Server folders (SortedGuildStore)",
       "Server unread state (GuildReadStateStore)",
+      "Message previews (MessageStore)",
+      "Discord's streamer mode (StreamerModeStore)",
     ]);
+    adapter.update({ guilds: [], badge, health: { guildBar: true, stores: ["ChannelStore", "MessageStore", "StreamerModeStore"] } });
+    expect(adapter.health().find((c) => c.name === "Message previews (MessageStore)")).toMatchObject({ ok: true, detail: "The last message of each DM in the Messages list" });
+    expect(adapter.health().find((c) => c.name === "Discord's streamer mode (StreamerModeStore)")!.ok).toBe(true);
+    adapter.update({ guilds: [], badge, health: { guildBar: false, stores: ["ChannelStore", "ReadStateStore", "UserStore", "CallStore"] } });
     expect(after.find((c) => c.name === "Calls (CallStore)")).toMatchObject({ ok: true, detail: "Ringing for incoming calls" });
     adapter.update({ guilds: [], badge }); // no health in this update: keep the last report
     expect(adapter.health()).toEqual(after);
@@ -137,8 +143,19 @@ describe("DiscordAdapter", () => {
       },
     ]);
     expect(directsChanged).toHaveBeenCalledWith(directs);
+    expect(directs[0]).not.toHaveProperty("preview");
     // DM bubbles carry their own badges now.
     expect(adapter.homeBadge()).toEqual({ unread: false, mentions: 0 });
+  });
+
+  it("passes the last message on as the DM's preview", async () => {
+    const adapter = new DiscordAdapter(vi.fn());
+    expect(adapter.capabilities.messagePreviews).toBe(true);
+    const dm = { id: "9", title: "Ana", unread: false, mentions: 0, lastActivity: 1000 };
+    adapter.update({ guilds: [], badge: { unread: false, mentions: 0 }, dms: [{ ...dm, preview: "See you at eight" }, { ...dm, id: "10" }] });
+    const [withPreview, without] = await adapter.listDirectConversations();
+    expect(withPreview!.preview).toBe("See you at eight");
+    expect(without).not.toHaveProperty("preview");
   });
 
   it("implements the rest of the adapter contract", async () => {
