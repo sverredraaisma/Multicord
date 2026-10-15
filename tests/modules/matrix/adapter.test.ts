@@ -142,6 +142,7 @@ class FakeMatrixApi implements MatrixApi {
   redact = vi.fn(async (_s: MxSession, _room: string, _id: string) => {});
   typing = vi.fn(async (_s: MxSession, _room: string, _typing: boolean, _timeout: number) => {});
   markRead = vi.fn(async (_s: MxSession, _room: string, _id: string) => {});
+  muteRoom = vi.fn(async (_s: MxSession, _room: string, _mute: boolean) => {});
   thumbnail = vi.fn(async (_s: MxSession, _mxc: string): Promise<string | undefined> => undefined);
   download = vi.fn(async (_s: MxSession, _mxc: string, _max: number): Promise<MxDownload | undefined> => undefined);
   uploadLimit = vi.fn(async (_s: MxSession): Promise<number | undefined> => 1024 * 1024);
@@ -627,14 +628,46 @@ describe("listing", () => {
     expect(await ctx.adapter.listDirectConversations()).toEqual(ctx.directs.at(-1));
   });
 
+  it("keeps muted rooms quiet, and mutes and unmutes rooms with push rules", async () => {
+    const ctx = await signedIn();
+    await ctx.live(sync({ mutedRooms: ["!dm:x.org", "!lounge:x.org"] }));
+    // Unread, but without counts, here, in the Messages list and on the rail.
+    expect(ctx.item("Bo")).toMatchObject({ muted: true, unread: true, mentions: 0 });
+    expect(ctx.item("Lounge")).toMatchObject({ muted: true, unread: true, mentions: 0 });
+    expect(ctx.directs.at(-1)![0]).toMatchObject({ unread: true, mentions: 0 });
+    expect(ctx.adapter.homeBadge()).toEqual({ unread: false, mentions: 0 });
+    // No notifications, mentions included.
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [msg("d9", BO, `hey ${ME}`, 9000, { mentions: [ME] })] })] }));
+    expect(ctx.notifications).toEqual([]);
+
+    await ctx.act({ type: "mute", channelId: ctx.item("Bo").id, mute: false });
+    expect(ctx.api.muteRoom).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", false);
+    expect(ctx.item("Bo")).toMatchObject({ muted: false, mentions: 2 });
+    await ctx.act({ type: "mute", channelId: ctx.item("Secret").id, mute: true });
+    expect(ctx.api.muteRoom).toHaveBeenLastCalledWith(SESSION, "!sec:x.org", true);
+    expect(ctx.item("Secret").muted).toBe(true);
+    // Already so, or unknown: nothing to do.
+    await ctx.act({ type: "mute", channelId: ctx.item("Secret").id, mute: true });
+    await ctx.act({ type: "mute", channelId: "999999", mute: true });
+    expect(ctx.api.muteRoom).toHaveBeenCalledTimes(2);
+    // Failures say so and change nothing.
+    ctx.api.muteRoom.mockRejectedValueOnce(new Error("Forbidden"));
+    await ctx.act({ type: "mute", channelId: ctx.item("Bo").id, mute: true });
+    expect(ctx.chat().error).toBe("Could not mute the room: Forbidden");
+    expect(ctx.item("Bo").muted).toBe(false);
+    ctx.api.muteRoom.mockRejectedValueOnce(new Error("Forbidden"));
+    await ctx.act({ type: "mute", channelId: ctx.item("Lounge").id, mute: false });
+    expect(ctx.chat().error).toBe("Could not unmute the room: Forbidden");
+  });
+
   it("shows DMs and other rooms in the sidebar", async () => {
     const ctx = await signedIn();
     expect(ctx.chat().sidebar).toEqual([
       { id: "dms", name: "Direct messages", kind: "category", unread: false, mentions: 0, active: false },
-      { id: expect.stringMatching(/^\d+$/), name: "Bo", kind: "dm", unread: true, mentions: 2, active: false },
+      { id: expect.stringMatching(/^\d+$/), name: "Bo", kind: "dm", unread: true, mentions: 2, active: false, muted: false, canMute: true },
       { id: "rooms", name: "Rooms", kind: "category", unread: false, mentions: 0, active: false },
-      { id: expect.stringMatching(/^\d+$/), name: "Lounge", kind: "text", unread: true, mentions: 1, active: false },
-      { id: expect.stringMatching(/^\d+$/), name: "Secret", kind: "text", unread: false, mentions: 0, active: false },
+      { id: expect.stringMatching(/^\d+$/), name: "Lounge", kind: "text", unread: true, mentions: 1, active: false, muted: false, canMute: true },
+      { id: expect.stringMatching(/^\d+$/), name: "Secret", kind: "text", unread: false, mentions: 0, active: false, muted: false, canMute: true },
     ]);
   });
 

@@ -134,7 +134,8 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - reactions, typing indicators, files and pictures (one message per file, up to the homeserver's upload limit and at most 50 MB);
   - mentions: messages that mention you (by `m.mentions`, `@room`, or from older clients your user ID or display name in the text) are highlighted. `@name` in the composer inserts the user ID of someone who wrote recently; user IDs in a message are sent in `m.mentions` and as pills (links to matrix.to showing the name), as Element sends them;
   - custom emoji and stickers from image packs (MSC2545, as Element, Cinny and FluffyChat make them): the open room's own packs, your personal pack, and the room packs you enabled for every room (from rooms you have joined). The picker offers up to 500 pictures per room. Custom emoji go into messages as `:name:` with the picture for other apps, and most can be used as reactions. Stickers go as Matrix stickers, encrypted in encrypted rooms. Custom emoji in messages and reactions show with their picture once it has loaded, and as `:name:` until then. There is no GIF search, as Matrix has none of its own;
-  - notifications for DMs and mentions.
+  - notifications for DMs and mentions;
+  - muting: rooms muted in Element (a push rule of the room's own that does not notify) show as muted, with no notifications or counts, only whether they have news; the bell beside a room mutes or unmutes it the same way, so Element follows.
 
   **End-to-end encryption.** On devices of its own, Multicord encrypts and decrypts with the Matrix Rust crypto library (WebAssembly) in its engine:
   - it reads and sends in encrypted rooms, and marks messages from devices their owner has not verified;

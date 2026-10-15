@@ -379,6 +379,20 @@ describe("encryption endpoints", () => {
     await expect(forbidden.client.accountData(SESSION, "m.x")).rejects.toMatchObject({ errcode: "M_FORBIDDEN" });
   });
 
+  it("mutes a room with an override push rule of its own, and unmutes it by removing the rule", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({}));
+    await client.muteRoom(SESSION, "!r:x.org", true);
+    const put = callOf(fetchFn);
+    expect(put.url.pathname).toBe("/_matrix/client/v3/pushrules/global/override/!r%3Ax.org");
+    expect(put.init.method).toBe("PUT");
+    expect(put.body).toEqual({ conditions: [{ kind: "event_match", key: "room_id", pattern: "!r:x.org" }], actions: ["dont_notify"] });
+    await client.muteRoom(SESSION, "!r:x.org", false);
+    expect(callOf(fetchFn, 1).init.method).toBe("DELETE");
+    // A rule already gone is no error; others are.
+    await expect(fakeFetch(() => json({ errcode: "M_NOT_FOUND" }, 404)).client.muteRoom(SESSION, "!r:x.org", false)).resolves.toBeUndefined();
+    await expect(fakeFetch(() => json({ errcode: "M_FORBIDDEN" }, 403)).client.muteRoom(SESSION, "!r:x.org", false)).rejects.toMatchObject({ errcode: "M_FORBIDDEN" });
+  });
+
   it("makes the crypto library's requests", async () => {
     const { client, fetchFn } = fakeFetch(() => json({ one_time_key_counts: {} }));
     expect(await client.request(SESSION, "POST", "/v3/keys/upload", { device_keys: {} }, { version: "1" })).toEqual({ one_time_key_counts: {} });
@@ -532,7 +546,7 @@ describe("calls", () => {
   it("asks for image packs: room packs in the timeline, the user's own and enabled rooms in account data", () => {
     const filter = JSON.parse(SYNC_FILTER);
     expect(filter.room.timeline.types).toContain("im.ponies.room_emotes");
-    expect(filter.account_data).toEqual({ types: ["m.direct", "im.ponies.user_emotes", "im.ponies.emote_rooms"] });
+    expect(filter.account_data).toEqual({ types: ["m.direct", "im.ponies.user_emotes", "im.ponies.emote_rooms", "m.push_rules"] });
   });
 
   it("asks for call memberships of both kinds in the sync timeline", () => {

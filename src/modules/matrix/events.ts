@@ -471,12 +471,34 @@ export function parsePackRooms(content: unknown): MxPackRef[] {
   return refs.slice(0, MAX_PACK_ROOMS);
 }
 
-/** The user's pack and enabled room packs among a sync's global account data. */
-export function accountPacks(events: unknown[], sync: MxSync): void {
+/** The push rules account data, which says (among much else) which rooms are muted. */
+export const PUSH_RULES_TYPE = "m.push_rules";
+
+/**
+ * The rooms the user muted, from their push rules: an enabled override rule
+ * named after the room that matches only its events and does not notify, as
+ * Element (and Multicord) make them.
+ */
+export function parseMutedRooms(content: unknown): string[] {
+  const global = isRecord(content) && isRecord(content.global) ? content.global : {};
+  const muted: string[] = [];
+  for (const rule of list(global.override, MAX_ROOMS)) {
+    const id = isRecord(rule) && rule.enabled !== false ? roomId(rule.rule_id) : undefined;
+    if (!id) continue;
+    const [condition, ...more] = list((rule as Record<string, unknown>).conditions, 2);
+    const onlyRoom = more.length === 0 && isRecord(condition) && condition.kind === "event_match" && condition.key === "room_id" && condition.pattern === id;
+    if (onlyRoom && list((rule as Record<string, unknown>).actions, 2).every((a) => a === "dont_notify")) muted.push(id);
+  }
+  return muted;
+}
+
+/** The user's pack, enabled room packs and muted rooms among a sync's global account data. */
+export function globalAccountData(events: unknown[], sync: MxSync): void {
   for (const event of events) {
     if (!isRecord(event)) continue;
     if (event.type === USER_PACK_TYPE) sync.userPack = parsePack(isRecord(event.content) ? event.content : {});
     else if (event.type === PACK_ROOMS_TYPE) sync.packRooms = parsePackRooms(event.content);
+    else if (event.type === PUSH_RULES_TYPE) sync.mutedRooms = parseMutedRooms(event.content);
   }
 }
 
@@ -745,7 +767,7 @@ export function parseSync(raw: unknown): MxSync {
   const accountData = list(isRecord(raw.account_data) ? raw.account_data.events : undefined, 100);
   const direct = accountData.find((e) => isRecord(e) && e.type === "m.direct");
   if (isRecord(direct)) sync.directs = parseDirects(direct.content);
-  accountPacks(accountData, sync);
+  globalAccountData(accountData, sync);
   const rooms = isRecord(raw.rooms) ? raw.rooms : {};
   const join = isRecord(rooms.join) ? rooms.join : {};
   for (const [id, room] of Object.entries(join).slice(0, MAX_ROOMS)) {

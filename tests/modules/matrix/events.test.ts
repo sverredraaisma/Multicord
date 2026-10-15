@@ -28,6 +28,8 @@ import {
   parseEncryption,
   parseEvent,
   parseMembers,
+  parseMutedRooms,
+  PUSH_RULES_TYPE,
   parseMxc,
   parsePage,
   parseSync,
@@ -920,6 +922,39 @@ describe("image packs (MSC2545)", () => {
     expect(sync.packRooms).toEqual([{ roomId: "!a:x.org", stateKey: "" }]);
     expect(parseSync({ next_batch: "s", account_data: { events: [{ type: USER_PACK_TYPE, content: "x" }] } }).userPack).toEqual({ images: [] });
     expect(parseSync({ next_batch: "s" })).not.toHaveProperty("userPack");
+  });
+
+  it("reads the rooms the user muted from their push rules", () => {
+    const rule = (id: unknown, extra: Record<string, unknown> = {}) => ({ rule_id: id, conditions: [{ kind: "event_match", key: "room_id", pattern: id }], actions: [], ...extra });
+    const sync = parseSync({
+      next_batch: "s",
+      account_data: {
+        events: [
+          {
+            type: PUSH_RULES_TYPE,
+            content: {
+              global: {
+                override: [
+                  rule("!a:x.org"),
+                  rule("!b:x.org", { actions: ["dont_notify"] }),
+                  rule("!c:x.org", { enabled: false }),
+                  rule("!d:x.org", { actions: ["notify"] }),
+                  rule("!e:x.org", { conditions: [{ kind: "event_match", key: "room_id", pattern: "!other:x.org" }] }),
+                  rule("!f:x.org", { conditions: [{ kind: "event_match", key: "room_id", pattern: "!f:x.org" }, { kind: "contains_display_name" }] }),
+                  rule("!g:x.org", { conditions: ["junk"] }),
+                  rule(".m.rule.master"),
+                  "junk",
+                ],
+              },
+            },
+          },
+        ],
+      },
+    });
+    expect(sync.mutedRooms).toEqual(["!a:x.org", "!b:x.org"]);
+    expect(parseMutedRooms(undefined)).toEqual([]);
+    expect(parseMutedRooms({ global: "x" })).toEqual([]);
+    expect(parseSync({ next_batch: "s" })).not.toHaveProperty("mutedRooms");
   });
 
   it("reads the custom emoji a message's formatted_body shows", () => {

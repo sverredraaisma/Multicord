@@ -12,6 +12,7 @@ import {
   mimeType,
   PACK_ROOMS_TYPE,
   ROOM_PACK_TYPE,
+  PUSH_RULES_TYPE,
   USER_PACK_TYPE,
   parseEncryption,
   parseMembers,
@@ -54,7 +55,7 @@ const SPACE_TYPES = ["m.room.create", "m.space.child", ROOM_PACK_TYPE];
  */
 export const SYNC_FILTER = JSON.stringify({
   presence: { not_types: ["*"] },
-  account_data: { types: ["m.direct", USER_PACK_TYPE, PACK_ROOMS_TYPE] },
+  account_data: { types: ["m.direct", USER_PACK_TYPE, PACK_ROOMS_TYPE, PUSH_RULES_TYPE] },
   room: {
     state: { lazy_load_members: true },
     timeline: { limit: TIMELINE_LIMIT, types: [...TIMELINE_TYPES, ...SPACE_TYPES, CALL_MEMBER_TYPE, RTC_MEMBER_TYPE], lazy_load_members: true },
@@ -424,6 +425,20 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
       } catch (error) {
         if (error instanceof MatrixError && error.status === 404) return undefined;
         throw error;
+      }
+    },
+
+    async muteRoom(session, roomId, mute) {
+      const rule = `${CLIENT}/pushrules/global/override/${encodeURIComponent(roomId)}`;
+      if (mute) {
+        await authed(session, rule, { method: "PUT", body: { conditions: [{ kind: "event_match", key: "room_id", pattern: roomId }], actions: ["dont_notify"] } });
+        return;
+      }
+      try {
+        await authed(session, rule, { method: "DELETE" });
+      } catch (error) {
+        // Not muted after all: nothing to remove.
+        if (!(error instanceof MatrixError && error.status === 404)) throw error;
       }
     },
 

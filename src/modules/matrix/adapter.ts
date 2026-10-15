@@ -492,6 +492,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   /** The user's own image pack, and the room packs enabled everywhere (account data). */
   private userPack: MxPack | undefined;
   private packRooms: MxPackRef[] = [];
+  /** Rooms the user muted (by push rule): no notifications and no counts, only their unread state. */
+  private mutedRooms = new Set<string>();
   /** Custom emoji pictures (pack emoji, and reactions with them) as data: URLs by mxc URI; failed ones are not asked for again. */
   private readonly pictures = new Map<string, string>();
   /** The composer's picker is open: only then do loaded sticker pictures go to the view. */
@@ -738,7 +740,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   /** The rooms at home: DM bubbles and spaces carry their own badges. */
   homeBadge(): HomeBadge {
-    return badge(this.homeRooms(this.spaceLayout()));
+    return badge(this.audible(this.homeRooms(this.spaceLayout())));
   }
 
   /** Home: DMs and the rooms in no space, with the room last open there. */
@@ -823,6 +825,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.lastRoom.clear();
     this.userPack = undefined;
     this.packRooms = [];
+    this.mutedRooms.clear();
     this.directsChanged.emit([]);
     this.publishServers();
   }
@@ -895,6 +898,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.remove(action.messageId);
       case "react":
         return this.react(action.messageId, action.emoji, action.add);
+      case "mute":
+        return this.mute(action.channelId, action.mute);
       case "typing":
         return this.sendTyping();
       case "attach":
@@ -1613,6 +1618,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     }
     if (sync.userPack) this.userPack = sync.userPack;
     if (sync.packRooms) this.packRooms = sync.packRooms;
+    if (sync.mutedRooms) this.mutedRooms = new Set(sync.mutedRooms);
     for (const id of sync.left) {
       this.rooms.delete(id);
       if (this.selected === id) this.selected = undefined;
@@ -1742,6 +1748,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private notify(room: Room, event: Shown): void {
+    // A muted room raises nothing, mentions included, as in Element.
+    if (this.mutedRooms.has(room.id)) return;
     const dm = this.dmUsers.has(room.id);
     if (!dm && !this.mentionsMe(room, event)) return;
     const title = this.title(room);
@@ -1871,6 +1879,18 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     room.lastRead = last.id;
     room.readTs = last.ts;
     void this.deps.api.markRead(this.session!, room.id, last.id).catch(() => undefined);
+  }
+
+  /** Mutes or unmutes a room with a push rule of its own, as Element does, and follows it here at once. */
+  private async mute(local: string, mute: boolean): Promise<void> {
+    const room = this.rooms.get(this.byLocal.get(local) ?? "");
+    if (!room || this.mutedRooms.has(room.id) === mute) return;
+    await this.attempt(mute ? "Could not mute the room" : "Could not unmute the room", async () => {
+      await this.deps.api.muteRoom(this.session!, room.id, mute);
+      if (mute) this.mutedRooms.add(room.id);
+      else this.mutedRooms.delete(room.id);
+      this.publish();
+    });
   }
 
   private async attempt(what: string, task: () => Promise<void>): Promise<void> {
@@ -2819,7 +2839,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   railServers(): RailServer[] {
     return [...this.spaceLayout().servers].map(([id, sections]) => {
       const space = this.rooms.get(id)!;
-      const server: RailServer = { key: id, account: this.account, name: this.title(space), ...badge(sections.flatMap((s) => s.rooms)) };
+      const server: RailServer = { key: id, account: this.account, name: this.title(space), ...badge(this.audible(sections.flatMap((s) => s.rooms))) };
       const icon = this.avatars.get(this.avatarOf(space) ?? "");
       if (icon) server.iconUrl = icon;
       return server;
@@ -2845,7 +2865,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
           title: this.title(room),
           lastActivity: room.lastActivity,
           unread: room.notifications > 0,
-          mentions: room.notifications,
+          mentions: this.mutedRooms.has(room.id) ? 0 : room.notifications,
         };
         const avatar = this.avatars.get(this.avatarOf(room) ?? "");
         if (avatar) direct.avatarUrl = avatar;
@@ -2928,14 +2948,23 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return native;
   }
 
+  /** Rooms that may badge the rail: muted ones stay out. */
+  private audible(rooms: Room[]): Room[] {
+    return rooms.filter((room) => !this.mutedRooms.has(room.id));
+  }
+
   private sidebarItem(room: Room, dm: boolean): NativeSidebarItem {
+    const muted = this.mutedRooms.has(room.id);
     const item: NativeSidebarItem = {
       id: room.local,
       name: this.title(room),
       kind: dm ? "dm" : "text",
       unread: room.notifications > 0,
-      mentions: dm ? room.notifications : room.highlights,
+      // A muted room shows it has news, without a count.
+      mentions: muted ? 0 : dm ? room.notifications : room.highlights,
       active: room.id === this.selected,
+      muted,
+      canMute: true,
     };
     const avatar = dm ? this.avatars.get(this.avatarOf(room) ?? "") : undefined;
     if (avatar) item.iconUrl = avatar;

@@ -10,7 +10,7 @@
 // the crypto library has them, as with classic sync's next_batch.
 
 import type { MxRoomUpdate, MxSync } from "./api";
-import { accountPacks, CALL_MEMBER_TYPE, eventId, isRecord, MAX_EVENTS, MAX_ROOMS, MAX_TOKEN, parseCryptoSync, parseDirects, parseRoom, ROOM_PACK_TYPE, roomId } from "./events";
+import { CALL_MEMBER_TYPE, eventId, isRecord, MAX_EVENTS, MAX_ROOMS, MAX_TOKEN, globalAccountData, parseCryptoSync, parseDirects, parseRoom, ROOM_PACK_TYPE, roomId } from "./events";
 
 /** What /versions lists (unstable_features) when the homeserver has simplified sliding sync. */
 export const SLIDING_SYNC_FEATURE = "org.matrix.simplified_msc3575";
@@ -225,7 +225,7 @@ export function parseSlidingSync(raw: unknown, position: SlidingPosition, contex
   const global = Array.isArray(accountData.global) ? accountData.global.slice(0, MAX_ACCOUNT_DATA) : [];
   const direct = global.find((e) => isRecord(e) && e.type === "m.direct");
   if (isRecord(direct)) sync.directs = parseDirects(direct.content);
-  accountPacks(global, sync);
+  globalAccountData(global, sync);
 
   const next: SlidingPosition & { pos: string } = { pos: raw.pos };
   if (context.encryption) {

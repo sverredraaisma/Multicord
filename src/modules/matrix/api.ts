@@ -357,6 +357,8 @@ export interface MxSync {
   userPack?: MxPack;
   /** Room packs the user enabled everywhere (im.ponies.emote_rooms), when that changed. */
   packRooms?: MxPackRef[];
+  /** Rooms the user muted (m.push_rules), when the push rules changed. */
+  mutedRooms?: string[];
   joined: MxRoomUpdate[];
   /** Rooms the user left or was removed from. */
   left: string[];
@@ -416,6 +418,8 @@ export interface MatrixApi {
   upload(session: MxSession, bytes: Uint8Array<ArrayBuffer>, contentType: string, filename?: string): Promise<string>;
   /** The user's account data of a type, or undefined when there is none. */
   accountData(session: MxSession, type: string): Promise<Record<string, unknown> | undefined>;
+  /** Mutes a room (a push rule of its own that does not notify, as Element's "Mute"), or unmutes it by removing that rule. */
+  muteRoom(session: MxSession, roomId: string, mute: boolean): Promise<void>;
   /**
    * Any other Client-Server call, for the crypto library's requests (keys,
    * to-device, backup). `path` is below /_matrix/client and already encoded.
