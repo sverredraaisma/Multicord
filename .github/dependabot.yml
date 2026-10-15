@@ -1,0 +1,21 @@
+# Weekly pull requests for outdated dependencies and actions. Electron ships a
+# whole browser, so its updates (security fixes in Chromium) matter most;
+# security updates come on their own, as soon as an advisory is out.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      # Electron alone, so an upgrade is tested (CI's smoke run on every OS) and merged by itself.
+      electron:
+        patterns: ["electron"]
+      tooling:
+        dependency-type: development
+        exclude-patterns: ["electron"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
