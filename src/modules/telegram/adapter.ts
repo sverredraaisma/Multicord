@@ -2,11 +2,11 @@ import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/run
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { customEmojiIds, escapeText, fromMarkdown, toMarkdown } from "./format";
-import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeFolder, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativePoll, NativePollOption, NativeSearchResults, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeChannelView, NativeCustomEmoji, NativeEmbed, NativeFolder, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativePoll, NativePollOption, NativeSearchResults, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS, MAX_CUSTOM_EMOJI, MAX_FOLDERS } from "../../shared/native";
 import { TYPING_SETTING, type AccountStatus, type ServiceSettingStatus, type ServiceSettingValues } from "../../shared/settings";
-import { ALL_CHATS, CUSTOM_EMOJI_BATCH, customReaction, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgCustomEmoji, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgNotifyDefaults, type TgPoll, type TgPreview, type TgProfile, type TgQrLogin, type TgReaction, type TgSticker, type TgText, type TgTopic, type TgUpdate, type TgUser } from "./api";
+import { ALL_CHATS, CUSTOM_EMOJI_BATCH, CUSTOM_REACTION, customReaction, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgCustomEmoji, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgNotifyDefaults, type TgPoll, type TgPreview, type TgProfile, type TgQrLogin, type TgReaction, type TgSticker, type TgText, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /**
  * Chats listed: one-to-one chats, groups and channels together, most recent
@@ -84,6 +84,9 @@ export const EMOJI_CACHE_BYTES = 8 * 1024 * 1024;
 export const MAX_EMOJI_BYTES = 128 * 1024;
 /** Custom emoji pictures downloaded at once. */
 const EMOJI_DOWNLOADS = 4;
+/** Installed custom emoji sets fetched for the picker, in the user's order, and emoji offered from them in all; later ones are not offered. */
+export const EMOJI_SET_LIMIT = 50;
+export const PICKER_EMOJI_LIMIT = 500;
 const SESSION_KEY = "session";
 const CREDENTIALS_KEY = "api";
 /** The Settings action (manifest `settings`) that forgets the API ID the user entered. */
@@ -322,6 +325,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly emojiQueue: TgCustomEmoji[] = [];
   private readonly emojiQueued = new Set<string>();
   private emojiDownloads = 0;
+  /** The user's custom emoji sets as fetched this session for the picker, in their order; whether they were asked for. */
+  private emojiPacks: { name: string; emoji: TgCustomEmoji[] }[] = [];
+  private emojiSetsAsked = false;
   /** The profile card the view asked for last. */
   private profile: NativeProfile | undefined;
   /** The user's chat folders as last fetched, and the one the sidebar shows. */
@@ -520,6 +526,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.emojiFailed.clear();
     this.emojiQueue.length = 0;
     this.emojiQueued.clear();
+    this.emojiPacks = [];
+    this.emojiSetsAsked = false;
     this.session++;
     this.selected = undefined;
     this.topic = undefined;
@@ -1596,7 +1604,10 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
    */
   private setPickerOpen(open: boolean): void {
     this.pickerOpen = open;
-    if (open && this.step === "chat") void this.loadStickers();
+    if (open && this.step === "chat") {
+      void this.loadStickers();
+      void this.loadEmojiSets();
+    }
     this.render();
   }
 
@@ -1849,6 +1860,61 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     } else {
       this.emojiFailed.add(emoji.id);
     }
+  }
+
+  /**
+   * Fetches the user's custom emoji sets for the picker once a session, one
+   * set at a time, up to EMOJI_SET_LIMIT sets and PICKER_EMOJI_LIMIT emoji.
+   * Sets show as they arrive; one that fails is left out.
+   */
+  private async loadEmojiSets(): Promise<void> {
+    if (this.emojiSetsAsked) return;
+    this.emojiSetsAsked = true;
+    const api = this.api!;
+    const session = this.session;
+    const sets = await api.emojiSets().catch(() => undefined);
+    if (session !== this.session) return;
+    // Asked again when the picker opens next.
+    if (!sets) {
+      this.emojiSetsAsked = false;
+      return;
+    }
+    let room = PICKER_EMOJI_LIMIT;
+    for (const set of sets.slice(0, EMOJI_SET_LIMIT)) {
+      const listed = await api.emojiSet(set.id).catch((): TgCustomEmoji[] => []);
+      if (session !== this.session) return;
+      // Only emoji the view's <:emoji:id> can carry.
+      const emoji = listed.filter((e) => /^[^\s:<>]{1,32}$/.test(e.emoji)).slice(0, room);
+      if (emoji.length === 0) continue;
+      for (const e of emoji) if (!this.emojiInfo.get(e.id)) this.emojiInfo.set(e.id, e);
+      this.emojiPacks.push({ name: set.title, emoji });
+      this.renderSoon();
+      room -= emoji.length;
+      if (room === 0) break;
+    }
+  }
+
+  /**
+   * The custom emoji the picker offers in the open chat: those the user may
+   * send there, each with its set's name, once its picture has loaded; the
+   * others' pictures are asked for. Reacting with one follows the chat's
+   * rules.
+   */
+  private pickerEmoji(dialog: TgDialog): NativeCustomEmoji[] {
+    const offered: NativeCustomEmoji[] = [];
+    for (const pack of this.emojiPacks) {
+      for (const emoji of pack.emoji) {
+        if (!this.maySendEmoji(emoji)) continue;
+        const url = this.emojiPictures.get(emoji.id);
+        if (!url) {
+          this.loadEmoji(emoji);
+          continue;
+        }
+        const key = CUSTOM_REACTION + emoji.id;
+        offered.push({ id: emoji.id, name: emoji.emoji, animated: false, url, source: pack.name, text: `<:${emoji.emoji}:${emoji.id}>`, key, react: this.refused(dialog.chatId, key) === undefined });
+      }
+    }
+    return offered;
   }
 
   /** A reaction as the view shows it: an emoji, or a custom emoji's picture (its emoji until the picture loads). */
@@ -2356,6 +2422,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const stickers = this.pickerOpen && dialog && this.canSendStickers(dialog) ? this.offeredStickers() : [];
     // Pictures of the custom emoji in the open conversation's messages, which load as they show.
     const emojiUrls = dialog && !(dialog.forum && this.topic === undefined) ? this.shownEmoji(this.messages.get(this.current()!) ?? []) : {};
+    // Custom emoji only while the picker is open (their pictures travel with them), where the user may write.
+    const customEmoji = this.pickerOpen && dialog && dialog.readOnly !== true && !(dialog.forum && this.topic === undefined) ? this.pickerEmoji(dialog) : [];
     return {
       screen: "chat",
       platform,
@@ -2366,6 +2434,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       voice: null,
       ...(stickers.length > 0 ? { stickers } : {}),
       ...(Object.keys(emojiUrls).length > 0 ? { emojiUrls } : {}),
+      ...(customEmoji.length > 0 ? { customEmoji } : {}),
       ...(this.profile ? { profile: this.profile } : {}),
       ...(folders ? { folders } : {}),
       error: this.error,

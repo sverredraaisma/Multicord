@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
 import type { TelegramApi, TelegramCredentials, TgCustomEmoji, TgNewPoll, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgFolder, TgMember, TgQrLogin, TgMemberPage, TgMessage, TgNotifyDefaults, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
-import { EMOJI_LIMIT, MAX_EMOJI_BYTES, MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
+import { EMOJI_LIMIT, EMOJI_SET_LIMIT, MAX_EMOJI_BYTES, PICKER_EMOJI_LIMIT, MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
 import { QR_REFRESH_MAX_MS, QR_REFRESH_MIN_MS } from "../../../src/modules/telegram/adapter";
 import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, DIALOG_PAGE, DIALOG_PAGE_MS, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, MUTE_FOREVER, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
@@ -71,6 +71,8 @@ class FakeTelegramApi implements TelegramApi {
   sendSticker = vi.fn(async (chatId: string, _id: string, _replyTo?: number, _topicId?: number) => msg(chatId, 400, { out: true, text: "", media: "😀 Sticker" }));
   customEmoji = vi.fn(async (ids: string[]): Promise<TgCustomEmoji[]> => ids.map((id) => ({ id, emoji: "😀", format: "webp" as const })));
   customEmojiFile = vi.fn(async (_id: string, _thumbnail: boolean): Promise<Uint8Array | undefined> => new Uint8Array([104, 105]));
+  emojiSets = vi.fn(async (): Promise<TgStickerSet[]> => []);
+  emojiSet = vi.fn(async (_setId: string): Promise<TgCustomEmoji[]> => []);
   onUpdate = vi.fn((cb: (update: TgUpdate) => void) => void (this.listener = cb));
   session = vi.fn(() => "sess");
   logOut = vi.fn(async () => {});
@@ -3801,5 +3803,140 @@ describe("sending custom emoji", () => {
     await ctx.adapter.openConversation("1");
     await settle();
     expect(ctx.chat().channel!.messages[0]).toMatchObject({ content: "**a**😀", source: "**a**<:😀:77>" });
+  });
+});
+
+describe("custom emoji in the picker", () => {
+  const settle = async () => {
+    await flush();
+    await vi.advanceTimersByTimeAsync(STICKER_RENDER_MS);
+    await flush();
+  };
+  const cat: TgCustomEmoji = { id: "101", emoji: "😺", format: "webp" };
+  const free: TgCustomEmoji = { id: "102", emoji: "😀", format: "lottie", free: true };
+
+  interface PickerOptions extends Options {
+    premium?: boolean;
+    sets?: Record<string, TgCustomEmoji[]>;
+  }
+
+  /** Signed in with these emoji sets (by id, titled "Set <id>"), a chat open and the picker open. */
+  async function pickerChat(options: PickerOptions = {}, chatId = "1") {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true, ...options });
+    if (options.premium) ctx.api.me.mockResolvedValue({ id: "9", name: "Me", bot: false, premium: true });
+    const sets = options.sets ?? { "31": [cat, free] };
+    ctx.api.emojiSets.mockResolvedValue(Object.keys(sets).map((id) => ({ id, title: `Set ${id}` })));
+    ctx.api.emojiSet.mockImplementation(async (id: string) => sets[id] ?? []);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.act({ type: "select", channelId: viewId(chatId) });
+    await ctx.act({ type: "picker", open: true });
+    await settle();
+    await settle();
+    return ctx;
+  }
+  type Ctx = Awaited<ReturnType<typeof pickerChat>>;
+  const offered = (ctx: Ctx) => (ctx.chat().customEmoji ?? []).map((e) => e.id);
+
+  it("offers the user's emoji sets with Premium, each emoji once its picture loaded, only while the picker is open", async () => {
+    const ctx = await pickerChat({ premium: true, sets: { "31": [cat, { id: "103", emoji: "", format: "webp" }], "32": [], "33": [free] } });
+    expect(ctx.chat().customEmoji).toEqual([
+      { id: "101", name: "😺", animated: false, url: "data:image/webp;base64,aGk=", source: "Set 31", text: "<:😺:101>", key: "custom:101", react: true },
+      { id: "102", name: "😀", animated: false, url: "data:image/webp;base64,aGk=", source: "Set 33", text: "<:😀:102>", key: "custom:102", react: true },
+    ]);
+    // The WebP for static emoji, the still for animated ones; an emoji without an emoji of its own is left out.
+    expect(Object.fromEntries(ctx.api.customEmojiFile.mock.calls)).toEqual({ "101": false, "102": true });
+    await ctx.act({ type: "picker", open: false });
+    expect(ctx.chat().customEmoji).toBeUndefined();
+    await ctx.act({ type: "picker", open: true });
+    expect(offered(ctx)).toEqual(["101", "102"]);
+    expect(ctx.api.emojiSets).toHaveBeenCalledTimes(1);
+    // Picked, it goes as Telegram's own custom emoji.
+    await ctx.act({ type: "send", content: "<:😺:101>" });
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "😺", entities: [{ type: "customEmoji", offset: 0, length: 2, documentId: "101" }] }, undefined, undefined);
+  });
+
+  it("offers only free emoji without Premium, except in Saved Messages, and reactions with none of them", async () => {
+    const ctx = await pickerChat();
+    expect(offered(ctx)).toEqual(["102"]);
+    expect(ctx.chat().customEmoji![0]!.react).toBe(false);
+    const saved = await pickerChat({ dialogs: [dlg("9", { title: "Saved Messages" })] }, "9");
+    expect(offered(saved)).toEqual(["101", "102"]);
+  });
+
+  it("offers nothing where the user may not write, nor in a forum's topic list", async () => {
+    const channel = await pickerChat({ premium: true, dialogs: [dlg("-1007", { kind: "channel", title: "News", readOnly: true })] }, "-1007");
+    expect(channel.chat().customEmoji).toBeUndefined();
+    expect(channel.api.customEmojiFile).not.toHaveBeenCalled();
+    const forum = await pickerChat({ premium: true, dialogs: [dlg("-1008", { kind: "group", title: "Forum", forum: true })] }, "-1008");
+    expect(forum.chat().customEmoji).toBeUndefined();
+  });
+
+  it("follows the chat's rules for reacting with them", async () => {
+    const ctx = await pickerChat({ premium: true, dialogs: [dlg("-5", { kind: "group", title: "G" })] }, "-5");
+    expect(ctx.api.allowedReactions).toHaveBeenCalledWith("-5");
+    // The fake group takes every emoji, but no custom ones.
+    expect(ctx.chat().customEmoji!.map((e) => e.react)).toEqual([false, false]);
+  });
+
+  it("asks for the sets again when Telegram did not list them, and leaves out a set that fails", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    ctx.api.me.mockResolvedValue({ id: "9", name: "Me", bot: false, premium: true });
+    ctx.api.emojiSets.mockRejectedValueOnce(new Error("offline")).mockResolvedValue([{ id: "31", title: "Cats" }, { id: "32", title: "Dogs" }]);
+    ctx.api.emojiSet.mockRejectedValueOnce(new Error("offline")).mockResolvedValue([cat]);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.act({ type: "select", channelId: "1" });
+    await ctx.act({ type: "picker", open: true });
+    await settle();
+    expect(ctx.chat().customEmoji).toBeUndefined();
+    await ctx.act({ type: "picker", open: false });
+    await ctx.act({ type: "picker", open: true });
+    await settle();
+    await settle();
+    expect(ctx.api.emojiSets).toHaveBeenCalledTimes(2);
+    expect(ctx.chat().customEmoji!.map((e) => e.source)).toEqual(["Dogs"]);
+  });
+
+  it("fetches at most EMOJI_SET_LIMIT sets and PICKER_EMOJI_LIMIT emoji", async () => {
+    const emoji = (set: number, count: number) => Array.from({ length: count }, (_, i): TgCustomEmoji => ({ id: String(set * 1000 + i), emoji: "😀", format: "webp" }));
+    const many = Object.fromEntries(Array.from({ length: EMOJI_SET_LIMIT + 10 }, (_, i) => [String(i + 1), emoji(i + 1, 1)]));
+    const ctx = await pickerChat({ premium: true, sets: many });
+    expect(ctx.api.emojiSet).toHaveBeenCalledTimes(EMOJI_SET_LIMIT);
+    const large = await pickerChat({ premium: true, sets: { "1": emoji(1, 300), "2": emoji(2, 300), "3": emoji(3, 1) } });
+    expect(large.api.emojiSet).toHaveBeenCalledTimes(2);
+    for (let i = 0; i < 200; i++) await settle();
+    expect(large.chat().customEmoji).toHaveLength(PICKER_EMOJI_LIMIT);
+  });
+
+  it("drops sets that arrive for a session that ended", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    let list: (sets: TgStickerSet[]) => void = () => {};
+    ctx.api.emojiSets.mockImplementationOnce(() => new Promise((resolve) => (list = resolve)));
+    await ctx.adapter.start();
+    await flush();
+    await ctx.act({ type: "select", channelId: "1" });
+    await ctx.act({ type: "picker", open: true });
+    await ctx.adapter.signOut();
+    list([{ id: "31", title: "Cats" }]);
+    await settle();
+    expect(ctx.api.emojiSet).not.toHaveBeenCalled();
+
+    const other = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    let set: (emoji: TgCustomEmoji[]) => void = () => {};
+    other.api.emojiSets.mockResolvedValue([{ id: "31", title: "Cats" }, { id: "32", title: "Dogs" }]);
+    other.api.emojiSet.mockImplementationOnce(() => new Promise((resolve) => (set = resolve)));
+    await other.adapter.start();
+    await flush();
+    await other.act({ type: "select", channelId: "1" });
+    await other.act({ type: "picker", open: true });
+    await flush();
+    await other.adapter.signOut();
+    set([cat]);
+    await settle();
+    expect(other.api.emojiSet).toHaveBeenCalledTimes(1);
   });
 });

@@ -50,6 +50,7 @@ const h = vi.hoisted(() => {
       AllStickers: class extends Base {},
       GetStickerSet: class extends Base {},
       GetCustomEmojiDocuments: class extends Base {},
+      GetEmojiStickers: class extends Base {},
       StickerSet: class extends Base {},
       GetRecentStickers: class extends Base {},
       RecentStickers: class extends Base {},
@@ -1680,6 +1681,26 @@ describe("custom emoji", () => {
       client.downloadMedia.mockClear().mockRejectedValueOnce(new Error("offline"));
       await expect(api.customEmojiFile("5", false)).rejects.toThrow("offline");
       expect(client.downloadMedia).toHaveBeenCalledTimes(1);
+    });
+
+    it("lists the installed emoji sets, asking again with Telegram's hash, and their emoji, which then download", async () => {
+      client.invoke.mockResolvedValueOnce({});
+      await expect(api.emojiSets()).resolves.toEqual([]);
+      expect(client.invoke.mock.calls.at(-1)![0]).toBeInstanceOf(Api.messages.GetEmojiStickers);
+      const sets = [make(Api.StickerSet, { id: 1n, accessHash: 2n, title: "Cats", emojis: true }), make(Api.StickerSet, { id: 3n, accessHash: 4n, title: "Stickers" }), make(Api.StickerSet, { id: 5n, accessHash: 6n, emojis: true })];
+      client.invoke.mockResolvedValueOnce(make(Api.messages.AllStickers, { hash: 77n, sets }));
+      await expect(api.emojiSets()).resolves.toEqual([{ id: "1", title: "Cats" }, { id: "5", title: "Emoji" }]);
+      client.invoke.mockResolvedValueOnce({}); // not modified
+      await expect(api.emojiSets()).resolves.toEqual([{ id: "1", title: "Cats" }, { id: "5", title: "Emoji" }]);
+      expect(client.invoke.mock.calls.at(-1)![0]).toMatchObject({ hash: 77n });
+      client.invoke.mockResolvedValueOnce(make(Api.messages.StickerSet, { documents: [emojiDocument(9n, "image/webp"), make(Api.Document, { attributes: [] })] }));
+      await expect(api.emojiSet("1")).resolves.toEqual([{ id: "9", emoji: "😀", format: "webp" }]);
+      expect(client.invoke.mock.calls.at(-1)![0]).toBeInstanceOf(Api.messages.GetStickerSet);
+      client.downloadMedia.mockResolvedValue(new Uint8Array([1]));
+      await expect(api.customEmojiFile("9", false)).resolves.toEqual(new Uint8Array([1]));
+      client.invoke.mockResolvedValueOnce({});
+      await expect(api.emojiSet("1")).resolves.toEqual([]);
+      await expect(api.emojiSet("99")).rejects.toThrow("Telegram did not list this emoji set");
     });
 
     it("keeps at most 5000 emoji documents, the oldest going first", async () => {

@@ -446,7 +446,11 @@ export interface TelegramApi {
   sendSticker(chatId: string, id: string, replyTo?: number, topicId?: number): Promise<TgMessage>;
   /** The custom emoji of these document ids (at most CUSTOM_EMOJI_BATCH) that Telegram describes. */
   customEmoji(ids: string[]): Promise<TgCustomEmoji[]>;
-  /** A described custom emoji's file, or its still thumbnail; undefined when there is none. */
+  /** The user's installed custom emoji sets, in their order. */
+  emojiSets(): Promise<TgStickerSet[]>;
+  /** A listed custom emoji set's emoji. */
+  emojiSet(setId: string): Promise<TgCustomEmoji[]>;
+  /** A described or listed custom emoji's file, or its still thumbnail; undefined when there is none. */
   customEmojiFile(id: string, thumbnail: boolean): Promise<Uint8Array | undefined>;
   onUpdate(cb: (update: TgUpdate) => void): void;
   /** The session to store, so the next start skips signing in. */

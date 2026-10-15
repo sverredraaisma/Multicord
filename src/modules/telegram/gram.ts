@@ -647,13 +647,13 @@ export function customEmojiOf(document: unknown): TgCustomEmoji | undefined {
   return emoji;
 }
 
-/** The installed sticker sets the picker offers: regular ones, not archived, masks or custom emoji. */
-export function stickerSetsOf(sets: readonly unknown[]): { set: TgStickerSet; input: Api.InputStickerSetID }[] {
+/** The installed sets the picker offers: regular sticker sets (not archived, masks or custom emoji), or with `emojis` custom emoji sets. */
+export function stickerSetsOf(sets: readonly unknown[], emojis = false): { set: TgStickerSet; input: Api.InputStickerSetID }[] {
   return sets.flatMap((s) => {
-    if (!(s instanceof Api.StickerSet) || s.archived || s.masks || s.emojis) return [];
+    if (!(s instanceof Api.StickerSet) || s.archived || s.masks || (s.emojis === true) !== emojis) return [];
     const id = String(s.id);
     if (!/^-?\d{1,20}$/.test(id)) return [];
-    return [{ set: { id, title: (s.title || "Stickers").slice(0, 100) }, input: new Api.InputStickerSetID({ id: s.id, accessHash: s.accessHash }) }];
+    return [{ set: { id, title: (s.title || (emojis ? "Emoji" : "Stickers")).slice(0, 100) }, input: new Api.InputStickerSetID({ id: s.id, accessHash: s.accessHash }) }];
   });
 }
 
@@ -798,12 +798,13 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
     return stickers;
   };
 
-  /** Custom emoji documents described this session, by id, oldest first. */
+  /** Custom emoji documents described or listed this session, by id, oldest first; and the installed emoji sets as last listed. */
   const emojiDocuments = new Map<string, Api.Document>();
+  let installedEmoji: { hash: Api.long; sets: TgStickerSet[] } | undefined;
 
-  const describeEmoji = async (ids: readonly string[]): Promise<TgCustomEmoji[]> => {
-    const found = await client.invoke(new Api.messages.GetCustomEmojiDocuments({ documentId: ids.slice(0, CUSTOM_EMOJI_BATCH).map((id) => returnBigInt(id)) }));
-    return (Array.isArray(found) ? found : []).flatMap((document) => {
+  /** Custom emoji among these documents, kept to download them. */
+  const keepEmoji = (documents: readonly unknown[]): TgCustomEmoji[] =>
+    documents.flatMap((document) => {
       const emoji = customEmojiOf(document);
       if (!emoji) return [];
       emojiDocuments.delete(emoji.id);
@@ -811,6 +812,10 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       if (emojiDocuments.size > MAX_EMOJI_DOCUMENTS) emojiDocuments.delete(emojiDocuments.keys().next().value!);
       return [emoji];
     });
+
+  const describeEmoji = async (ids: readonly string[]): Promise<TgCustomEmoji[]> => {
+    const found = await client.invoke(new Api.messages.GetCustomEmojiDocuments({ documentId: ids.slice(0, CUSTOM_EMOJI_BATCH).map((id) => returnBigInt(id)) }));
+    return keepEmoji(Array.isArray(found) ? found : []);
   };
 
   /** A document's file, or its largest thumbnail (none: undefined, never the file in its place). */
@@ -1085,6 +1090,22 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
     stickers: (setId) => listStickers(setId),
     stickerFile: (id, thumbnail) => withSticker(id, (document) => documentFile(document, thumbnail)),
     customEmoji: (ids) => describeEmoji(ids),
+    emojiSets: async () => {
+      const found = await client.invoke(new Api.messages.GetEmojiStickers({ hash: installedEmoji?.hash ?? returnBigInt(0) }));
+      // Unchanged since last asked: the sets known.
+      if (found instanceof Api.messages.AllStickers) {
+        const sets = stickerSetsOf(found.sets, true);
+        for (const { set, input } of sets) stickerSetInputs.set(set.id, input);
+        installedEmoji = { hash: found.hash, sets: sets.map((s) => s.set) };
+      }
+      return installedEmoji?.sets ?? [];
+    },
+    emojiSet: async (setId) => {
+      const input = stickerSetInputs.get(setId);
+      if (!input) throw new Error("Telegram did not list this emoji set");
+      const found = await client.invoke(new Api.messages.GetStickerSet({ stickerset: input, hash: 0 }));
+      return keepEmoji(found instanceof Api.messages.StickerSet ? found.documents : []);
+    },
     customEmojiFile: async (id, thumbnail) => {
       const known = emojiDocuments.get(id);
       if (!known) throw new Error("Telegram did not describe this emoji");
