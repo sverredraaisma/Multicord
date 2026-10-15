@@ -210,6 +210,58 @@ describe("services tab", () => {
     expect(row("off").querySelector(".service-notifications")).toBeNull();
   });
 
+  it("shows the settings a service's module declares, with what the service says about them", () => {
+    const fields: ServiceInfo["settings"] = [
+      { kind: "toggle", key: "typing", label: "Send typing notices", hint: "Others see it.", default: true },
+      { kind: "choice", key: "theme", label: "Theme", options: [{ value: "light", label: "Light" }, { value: "dark", label: "Dark" }], default: "light" },
+      { kind: "action", key: "forget", label: "Forget call services", hint: "Looked up again.", confirm: "Click again to forget" },
+      { kind: "action", key: "reload", label: "Reload" },
+    ];
+    const state = viewState({
+      services: [
+        service({ id: "mx", settings: fields, settingsStatus: { forget: { text: "Remembered: a.org" }, reload: { disabled: true } } }),
+        service({ id: "idle", settings: fields, account: undefined }),
+        service({ id: "off", enabled: false, settings: fields }),
+      ],
+    });
+    state.settings = { ...state.settings, services: { mx: { notifications: true, options: { typing: false, theme: "blue" } } } };
+    mount(state);
+    const field = (key: string, id = "mx") => q(`.service-setting[data-key="${key}"]`, row(id));
+
+    const typing = q<HTMLInputElement>("input", field("typing"));
+    expect(field("typing").textContent).toContain("Others see it.");
+    expect(typing.checked).toBe(false);
+    change(typing, true);
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { mx: { options: { typing: true } } } } });
+
+    // A stored value that does not fit shows the default.
+    const theme = q<HTMLSelectElement>('select[aria-label="Theme"]', field("theme"));
+    expect(theme.value).toBe("light");
+    change(theme, "dark");
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { mx: { options: { theme: "dark" } } } } });
+
+    expect(q(".setting-status", field("forget")).textContent).toBe("Remembered: a.org");
+    const forget = button("Forget call services", field("forget"));
+    expect(forget.disabled).toBe(false);
+    forget.click();
+    expect(act).not.toHaveBeenCalledWith(expect.objectContaining({ type: "serviceAction" }));
+    forget.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "serviceAction", id: "mx", key: "forget" });
+    // Nothing to do, or the service is not running: the button is off.
+    expect(button("Reload", field("reload")).disabled).toBe(true);
+    expect(button("Reload", field("reload", "idle")).disabled).toBe(true);
+    expect(button("Forget call services", field("forget", "idle")).disabled).toBe(true);
+    expect(q<HTMLInputElement>("input", field("typing", "idle")).checked).toBe(true);
+    expect(row("off").querySelector(".service-settings")).toBeNull();
+    expect(row("idle").querySelector(".setting-status")).toBeNull();
+  });
+
+  it("runs an action without a confirmation on the first click", () => {
+    mount(viewState({ services: [service({ id: "mx", settings: [{ kind: "action", key: "reload", label: "Reload" }] })] }));
+    button("Reload", row("mx")).click();
+    expect(act).toHaveBeenLastCalledWith({ type: "serviceAction", id: "mx", key: "reload" });
+  });
+
   it("the switch sends setEnabled", () => {
     mount();
     const input = q<HTMLInputElement>('input[aria-label="Discord on"]');

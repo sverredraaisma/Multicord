@@ -79,6 +79,7 @@ Adding the module to `BUILT_IN` in `src/main/platforms.ts` is optional. That lis
 | `protocols` | Link schemes the module opens (e.g. `discord`), when the user lets Multicord handle them. The adapter needs `openLink()`. |
 | `usesVoiceSettings` | The view gets the voice settings (devices, processing) and updates to them. Set it when the module runs calls (tested for native modules with `voice`). |
 | `forwardPushToTalk`, `voiceKeys` | Web clients with their own push to talk and mute/deafen keys (Discord). |
+| `settings` | Settings each service of the module has, shown under it in Settings > Services (below). |
 
 Native engine fields:
 
@@ -91,16 +92,34 @@ Native engine fields:
 | `capabilities` | `{ directMessages, messagePreviews, voice, screenShare }`. The shell reads the manifest's, not the adapter's, so keep them equal (the template's test checks its own). |
 | `screenShare` | Route `getDisplayMedia` in the module's view through the shell's screen picker. Set it exactly when `capabilities.screenShare` is set (tested for modules with `voice`). |
 
+#### Service settings
+
+Put settings a user may want to change per service in `settings`, not in the module's own screens or secrets, so they sit with every other setting. A field is one of:
+
+- `{ kind: "toggle", key, label, hint?, default }`: on or off.
+- `{ kind: "choice", key, label, hint?, options: [{ value, label }], default }`: one of 2 to 16 fixed values (lowercase letters, digits and dashes).
+- `{ kind: "action", key, label, hint?, confirm? }`: a button that has the running service do something once, such as forget what it learned. With `confirm`, it asks for a second click.
+
+Keys are camelCase (`/^[a-z][A-Za-z0-9]{0,31}$/`), at most 16 fields, labels up to 80 characters and hints up to 300 (tested for every manifest). There is no free-text field.
+
+The values are stored in `settings.json` under the service (`services[id].options`) and checked against the fields every time they are read: a missing or unfitting value gives the default, and keys no field declares are dropped. Settings rejects a change that names another field or does not fit. A service only ever gets its own values:
+
+- An engine gets them in `engineInfo(bridge).settings`, and changes as `applySettings(values)` on its adapter. Action buttons call `runSettingAction(key)`.
+- The adapter's `settingsStatus()` says what Settings shows with each field: `{ [key]: { text?, disabled? } }`, e.g. what is remembered, or `disabled` when an action has nothing to do. `serveAdapter` sends it when it changes (after each `sync()` and each Settings command). Texts are capped at 500 characters, and Settings shows only declared keys. Never put secrets in it.
+- A `load()` module reads its values from `ModuleHost.settings()`; changes reach its adapter's `applySettings()`.
+
+Matrix (`typing`, `forgetCallServices`) and Telegram (`forgetApiId`) show how.
+
 ### The engine side
 
 An engine has no network, storage or files of its own beyond its page. Everything goes through the `EngineBridge` (`src/preload/engine.ts`). Use the helpers in `src/engine/runtime.ts` rather than raw requests:
 
-- `engineInfo(bridge)`: the instance's id, name, url and the OS. Call it first; the shell holds commands until it does.
+- `engineInfo(bridge)`: the instance's id, name, url and the OS, and its values for the manifest's `settings`. Call it first; the shell holds commands until it does.
 - `bridgeFetch(bridge)`: a `fetch` that goes through the main process. The engine page's CSP does not allow `fetch` to other origins, so this is the only way to make HTTP requests.
 - `bridgeSecrets(bridge)`: this instance's secret store (`load`, `save`, `delete`). Keep tokens here, never in web storage.
 - `lockHosts(bridge, hosts)`: from now on, reach only these hosts. Call it once you know the instance's API, socket and file hosts (Stoat, Matrix and the template do). A lock can only narrow; the shell refuses one that widens or names a private host. Treat a refusal as non-fatal, as the template does.
 - `pickFiles(bridge)`: files the user picked, read in ranges through handles. It works only within 10 seconds of the user pressing attach in the module's view.
-- `serveAdapter(bridge, adapter)`: serves the adapter to the shell. Rail servers, conversations, notifications and incoming calls go out as events; shell commands (`openHome`, `openServer`, `openConversation`, `toggleGroup`, `visible`, `signOut`) and view actions come in. Call the returned `sync()` after each render, so account and home-badge changes reach the shell.
+- `serveAdapter(bridge, adapter)`: serves the adapter to the shell. Rail servers, conversations, notifications, incoming calls and the settings status go out as events; shell commands (`openHome`, `openServer`, `openConversation`, `toggleGroup`, `visible`, `signOut`, `settings`, `settingAction`) and view actions come in. Call the returned `sync()` after each render, so account and home-badge changes reach the shell.
 - WebSockets: use the page's own `new WebSocket(url)`. Only `wss:` to allowed public hosts gets through.
 
 The view shows what the engine renders: `bridge.render(state)` with a `NativeViewState` (`src/shared/native.ts`). The `login` screen takes an email or username and password; the `mfa` screen takes codes; `prompt` screens are sign-in steps the module defines (Telegram's phone and code); `connecting` shows a status; `chat` shows the sidebar, the open channel with its messages, typing, pending uploads, and the voice session. The view sends `NativeAction`s back to `adapter.handleAction()`. The main process checks every action's shape first (`isNativeAction`): channel and message ids must be numeric snowflakes or ULIDs, and texts have length limits.
@@ -154,6 +173,7 @@ The boundaries of the protocol and sandbox are covered in `tests/main/engineHost
 - [ ] `storage` only if the module must keep keys across restarts.
 - [ ] `usesVoiceSettings` and `screenShare` if it runs calls with screen sharing.
 - [ ] `notice` if using the platform here carries a risk users should know about.
+- [ ] `settings` for anything users may want to change or reset per service, instead of a screen or secret of the module's own.
 - [ ] Added to `MODULES` in `src/main/modules/index.ts`, and the expected lists in `tests/main/modules.test.ts` updated.
 - [ ] Tokens only in the scoped secret store; no Electron, Node or `main/` imports.
 - [ ] Unit tests in `tests/modules/<module>/`, and a live suite in `tests/live/` if a server can be run locally.

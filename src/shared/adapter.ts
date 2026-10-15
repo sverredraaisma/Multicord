@@ -1,4 +1,4 @@
-import type { AccountStatus } from "./settings";
+import type { AccountStatus, ServiceSettingStatus, ServiceSettingValues } from "./settings";
 
 // Adapter contract from the integration study. Every platform plugs into the
 // shell through PlatformAdapter, either as an embedded web view or natively.
@@ -141,4 +141,13 @@ export interface PlatformAdapter {
   setActivity?(update: ActivityUpdate): void;
   onAccountChanged?(cb: (account: AccountStatus) => void): () => void;
   signOut?(): Promise<void>;
+
+  // The settings the module declares (ModuleManifest.settings), for this service only.
+  /** New values for its toggles and choices, each already checked against its field. */
+  applySettings?(values: ServiceSettingValues): void;
+  /** The user pressed one of its action buttons. */
+  runSettingAction?(key: string): Promise<void>;
+  /** What the settings page shows with those settings now. */
+  settingsStatus?(): ServiceSettingStatus;
+  onSettingsStatusChanged?(cb: () => void): () => void;
 }

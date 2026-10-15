@@ -266,3 +266,11 @@
 
 /* Per-service notifications */
 .service-notifications { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); cursor: pointer; }
+
+/* Settings a service's module declares */
+.service-settings { margin-top: 10px; border-top: 1px solid var(--border); }
+.service-setting > .switch-row { padding: 8px 0; }
+.service-setting:not(:has(> .switch-row)) { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.service-setting .switch-label { font-size: 14px; }
+.service-setting button, .service-setting select { flex: none; padding: 4px 12px; font-size: 13px; }
+.setting-status { overflow-wrap: anywhere; }

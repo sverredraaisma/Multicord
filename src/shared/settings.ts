@@ -113,6 +113,123 @@ export type ShortcutAction = keyof ShortcutSettings;
 export interface ServiceSettings {
   /** Desktop notifications from this service; the general switch still applies. */
   notifications: boolean;
+  /**
+   * Values for the settings its module declares (ModuleManifest.settings).
+   * Stored loosely; serviceSettingValues() checks them against the fields.
+   */
+  options?: ServiceSettingValues;
+}
+
+// --- Settings a module declares for its services -----------------------------
+
+/**
+ * A setting a module declares for each of its services. Settings > Services
+ * shows it under the service; the module gets the values (not actions)
+ * through serviceSettingValues(), and only its own service's.
+ */
+export type ServiceSettingField =
+  | { kind: "toggle"; key: string; label: string; hint?: string; default: boolean }
+  | { kind: "choice"; key: string; label: string; hint?: string; options: { value: string; label: string }[]; default: string }
+  /** A button that has the running service do something once, e.g. forget what it learned. With `confirm`, it asks for a second click. */
+  | { kind: "action"; key: string; label: string; hint?: string; confirm?: string };
+
+/** A service's values for its module's toggles and choices, by field key. */
+export type ServiceSettingValues = Record<string, boolean | string>;
+
+/** What a running service says about its fields now, by key: a line of text, and whether an action has nothing to do. */
+export type ServiceSettingStatus = Record<string, { text?: string; disabled?: boolean }>;
+
+/** Fields a module may declare, and so values and statuses a service may have. */
+export const MAX_SERVICE_FIELDS = 16;
+export const MAX_STATUS_TEXT = 500;
+const FIELD_KEY = /^[a-z][A-Za-z0-9]{0,31}$/;
+const CHOICE_VALUE = /^[a-z0-9-]{1,32}$/;
+
+export const isSettingKey = (value: unknown): value is string => typeof value === "string" && FIELD_KEY.test(value);
+const isSettingValue = (value: unknown): value is boolean | string => typeof value === "boolean" || (typeof value === "string" && CHOICE_VALUE.test(value));
+
+/** Values as a patch or an engine command may carry them: known shapes only, not yet checked against any module's fields. */
+export function isServiceSettingValues(value: unknown): value is ServiceSettingValues {
+  if (!isRecord(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= MAX_SERVICE_FIELDS && entries.every(([key, v]) => isSettingKey(key) && isSettingValue(v));
+}
+
+/** Whether a field accepts a value: a boolean for a toggle, one of its options for a choice; actions take none. */
+function accepts(field: ServiceSettingField, value: unknown): value is boolean | string {
+  if (field.kind === "toggle") return typeof value === "boolean";
+  return field.kind === "choice" && field.options.some((option) => option.value === value);
+}
+
+/** Each toggle and choice with its stored value, or its default when the stored one is missing or does not fit. */
+export function serviceSettingValues(fields: readonly ServiceSettingField[] | undefined, stored: ServiceSettingValues | undefined): ServiceSettingValues {
+  const values: ServiceSettingValues = {};
+  for (const field of fields ?? []) {
+    if (field.kind === "action") continue;
+    const value = stored && Object.hasOwn(stored, field.key) ? stored[field.key] : undefined;
+    values[field.key] = accepts(field, value) ? value : field.default;
+  }
+  return values;
+}
+
+/** Whether every value in a patch names a toggle or choice of these fields and fits it. */
+export function fitsServiceFields(fields: readonly ServiceSettingField[] | undefined, values: ServiceSettingValues): boolean {
+  return Object.entries(values).every(([key, value]) => {
+    const field = fields?.find((f) => f.key === key);
+    return field !== undefined && accepts(field, value);
+  });
+}
+
+const isLabel = (value: unknown, max = 80): value is string => isText(value, max) && value.trim() !== "";
+
+/** A well-formed field list, as a manifest must declare it (tested for every module). */
+export function isServiceSettingFields(value: unknown): value is ServiceSettingField[] {
+  if (!Array.isArray(value) || value.length > MAX_SERVICE_FIELDS) return false;
+  const keys = new Set<string>();
+  return value.every((field: unknown) => {
+    if (!isRecord(field) || !isSettingKey(field.key) || keys.has(field.key) || !isLabel(field.label) || !(field.hint === undefined || isLabel(field.hint, 300))) return false;
+    keys.add(field.key);
+    switch (field.kind) {
+      case "toggle":
+        return typeof field.default === "boolean";
+      case "choice":
+        return (
+          Array.isArray(field.options) &&
+          field.options.length >= 2 &&
+          field.options.length <= 16 &&
+          field.options.every((o: unknown) => isRecord(o) && typeof o.value === "string" && CHOICE_VALUE.test(o.value) && isLabel(o.label)) &&
+          field.options.some((o: { value: string }) => o.value === field.default)
+        );
+      case "action":
+        return field.confirm === undefined || isLabel(field.confirm);
+      default:
+        return false;
+    }
+  });
+}
+
+/** A status as an engine may report it; the settings page shows only the keys the module declares. */
+export function isServiceSettingStatus(value: unknown): value is ServiceSettingStatus {
+  if (!isRecord(value)) return false;
+  const entries = Object.entries(value);
+  return (
+    entries.length <= MAX_SERVICE_FIELDS &&
+    entries.every(
+      ([key, s]) =>
+        isSettingKey(key) &&
+        isRecord(s) &&
+        Object.keys(s).every((k) => k === "text" || k === "disabled") &&
+        (s.text === undefined || isText(s.text, MAX_STATUS_TEXT)) &&
+        (s.disabled === undefined || typeof s.disabled === "boolean"),
+    )
+  );
+}
+
+/** Stored values, leniently: what does not fit the known shapes is dropped. */
+function parseServiceSettingValues(value: unknown): ServiceSettingValues | undefined {
+  if (!isRecord(value)) return undefined;
+  const entries = Object.entries(value).filter((entry): entry is [string, boolean | string] => isSettingKey(entry[0]) && isSettingValue(entry[1]));
+  return entries.length > 0 ? Object.fromEntries(entries.slice(0, MAX_SERVICE_FIELDS)) : undefined;
 }
 
 export interface AppSettings {
@@ -213,7 +330,10 @@ export function parseSettings(raw: unknown): AppSettings {
   }
   if (isRecord(raw.services)) {
     for (const [id, value] of Object.entries(raw.services).slice(0, MAX_SERVICE_SETTINGS)) {
-      if (SERVICE_ID.test(id) && isRecord(value) && typeof value.notifications === "boolean") settings.services[id] = { notifications: value.notifications };
+      if (!SERVICE_ID.test(id) || !isRecord(value) || typeof value.notifications !== "boolean") continue;
+      settings.services[id] = { notifications: value.notifications };
+      const options = parseServiceSettingValues(value.options);
+      if (options) settings.services[id].options = options;
     }
   }
   return settings;
@@ -229,7 +349,7 @@ export function isSettingsPatch(value: unknown): value is SettingsPatch {
     for (const [id, v] of Object.entries(services)) {
       if (!SERVICE_ID.test(id)) return false;
       if (v === null) continue;
-      if (!isRecord(v) || !Object.entries(v).every(([key, flag]) => key === "notifications" && typeof flag === "boolean")) return false;
+      if (!isRecord(v) || !Object.entries(v).every(([key, field]) => (key === "notifications" && typeof field === "boolean") || (key === "options" && isServiceSettingValues(field)))) return false;
     }
   }
   if (shortcuts !== undefined) {
@@ -267,7 +387,13 @@ export function applySettingsPatch(settings: AppSettings, patch: SettingsPatch):
   Object.assign(next.shortcuts, patch.shortcuts);
   for (const [id, value] of Object.entries(patch.services ?? {})) {
     if (value === null) delete next.services[id];
-    else if (Object.keys(next.services).length < MAX_SERVICE_SETTINGS || Object.hasOwn(next.services, id)) next.services[id] = { ...serviceSettings(next, id), ...value };
+    else if (Object.keys(next.services).length < MAX_SERVICE_SETTINGS || Object.hasOwn(next.services, id)) {
+      const current = serviceSettings(next, id);
+      const merged: ServiceSettings = { ...current, ...value };
+      // Values merge per key, so changing one keeps the others; at most MAX_SERVICE_FIELDS are kept.
+      if (value.options) merged.options = Object.fromEntries(Object.entries({ ...current.options, ...value.options }).slice(-MAX_SERVICE_FIELDS));
+      next.services[id] = merged;
+    }
   }
   for (const [key, value] of Object.entries(patch.voice ?? {})) {
     if (value === null) delete next.voice[key as (typeof DEVICE_KEYS)[number] | "pushToTalk"];
@@ -303,6 +429,10 @@ export interface ServiceInfo {
   account?: AccountStatus;
   /** Integration checks, for services that report them. */
   health?: { name: string; ok: boolean; detail?: string }[];
+  /** The settings its module declares, shown under the service. */
+  settings?: ServiceSettingField[];
+  /** What the running service says about those settings, for declared keys only. */
+  settingsStatus?: ServiceSettingStatus;
 }
 
 /** A module the user can add services (or extra accounts) from. */
@@ -369,6 +499,8 @@ export type SettingsAction =
   | { type: "renameService"; id: string; name: string }
   | { type: "signOut"; id: string }
   | { type: "openService"; id: string }
+  /** Runs an action field its module declares, on the running service. */
+  | { type: "serviceAction"; id: string; key: string }
   | { type: "restart" }
   | { type: "checkUpdates" }
   | { type: "installUpdate" }
@@ -393,6 +525,8 @@ export function isSettingsAction(value: unknown): value is SettingsAction {
     case "signOut":
     case "openService":
       return isServiceId(value.id);
+    case "serviceAction":
+      return isServiceId(value.id) && isSettingKey(value.key);
     case "restart":
     case "copyReport":
     case "checkUpdates":

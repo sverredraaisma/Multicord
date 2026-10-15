@@ -6,7 +6,7 @@
 
 import type { HomeBadge, IncomingCall, PlatformNotification } from "./adapter";
 import { isHttpsUrl } from "./ipc";
-import type { AccountStatus } from "./settings";
+import { isServiceSettingStatus, isServiceSettingValues, isSettingKey, type AccountStatus, type ServiceSettingStatus, type ServiceSettingValues } from "./settings";
 
 export const ENGINE_IPC = {
   /** Engine -> main: rail data, notifications, account state (EngineEvent). */
@@ -32,6 +32,11 @@ export interface EngineInfo {
   url: string;
   /** The OS, as Node names it, for platform-specific behaviour. */
   os: string;
+  /**
+   * For a module that declares settings: this instance's values, each one
+   * checked against its field. Changes come as a "settings" command.
+   */
+  settings?: ServiceSettingValues;
 }
 
 export interface EngineServer {
@@ -64,7 +69,9 @@ export type EngineEvent =
   | { type: "notification"; notification: PlatformNotification }
   | { type: "call"; call: IncomingCall }
   | { type: "account"; account: AccountStatus }
-  | { type: "homeBadge"; badge: HomeBadge };
+  | { type: "homeBadge"; badge: HomeBadge }
+  /** What Settings shows with the module's declared settings; only declared keys are shown. */
+  | { type: "settingsStatus"; status: ServiceSettingStatus };
 
 export type EngineCommand =
   | { type: "openHome" }
@@ -72,7 +79,11 @@ export type EngineCommand =
   | { type: "openConversation"; key: string }
   | { type: "toggleGroup"; key: string }
   | { type: "visible"; visible: boolean }
-  | { type: "signOut" };
+  | { type: "signOut" }
+  /** The instance's values for the module's declared settings changed. */
+  | { type: "settings"; values: ServiceSettingValues }
+  /** The user pressed one of the module's declared action buttons for this instance. */
+  | { type: "settingAction"; key: string };
 
 export interface HttpRequest {
   url: string;
@@ -208,6 +219,8 @@ export function isEngineEvent(value: unknown): value is EngineEvent {
       return isAccount(value.account);
     case "homeBadge":
       return isRecord(value.badge) && typeof value.badge.unread === "boolean" && isCount(value.badge.mentions);
+    case "settingsStatus":
+      return isServiceSettingStatus(value.status);
     default:
       return false;
   }
@@ -225,6 +238,10 @@ export function isEngineCommand(value: unknown): value is EngineCommand {
       return isText(value.key, MAX_KEY, 1);
     case "visible":
       return typeof value.visible === "boolean";
+    case "settings":
+      return isServiceSettingValues(value.values);
+    case "settingAction":
+      return isSettingKey(value.key);
     default:
       return false;
   }

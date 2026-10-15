@@ -2,11 +2,20 @@ import { describe, expect, it } from "vitest";
 import {
   applySettingsPatch,
   DEFAULT_SETTINGS,
+  fitsServiceFields,
   isDeviceChoice,
   isServiceId,
+  isServiceSettingFields,
+  isServiceSettingStatus,
+  isServiceSettingValues,
   isSettingsAction,
   isSettingsPatch,
+  MAX_SERVICE_FIELDS,
+  MAX_STATUS_TEXT,
   parseSettings,
+  serviceSettingValues,
+  type ServiceSettingField,
+  type ServiceSettingValues,
 } from "../../src/shared/settings";
 
 const mic = { id: "abc", label: "Headset" };
@@ -76,6 +85,7 @@ describe("settings actions", () => {
       { type: "removeService", id: "element" },
       { type: "signOut", id: "fluxer" },
       { type: "openService", id: "fluxer" },
+      { type: "serviceAction", id: "matrix", key: "forgetCallServices" },
       { type: "restart" },
       { type: "checkUpdates" },
       { type: "copyReport" },
@@ -97,6 +107,8 @@ describe("settings actions", () => {
       { type: "addService", module: "web", name: "A", url: 5 },
       { type: "renameService", id: "discord" },
       { type: "signOut", id: "../x" },
+      { type: "serviceAction", id: "matrix", key: "Bad-Key" },
+      { type: "serviceAction", id: "matrix" },
     ]) {
       expect(isSettingsAction(action)).toBe(false);
     }
@@ -194,6 +206,88 @@ describe("per-service settings", () => {
     expect(next.services).not.toHaveProperty("extra");
     const capped = parseSettings({ services: Object.fromEntries(Array.from({ length: MAX_SERVICE_SETTINGS + 5 }, (_, i) => [`s${i}`, { notifications: false }])) });
     expect(Object.keys(capped.services)).toHaveLength(MAX_SERVICE_SETTINGS);
+  });
+});
+
+describe("settings modules declare for their services", () => {
+  const FIELDS: ServiceSettingField[] = [
+    { kind: "toggle", key: "typing", label: "Send typing notices", default: true },
+    { kind: "choice", key: "theme", label: "Theme", hint: "Colours", options: [{ value: "light", label: "Light" }, { value: "dark", label: "Dark" }], default: "light" },
+    { kind: "action", key: "forget", label: "Forget", confirm: "Sure?" },
+  ];
+
+  it("checks the fields a manifest declares", () => {
+    expect(isServiceSettingFields(FIELDS)).toBe(true);
+    expect(isServiceSettingFields([])).toBe(true);
+    const toggle = FIELDS[0]!;
+    const choice = FIELDS[1] as Extract<ServiceSettingField, { kind: "choice" }>;
+    for (const bad of [
+      "x",
+      [null],
+      [toggle, toggle],
+      [{ ...toggle, key: "Bad-Key" }],
+      [{ ...toggle, label: " " }],
+      [{ ...toggle, hint: "x".repeat(301) }],
+      [{ ...toggle, default: "yes" }],
+      [{ ...choice, default: "blue" }],
+      [{ ...choice, options: [choice.options[0]] }],
+      [{ ...choice, options: "light" }],
+      [{ ...choice, options: [...choice.options, { value: "Not Ok", label: "x" }] }],
+      [{ ...choice, options: [...choice.options, { value: "ok", label: "" }] }],
+      [{ ...choice, options: Array.from({ length: 17 }, (_, i) => ({ value: `v${i}`, label: "V" })), default: "v0" }],
+      [{ kind: "action", key: "a", label: "A", confirm: "" }],
+      [{ kind: "text", key: "a", label: "A" }],
+      Array.from({ length: MAX_SERVICE_FIELDS + 1 }, (_, i) => ({ ...toggle, key: `k${i}` })),
+    ]) {
+      expect(isServiceSettingFields(bad)).toBe(false);
+    }
+  });
+
+  it("gives each toggle and choice its stored value when it fits, else the default; actions have none", () => {
+    expect(serviceSettingValues(FIELDS, undefined)).toEqual({ typing: true, theme: "light" });
+    expect(serviceSettingValues(undefined, { typing: false })).toEqual({});
+    expect(serviceSettingValues(FIELDS, { typing: false, theme: "dark", forget: true, other: true })).toEqual({ typing: false, theme: "dark" });
+    expect(serviceSettingValues(FIELDS, { typing: "no", theme: "blue" })).toEqual({ typing: true, theme: "light" });
+    // Stored values never reach a module through the prototype.
+    expect(serviceSettingValues(FIELDS, JSON.parse('{"__proto__": {"typing": false}}'))).toEqual({ typing: true, theme: "light" });
+  });
+
+  it("lets a patch change only declared toggles and choices, with fitting values", () => {
+    expect(fitsServiceFields(FIELDS, { typing: false, theme: "dark" })).toBe(true);
+    expect(fitsServiceFields(FIELDS, {})).toBe(true);
+    for (const bad of [{ typing: "dark" }, { theme: true }, { theme: "blue" }, { forget: true }, { other: true }] as ServiceSettingValues[]) expect(fitsServiceFields(FIELDS, bad)).toBe(false);
+    expect(fitsServiceFields(undefined, { typing: true })).toBe(false);
+  });
+
+  it("stores values leniently, patches them strictly and merges them per key", () => {
+    const parsed = parseSettings({ services: { m: { notifications: true, options: { typing: false, theme: "dark", "Bad-Key": true, n: 5, s: "Not Ok" } }, e: { notifications: true, options: { "Bad-Key": true } }, f: { notifications: true, options: [] } } });
+    expect(parsed.services).toEqual({ m: { notifications: true, options: { typing: false, theme: "dark" } }, e: { notifications: true }, f: { notifications: true } });
+    const capped = parseSettings({ services: { m: { notifications: true, options: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`k${i}`, true])) } } });
+    expect(Object.keys(capped.services.m!.options!)).toHaveLength(MAX_SERVICE_FIELDS);
+
+    expect(isSettingsPatch({ services: { m: { options: { typing: false, theme: "dark" } } } })).toBe(true);
+    for (const options of [[], { "Bad-Key": true }, { typing: 1 }, { theme: "Not Ok" }, Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`k${i}`, true]))]) {
+      expect(isSettingsPatch({ services: { m: { options } } })).toBe(false);
+    }
+    const one = applySettingsPatch(DEFAULT_SETTINGS, { services: { m: { options: { typing: false } } } });
+    expect(one.services.m).toEqual({ notifications: true, options: { typing: false } });
+    const two = applySettingsPatch(one, { services: { m: { options: { theme: "dark" } } } });
+    expect(two.services.m).toEqual({ notifications: true, options: { typing: false, theme: "dark" } });
+    expect(applySettingsPatch(two, { services: { m: { notifications: false } } }).services.m).toEqual({ notifications: false, options: { typing: false, theme: "dark" } });
+    const full = { ...DEFAULT_SETTINGS, services: { m: { notifications: true, options: Object.fromEntries(Array.from({ length: MAX_SERVICE_FIELDS }, (_, i) => [`k${i}`, true])) } } };
+    const kept = applySettingsPatch(full, { services: { m: { options: { last: false } } } }).services.m!.options!;
+    expect(Object.keys(kept)).toHaveLength(MAX_SERVICE_FIELDS);
+    expect(kept).toMatchObject({ last: false });
+    expect(kept).not.toHaveProperty("k0");
+  });
+
+  it("checks what a running service reports about its fields", () => {
+    expect(isServiceSettingStatus({ forget: { text: "Remembered: a.org", disabled: false }, typing: {} })).toBe(true);
+    for (const bad of [null, [], { "Bad-Key": {} }, { forget: "text" }, { forget: { text: 5 } }, { forget: { text: "x".repeat(MAX_STATUS_TEXT + 1) } }, { forget: { disabled: "no" } }, { forget: { html: "<b>" } }, Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`k${i}`, {}]))]) {
+      expect(isServiceSettingStatus(bad)).toBe(false);
+    }
+    expect(isServiceSettingValues({ a: true, b: "x-1" })).toBe(true);
+    expect(isServiceSettingValues(null)).toBe(false);
   });
 });
 

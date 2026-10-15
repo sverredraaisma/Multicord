@@ -34,7 +34,7 @@ import {
 } from "../shared/ipc";
 import type { ActivityUpdate, HealthCheck, PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
-import { isSettingsAction, serviceSettings, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
+import { isSettingsAction, serviceSettings, serviceSettingValues, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import { EngineHub, engineStoragePartition } from "./engineHost";
 import { filterShellRequests, installHardening } from "./hardening";
@@ -211,6 +211,8 @@ export async function createShell(
   const general = () => settingsStore.get().general;
   /** Notifications from this service: on in general and not turned off for it. */
   const notificationsOn = (id: string): boolean => general().notifications && serviceSettings(settingsStore.get(), id).notifications;
+  /** One service's values for the settings its module declares, checked against them: stored values are untrusted. */
+  const settingValues = (manifest: PlatformModule["manifest"], id: string) => serviceSettingValues(manifest.settings, serviceSettings(settingsStore.get(), id).options);
   let activePlatform = platforms[0]!.id;
   /** What the content area shows: a platform, the settings page, or the Messages list beside a conversation. */
   let mode: "platform" | "settings" | "messages" = "platform";
@@ -308,6 +310,7 @@ export async function createShell(
       capabilities: manifest.capabilities ?? { directMessages: false, messagePreviews: false, voice: false, screenShare: false },
       view,
       secrets: credentials.scope(def.id),
+      ...(manifest.settings?.length ? { settings: () => settingValues(manifest, def.id) } : {}),
     });
     return {
       adapter: engine.adapter,
@@ -352,11 +355,18 @@ export async function createShell(
           platform,
           secrets: credentials.scope(def.id),
           enableScreenShare: () => handleScreenShare(ses),
+          settings: () => settingValues(module.manifest, def.id),
         })
       : startEngineModule(module.manifest, def, view, ses);
     adapters.set(def.id, adapter);
     manifests.set(def.id, module.manifest);
     await registry.add(adapter, def.name, { label: module.manifest.label, color: module.manifest.color });
+    // Each service gets its own values only, whenever they change.
+    if (module.manifest.settings?.length) {
+      settingsStore.changed.on(({ patch }) => {
+        if (patch.services && Object.hasOwn(patch.services, def.id)) adapter.applySettings?.(settingValues(module.manifest, def.id));
+      });
+    }
     if (module.manifest.usesVoiceSettings) {
       const sendVoice = (): void => view.webContents.send(SETTINGS_IPC.voice, settingsStore.get().voice);
       view.webContents.on("did-finish-load", sendVoice);
@@ -621,6 +631,11 @@ export async function createShell(
   registry.onChange(() => {
     if (mode === "settings") settings.refresh();
   });
+  for (const adapter of adapters.values()) {
+    adapter.onSettingsStatusChanged?.(() => {
+      if (mode === "settings") settings.refresh();
+    });
+  }
   streamer.changed.on(() => {
     publishMessages();
     if (mode === "settings") settings.refresh();

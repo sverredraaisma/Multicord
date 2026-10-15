@@ -18,7 +18,7 @@ import {
   type PickedFile,
 } from "../shared/engine";
 import { isNativeAction, NATIVE_IPC } from "../shared/native";
-import type { AccountStatus } from "../shared/settings";
+import type { AccountStatus, ServiceSettingStatus, ServiceSettingValues } from "../shared/settings";
 import type { SecretStore } from "./credentials";
 import { contentTypeFor, readRange } from "./files";
 import { checkUrl, createAddressGuard, narrowHosts, performHttp, type UrlPolicy } from "./netPolicy";
@@ -36,6 +36,8 @@ export class EngineAdapter extends BaseAdapter implements PlatformAdapter {
   private directs: DirectConversation[] = [];
   private engine: EngineHealth = { state: "starting", responsive: true, restarts: 0 };
   private readonly accountChanged = new Emitter<AccountStatus>();
+  private settings: ServiceSettingStatus = {};
+  private readonly settingsChanged = new Emitter<void>();
   readonly openHome?: () => Promise<void>;
 
   constructor(
@@ -68,7 +70,26 @@ export class EngineAdapter extends BaseAdapter implements PlatformAdapter {
         this.badge = event.badge;
         // The rail reads the home badge when servers change.
         return this.serversChanged.emit(this.servers);
+      case "settingsStatus":
+        this.settings = event.status;
+        return this.settingsChanged.emit();
     }
+  }
+
+  applySettings(values: ServiceSettingValues): void {
+    this.send({ type: "settings", values });
+  }
+
+  async runSettingAction(key: string): Promise<void> {
+    this.send({ type: "settingAction", key });
+  }
+
+  settingsStatus(): ServiceSettingStatus {
+    return this.settings;
+  }
+
+  onSettingsStatusChanged(cb: () => void): () => void {
+    return this.settingsChanged.on(cb);
   }
 
   /** The host's view of the engine process, for Settings > Diagnostics. */
@@ -164,6 +185,8 @@ export interface EngineSpec {
   /** The module's own view; it gets the engine's display state and sends user actions. */
   view: WebContentsView;
   secrets: SecretStore;
+  /** For a module that declares settings: the instance's values now, given to the engine with its info. */
+  settings?: () => ServiceSettingValues;
 }
 
 interface Running {
@@ -401,6 +424,7 @@ export class EngineHub {
         running.adapter.setEngineHealth(running.health);
         for (const { channel, payload } of running.queue.splice(0)) running.engine.webContents.send(channel, payload);
         const info: EngineInfo = { id: spec.def.id, name: spec.def.name, url: spec.def.url, os: this.deps.os };
+        if (spec.settings) info.settings = spec.settings();
         return info;
       }
       case "secretLoad":

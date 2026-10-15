@@ -1,7 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { PlatformAdapter } from "../shared/adapter";
-import { diagnosticsReport, type ModuleInfo, type ServiceInfo, type SettingsAction, type SettingsViewState, type ShortcutAction, type UpdateStatus } from "../shared/settings";
+import {
+  diagnosticsReport,
+  fitsServiceFields,
+  type ModuleInfo,
+  type ServiceInfo,
+  type ServiceSettingField,
+  type SettingsAction,
+  type SettingsViewState,
+  type ShortcutAction,
+  type UpdateStatus,
+} from "../shared/settings";
 import { configurableModules } from "./modules/index";
 import type { PlatformModule } from "./modules/types";
 import { loadPlatforms } from "./platforms";
@@ -82,15 +92,25 @@ export class SettingsController {
     this.restartNeeded = true;
   }
 
-  state(): SettingsViewState {
+  /** Every configured service, as platforms.json says now. */
+  private platforms() {
     let text: string | undefined;
     try {
       text = fs.readFileSync(this.deps.platformsFile, "utf8");
     } catch {
       text = undefined;
     }
-    const { all } = loadPlatforms(() => text, this.rules);
-    const services: ServiceInfo[] = all.map(({ def, enabled, builtIn }) => {
+    return loadPlatforms(() => text, this.rules).all;
+  }
+
+  /** The settings a service's module declares. */
+  private fieldsOf(id: string): ServiceSettingField[] {
+    const def = this.platforms().find((p) => p.def.id === id)?.def;
+    return (def && this.manifest(def.module)?.settings) ?? [];
+  }
+
+  state(): SettingsViewState {
+    const services: ServiceInfo[] = this.platforms().map(({ def, enabled, builtIn }) => {
       const manifest = this.manifest(def.module);
       const adapter = this.deps.adapters.get(def.id);
       const service: ServiceInfo = {
@@ -108,6 +128,14 @@ export class SettingsController {
       if (adapter) service.account = adapter.accountStatus?.() ?? { state: "unknown" };
       const health = adapter?.health?.();
       if (health) service.health = health;
+      const fields = manifest?.settings ?? [];
+      if (fields.length > 0) {
+        service.settings = fields;
+        // Only what the module declared: a status for anything else is not shown.
+        const reported = adapter?.settingsStatus?.() ?? {};
+        const status = Object.fromEntries(fields.flatMap((f) => (Object.hasOwn(reported, f.key) ? [[f.key, reported[f.key]!]] : [])));
+        if (Object.keys(status).length > 0) service.settingsStatus = status;
+      }
       return service;
     });
     const modules: ModuleInfo[] = this.deps.modules
@@ -163,8 +191,19 @@ export class SettingsController {
   private async run(action: SettingsAction): Promise<void> {
     switch (action.type) {
       case "update":
+        // A module's values must name its own fields and fit them.
+        for (const [id, value] of Object.entries(action.patch.services ?? {})) {
+          if (value?.options && !fitsServiceFields(this.fieldsOf(id), value.options)) throw new Error("That setting does not exist for this service.");
+        }
         this.deps.store.update(action.patch);
         return;
+      case "serviceAction": {
+        if (!this.fieldsOf(action.id).some((f) => f.kind === "action" && f.key === action.key)) throw new Error("That setting does not exist for this service.");
+        const adapter = this.deps.adapters.get(action.id);
+        if (!adapter?.runSettingAction) throw new Error("Turn the service on first.");
+        await adapter.runSettingAction(action.key);
+        return;
+      }
       case "setEnabled": {
         const raw = setServiceEnabled(this.readConfig(), action.id, action.enabled);
         if (!keepsOneEnabled(raw, this.rules)) throw new Error("Keep at least one service turned on.");

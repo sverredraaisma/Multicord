@@ -104,6 +104,23 @@ describe("EngineAdapter", () => {
     expect(adapter.mode).toBe("native");
     expect(new EngineAdapter("x", "x", capabilities, send, false).openHome).toBeUndefined();
   });
+
+  it("passes Settings values and actions on as commands, and keeps the settings status the engine reports", async () => {
+    const send = vi.fn();
+    const adapter = new EngineAdapter("demo", "demo.example", capabilities, send, false);
+    const changed = vi.fn();
+    adapter.onSettingsStatusChanged(changed);
+    expect(adapter.settingsStatus()).toEqual({});
+    adapter.handle({ type: "settingsStatus", status: { forget: { text: "Remembered: a.org" } } });
+    expect(adapter.settingsStatus()).toEqual({ forget: { text: "Remembered: a.org" } });
+    expect(changed).toHaveBeenCalledOnce();
+    adapter.applySettings({ typing: false });
+    await adapter.runSettingAction("forget");
+    expect(send.mock.calls.map((c) => c[0])).toEqual([
+      { type: "settings", values: { typing: false } },
+      { type: "settingAction", key: "forget" },
+    ]);
+  });
 });
 
 describe("serveEngine", () => {
@@ -254,6 +271,17 @@ describe("EngineHub", () => {
     await ask({ type: "info" });
     expect(engine.webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "openConversation", key: "5" });
     expect(fromEngine.sender).toBe(engine.webContents);
+  });
+
+  it("gives the engine its service's settings values with its info, as they are when asked", async () => {
+    let values = { typing: true };
+    const { ask, adapter, fromEngine } = setup({ settings: () => values });
+    expect(await ask({ type: "info" })).toEqual({ id: "demo", name: "Demo", url: "https://demo.example", os: "win32", settings: { typing: true } });
+    values = { typing: false };
+    expect(await ask({ type: "info" })).toMatchObject({ settings: { typing: false } });
+    // A malformed status from the engine is dropped.
+    ipcMain.emit(ENGINE_IPC.event, fromEngine, { type: "settingsStatus", status: { forget: { text: 5 } } });
+    expect(adapter.settingsStatus()).toEqual({});
   });
 
   it("validates engine events and relays its display state to its own view only", () => {

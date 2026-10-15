@@ -1,6 +1,6 @@
 import type { SettingsApi } from "../preload/settings";
 import { keyNameForCode } from "../shared/keys";
-import { isAccelerator, serviceSettings, ZOOM_LEVELS, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
+import { isAccelerator, serviceSettings, serviceSettingValues, ZOOM_LEVELS, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
 import { el, initials, setColor } from "./components/dom";
 import { browserMediaEnv, playTestTone, startMeter, stopStream, type DeviceInfo, type MediaEnv, type Stop } from "./media";
 
@@ -652,6 +652,7 @@ export class SettingsPage {
       info.append(title, status);
       if (service.notice) info.append(el(doc, "p", "service-notice", service.notice));
       info.append(actions);
+      if (service.enabled && service.settings?.length) info.append(this.serviceFields(service));
       const { row, input } = switchRow(doc, "On", undefined, (on) => this.api.act({ type: "setEnabled", id: service.id, enabled: on }));
       row.classList.add("service-switch");
       input.checked = service.enabled;
@@ -660,6 +661,55 @@ export class SettingsPage {
       return item;
     });
     this.parts.services.replaceChildren(...items);
+  }
+
+  /** The settings the service's module declares: toggles, choices and action buttons, with what the service says about each. */
+  private serviceFields(service: ServiceInfo): HTMLElement {
+    const doc = this.root.ownerDocument;
+    const box = el(doc, "div", "service-settings");
+    const values = serviceSettingValues(service.settings, serviceSettings(this.state!.settings, service.id).options);
+    const set = (key: string, value: boolean | string): void => this.update({ services: { [service.id]: { options: { [key]: value } } } });
+    for (const field of service.settings!) {
+      const status = service.settingsStatus?.[field.key];
+      const row = el(doc, "div", "service-setting");
+      row.dataset.key = field.key;
+      // An action's button carries its label.
+      const text = el(doc, "span", "switch-text");
+      if (field.kind !== "action") text.append(el(doc, "span", "switch-label", field.label));
+      if (field.hint) text.append(el(doc, "small", "hint", field.hint));
+      if (status?.text) text.append(el(doc, "small", "hint setting-status", status.text));
+      if (field.kind === "toggle") {
+        const toggle = el(doc, "label", "switch-row");
+        const input = el(doc, "input", "switch");
+        input.type = "checkbox";
+        input.setAttribute("role", "switch");
+        input.checked = values[field.key] === true;
+        input.addEventListener("change", () => set(field.key, input.checked));
+        toggle.append(text, input);
+        row.append(toggle);
+      } else if (field.kind === "choice") {
+        const select = el(doc, "select");
+        select.setAttribute("aria-label", field.label);
+        for (const option of field.options) {
+          const item = el(doc, "option", undefined, option.label);
+          item.value = option.value;
+          item.selected = option.value === values[field.key];
+          select.append(item);
+        }
+        select.addEventListener("change", () => set(field.key, select.value));
+        row.append(text, select);
+      } else {
+        const run = (): void => this.api.act({ type: "serviceAction", id: service.id, key: field.key });
+        const button = field.confirm ? confirmButton(doc, field.label, field.confirm, run, "secondary") : el(doc, "button", "secondary", field.label);
+        button.type = "button";
+        if (!field.confirm) button.addEventListener("click", run);
+        // Actions need the service running, and something to act on.
+        button.disabled = service.account === undefined || status?.disabled === true;
+        row.append(text, button);
+      }
+      box.append(row);
+    }
+    return box;
   }
 
   private renderUpdate(update: SettingsViewState["update"]): void {

@@ -127,6 +127,12 @@ describe("isEngineEvent notification, call, account, homeBadge", () => {
     expect(isEngineEvent({ type: "homeBadge", badge: null })).toBe(false);
   });
 
+  it("validates settings statuses", () => {
+    expect(isEngineEvent({ type: "settingsStatus", status: { forgetApiId: { text: "Using your own.", disabled: false } } })).toBe(true);
+    expect(isEngineEvent({ type: "settingsStatus", status: { forgetApiId: { text: 5 } } })).toBe(false);
+    expect(isEngineEvent({ type: "settingsStatus" })).toBe(false);
+  });
+
   it("rejects unknown types and non-objects", () => {
     expect(isEngineEvent({ type: "nope" })).toBe(false);
     for (const v of [null, undefined, "servers", 1, []]) expect(isEngineEvent(v)).toBe(false);
@@ -146,6 +152,10 @@ describe("isEngineCommand", () => {
       expect(isEngineCommand({ type, key: "k".repeat(MAX_KEY + 1) })).toBe(false);
     }
     expect(isEngineCommand({ type: "visible", visible: "true" })).toBe(false);
+    expect(isEngineCommand({ type: "settings", values: { typing: false, theme: "dark" } })).toBe(true);
+    expect(isEngineCommand({ type: "settings", values: { typing: 1 } })).toBe(false);
+    expect(isEngineCommand({ type: "settingAction", key: "forgetCallServices" })).toBe(true);
+    expect(isEngineCommand({ type: "settingAction", key: "../x" })).toBe(false);
     expect(isEngineCommand({ type: "unknown" })).toBe(false);
     for (const v of [null, "openHome", []]) expect(isEngineCommand(v)).toBe(false);
   });

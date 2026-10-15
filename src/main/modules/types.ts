@@ -1,5 +1,6 @@
 import type { BaseWindow, Session, WebContentsView } from "electron";
 import type { PlatformAdapter } from "../../shared/adapter";
+import type { ServiceSettingField, ServiceSettingValues } from "../../shared/settings";
 import type { SecretBox, SecretStore } from "../credentials";
 import type { PlatformDef } from "../platforms";
 import type { PageKeys } from "../shortcuts";
@@ -48,6 +49,13 @@ export interface ModuleManifest {
   screenShare?: boolean;
   /** Engines only: what the module supports. */
   capabilities?: PlatformAdapter["capabilities"];
+  /**
+   * Settings each service of this module has, shown under it in Settings >
+   * Services. An engine gets its values in EngineInfo.settings and changes
+   * as commands (ServedAdapter.applySettings), and its action buttons as
+   * runSettingAction(); a load() module gets them from ModuleHost.settings().
+   */
+  settings?: ServiceSettingField[];
 }
 
 /** What the shell itself uses; modules never get the OS secret store. */
@@ -70,6 +78,8 @@ export interface ModuleHost {
   secrets: SecretStore;
   /** Routes getDisplayMedia in this view through the shell's screen picker. */
   enableScreenShare(): void;
+  /** This instance's values for the manifest's settings now; changes reach the adapter's applySettings(). */
+  settings(): ServiceSettingValues;
 }
 
 export interface LoadedPlatform {

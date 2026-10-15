@@ -4,7 +4,7 @@ import { createEngineBridge, type EngineBridge, type EngineIpc } from "../../src
 import type { AccountRef, DirectConversation, HomeBadge, IncomingCall, PlatformNotification, RailServer } from "../../src/shared/adapter";
 import { BaseAdapter } from "../../src/shared/baseAdapter";
 import { ENGINE_IPC, type EngineCommand, type HttpResponse } from "../../src/shared/engine";
-import type { AccountStatus } from "../../src/shared/settings";
+import type { AccountStatus, ServiceSettingStatus } from "../../src/shared/settings";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
@@ -308,6 +308,46 @@ describe("serveAdapter commands", () => {
     action({ do: "x" });
     await flush();
     expect(adapter.handleAction).toHaveBeenCalledWith({ do: "x" });
+  });
+
+  it("hands Settings values and actions to the adapter, and reports its settings status when it changes", async () => {
+    const f = fakeBridge();
+    const adapter = new FakeAdapter() as FakeAdapter & ServedAdapter;
+    let status: ServiceSettingStatus = { forget: { text: "Remembered: a.org" } };
+    adapter.settingsStatus = () => status;
+    adapter.applySettings = vi.fn();
+    adapter.runSettingAction = vi.fn(async () => void (status = { forget: { text: "None", disabled: true } }));
+    const log = vi.fn();
+    const { sync } = serveAdapter(f.bridge, adapter, log);
+    sync();
+    sync();
+    expect(f.bridge.emit.mock.calls.filter(([e]) => e.type === "settingsStatus")).toEqual([[{ type: "settingsStatus", status: { forget: { text: "Remembered: a.org" } } }]]);
+    f.command({ type: "settings", values: { typing: false } });
+    f.command({ type: "settingAction", key: "forget" });
+    await flush();
+    expect(adapter.applySettings).toHaveBeenCalledWith({ typing: false });
+    expect(adapter.runSettingAction).toHaveBeenCalledWith("forget");
+    expect(f.bridge.emit).toHaveBeenLastCalledWith({ type: "settingsStatus", status: { forget: { text: "None", disabled: true } } });
+    // A failed action is logged, and what it changed before failing is still reported.
+    adapter.runSettingAction = vi.fn(async () => {
+      status = {};
+      throw new Error("no");
+    });
+    f.command({ type: "settingAction", key: "forget" });
+    await flush();
+    expect(log).toHaveBeenCalledWith("setting forget: no");
+    expect(f.bridge.emit).toHaveBeenLastCalledWith({ type: "settingsStatus", status: {} });
+  });
+
+  it("ignores Settings commands an adapter has no use for, and reports no status for it", async () => {
+    const f = fakeBridge();
+    const log = vi.fn();
+    serveAdapter(f.bridge, new FakeAdapter(), log).sync();
+    f.command({ type: "settings", values: {} });
+    f.command({ type: "settingAction", key: "forget" });
+    await flush();
+    expect(log).not.toHaveBeenCalled();
+    expect(f.bridge.emit.mock.calls.map(([e]) => e.type)).not.toContain("settingsStatus");
   });
 
   it("logs to console.warn by default", async () => {

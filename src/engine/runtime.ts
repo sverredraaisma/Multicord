@@ -101,7 +101,14 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
 export function serveAdapter(bridge: EngineBridge, adapter: ServedAdapter, log: (message: string) => void = console.warn): { sync(): void } {
   let lastAccount = "";
   let lastBadge = "";
+  let lastSettings = "{}";
   const sync = (): void => {
+    const status = adapter.settingsStatus?.();
+    const statusJson = JSON.stringify(status ?? {});
+    if (status && statusJson !== lastSettings) {
+      lastSettings = statusJson;
+      bridge.emit({ type: "settingsStatus", status });
+    }
     const account: AccountStatus = adapter.accountStatus?.() ?? { state: "unknown" };
     const accountJson = JSON.stringify(account);
     if (accountJson !== lastAccount) {
@@ -146,6 +153,19 @@ export function serveAdapter(bridge: EngineBridge, adapter: ServedAdapter, log: 
         return adapter.setVisible?.(command.visible);
       case "signOut":
         return attempt("sign out", () => adapter.signOut?.());
+      case "settings":
+        return attempt("apply settings", () => {
+          adapter.applySettings?.(command.values);
+          sync();
+        });
+      case "settingAction":
+        return attempt(`setting ${command.key}`, async () => {
+          try {
+            await adapter.runSettingAction?.(command.key);
+          } finally {
+            sync();
+          }
+        });
     }
   });
   bridge.onAction((action) => attempt("action", () => adapter.handleAction?.(action)));
