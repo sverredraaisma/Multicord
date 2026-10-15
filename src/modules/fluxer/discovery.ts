@@ -18,6 +18,8 @@ export interface FluxerInstance {
    * guild (in other guilds and in DMs); undefined when it publishes none.
    */
   expressionRules?: LimitRule[];
+  /** The instance's public status page, where it names one (https only). */
+  statusPage?: string;
 }
 
 /** One rule of the instance's limits, reduced to feature_global_expressions. */
@@ -95,6 +97,8 @@ export async function discoverInstance(origin: string, fetchFn: typeof fetch): P
   const media = https(endpoints.media);
   if (!api || !gateway?.startsWith("wss:") || !media) throw new Error("Instance discovery returned incomplete endpoints");
   const features = isRecord(body.features) ? body.features : {};
+  const branding = isRecord(body.app_public) && isRecord(body.app_public.branding) ? body.app_public.branding : {};
+  const statusPage = https(branding.status_page_url);
   return {
     api: `${api}/v1`,
     gateway,
@@ -104,5 +108,6 @@ export async function discoverInstance(origin: string, fetchFn: typeof fetch): P
     voiceEnabled: features.voice_enabled !== false,
     gifs: isRecord(body.gif) && !(isRecord(body.services) && body.services.gif_enabled === false),
     expressionRules: parseExpressionRules(body.limits),
+    ...(statusPage?.startsWith("https:") ? { statusPage } : {}),
   };
 }

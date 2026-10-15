@@ -106,6 +106,43 @@ describe("FluxerAdapter session", () => {
     expect(adapter.mode).toBe("native");
   });
 
+  it("checks the instance's health endpoints now and then, for Diagnostics", async () => {
+    const { HEALTH_INTERVAL_MS } = await import("../../../src/modules/fluxer/adapter");
+    let gateway: { status: number } | Error = { status: 503 };
+    let found = false;
+    const { adapter, calls, renders } = setup({
+      routes: [
+        (url) => (url.endsWith("/.well-known/fluxer") && !found ? { status: 503 } : undefined),
+        (url) => (url.endsWith("/.well-known/fluxer") ? { status: 200, body: { ...DISCOVERY, app_public: { branding: { status_page_url: "https://status.fx" } } } } : undefined),
+        (url) => {
+          if (url !== "https://gw.fx/_health") return undefined;
+          if (gateway instanceof Error) throw gateway;
+          return gateway;
+        },
+      ],
+    });
+    expect(adapter.health()).toEqual([]);
+    await adapter.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(adapter.health()).toEqual([{ name: "Instance found", ok: false, detail: "Could not reach Fluxer: Instance discovery failed (HTTP 503) Nothing works until it does." }]);
+    found = true;
+    const shown = renders.length;
+    await vi.advanceTimersByTimeAsync(HEALTH_INTERVAL_MS);
+    expect(calls.filter((c) => c.url.endsWith("/_health")).map((c) => c.url)).toEqual(["https://api.fx/_health", "https://gw.fx/_health", "https://media.fx/_health"]);
+    expect(adapter.health()).toEqual([
+      { name: "API answers", ok: true },
+      { name: "Gateway answers", ok: false, detail: "It answered HTTP 503. New messages, typing and calls do not arrive. Its status page: https://status.fx" },
+      { name: "Media answers", ok: true },
+    ]);
+    // Each round renders, so the engine reports it.
+    expect(renders.length).toBeGreaterThan(shown);
+    gateway = new Error("offline");
+    await vi.advanceTimersByTimeAsync(HEALTH_INTERVAL_MS);
+    expect(adapter.health()[1]).toEqual({ name: "Gateway answers", ok: false, detail: "It could not be reached (offline). New messages, typing and calls do not arrive. Its status page: https://status.fx" });
+    // Nothing is sent with them: no token, no body.
+    expect(calls.filter((c) => c.url.endsWith("/_health")).every((c) => c.init.headers === undefined && c.init.body === undefined)).toBe(true);
+  });
+
   it("reports an unreachable instance and retries discovery on login", async () => {
     let down = true;
     const { adapter, last, secrets } = setup({

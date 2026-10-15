@@ -1,4 +1,4 @@
-import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
+import type { DirectConversation, HealthCheck, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
 import {
   MAX_ATTACHMENTS,
   type NativeAction,
@@ -63,6 +63,9 @@ const GIF_DEBOUNCE_MS = 300;
 const MEMBER_WINDOW = 100;
 /** How long to wait for a member list before saying it did not come (Fluxer sends none where the user may not see the channel's members). */
 const MEMBER_LIST_TIMEOUT_MS = 15_000;
+
+/** How often the instance's health endpoints are asked whether its services run. */
+export const HEALTH_INTERVAL_MS = 5 * 60_000;
 
 /** LiveKit wants a ws(s) URL; Fluxer's endpoint may be a bare host. */
 export function liveKitUrl(endpoint: string): string {
@@ -177,6 +180,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private memberError: string | undefined;
   /** The profile card the view asked for last. */
   private profile: NativeProfile | undefined;
+  /** Whether the instance's services answered their health checks last time. */
+  private checks: HealthCheck[] = [];
+  private healthTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly deps: FluxerAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -199,7 +205,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
 
   /** Discovers the instance and resumes a saved session, else shows the login screen. */
   async start(): Promise<void> {
-    if (!(await this.ensureInstance())) return this.render();
+    this.healthTimer ??= setInterval(() => void this.checkHealth(), HEALTH_INTERVAL_MS);
+    const found = await this.ensureInstance();
+    void this.checkHealth();
+    if (!found) return this.render();
     const token = await this.deps.secrets.load(this.secretKey);
     this.hasToken = token !== undefined;
     if (token) this.openSession(token);
@@ -336,6 +345,40 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   // --- Session ---------------------------------------------------------------
+
+  /** For Settings > Diagnostics: whether the instance's API, gateway and media servers answer. */
+  health(): HealthCheck[] {
+    return this.checks;
+  }
+
+  /**
+   * Asks the instance's documented health endpoints (/_health on its API,
+   * gateway and media proxy) whether they run. Nothing is sent with them.
+   */
+  private async checkHealth(): Promise<void> {
+    const instance = await this.ensureInstance();
+    const status = instance?.statusPage ? ` Its status page: ${instance.statusPage}` : "";
+    if (!instance) {
+      this.checks = [{ name: "Instance found", ok: false, detail: `${this.error ?? "It did not answer."} Nothing works until it does.` }];
+      return this.render();
+    }
+    const probes = [
+      { name: "API answers", url: `${instance.api.replace(/\/v1$/, "")}/_health`, breaks: "Signing in, history and sending fail." },
+      { name: "Gateway answers", url: `${instance.gateway.replace(/^wss:/, "https:")}/_health`, breaks: "New messages, typing and calls do not arrive." },
+      { name: "Media answers", url: `${instance.media}/_health`, breaks: "Pictures, avatars and files do not load." },
+    ];
+    this.checks = await Promise.all(
+      probes.map(async ({ name, url, breaks }): Promise<HealthCheck> => {
+        try {
+          const response = await this.deps.fetch(url);
+          return response.ok ? { name, ok: true } : { name, ok: false, detail: `It answered HTTP ${response.status}. ${breaks}${status}` };
+        } catch (error) {
+          return { name, ok: false, detail: `It could not be reached (${messageOf(error)}). ${breaks}${status}` };
+        }
+      }),
+    );
+    this.render();
+  }
 
   private async ensureInstance(): Promise<FluxerInstance | undefined> {
     if (this.instance) return this.instance;

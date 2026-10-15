@@ -74,6 +74,12 @@ describe("discoverInstance", () => {
     }
   });
 
+  it("reads the status page, https only", async () => {
+    const discover = (url: unknown) => discoverInstance("https://fluxer.app", fakeFetch({ status: 200, body: { ...OFFICIAL, app_public: { branding: { status_page_url: url } } } }).fetch);
+    expect(await discover("https://fluxerstatus.com/")).toMatchObject({ statusPage: "https://fluxerstatus.com" });
+    for (const url of ["wss://x.example", "http://x.example", null]) expect(await discover(url)).not.toHaveProperty("statusPage");
+  });
+
   it("reads GIF search and the expression limits", async () => {
     const discover = (extra: Record<string, unknown>) => discoverInstance("https://fluxer.app", fakeFetch({ status: 200, body: { ...OFFICIAL, ...extra } }).fetch);
     const gif = { provider: "klipy", display_name: "Klipy", attribution_required: false };
