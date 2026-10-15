@@ -297,6 +297,8 @@ export interface ServiceInfo {
   enabled: boolean;
   /** Built-in services can be turned off but not removed. */
   builtIn: boolean;
+  /** What users should know before using the service's module. */
+  notice?: string;
   /** Present for services running now; disabled ones have no account state. */
   account?: AccountStatus;
   /** Integration checks, for services that report them. */

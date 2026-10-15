@@ -649,7 +649,9 @@ export class SettingsPage {
         notes.append(box, " Notifications");
         actions.append(notes);
       }
-      info.append(title, status, actions);
+      info.append(title, status);
+      if (service.notice) info.append(el(doc, "p", "service-notice", service.notice));
+      info.append(actions);
       const { row, input } = switchRow(doc, "On", undefined, (on) => this.api.act({ type: "setEnabled", id: service.id, enabled: on }));
       row.classList.add("service-switch");
       input.checked = service.enabled;

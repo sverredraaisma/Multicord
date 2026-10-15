@@ -199,6 +199,7 @@
 .service-status { margin-top: 2px; color: var(--muted); font-size: 13px; }
 .service-status[data-state="signed-in"] { color: var(--ok); }
 .service-status[data-state="signed-out"] { color: #f0b232; }
+.service-notice { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .service-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .service-actions button { padding: 4px 12px; font-size: 13px; }
 .service-switch { padding: 0; border: 0; }

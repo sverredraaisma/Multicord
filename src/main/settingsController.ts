@@ -104,6 +104,7 @@ export class SettingsController {
         enabled,
         builtIn,
       };
+      if (manifest?.notice) service.notice = manifest.notice;
       if (adapter) service.account = adapter.accountStatus?.() ?? { state: "unknown" };
       const health = adapter?.health?.();
       if (health) service.health = health;

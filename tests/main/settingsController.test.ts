@@ -63,6 +63,7 @@ describe("settings state", () => {
         moduleName: "Discord",
         label: "Discord",
         color: "#5865f2",
+        notice: expect.stringContaining("carries some risk to your account"),
         enabled: true,
         builtIn: true,
         account: { state: "signed-in", name: "Ana" },

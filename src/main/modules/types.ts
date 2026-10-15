@@ -16,6 +16,8 @@ export interface ModuleManifest {
   /** Address prefilled for new instances; with fixedUrl, the only one allowed. */
   defaultUrl?: string;
   fixedUrl?: boolean;
+  /** What users should know before using the module (e.g. a risk to their account), shown with its services in Settings. */
+  notice?: string;
   /** The module runs calls itself and takes the voice settings (devices, processing). */
   usesVoiceSettings?: boolean;
   /** Preload script for the module's view, relative to the build directory. */

@@ -191,6 +191,12 @@ describe("services tab", () => {
     expect(status("new").textContent).toBe("Starts after a restart");
     expect(status("new").dataset.state).toBe("pending");
     expect(button("Open", row("new"))).toBeUndefined();
+    expect(row("discord").querySelector(".service-notice")).toBeNull();
+  });
+
+  it("shows what a module says users should know, with its services", () => {
+    mount(viewState({ services: [service({ notice: "Some risk to your account." })] }));
+    expect(q(".service-notice").textContent).toBe("Some risk to your account.");
   });
 
   it("turns a running service's notifications on and off", () => {
