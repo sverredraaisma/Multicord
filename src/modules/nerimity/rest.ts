@@ -29,6 +29,8 @@ export interface ReactionTarget {
 const MAX_RETRIES = 2;
 /** Messages per page of history (the server allows up to 100). */
 export const PAGE_SIZE = 50;
+/** Pins per page, as the server gives them. */
+export const PIN_PAGE = 10;
 /** The CDN takes files up to 50 MB. */
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const READ_CHUNK = 1 << 20;
@@ -144,6 +146,18 @@ export class NerimityRest {
     const body: Record<string, unknown> = { name: target.name };
     if (target.emojiId) Object.assign(body, { emojiId: target.emojiId, gif: target.gif === true, webp: target.webp === true });
     return parseReactionCount(await this.request("POST", `/channels/${channelId}/messages/${messageId}/reactions${add ? "" : "/remove"}`, body));
+  }
+
+  /** One page of a channel's pins (PIN_PAGE, newest pin first); `after` continues after that pinned message. */
+  async pins(channelId: string, after?: string): Promise<NerimityMessage[]> {
+    const query = after ? `?${new URLSearchParams({ afterId: after })}` : "";
+    const data = await this.request("GET", `/channels/${channelId}/messages/pins${query}`);
+    return list(isRecord(data) ? data.messages : undefined).flatMap((m) => parseMessage(m) ?? []);
+  }
+
+  /** Pins or unpins a message (POST or DELETE /channels/{id}/messages/pins/{message}). */
+  async pin(channelId: string, messageId: string, pin: boolean): Promise<void> {
+    await this.request(pin ? "POST" : "DELETE", `/channels/${channelId}/messages/pins/${messageId}`);
   }
 
   async typing(channelId: string): Promise<void> {

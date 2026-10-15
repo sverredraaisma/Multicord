@@ -12,7 +12,7 @@ export const TEXT_CHANNEL_TYPES: ReadonlySet<number> = new Set([ChannelType.Dm, 
 export const MessageType = { Content: 0, JoinServer: 1, LeaveServer: 2, KickUser: 3, BanUser: 4, CallStarted: 5, BumpServer: 6, PinnedMessage: 7 } as const;
 
 /** Role permission bits (ROLE_PERMISSIONS in Nerimity's server). */
-export const RolePermission = { Admin: 1, SendMessage: 2, MentionEveryone: 64, MentionRoles: 256 } as const;
+export const RolePermission = { Admin: 1, SendMessage: 2, ManageChannels: 4, MentionEveryone: 64, MentionRoles: 256 } as const;
 /** Channel permission bits a role is given per channel (CHANNEL_PERMISSIONS). */
 export const ChannelPermission = { Public: 1, SendMessage: 2 } as const;
 
@@ -144,6 +144,7 @@ export interface NerimityMessage {
   /** Messages quoted inline with [q:id]. */
   quotes: NerimityReply[];
   embed?: NerimityLinkEmbed;
+  pinned?: boolean;
 }
 
 /** A DM: the conversation with one other user, as the inbox lists it. */
@@ -332,6 +333,7 @@ export function parseMessage(value: unknown): NerimityMessage | undefined {
   if (replyTo) message.replyTo = replyTo;
   const embed = parseEmbed(value.embed);
   if (embed) message.embed = embed;
+  if (value.pinned === true) message.pinned = true;
   return message;
 }
 

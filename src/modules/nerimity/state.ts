@@ -391,6 +391,8 @@ export class NerimityState {
       if (embed) message.embed = embed;
       else delete message.embed;
     }
+    if (updated.pinned === true) message.pinned = true;
+    else if (updated.pinned === false) delete message.pinned;
     const latest = this.latest.get(message.channelId);
     if (latest?.id === message.id) this.latest.set(message.channelId, message);
     return true;
@@ -475,6 +477,15 @@ export class NerimityState {
     const granted = channel.permissions.filter((p) => roleIds.includes(p.roleId)).reduce((bits, p) => bits | p.permissions, 0);
     if (granted & ChannelPermission.Public) return true;
     return (this.roles.get(server.id) ?? []).some((r) => roleIds.includes(r.id) && (r.permissions & RolePermission.Admin) !== 0);
+  }
+
+  /** Whether the user may manage a server's channels (and so pin there): its owner, or by a role with Admin or Manage Channels. */
+  canManageChannels(serverId: string): boolean {
+    const server = this.servers.get(serverId);
+    if (!server) return false;
+    if (this.me && server.createdById === this.me.id) return true;
+    const roleIds = this.ownRoleIds(server);
+    return (this.roles.get(server.id) ?? []).some((r) => roleIds.includes(r.id) && (r.permissions & (RolePermission.Admin | RolePermission.ManageChannels)) !== 0);
   }
 
   /** The user's roles in a server, with its default role. */

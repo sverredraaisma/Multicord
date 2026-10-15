@@ -560,6 +560,8 @@ describe("NerimityAdapter messages", () => {
       mine: false,
       canEdit: false,
       canDelete: false,
+      // Pinning in Alpha takes Manage Channels, which the user's roles lack.
+      canPin: false,
       mentionsMe: true,
       reactions: [
         { key: "👍", label: "👍", imageUrl: undefined, count: 1, me: true },
@@ -600,6 +602,93 @@ describe("NerimityAdapter messages", () => {
     expect(ctx.channel().messages[0]!.embeds).toEqual([{ title: "Later" }]);
     await ctx.dispatch("message:updated", { channelId: "111", messageId: "450", updated: { content: "edited" } });
     expect(ctx.channel().messages[0]).toMatchObject({ content: "edited", embeds: [{ title: "Later" }] });
+  });
+
+  it("lists pins in pages while the panel is open, and follows them live", async () => {
+    let total = 30;
+    let failing = false;
+    const pinned = (from: number) => Array.from({ length: Math.max(0, Math.min(10, total - (from - 600))) }, (_, i) => message(String(from + i), "900"));
+    const ctx = await opened(
+      {
+        routes: [
+          (url, init) => {
+            if (!url.startsWith(`${API}/channels/900/messages/pins`) || init.method !== "GET") return undefined;
+            if (failing) return { status: 429, body: { message: "Too many requests" } };
+            const after = new URL(url).searchParams.get("afterId");
+            return { status: 200, body: { messages: [...pinned(after ? Number(after) + 1 : 600), { bad: true }] } };
+          },
+        ],
+      },
+      "900",
+    );
+    const lists = () => ctx.calls.filter((c) => c.url.startsWith(`${API}/channels/900/messages/pins`) && c.init.method === "GET").map((c) => c.url);
+    expect(ctx.channel().can.pins).toBe(true);
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(lists()).toEqual([`${API}/channels/900/messages/pins`, `${API}/channels/900/messages/pins?afterId=609`, `${API}/channels/900/messages/pins?afterId=619`]);
+    expect(ctx.channel().pins).toMatchObject({ loading: false, note: "Only the latest 30 pins are listed." });
+    expect(ctx.channel().pins!.messages).toHaveLength(30);
+    expect(ctx.channel().pins!.messages[0]).toEqual({ id: "600", author: "ana", avatarUrl: `${CDN}/avatars/2/9.webp`, content: "m600", timestamp: new Date(at(600)).toISOString() });
+    // Someone pins in this channel: the message shows pinned and the list is fetched again.
+    total = 12;
+    await ctx.dispatch("message:updated", { channelId: "900", messageId: "450", updated: { pinned: true } });
+    expect(ctx.channel().messages[0]).toMatchObject({ pinned: true });
+    expect(ctx.channel().pins).toEqual({ messages: expect.any(Array), loading: false });
+    expect(ctx.channel().pins!.messages).toHaveLength(12);
+    await ctx.dispatch("message:updated", { channelId: "900", messageId: "450", updated: { pinned: false } });
+    expect(ctx.channel().messages[0]).not.toHaveProperty("pinned");
+    // Other channels' updates and other changes fetch nothing.
+    const fetched = lists().length;
+    await ctx.dispatch("message:updated", { channelId: "111", messageId: "1", updated: { pinned: true } });
+    await ctx.dispatch("message:updated", { channelId: "900", messageId: "450", updated: { content: "x" } });
+    await ctx.dispatch("message:updated", { channelId: "900", messageId: "450" });
+    expect(lists()).toHaveLength(fetched);
+    // A failure shows in the panel; a deleted author's pin still lists.
+    failing = true;
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(ctx.channel().pins).toEqual({ messages: [], loading: false, error: "Could not load pinned messages: Too many requests" });
+    failing = false;
+    total = 0;
+    ctx.routes.unshift((url) => (url === `${API}/channels/900/messages/pins` ? { status: 200, body: { messages: [message("700", "900", { createdBy: null, content: "", attachments: [{ id: "8", path: "a/b.png", provider: "local" }] })] } } : undefined));
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(ctx.channel().pins!.messages).toEqual([{ id: "700", author: "Deleted user", content: "📎 Attachment", timestamp: new Date(at(700)).toISOString() }]);
+    ctx.routes.unshift((url) => (url === `${API}/channels/900/messages/pins` ? { status: 200, body: "odd" } : undefined));
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(ctx.channel().pins).toEqual({ messages: [], loading: false });
+    // Closed, or another channel opened: no list, and late answers are dropped.
+    const late = ctx.adapter.handleAction({ type: "pins", open: true });
+    await ctx.adapter.handleAction({ type: "pins", open: false });
+    await late;
+    expect(ctx.channel()).not.toHaveProperty("pins");
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    await ctx.adapter.openConversation("111");
+    expect(ctx.channel()).not.toHaveProperty("pins");
+    await ctx.adapter.handleAction({ type: "pins", open: false });
+  });
+
+  it("pins and unpins where the user may, and shows the server's refusal", async () => {
+    const ctx = await opened({}, "900");
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
+    expect(ctx.calls.at(-1)).toMatchObject({ url: `${API}/channels/900/messages/pins/450`, init: { method: "POST" } });
+    expect(ctx.channel().messages[0]).toMatchObject({ pinned: true, canPin: true });
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: false });
+    expect(ctx.calls.at(-1)).toMatchObject({ url: `${API}/channels/900/messages/pins/450`, init: { method: "DELETE" } });
+    expect(ctx.channel().messages[0]).not.toHaveProperty("pinned");
+    await ctx.adapter.handleAction({ type: "pin", messageId: "999", pin: true });
+    ctx.routes.unshift((url) => (url.includes("/messages/pins/") ? { status: 500, body: { message: "Message already pinned!" } } : undefined));
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
+    expect(ctx.last()).toMatchObject({ error: "Message not pinned: Message already pinned!" });
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: false });
+    expect(ctx.last()).toMatchObject({ error: "Message not unpinned: Message already pinned!" });
+    // In a server, only its owner and whoever may manage its channels; system lines never.
+    await ctx.adapter.openConversation("211");
+    expect(ctx.channel().messages[0]!.canPin).toBe(true);
+    await ctx.adapter.openConversation("111");
+    expect(ctx.channel().messages[0]!.canPin).toBe(false);
+    await ctx.dispatch("server:role_updated", { serverId: "100", roleId: "122", updated: { permissions: 4 } });
+    expect(ctx.channel().messages[0]!.canPin).toBe(true);
+    await ctx.dispatch("message:created", { message: message("460", "111", { type: 1 }) });
+    expect(ctx.channel().messages.at(-1)!.canPin).toBe(false);
+    expect(ctx.adapter.state.canManageChannels("404")).toBe(false);
   });
 
   it("sends, replies, edits and deletes", async () => {
@@ -653,6 +742,8 @@ describe("NerimityAdapter messages", () => {
       { type: "sendFile", file: { handle: "h", name: "a.png", size: 1, type: "image/png" } },
       { type: "removeAttachment", index: 0 },
       { type: "joinVoice", channelId: "1" },
+      { type: "pins", open: true },
+      { type: "pin", messageId: "1", pin: true },
     ] as const)
       await adapter.handleAction(action as never);
     expect(calls.length).toBe(before);

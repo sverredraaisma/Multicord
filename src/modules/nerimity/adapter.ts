@@ -5,9 +5,11 @@ import {
   type NativeAttachment,
   type NativeCustomEmoji,
   type NativeEmbed,
+  type NativeListedMessage,
   type NativeMember,
   type NativeMemberList,
   type NativeMessage,
+  type NativeMessageList,
   type NativePresence,
   type NativeProfile,
   type NativeSidebarItem,
@@ -19,7 +21,7 @@ import { TYPING_SETTING, type AccountStatus, type ServiceSettingValues } from ".
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { emojiMarkup, toMarkdown, toPlainLine, type MarkupNames } from "./markup";
-import { NerimityApiError, NerimityRest, PAGE_SIZE, type ReactionTarget, type RestOptions } from "./rest";
+import { NerimityApiError, NerimityRest, PAGE_SIZE, PIN_PAGE, type ReactionTarget, type RestOptions } from "./rest";
 import { NerimitySocket, type SocketFactory, type SocketStatus } from "./socket";
 import { NerimityState, TYPING_MS } from "./state";
 import {
@@ -49,6 +51,8 @@ const MAX_MEMBERS = 200;
 const MAX_CONTENT = 2_000;
 /** An upload token is good for a few minutes; Nerimity's client reuses one for two. */
 const CDN_TOKEN_MS = 2 * 60_000;
+/** Pages of pins fetched at most: the server allows ten pin lists per 30 seconds. */
+const PIN_PAGES = 3;
 const SIGN_IN_PROMPT = "signin";
 const TOKEN_PROMPT = "token";
 
@@ -166,6 +170,8 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
   private profile: NativeProfile | undefined;
   private checks: HealthCheck[] = [];
   private healthTimer: ReturnType<typeof setInterval> | undefined;
+  /** The open channel's pinned messages, while its pins panel is open. */
+  private pins: { channelId: string; list: NativeMessageList } | undefined;
 
   constructor(private readonly deps: NerimityAdapterDeps) {
     const url = new URL(deps.def.url);
@@ -241,6 +247,10 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
         return this.render();
       case "profile":
         return this.showProfile(action.id);
+      case "pins":
+        return this.showPins(action.open);
+      case "pin":
+        return this.pin(action.messageId, action.pin);
       case "logout":
         return this.logout();
       default:
@@ -405,6 +415,9 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
 
   private onEvent(name: string, data: unknown): void {
     this.state.apply(name, data);
+    // Someone pinned or unpinned in the channel whose pins are listed.
+    if (name === "message:updated" && this.pins && isRecord(data) && data.channelId === this.pins.channelId && isRecord(data.updated) && typeof data.updated.pinned === "boolean")
+      void this.loadPins(this.pins.channelId);
     if (name !== "user:authenticated") return;
     // The server may hand out a new token with the session; later connections use it.
     const fresh = isRecord(data) ? data.newToken : undefined;
@@ -432,6 +445,7 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     this.state.reset();
     this.membersOpen = false;
     this.profile = undefined;
+    this.pins = undefined;
     this.pending.clear();
     this.cdnTokens.clear();
     this.selection = { kind: "home" };
@@ -453,6 +467,7 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
       // Noted before it is read: where its news began.
       this.unreadAt = this.state.isUnread(channel) ? { channelId, after: this.state.lastSeen.get(channelId) ?? 0 } : undefined;
       this.profile = undefined;
+      this.pins = undefined;
     }
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.serverId ?? "home", channelId);
@@ -605,6 +620,50 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     await this.attempt("Reaction failed", async () => {
       const result = await this.rest.react(channelId, messageId, target, add);
       if (result && this.state.setReaction(channelId, messageId, { ...target, ...result }, add)) this.state.changed.emit();
+    });
+  }
+
+  /** Opens the open channel's pins panel and fetches its pins, or closes it. */
+  private async showPins(open: boolean): Promise<void> {
+    const channelId = this.selectedChannelId;
+    this.pins = open && channelId ? { channelId, list: { messages: [], loading: true } } : undefined;
+    this.render();
+    if (this.pins) await this.loadPins(this.pins.channelId);
+  }
+
+  /** Fetches the pins of a channel whose pins panel is open, a page of ten at a time up to PIN_PAGES; a reply for a panel since closed is dropped. */
+  private async loadPins(channelId: string): Promise<void> {
+    let list: NativeMessageList;
+    try {
+      const found: NerimityMessage[] = [];
+      let page = await this.rest.pins(channelId);
+      for (let pages = 1; ; pages++) {
+        found.push(...page);
+        if (page.length < PIN_PAGE || pages >= PIN_PAGES) break;
+        page = await this.rest.pins(channelId, page.at(-1)!.id);
+      }
+      list = { messages: found.map((m) => this.listedMessage(m)), loading: false };
+      if (page.length === PIN_PAGE) list.note = `Only the latest ${PIN_PAGE * PIN_PAGES} pins are listed.`;
+    } catch (error) {
+      list = { messages: [], loading: false, error: `Could not load pinned messages: ${messageOf(error)}` };
+    }
+    if (this.pins?.channelId !== channelId) return;
+    this.pins = { channelId, list };
+    this.render();
+  }
+
+  /**
+   * Pins or unpins a message. The server tells the channel (message:updated),
+   * which also brings the pins list up to date, so it is not fetched here.
+   */
+  private async pin(messageId: string, pin: boolean): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId) return;
+    await this.attempt(pin ? "Message not pinned" : "Message not unpinned", async () => {
+      await this.rest.pin(channelId, messageId, pin);
+      const message = this.state.findMessage(channelId, messageId);
+      if (message) message.pinned = pin;
+      this.render();
     });
   }
 
@@ -839,6 +898,20 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     return embed;
   }
 
+  /** A message as the pins list shows it: its text in one line, or that it carries a file. */
+  private listedMessage(message: NerimityMessage): NativeListedMessage {
+    const serverId = this.state.channels.get(message.channelId)?.serverId;
+    const listed: NativeListedMessage = {
+      id: message.id,
+      author: message.author ? this.authorName(message.author, serverId) : "Deleted user",
+      content: this.previewText(message),
+      timestamp: new Date(message.createdAt).toISOString(),
+    };
+    const avatar = message.author && this.avatarUrl(message.author);
+    if (avatar) listed.avatarUrl = avatar;
+    return listed;
+  }
+
   private viewMessage(message: NerimityMessage): NativeMessage {
     const serverId = this.state.channels.get(message.channelId)?.serverId;
     const author = message.author;
@@ -864,6 +937,9 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
       attachments: message.attachments.map((a) => this.attachmentView(a)),
     };
     if (message.embed) view.embeds = [this.linkPreview(message.embed)];
+    if (message.pinned) view.pinned = true;
+    // Nerimity pins the user's words, in a DM by either person, in a server by whoever may manage its channels.
+    view.canPin = message.type === MessageType.Content && (!serverId || this.state.canManageChannels(serverId));
     if (author) {
       view.authorId = author.id;
       view.authorMention = `[@:${author.id}]`;
@@ -966,7 +1042,8 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
                 uploading: this.uploading.has(channel.id),
                 ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt.after) } : {}),
                 ...(members ? { members } : {}),
-                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true },
+                ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
+                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true },
               }
             : null,
           voice: null,

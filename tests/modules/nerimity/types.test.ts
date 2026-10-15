@@ -55,6 +55,8 @@ describe("Nerimity link previews", () => {
     expect(parseEmbed("x")).toBeUndefined();
     expect(parseMessage(message("1", "2", { embed: { title: "T" } }))!.embed).toEqual({ title: "T" });
     expect(parseMessage(message("1", "2", { embed: null }))).not.toHaveProperty("embed");
+    expect(parseMessage(message("1", "2", { pinned: true }))!.pinned).toBe(true);
+    expect(parseMessage(message("1", "2", { pinned: false }))).not.toHaveProperty("pinned");
   });
 });
 

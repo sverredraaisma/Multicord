@@ -76,6 +76,7 @@ describe("NerimityState from user:authenticated", () => {
     expect(state.canSee(state.channels.get("7")!)).toBe(true);
     state.apply("server:joined", { server: { id: "8", name: "T" }, channels: [{ id: "9", serverId: "8", type: 1 }] });
     expect(state.canSee(state.channels.get("9")!)).toBe(false);
+    expect(state.canManageChannels("5")).toBe(false);
   });
 });
 
