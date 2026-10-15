@@ -35,7 +35,7 @@ import {
 import type { ActivityUpdate, HealthCheck, PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
 import { FAVOURITES_IPC, isFavouritesAction, MEDIA_SCHEME, type FavouritesState } from "../shared/favourites";
-import { isSettingsAction, mediaAutoLoadLimit, serviceSettings,serviceSettingValues, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
+import { isSettingsAction, mediaAutoLoadLimit, serviceSettings, serviceSettingValues, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import { EngineHub, engineStoragePartition } from "./engineHost";
 import { downloadMedia, FavouritesStore } from "./favourites";
