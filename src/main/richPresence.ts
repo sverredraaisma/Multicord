@@ -170,9 +170,15 @@ export async function resolveActivity(activity: Activity, lookup: AppLookup): Pr
   return resolved;
 }
 
-/** Where apps look for Discord: discord-ipc-0 to -9, in the OS's place for them. */
+/**
+ * Where apps look for Discord: discord-ipc-0 to -9, in the OS's place for them.
+ * Inside a Flatpak that place is private to the sandbox, so the sockets go in
+ * the app's own runtime directory, which the host shares (as Discord's Flatpak
+ * does); apps outside reach them through a link (README, "Linux packages").
+ */
 export function ipcPaths(platform: NodeJS.Platform, env: NodeJS.ProcessEnv): string[] {
-  const dir = platform === "win32" ? "\\\\?\\pipe" : (env.XDG_RUNTIME_DIR ?? env.TMPDIR ?? env.TMP ?? env.TEMP ?? "/tmp");
+  const runtime = env.XDG_RUNTIME_DIR && env.FLATPAK_ID ? `${env.XDG_RUNTIME_DIR}/app/${env.FLATPAK_ID}` : env.XDG_RUNTIME_DIR;
+  const dir = platform === "win32" ? "\\\\?\\pipe" : (runtime ?? env.TMPDIR ?? env.TMP ?? env.TEMP ?? "/tmp");
   const join = platform === "win32" ? path.win32.join : path.posix.join;
   return Array.from({ length: 10 }, (_, i) => join(dir, `discord-ipc-${i}`));
 }

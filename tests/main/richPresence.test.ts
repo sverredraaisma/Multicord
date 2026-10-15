@@ -253,6 +253,9 @@ describe("frames and activities", () => {
     expect(ipcPaths("linux", { XDG_RUNTIME_DIR: "/run/user/1000" })[9]).toBe("/run/user/1000/discord-ipc-9");
     expect(ipcPaths("darwin", { TMPDIR: "/var/folders/x" })[0]).toBe("/var/folders/x/discord-ipc-0");
     expect(ipcPaths("linux", {})[0]).toBe("/tmp/discord-ipc-0");
+    // Inside a Flatpak: the app's runtime directory, which the host can see.
+    expect(ipcPaths("linux", { XDG_RUNTIME_DIR: "/run/user/1000", FLATPAK_ID: "io.example.App" })[0]).toBe("/run/user/1000/app/io.example.App/discord-ipc-0");
+    expect(ipcPaths("linux", { FLATPAK_ID: "io.example.App", TMPDIR: "/tmp/x" })[0]).toBe("/tmp/x/discord-ipc-0");
   });
 
   it("reclaims only paths nobody answers on", async () => {
