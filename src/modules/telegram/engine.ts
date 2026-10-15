@@ -1,4 +1,4 @@
-import { bridgeSecrets, engineInfo, pickFiles, serveAdapter } from "../../engine/runtime";
+import { bridgeSecrets, engineInfo, fileSource, pickFiles, serveAdapter } from "../../engine/runtime";
 import type { EngineBridge } from "../../preload/engine";
 import { TelegramAdapter } from "./adapter";
 import type { TelegramApi, TelegramCredentials } from "./api";
@@ -25,7 +25,7 @@ export async function startTelegramEngine(bridge: EngineBridge, options: Telegra
     },
     builtInCredentials: options.builtIn,
     createApi: (credentials, session) => createApi(credentials, session, { os: info.os, appVersion: options.appVersion }),
-    files: { pick: () => pickFiles(bridge) },
+    files: { pick: () => pickFiles(bridge), open: (file) => fileSource(bridge, file) },
   });
   served = serveAdapter(bridge, adapter);
   await adapter.start();

@@ -119,6 +119,8 @@ describe("Matrix files", () => {
     const adapter = await startMatrixEngine(bridge, { createApi: () => api });
     const pick = (adapter as unknown as { deps: { files: { pick(): Promise<{ filename: string; contentType: string }[]> } } }).deps.files.pick;
     expect(await pick()).toMatchObject([{ filename: "a.png", contentType: "image/png" }]);
+    const open = (adapter as unknown as { deps: { files: { open(file: unknown): { filename: string; contentType: string } } } }).deps.files.open;
+    expect(open({ handle: "h9", name: "fav.gif", size: 4, type: "image/gif" })).toMatchObject({ filename: "fav.gif", contentType: "image/gif", size: 4 });
   });
 });
 

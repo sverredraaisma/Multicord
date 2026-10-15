@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { bridgeFetch, bridgeSecrets, engineInfo, lockHosts, pickFiles, serveAdapter, type ServedAdapter } from "../../src/engine/runtime";
+import { bridgeFetch, bridgeSecrets, engineInfo, fileSource, lockHosts, pickFiles, serveAdapter, type ServedAdapter } from "../../src/engine/runtime";
 import { createEngineBridge, type EngineBridge, type EngineIpc } from "../../src/preload/engine";
 import type { AccountRef, DirectConversation, HomeBadge, IncomingCall, PlatformNotification, RailServer } from "../../src/shared/adapter";
 import { BaseAdapter } from "../../src/shared/baseAdapter";
@@ -136,6 +136,17 @@ describe("bridgeFetch", () => {
     const res = await fetch("https://x.test/");
     expect(res.status).toBe(status);
     expect(res.body).toBeNull();
+  });
+});
+
+describe("fileSource", () => {
+  it("reads a file the shell handed over through its handle", async () => {
+    const { bridge } = fakeBridge();
+    const file = fileSource(bridge, { handle: "h2", name: "fav.gif", size: 4, type: "image/gif" });
+    expect(file).toMatchObject({ filename: "fav.gif", size: 4, contentType: "image/gif" });
+    bridge.request.mockResolvedValueOnce(new Uint8Array([1]));
+    await expect(file.read(0, 1)).resolves.toEqual(new Uint8Array([1]));
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "readFile", handle: "h2", start: 0, end: 1 });
   });
 });
 

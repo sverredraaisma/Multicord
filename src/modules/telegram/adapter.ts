@@ -1,9 +1,9 @@
-import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
+import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
 import type { NativeAction, NativeAttachment, NativeChannelView, NativeForumPost, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeViewState } from "../../shared/native";
-import { MAX_HTTP_BODY } from "../../shared/engine";
+import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
 import { GENERAL_TOPIC, isChannelPeer, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgReaction, type TgTopic, type TgUpdate, type TgUser } from "./api";
@@ -60,7 +60,7 @@ export interface TelegramAdapterDeps {
   builtInCredentials?: TelegramCredentials;
   createApi(credentials: TelegramCredentials, session: string): TelegramApi;
   /** Lets the user pick files; the engine reads only what was picked. */
-  files?: { pick(): Promise<FileSource[]> };
+  files?: EngineFiles;
   /** Bytes of loaded media kept for the view (default MEDIA_CACHE_BYTES). */
   mediaBudget?: number;
 }
@@ -431,6 +431,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.sendTyping();
       case "attach":
         return this.attach();
+      case "sendFile":
+        return this.sendShared(action.file, action.replyTo);
       case "removeAttachment":
         if (this.selected && !this.uploading.has(this.current()!)) this.pending.get(this.current()!)?.splice(action.index, 1);
         return this.render();
@@ -810,6 +812,25 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       if (list.length > 0) this.pending.set(key, list);
       this.render();
     });
+  }
+
+  /**
+   * A file the shell hands over (a favourite, or a sticker sent as a
+   * picture): it goes out at once, or waits with files already picked.
+   */
+  private async sendShared(file: PickedFile, replyTo?: string): Promise<void> {
+    const key = this.current();
+    const dialog = this.selected ? this.dialog(this.selected) : undefined;
+    if (!key || !dialog || !this.deps.files?.open || !this.canAttach(dialog) || this.uploading.has(key)) return;
+    const list = this.pending.get(key) ?? [];
+    if (list.length >= MAX_ATTACHMENTS) this.error = `At most ${MAX_ATTACHMENTS} files per message.`;
+    else if (file.size > MAX_UPLOAD_BYTES || file.size <= 0) this.error = `${file.name.slice(0, 100)} cannot be sent.`;
+    else {
+      list.push(this.deps.files.open(file));
+      this.pending.set(key, list);
+      if (list.length === 1) return this.send("", replyTo);
+    }
+    this.render();
   }
 
   private async edit(messageId: string, content: string): Promise<void> {

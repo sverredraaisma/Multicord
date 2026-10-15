@@ -602,6 +602,24 @@ describe("StoatAdapter attachments", () => {
     expect(chat().channel!.pending).toEqual([]);
   });
 
+  it("sends a file the shell hands over at once, or with the files waiting", async () => {
+    const open = vi.fn((f: { name: string }) => file(f.name));
+    const pick = vi.fn(async () => [file("1"), file("2"), file("3"), file("4")]);
+    const { adapter, chat, online, requests } = setup({ token: "saved", files: { pick, open } });
+    await online();
+    await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "dance.gif", size: 3, type: "image/gif" } }); // no conversation open
+    await adapter.openConversation(DM);
+    await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "dance.gif", size: 3, type: "image/gif" }, replyTo: ulid(450) });
+    const post = requests("/messages").find((c) => c.init.method === "POST")!;
+    expect(JSON.parse(post.init.body as string)).toMatchObject({ attachments: [expect.stringMatching(/^up\d+$/)], replies: [{ id: ulid(450), mention: false }] });
+    expect(chat().channel!.pending).toEqual([]);
+    await adapter.handleAction({ type: "attach" });
+    await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "dance.gif", size: 3, type: "image/gif" } });
+    expect(chat().channel!.pending.map((f) => f.name)).toEqual(["1", "2", "3", "4", "dance.gif"]);
+    await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "more.gif", size: 3, type: "image/gif" } });
+    expect(chat().error).toBe("At most 5 files per message.");
+  });
+
   it("keeps at most five files and reports picker failures", async () => {
     let fail = false;
     const pick = vi.fn(async () => {
@@ -646,11 +664,13 @@ describe("StoatAdapter attachments", () => {
   });
 
   it("explains an instance without a file server, and works without a picker", async () => {
-    const { adapter, chat, online } = setup({ token: "saved", files: { pick: async () => [] }, routes: [(url) => (url.endsWith("/api/") ? { status: 200, body: { ws: "wss://events.test" } } : undefined)] });
+    const { adapter, chat, online } = setup({ token: "saved", files: { pick: async () => [], open: (f) => file(f.name) }, routes: [(url) => (url.endsWith("/api/") ? { status: 200, body: { ws: "wss://events.test" } } : undefined)] });
     await online();
     await adapter.openConversation(DM);
     await adapter.handleAction({ type: "attach" });
     expect(chat().error).toBe("This Stoat instance does not accept files.");
+    await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "a.gif", size: 3, type: "image/gif" } });
+    expect(chat().channel!.pending).toEqual([]);
     expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false });
     // Without a file server there are no avatar or icon URLs either.
     expect(chat().sidebar[0]!.iconUrl).toBeUndefined();

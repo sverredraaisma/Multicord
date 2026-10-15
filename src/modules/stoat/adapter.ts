@@ -1,7 +1,8 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
 import { MAX_ATTACHMENTS, type NativeAction, type NativeMessage, type NativeSidebarItem, type NativeViewState } from "../../shared/native";
+import type { PickedFile } from "../../shared/engine";
 import type { AccountStatus } from "../../shared/settings";
-import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
+import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { StoatEvents, type EventsStatus, type SocketFactory } from "./events";
 import { discoverInstance, instanceHosts, StoatRest, type LoginResult, type RestOptions, type StoatInstance } from "./rest";
@@ -36,7 +37,7 @@ export interface StoatAdapterDeps {
   render(state: NativeViewState): void;
   rest?: Partial<RestOptions>;
   /** Lets the user pick files; the engine reads only what was picked. */
-  files?: { pick(): Promise<FileSource[]> };
+  files?: EngineFiles;
   /** Narrows what the engine may reach to these hosts, once they are known. */
   lockHosts?(hosts: string[]): Promise<void>;
 }
@@ -142,6 +143,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         return this.sendTyping();
       case "attach":
         return this.attach();
+      case "sendFile":
+        return this.sendShared(action.file, action.replyTo);
       case "removeAttachment":
         this.pending.get(this.selectedChannelId ?? "")?.splice(action.index, 1);
         return this.render();
@@ -406,6 +409,28 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       this.pending.set(channelId, list);
       this.render();
     });
+  }
+
+  /**
+   * A file the shell hands over (a favourite, or a sticker sent as a
+   * picture): it goes out at once, or waits with files already picked.
+   */
+  private async sendShared(file: PickedFile, replyTo?: string): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.deps.files?.open || this.uploading.has(channelId)) return;
+    if (!this.instance?.autumn) {
+      this.error = `This ${this.deps.def.name} instance does not accept files.`;
+      return this.render();
+    }
+    const list = this.pending.get(channelId) ?? [];
+    if (list.length >= MAX_FILES) {
+      this.error = `At most ${MAX_FILES} files per message.`;
+      return this.render();
+    }
+    list.push(this.deps.files.open(file));
+    this.pending.set(channelId, list);
+    if (list.length === 1) return this.send("", replyTo);
+    this.render();
   }
 
   private async edit(messageId: string, content: string): Promise<void> {

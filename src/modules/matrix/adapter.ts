@@ -1,7 +1,7 @@
-import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
+import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
-import { MAX_DIRECTS, MAX_HTTP_BODY, MAX_READ } from "../../shared/engine";
+import { MAX_DIRECTS, MAX_HTTP_BODY, MAX_READ, type PickedFile } from "../../shared/engine";
 import { escapeMarkdown } from "../../shared/markdown";
 import {
   MAX_ATTACHMENTS,
@@ -143,7 +143,7 @@ export interface MatrixAdapterDeps {
   /** Bytes of loaded media kept for the view (default MEDIA_CACHE_BYTES). */
   mediaBudget?: number;
   /** Lets the user pick files; the engine reads only what was picked. */
-  files?: { pick(): Promise<FileSource[]> };
+  files?: EngineFiles;
   /** This instance's values for the manifest's settings (see SETTING); changes come through applySettings(). */
   settings?: ServiceSettingValues;
 }
@@ -833,6 +833,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.sendTyping();
       case "attach":
         return this.attach();
+      case "sendFile":
+        return this.sendShared(action.file, action.replyTo);
       case "removeAttachment":
         // Not while the files are going out.
         if (!this.uploading.has(this.selected ?? "")) this.pending.get(this.selected ?? "")?.splice(action.index, 1);
@@ -1949,6 +1951,26 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private async maxUpload(session: MxSession): Promise<number> {
     this.uploadLimit ??= Math.min((await this.deps.api.uploadLimit(session).catch(() => undefined)) ?? MAX_HTTP_BODY, MAX_HTTP_BODY);
     return this.uploadLimit;
+  }
+
+  /**
+   * A file the shell hands over (a favourite, or a sticker sent as a
+   * picture): it goes out at once, or waits with files already picked.
+   */
+  private async sendShared(picked: PickedFile, replyTo?: string): Promise<void> {
+    const room = this.selectedRoom();
+    if (!room || !this.deps.files?.open || this.uploading.has(room.id) || this.lock(room)) return;
+    const file = this.deps.files.open(picked);
+    await this.attempt("Could not send", async () => {
+      const limit = await this.maxUpload(this.session!);
+      if (file.size > limit) throw new Error(`${cleanName(file.filename) ?? "The file"} is larger than the ${sizeText(limit)} ${this.host()} takes.`);
+      const list = this.pending.get(room.id) ?? [];
+      if (list.length >= MAX_ATTACHMENTS) throw new Error(`At most ${MAX_ATTACHMENTS} files per message.`);
+      list.push(file);
+      this.pending.set(room.id, list);
+      if (list.length === 1) return this.send("", replyTo);
+      this.render();
+    });
   }
 
   private async edit(local: string, text: string): Promise<void> {

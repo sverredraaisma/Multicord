@@ -66,6 +66,12 @@ describe("Stoat engine", () => {
     const adapter = await startStoatEngine(bridge, vi.fn());
     const pick = (adapter as unknown as { deps: { files: { pick(): Promise<{ filename: string }[]> } } }).deps.files.pick;
     expect((await pick()).map((f) => f.filename)).toEqual(["a.png"]);
+    // Files the shell hands over read through their handle too.
+    const open = (adapter as unknown as { deps: { files: { open(file: unknown): { filename: string; read(a: number, b: number): Promise<unknown> } } } }).deps.files.open;
+    const file = open({ handle: "h9", name: "fav.gif", size: 4, type: "image/gif" });
+    expect(file.filename).toBe("fav.gif");
+    await file.read(0, 2);
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "readFile", handle: "h9", start: 0, end: 2 });
   });
 });
 

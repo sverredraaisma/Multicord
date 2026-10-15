@@ -72,7 +72,11 @@ interface Options {
 function setup(options: Options = {}) {
   /** What the file picker returns next. */
   const picked: FileSource[] = [];
-  const picker = { pick: vi.fn(async () => [...picked]) };
+  const picker = {
+    pick: vi.fn(async () => [...picked]),
+    // Files the shell hands over.
+    open: vi.fn((file: { name: string; size: number; type: string }): FileSource => ({ filename: file.name, size: file.size, contentType: file.type, read: async () => new Uint8Array(file.size) })),
+  };
   const api = new FakeTelegramApi();
   api.dialogList = options.dialogs ?? defaultDialogs();
   api.isAuthorized = options.authorized ?? false;
@@ -1946,6 +1950,32 @@ describe("sending files", () => {
     await ctx.act({ type: "attach" });
     expect(pending(ctx)).toHaveLength(MAX_ATTACHMENTS);
     expect(ctx.chat().error).toBe(`At most ${MAX_ATTACHMENTS} files per message.`);
+  });
+
+  it("sends a file the shell hands over at once, or with the files waiting", async () => {
+    const shared = (name: string, size = 3) => ({ type: "sendFile" as const, file: { handle: "h", name, size, type: "image/gif" } });
+    const unselected = await signedIn();
+    await unselected.act(shared("a.gif"));
+    const readOnly = await open({ dialogs: [dlg("1", { readOnly: true })] });
+    await readOnly.act(shared("a.gif"));
+    expect(readOnly.picker.open).not.toHaveBeenCalled();
+    const ctx = await open();
+    await ctx.act({ ...shared("dance.gif"), replyTo: "2" });
+    expect(ctx.api.sendFile.mock.calls.map((c) => [c[1].filename, c[3]])).toEqual([["dance.gif", 2]]);
+    expect(pending(ctx)).toEqual([]);
+    await ctx.act(shared("empty.gif", 0));
+    expect(ctx.chat().error).toBe("empty.gif cannot be sent.");
+    await ctx.act(shared("huge.gif", MAX_UPLOAD_BYTES + 1));
+    expect(ctx.chat().error).toBe("huge.gif cannot be sent.");
+    ctx.picked.push(...Array.from({ length: MAX_ATTACHMENTS - 1 }, (_, i) => file(`${i}.png`)));
+    await ctx.act({ type: "attach" });
+    await ctx.act(shared("dance.gif"));
+    expect(pending(ctx).at(-1)).toEqual({ name: "dance.gif", size: 3 });
+    await ctx.act(shared("more.gif"));
+    expect(ctx.chat().error).toBe(`At most ${MAX_ATTACHMENTS} files per message.`);
+    const none = await open({ noFiles: true });
+    await none.act(shared("a.gif"));
+    expect(none.api.sendFile).not.toHaveBeenCalled();
   });
 
   it("reports a picker that failed", async () => {

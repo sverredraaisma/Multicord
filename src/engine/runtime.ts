@@ -63,15 +63,27 @@ export async function lockHosts(bridge: EngineBridge, hosts: string[]): Promise<
   await bridge.request({ type: "lockHosts", hosts });
 }
 
-/** Lets the user pick files through the shell; each is read through its handle. */
-export async function pickFiles(bridge: EngineBridge): Promise<FileSource[]> {
-  const picked = (await bridge.request({ type: "pickFiles" })) as PickedFile[];
-  return picked.map((file) => ({
+/** The files a module may send: those the user picks, and those the shell hands it (sendFile actions). */
+export interface EngineFiles {
+  pick(): Promise<FileSource[]>;
+  /** Opens a file the shell handed over in a sendFile action. */
+  open?(file: PickedFile): FileSource;
+}
+
+/** A file the shell handed the engine (picked, or shared in a sendFile action), read through its handle. */
+export function fileSource(bridge: EngineBridge, file: PickedFile): FileSource {
+  return {
     filename: file.name,
     size: file.size,
     contentType: file.type,
     read: (start, end) => bridge.request({ type: "readFile", handle: file.handle, start, end }) as Promise<Uint8Array>,
-  }));
+  };
+}
+
+/** Lets the user pick files through the shell; each is read through its handle. */
+export async function pickFiles(bridge: EngineBridge): Promise<FileSource[]> {
+  const picked = (await bridge.request({ type: "pickFiles" })) as PickedFile[];
+  return picked.map((file) => fileSource(bridge, file));
 }
 
 /** An adapter an engine serves: the PlatformAdapter contract plus the view's actions. */

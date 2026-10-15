@@ -1,4 +1,4 @@
-import { bridgeFetch, bridgeSecrets, engineInfo, lockHosts, pickFiles, serveAdapter } from "../../engine/runtime";
+import { bridgeFetch, bridgeSecrets, engineInfo, lockHosts, fileSource, pickFiles, serveAdapter } from "../../engine/runtime";
 import type { EngineBridge } from "../../preload/engine";
 import { StoatAdapter } from "./adapter";
 import type { SocketFactory } from "./events";
@@ -22,7 +22,7 @@ export async function startStoatEngine(
       bridge.render(state);
       served?.sync();
     },
-    files: { pick: () => pickFiles(bridge) },
+    files: { pick: () => pickFiles(bridge), open: (file) => fileSource(bridge, file) },
     lockHosts: (hosts) => lockHosts(bridge, hosts),
   });
   served = serveAdapter(bridge, adapter);

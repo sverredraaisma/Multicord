@@ -1,4 +1,4 @@
-import { bridgeFetch, bridgeSecrets, engineInfo, pickFiles, serveAdapter } from "../../engine/runtime";
+import { bridgeFetch, bridgeSecrets, engineInfo, fileSource, pickFiles, serveAdapter } from "../../engine/runtime";
 import type { EngineBridge } from "../../preload/engine";
 import { FluxerAdapter } from "./adapter";
 import type { SocketFactory } from "./gateway";
@@ -23,7 +23,7 @@ export async function startFluxerEngine(
       served?.sync();
     },
     platform: info.os,
-    files: { pick: () => pickFiles(bridge) },
+    files: { pick: () => pickFiles(bridge), open: (file) => fileSource(bridge, file) },
   });
   served = serveAdapter(bridge, adapter);
   await adapter.start();

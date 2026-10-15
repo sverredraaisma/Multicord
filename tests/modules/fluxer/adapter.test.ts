@@ -805,6 +805,34 @@ describe("FluxerAdapter attachments", () => {
     expect(chat().channel).toMatchObject({ pending: [], uploading: false });
   });
 
+  it("sends a file the shell hands over at once, or with the files waiting", async () => {
+    // One upload slot per file asked for.
+    const plan: Handler = (url, init) =>
+      url.endsWith("/channels/113/attachments")
+        ? { status: 200, body: { attachments: JSON.parse(String(init.body)).attachments.map((_: unknown, i: number) => ({ upload_filename: `up/${i}`, upload_url: `https://store/${i}` })) } }
+        : undefined;
+    const { adapter, chat, calls } = await withFiles([["a.txt"], Array.from({ length: 10 }, (_, i) => `f${i}.txt`)], [plan]);
+    const open = vi.fn((file: { name: string; size: number; type: string }) => ({ filename: file.name, size: file.size, contentType: file.type, read: async () => new Uint8Array([1]) }));
+    (adapter as unknown as { deps: { files: { open: typeof open } } }).deps.files.open = open;
+    const shared = { handle: "h", name: "dance.gif", size: 1, type: "image/gif" };
+    await adapter.handleAction({ type: "sendFile", file: shared, replyTo: "900" });
+    expect(open).toHaveBeenCalledWith(shared);
+    expect(chat().error).toBeUndefined();
+    const sent = calls.filter((c) => c.init.method === "POST" && c.url.endsWith("/channels/113/messages"));
+    expect(sent).toHaveLength(1);
+    expect(JSON.parse(String(sent[0]!.init.body))).toMatchObject({ content: "", message_reference: { message_id: "900" } });
+    expect(chat().channel!.pending).toEqual([]);
+
+    // With files picked already, it joins them.
+    await adapter.handleAction({ type: "attach" });
+    await adapter.handleAction({ type: "sendFile", file: shared });
+    expect(chat().channel!.pending.map((f) => f.name)).toEqual(["a.txt", "dance.gif"]);
+    await adapter.handleAction({ type: "send", content: "" });
+    await adapter.handleAction({ type: "attach" });
+    await adapter.handleAction({ type: "sendFile", file: shared });
+    expect(chat().error).toBe("At most 10 files per message.");
+  });
+
   it("caps attachments per message", async () => {
     const { adapter, chat } = await withFiles([Array.from({ length: 12 }, (_, i) => `f${i}.txt`)]);
     await adapter.handleAction({ type: "attach" });
@@ -842,6 +870,7 @@ describe("FluxerAdapter attachments", () => {
     await ctx.adapter.handleAction({ type: "attach" });
     await ctx.adapter.openServer("100");
     await ctx.adapter.handleAction({ type: "attach" }); // no picker
+    await ctx.adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "a.gif", size: 1, type: "image/gif" } }); // nor a way to open files
     await ctx.adapter.handleAction({ type: "send", content: "   " });
     await ctx.adapter.handleAction({ type: "removeAttachment", index: 0 });
     expect(ctx.calls.some((c) => c.init.method === "POST" && c.url.endsWith("/messages"))).toBe(false);

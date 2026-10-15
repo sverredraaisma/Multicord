@@ -35,6 +35,16 @@ function fakeBridge(token?: string) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Fluxer engine", () => {
+  it("picks files and opens the shell's files through the bridge", async () => {
+    const { bridge } = fakeBridge();
+    const adapter = await startFluxerEngine(bridge, vi.fn());
+    const files = (adapter as unknown as { deps: { files: { pick(): Promise<unknown[]>; open(file: unknown): { filename: string } } } }).deps.files;
+    // The fake bridge picks nothing usable; the request is what matters.
+    await files.pick().catch(() => undefined);
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "pickFiles" });
+    expect(files.open({ handle: "h", name: "fav.gif", size: 1, type: "image/gif" }).filename).toBe("fav.gif");
+  });
+
   it("discovers the instance through the bridge and shows the login screen", async () => {
     const { bridge } = fakeBridge();
     await startFluxerEngine(bridge, vi.fn());

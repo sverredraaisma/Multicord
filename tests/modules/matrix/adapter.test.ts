@@ -1254,7 +1254,9 @@ const text = (value: string) => new TextEncoder().encode(value);
 async function withFiles(first: MxSync = initialSync()) {
   const picks: FileSource[][] = [];
   const pick = vi.fn(async () => picks.shift() ?? []);
-  const ctx = setup({ session: SESSION_JSON }, false, { files: { pick } });
+  // Files the shell hands over: as many bytes as they say they have.
+  const open = vi.fn((file: { name: string; size: number; type: string }) => picked(file.name, new Uint8Array(file.size), file.type));
+  const ctx = setup({ session: SESSION_JSON }, false, { files: { pick, open } });
   ctx.api.push(first);
   await ctx.adapter.start();
   await flush();
@@ -1456,6 +1458,32 @@ describe("uploads", () => {
     finish("mxc://x.org/a");
     await sending;
     expect(ctx.api.send.mock.calls.map((c) => c[2].body)).toEqual(["a.txt", "b.txt"]);
+  });
+
+  it("sends a file the shell hands over at once, or with the files waiting", async () => {
+    const ctx = await withFiles();
+    const shared = (name: string, size = 4) => ({ type: "sendFile" as const, file: { handle: "h", name, size, type: "image/gif" } });
+    await ctx.act(shared("none.gif")); // no room open
+    await ctx.open("Bo");
+    await ctx.act({ ...shared("dance.gif"), replyTo: undefined });
+    expect(ctx.api.upload).toHaveBeenCalledWith(SESSION, new Uint8Array(4), "image/gif", "dance.gif");
+    expect(ctx.api.send.mock.calls.at(-1)![2]).toMatchObject({ msgtype: "m.image", body: "dance.gif" });
+    expect(ctx.chat().channel!.pending).toEqual([]);
+    // Too large for the homeserver: refused, with the reason.
+    await ctx.act(shared("big.gif", 2 * 1024 * 1024));
+    expect(ctx.chat().error).toBe("Could not send: big.gif is larger than the 1 MB x.org takes.");
+    await ctx.act(shared("", 2 * 1024 * 1024));
+    expect(ctx.chat().error).toBe("Could not send: The file is larger than the 1 MB x.org takes.");
+    // Waiting files: it joins them, up to the cap.
+    await ctx.attach(...Array.from({ length: 9 }, (_, i) => picked(`${i}.txt`, text("a"))));
+    await ctx.act(shared("dance.gif"));
+    expect(ctx.chat().channel!.pending.map((f) => f.name).at(-1)).toBe("dance.gif");
+    await ctx.act(shared("more.gif"));
+    expect(ctx.chat().error).toBe("Could not send: At most 10 files per message.");
+    const plain = await signedIn();
+    await plain.open("Bo");
+    await plain.act(shared("dance.gif"));
+    expect(plain.api.upload).not.toHaveBeenCalled();
   });
 
   it("attaches nothing without a room or a picker, and reports a picker that fails", async () => {

@@ -88,6 +88,8 @@ describe("Telegram engine", () => {
     await adapter.openConversation("1");
     await adapter.handleAction({ type: "attach" });
     expect(bridge.request).toHaveBeenCalledWith({ type: "pickFiles" });
+    const open = (adapter as unknown as { deps: { files: { open(file: unknown): { filename: string } } } }).deps.files.open;
+    expect(open({ handle: "h9", name: "fav.gif", size: 4, type: "image/gif" }).filename).toBe("fav.gif");
   });
 
   it("uses the GramJS implementation by default", async () => {

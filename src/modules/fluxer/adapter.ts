@@ -9,8 +9,9 @@ import {
   type NativeVoiceSession,
   type VoiceNoticeFlag,
 } from "../../shared/native";
+import type { PickedFile } from "../../shared/engine";
 import type { AccountStatus } from "../../shared/settings";
-import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
+import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import { solveAltcha } from "./captcha";
 import { discoverInstance, type FluxerInstance } from "./discovery";
 import { FluxerGateway, type GatewayStatus, type SocketFactory } from "./gateway";
@@ -76,7 +77,7 @@ export interface FluxerAdapterDeps {
   rest?: Partial<RestOptions>;
   platform?: string;
   /** Lets the user pick files; the engine reads only what was picked. */
-  files?: { pick(): Promise<FileSource[]> };
+  files?: EngineFiles;
 }
 
 type Selection = { kind: "home" } | { kind: "guild"; guildId: string };
@@ -190,6 +191,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.sendTyping();
       case "attach":
         return this.attach();
+      case "sendFile":
+        return this.sendShared(action.file, action.replyTo);
       case "createPost":
         return this.createPost(action.name, action.content);
       case "joinVoice":
@@ -607,6 +610,24 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       this.pending.set(channelId, list);
       this.render();
     });
+  }
+
+  /**
+   * A file the shell hands over (a favourite, or a sticker sent as a
+   * picture): it goes out at once, or waits with files already picked.
+   */
+  private async sendShared(file: PickedFile, replyTo?: string): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.deps.files?.open || this.uploading.has(channelId)) return;
+    const list = this.pending.get(channelId) ?? [];
+    if (list.length >= MAX_ATTACHMENTS) {
+      this.error = `At most ${MAX_ATTACHMENTS} files per message.`;
+      return this.render();
+    }
+    list.push(this.deps.files.open(file));
+    this.pending.set(channelId, list);
+    if (list.length === 1) return this.send("", replyTo);
+    this.render();
   }
 
   private async edit(messageId: string, content: string): Promise<void> {
