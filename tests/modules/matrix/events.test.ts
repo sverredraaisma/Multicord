@@ -242,6 +242,24 @@ describe("timeline events", () => {
     expect(parseEvent(ev({ type: "m.poll.start", content: {} }))).toBeUndefined();
   });
 
+  it("reads thread replies, whose fallback reply is no reply, and thread roots' bundled summaries", () => {
+    const relates = (extra: Record<string, unknown>) => parseEvent(ev({ content: { msgtype: "m.text", body: "in thread", "m.relates_to": { rel_type: "m.thread", event_id: "$root", "m.in_reply_to": { event_id: "$latest" }, ...extra } } }));
+    const fallback = relates({ is_falling_back: true });
+    expect(fallback).toMatchObject({ kind: "message", thread: "$root" });
+    expect(fallback).not.toHaveProperty("replyTo");
+    expect(relates({})).toMatchObject({ thread: "$root", replyTo: "$latest" });
+    expect(parseEvent(ev({ content: { msgtype: "m.text", body: "x", "m.relates_to": { rel_type: "m.thread", event_id: "root" } } }))).not.toHaveProperty("thread");
+    const root = (thread: unknown) => parseEvent(ev({ unsigned: { "m.relations": { "m.thread": thread } } }));
+    expect(root({ count: 3, latest_event: { sender: "@bo:x.org" }, current_user_participated: true })).toMatchObject({ threadInfo: { count: 3, latest: "@bo:x.org" } });
+    expect(root({ count: 2, latest_event: { sender: "bo" } })).toMatchObject({ threadInfo: { count: 2 } });
+    expect(root({ count: 0 })).not.toHaveProperty("threadInfo");
+    expect(root({ count: 4 })).toMatchObject({ threadInfo: { count: 4 } });
+    expect(root("x")).not.toHaveProperty("threadInfo");
+    expect(parseEvent(ev({ unsigned: { "m.relations": "x" } }))).not.toHaveProperty("threadInfo");
+    // Encrypted replies are known by their readable relation.
+    expect(parseEvent(ev({ type: "m.room.encrypted", content: { ciphertext: "…", "m.relates_to": { rel_type: "m.thread", event_id: "$root" } } }))).toMatchObject({ kind: "encrypted", thread: "$root" });
+  });
+
   it("reads poll votes and ends, which refer to their poll", () => {
     const ref = { rel_type: "m.reference", event_id: "$poll" };
     expect(parseEvent(ev({ type: "m.poll.response", content: { "m.relates_to": ref, "m.selections": ["a", 5, "b"] } }))).toEqual({ kind: "pollResponse", id: "$e1", sender: "@ana:x.org", ts: 1000, target: "$poll", answers: ["a", "b"] });

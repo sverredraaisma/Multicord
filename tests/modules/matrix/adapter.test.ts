@@ -45,6 +45,8 @@ import {
   MAX_MEDIA_BYTES,
   MAX_REACTIONS,
   MAX_POLL_EVENTS,
+  MAX_THREADS,
+  MAX_THREAD_REPLIES,
   MAX_SPACES,
   PAGE_SIZE,
   TYPING_IDLE_MS,
@@ -832,7 +834,7 @@ describe("conversations", () => {
     const { channel } = ctx.chat();
     expect(channel).toMatchObject({ id: ctx.item("Bo").id, name: "Bo", loading: false, hasOlder: true, typing: [], pending: [], uploading: false });
     expect(channel).not.toHaveProperty("locked");
-    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, stickers: true, pins: true, search: true, forward: true });
+    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, stickers: true, pins: true, search: true, forward: true, threads: true });
     expect(ctx.item("Bo").active).toBe(true);
     expect(ctx.messages()).toEqual([
       {
@@ -993,7 +995,7 @@ describe("conversations", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     expect(ctx.chat().channel!.locked).toBe(ENCRYPTED_NOTICE);
-    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: true, stickers: false, pins: true, search: true, forward: false });
+    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: true, stickers: false, pins: true, search: true, forward: false, threads: true });
     expect(ctx.messages()).toEqual([
       expect.objectContaining({ content: ENCRYPTED_TEXT.replace("—", "—"), author: ANA, canEdit: false, canDelete: false }),
       expect.objectContaining({ content: "before encryption", mine: true, canEdit: false, canDelete: true }),
@@ -4934,6 +4936,175 @@ describe("polls", () => {
     const votes = Array.from({ length: MAX_POLL_EVENTS + 1 }, (_, i) => vote(`m${i}`, `@u${i}:x.org`, 300 + i, "$h2", ["p"]));
     await ctx.live(sync({ joined: [room("!hist:x.org", { limited: true, prevBatch: "p-2", timeline: [poll("h2", ANA, 200), ...votes] })] }));
     expect(ctx.messages().map((m) => m.poll?.total)).toEqual([MAX_POLL_EVENTS]);
+  });
+});
+
+describe("threads", () => {
+  const reply = (id: string, sender: string, ts: number, root: string, text = "reply"): MxEvent => msg(id, sender, text, ts, { thread: root });
+  const rawReply = (id: string, ts: number, root: string, extra: Record<string, unknown> = {}) => ({
+    event_id: `$${id}`,
+    sender: BO,
+    origin_server_ts: ts,
+    type: "m.room.message",
+    content: { msgtype: "m.text", body: id, "m.relates_to": { rel_type: "m.thread", event_id: root }, ...extra },
+  });
+  const timeline = (): MxEvent[] => [
+    msg("t0", ANA, "root", 3000, { threadInfo: { count: 5, latest: BO } }),
+    reply("t1", BO, 3001, "$t0"),
+    { kind: "encrypted", id: "$t2", sender: ANA, ts: 3002, thread: "$t0" },
+    msg("u0", ANA, "other root", 3003),
+    reply("u1", BO, 3004, "$u0"),
+    reply("u1", BO, 3004, "$u0"),
+  ];
+  const withThreads = async () => {
+    const ctx = await signedIn();
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { timeline: timeline() })] }));
+    await ctx.open("Lounge");
+    return ctx;
+  };
+  const rootOf = (ctx: Awaited<ReturnType<typeof signedIn>>, text: string) => ctx.messages().find((m) => m.content === text)!;
+
+  it("keeps replies out of the timeline and sums them up on their root", async () => {
+    const ctx = await withThreads();
+    expect(ctx.messages().map((m) => m.content)).toEqual(["welcome", "root", "other root"]);
+    expect(ctx.chat().channel!.can.threads).toBe(true);
+    // The homeserver's count where it is more; the latest reply known here names its author.
+    expect(rootOf(ctx, "root").thread).toEqual({ count: 5, latest: "Ana" });
+    expect(rootOf(ctx, "other root").thread).toEqual({ count: 1, latest: BO });
+    expect(ctx.messages()[0]).not.toHaveProperty("thread");
+    // A redacted reply goes; a root with only a count names the homeserver's latest.
+    await ctx.live(
+      sync({
+        joined: [
+          room("!lounge:x.org", {
+            timeline: [{ kind: "redaction", id: "$r", sender: BO, ts: 3005, redacts: "$u1" }, msg("v0", ANA, "counted", 3006, { threadInfo: { count: 2, latest: BO } }), msg("w0", ANA, "bare", 3007, { threadInfo: { count: 1 } })],
+          }),
+        ],
+      }),
+    );
+    expect(rootOf(ctx, "other root")).not.toHaveProperty("thread");
+    expect(rootOf(ctx, "counted").thread).toEqual({ count: 2, latest: BO });
+    expect(rootOf(ctx, "bare").thread).toEqual({ count: 1 });
+  });
+
+  it("opens a thread with its latest replies beside the room, and closes it", async () => {
+    const ctx = await withThreads();
+    const edit = rawReply("e1", 3101, "$t0", { "m.relates_to": { rel_type: "m.replace", event_id: "$t1" }, "m.new_content": { msgtype: "m.text", body: "edited" } });
+    const reaction = { event_id: "$re", sender: BO, origin_server_ts: 3102, type: "m.reaction", content: { "m.relates_to": { rel_type: "m.annotation", event_id: "$t1", key: "👍" } } };
+    ctx.api.request.mockResolvedValue({ chunk: [rawReply("t3", 2999, "$t0"), rawReply("x1", 3100, "$other"), edit, reaction, "junk"], next_batch: "nb" });
+    const root = rootOf(ctx, "root");
+    await ctx.act({ type: "thread", rootId: root.id });
+    expect(ctx.api.request).toHaveBeenCalledWith(SESSION, "GET", "/v1/rooms/!lounge%3Ax.org/relations/%24t0/m.thread", undefined, { limit: "50", dir: "b" });
+    expect(ctx.renders.some((r) => r.screen === "chat" && r.channel?.thread?.loading === true)).toBe(true);
+    const thread = ctx.chat().channel!.thread!;
+    expect(thread.rootId).toBe(root.id);
+    expect(thread.messages.map((m) => m.content)).toEqual(["root", "t3", "reply", escapeMarkdown(ENCRYPTED_TEXT)]);
+    expect(thread).toMatchObject({ loading: false, note: "Only the latest 50 replies are listed; older ones may be missing." });
+    expect(thread).not.toHaveProperty("locked");
+    expect(ctx.messages().map((m) => m.content)).toEqual(["welcome", "root", "other root"]);
+    // Opening the room again keeps its thread open.
+    await ctx.open("Lounge");
+    expect(ctx.chat().channel!.thread!.rootId).toBe(root.id);
+    await ctx.act({ type: "thread" });
+    expect(ctx.chat().channel).not.toHaveProperty("thread");
+  });
+
+  it("replies in a thread, after its latest message as the fallback reply", async () => {
+    const ctx = await withThreads();
+    const root = rootOf(ctx, "root").id;
+    await ctx.act({ type: "thread", rootId: root });
+    await ctx.act({ type: "send", content: "**in** the thread", thread: root });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", {
+      msgtype: "m.text",
+      body: "**in** the thread",
+      "m.mentions": {},
+      format: "org.matrix.custom.html",
+      formatted_body: "<strong>in</strong> the thread",
+      "m.relates_to": { rel_type: "m.thread", event_id: "$t0", is_falling_back: true, "m.in_reply_to": { event_id: "$t2" } },
+    });
+    expect(ctx.chat().channel!.thread!.messages.at(-1)!.content).toBe("**in** the thread");
+    expect(ctx.messages().map((m) => m.content)).toEqual(["welcome", "root", "other root"]);
+    // A root without replies yet is the fallback; nothing goes without text, a known root or an open room.
+    const bare = rootOf(ctx, "welcome").id;
+    await ctx.act({ type: "send", content: "first", thread: bare });
+    expect(ctx.api.send.mock.calls.at(-1)![2]).toMatchObject({ "m.relates_to": { rel_type: "m.thread", event_id: "$l1", "m.in_reply_to": { event_id: "$l1" } } });
+    const sends = ctx.api.send.mock.calls.length;
+    await ctx.act({ type: "send", content: "  ", thread: bare });
+    await ctx.act({ type: "send", content: "x", thread: "99999" });
+    expect(ctx.api.send).toHaveBeenCalledTimes(sends);
+    const closed = await signedIn();
+    await closed.act({ type: "send", content: "x", thread: "1" });
+    expect(closed.api.send).not.toHaveBeenCalled();
+  });
+
+  it("says when a thread could not be loaded, drops an answer for a thread since closed, and drops threads with the room or a gap", async () => {
+    const ctx = await withThreads();
+    ctx.api.request.mockRejectedValueOnce(new MatrixError(500, "M_UNKNOWN", "Try later"));
+    await ctx.act({ type: "thread", rootId: rootOf(ctx, "root").id });
+    expect(ctx.chat().channel!.thread).toMatchObject({ loading: false, error: "Could not load the thread: Try later" });
+    let answer: (value: Record<string, unknown>) => void = () => {};
+    ctx.api.request.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    const opening = ctx.act({ type: "thread", rootId: rootOf(ctx, "other root").id });
+    await flush();
+    await ctx.act({ type: "thread" });
+    const renders = ctx.renders.length;
+    answer({ chunk: [] });
+    await opening;
+    expect(ctx.renders).toHaveLength(renders);
+    // A reply's own thread: its root is no timeline message, so only what is known shows.
+    await ctx.act({ type: "thread", rootId: rootOf(ctx, "root").id });
+    const replyId = ctx.chat().channel!.thread!.messages[1]!.id;
+    await ctx.act({ type: "thread", rootId: replyId });
+    expect(ctx.chat().channel!.thread!.messages).toEqual([]);
+    await ctx.open("Bo");
+    expect(ctx.chat().channel).not.toHaveProperty("thread");
+    await ctx.act({ type: "thread", rootId: "99999" });
+    expect(ctx.chat().channel).not.toHaveProperty("thread");
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { limited: true, prevBatch: "p2", timeline: [msg("n0", ANA, "new", 4000)] })] }));
+    await ctx.open("Lounge");
+    expect(ctx.messages()).toHaveLength(1);
+    expect(ctx.messages()[0]).not.toHaveProperty("thread");
+  });
+
+  it("shows why nothing may be sent into a thread of a locked room, and keeps replies from history in their thread", async () => {
+    const ctx = await signedIn();
+    ctx.api.messages.mockResolvedValueOnce({ events: [msg("z0", ME, "old root", 40), reply("h1", ANA, 50, "$z0"), { kind: "encrypted", id: "$h2", sender: ANA, ts: 60, thread: "$z0" }], state: { members: {} } });
+    await ctx.live(sync({ joined: [room("!vault:x.org", { state: { name: "Vault", encrypted: true, members: {} }, prevBatch: "p-v" })] }));
+    await ctx.open("Vault");
+    expect(ctx.messages().map((m) => m.content)).toEqual(["old root"]);
+    const root = ctx.messages()[0]!;
+    expect(root.thread).toEqual({ count: 2, latest: ANA });
+    await ctx.act({ type: "thread", rootId: root.id });
+    expect(ctx.chat().channel!.thread).toMatchObject({ locked: ENCRYPTED_NOTICE });
+  });
+
+  it("notifies replies like messages, and bounds threads and their replies", async () => {
+    const ctx = await signedIn();
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [reply("d9", BO, 5000, "$d1", "in a DM thread")] })] }));
+    expect(ctx.notifications.at(-1)).toMatchObject({ body: "in a DM thread", target: "!dm:x.org" });
+    const replies = Array.from({ length: MAX_THREAD_REPLIES + 1 }, (_, i) => reply(`m${i}`, BO, 6000 + i, "$d1"));
+    const roots = Array.from({ length: MAX_THREADS }, (_, i) => reply(`r${i}`, BO, 9000 + i, `$root${i}`));
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [...replies, ...roots] })] }));
+    await ctx.open("Bo");
+    // The thread of $d1 was the oldest: it went, so its root counts nothing.
+    expect(ctx.messages()[0]).not.toHaveProperty("thread");
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: replies })] }));
+    expect(ctx.messages()[0]!.thread).toEqual({ count: MAX_THREAD_REPLIES, latest: "Bo" });
+  });
+
+  it("decrypts thread replies again when their keys arrive", async () => {
+    const ctx = await withCrypto();
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [encRaw("q1", BO, 5000, { thread: "$c1", sessionId: "S2" }), encRaw("q2", BO, 5001, { thread: "$c1", sessionId: "S2" })] })] }));
+    await ctx.open("Bo");
+    const root = ctx.messages().find((m) => m.content === "decrypted hello")!;
+    await ctx.act({ type: "thread", rootId: root.id });
+    expect(ctx.chat().channel!.thread!.messages).toHaveLength(3);
+    ctx.e2ee.clear.set("$q1", msg("q1", BO, "decrypted in thread", 5000, { thread: "$c1" }));
+    ctx.e2ee.clear.set("$q2", { kind: "reaction", id: "$q2", sender: BO, ts: 5001, target: "$c1", key: "👍" });
+    ctx.e2ee.keys(["S2"]);
+    await flush();
+    expect(ctx.chat().channel!.thread!.messages.map((m) => m.content)).toEqual(["decrypted hello", "decrypted in thread"]);
+    expect(ctx.messages().find((m) => m.content === "decrypted hello")!.reactions).toEqual([{ key: "👍", label: "👍", count: 1, me: false }]);
   });
 });
 

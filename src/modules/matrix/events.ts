@@ -279,6 +279,16 @@ export function parseFormatting(content: Record<string, unknown>): MxRich | unde
   return content.format === "org.matrix.custom.html" && typeof content.formatted_body === "string" ? parseHtml(content.formatted_body) : undefined;
 }
 
+/** A thread root's summary, from the homeserver's bundled aggregation (unsigned m.relations m.thread); undefined without replies. */
+function threadSummary(unsigned: unknown): { count: number; latest?: string } | undefined {
+  const relations = isRecord(unsigned) && isRecord(unsigned["m.relations"]) ? unsigned["m.relations"] : {};
+  const thread = isRecord(relations["m.thread"]) ? relations["m.thread"] : {};
+  const replies = count(thread.count);
+  if (replies === 0) return undefined;
+  const latest = isRecord(thread.latest_event) ? userId(thread.latest_event.sender) : undefined;
+  return latest ? { count: replies, latest } : { count: replies };
+}
+
 /** Whom a message says it mentions (m.mentions): users, and the whole room; nothing when it does not say. */
 function mentionsOf(content: Record<string, unknown>): { mentions?: string[]; mentionsRoom?: true } {
   const mentions = content["m.mentions"];
@@ -311,6 +321,7 @@ export function parseEvent(raw: unknown): MxEvent | undefined {
       if (target && relates.rel_type === "m.replace") event.replaces = target;
       if (target && relates.rel_type === "m.annotation") event.annotates = target;
       if (target && relates.rel_type === "m.reference") event.references = target;
+      if (target && relates.rel_type === "m.thread") event.thread = target;
       return event;
     }
     case POLL_TYPES.start[0]:
@@ -365,11 +376,16 @@ export function parseEvent(raw: unknown): MxEvent | undefined {
       // A message without a body has had its content removed.
       if (!parsed) return { kind: "redacted", ...base };
       const event: MxEvent = { kind: "message", ...base, content: parsed, ...mentionsOf(content) };
+      const thread = relates.rel_type === "m.thread" ? eventId(relates.event_id) : undefined;
+      if (thread) event.thread = thread;
       const replyTo = isRecord(relates["m.in_reply_to"]) ? eventId(relates["m.in_reply_to"].event_id) : undefined;
-      if (replyTo) {
+      // In a thread, a reply marked is_falling_back only points clients without threads at the latest message: no reply.
+      if (replyTo && !(thread && relates.is_falling_back === true)) {
         event.replyTo = replyTo;
         parsed.text = stripReplyFallback(parsed.text);
       }
+      const summary = threadSummary(raw.unsigned);
+      if (summary) event.threadInfo = summary;
       return event;
     }
     default:

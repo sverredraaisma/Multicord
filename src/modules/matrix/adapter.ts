@@ -21,6 +21,7 @@ import {
   type NativeSidebarItem,
   type NativeSticker,
   type NativeStickerPack,
+  type NativeThreadView,
   type NativeUnread,
   type NativeViewState,
   type NativeVoiceMember,
@@ -224,12 +225,18 @@ type Message = Extract<MxEvent, { kind: "message" }>;
 type RtcEvent = Extract<MxEvent, { kind: "rtc" }>;
 type Reaction = Extract<MxEvent, { kind: "reaction" }>;
 type PollEvent = { target: string; sender: string; ts: number; answers?: string[] };
+type ThreadOpen = { roomId: string; rootId: string; loading: boolean; error?: string; more?: boolean };
 /** Encrypted sticky events kept per room until their keys arrive. */
 const MAX_STICKY_WAITING = 100;
 /** Reactions kept per room; beyond this the oldest go. */
 export const MAX_REACTIONS = 5000;
 /** Poll votes and ends kept per room; beyond this the oldest go. */
 export const MAX_POLL_EVENTS = 5000;
+/** Threads kept per room, and replies per thread; beyond these the oldest go. */
+export const MAX_THREADS = 200;
+export const MAX_THREAD_REPLIES = 500;
+/** Replies a thread's panel fetches when it opens: the latest. */
+export const THREAD_PAGE = 50;
 /** How long the server shows us typing unless renewed; renewed this often while typing goes on, and ended after this long idle (as Element does). */
 export const TYPING_TIMEOUT_MS = 30_000;
 export const TYPING_REPEAT_MS = 20_000;
@@ -309,6 +316,8 @@ interface Room {
    * event cannot bring a membership back.
    */
   rtc: Map<string, { id: string; expiresAt: number; member: MxCallMember | null }>;
+  /** Threads' replies by their root event, oldest first; kept out of the timeline. */
+  threads: Map<string, Shown[]>;
   /** Encrypted sticky events from outside the timeline whose keys have not arrived; tried again when they do. */
   stickyWaiting: MxEncryptedEvent[];
   /** The room is a space (m.room.create type m.space). */
@@ -576,6 +585,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private slidingSync: boolean;
   /** The hosts the engine locked itself to (and so its view); undefined while it is not locked. */
   private lockedHosts: string[] | undefined;
+  /** The thread open beside the open room: its root, and how fetching its replies went. */
+  private threadOpen: ThreadOpen | undefined;
   /** Invitations not answered yet, by room id. */
   private readonly invites = new Map<string, MxInvite>();
   /** A room just joined from here, opened once a sync brings it. */
@@ -916,6 +927,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.pinnedEvents.clear();
     this.invites.clear();
     this.hierarchies.clear();
+    this.threadOpen = undefined;
     this.opening = undefined;
     this.directsChanged.emit([]);
     this.publishServers();
@@ -982,7 +994,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       case "select":
         return this.select(action.channelId);
       case "send":
-        return this.send(action.content, action.replyTo);
+        return this.send(action.content, action.replyTo, action.thread);
+      case "thread":
+        return this.openThread(action.rootId);
       case "edit":
         return this.edit(action.messageId, action.content);
       case "delete":
@@ -1375,19 +1389,24 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const due = (e: MxEvent): e is MxEncryptedEvent => e.kind === "encrypted" && e.raw !== undefined && (!sessions || sessions.has(e.sessionId ?? ""));
     for (const room of [...this.rooms.values()]) {
       const rtc: RtcEvent[] = [];
-      for (const event of room.events.filter(due)) {
-        const result = await crypto.decrypt(room.id, event).catch(() => event);
-        if (crypto !== this.crypto) return;
-        if (result?.kind === "encrypted") continue;
-        changed = true;
-        const index = room.events.findIndex((e) => e.id === event.id);
-        if (index < 0) continue;
-        // A message takes the placeholder's place; anything else (an edit, a call membership, a hidden type) removes it.
-        if (result?.kind === "message" && !result.replaces) room.events[index] = result;
-        else {
-          room.events.splice(index, 1);
-          if (result?.kind === "rtc") rtc.push(result);
-          else if (result) this.addEvent(room, result, false);
+      // The timeline (read afresh each time, as removing an event replaces it), then each thread.
+      const lists = [() => room.events, ...[...room.threads.values()].map((replies) => () => replies)];
+      for (const list of lists) {
+        for (const event of list().filter(due)) {
+          const result = await crypto.decrypt(room.id, event).catch(() => event);
+          if (crypto !== this.crypto) return;
+          if (result?.kind === "encrypted") continue;
+          changed = true;
+          const current = list();
+          const index = current.findIndex((e) => e.id === event.id);
+          if (index < 0) continue;
+          // A message takes the placeholder's place; anything else (an edit, a call membership, a hidden type) removes it.
+          if (result?.kind === "message" && !result.replaces) current[index] = result;
+          else {
+            current.splice(index, 1);
+            if (result?.kind === "rtc") rtc.push(result);
+            else if (result) this.addEvent(room, result, false);
+          }
         }
       }
       // Sticky memberships from beside the timeline, whose keys came late.
@@ -1683,6 +1702,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         edits: new Map(),
         reactions: new Map(),
         polls: new Map(),
+        threads: new Map(),
         typing: [],
         notifications: 0,
         highlights: 0,
@@ -1784,6 +1804,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
           room.events = [];
           room.reactions.clear();
           room.polls.clear();
+          room.threads.clear();
         }
         room.prevBatch = update.prevBatch;
         // Membership changes may be in the gap too.
@@ -1924,6 +1945,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     room.events = room.events.filter((e) => e.id !== id);
     room.reactions.delete(id);
     room.polls.delete(id);
+    // In place: decrypting again holds on to the lists.
+    for (const replies of room.threads.values()) {
+      const index = replies.findIndex((e) => e.id === id);
+      if (index >= 0) replies.splice(index, 1);
+    }
     // A redacted sticky membership no longer counts (as matrix-js-sdk has it).
     for (const [key, entry] of room.rtc) if (entry.id === id) room.rtc.set(key, { ...entry, member: null });
     for (const [key, edit] of room.edits) if (edit.id === id || key.endsWith(`|${id}`)) room.edits.delete(key);
@@ -1952,8 +1978,24 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     }
     // An edit, a reaction or a poll's vote that cannot be read changes nothing that can be shown.
     if (event.kind === "encrypted" && (event.replaces || event.annotates || event.references)) return;
+    if (event.thread) return this.addReply(room, event.thread, event, live);
     if (room.events.some((e) => e.id === event.id)) return;
     room.events.push(event);
+    room.lastActivity = Math.max(room.lastActivity, event.ts);
+    if (live && event.sender !== this.session!.userId) this.notify(room, event);
+  }
+
+  /** Keeps a thread's reply with its thread, in order, once; it notifies like any message. */
+  private addReply(room: Room, root: string, event: Shown, live: boolean): void {
+    let replies = room.threads.get(root);
+    if (!replies) {
+      room.threads.set(root, (replies = []));
+      if (room.threads.size > MAX_THREADS) room.threads.delete(room.threads.keys().next().value!);
+    }
+    if (replies.some((e) => e.id === event.id)) return;
+    replies.push(event);
+    replies.sort((a, b) => a.ts - b.ts);
+    if (replies.length > MAX_THREAD_REPLIES) replies.shift();
     room.lastActivity = Math.max(room.lastActivity, event.ts);
     if (live && event.sender !== this.session!.userId) this.notify(room, event);
   }
@@ -2063,6 +2105,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (this.selected !== room.id) this.noteUnread(room);
     if (this.pins?.roomId !== room.id) this.pins = undefined;
     if (this.search?.roomId !== room.id) this.search = undefined;
+    if (this.threadOpen?.roomId !== room.id) this.threadOpen = undefined;
     this.selected = room.id;
     this.lastRoom.set(this.openSpace ?? "", room.id);
     this.render();
@@ -2125,7 +2168,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       const known = new Set(room.events.map((e) => e.id));
       const older: Shown[] = [];
       for (const event of page.events) {
-        if ((event.kind === "message" && event.replaces) || event.kind === "reaction" || event.kind === "pollResponse" || event.kind === "pollEnd") this.addEvent(room, event, false);
+        if (((event.kind === "message" || event.kind === "encrypted") && event.thread) || (event.kind === "message" && event.replaces) || event.kind === "reaction" || event.kind === "pollResponse" || event.kind === "pollEnd") this.addEvent(room, event, false);
         else if (event.kind === "redaction") this.removeEvent(room, event.redacts);
         else if ((event.kind === "message" || (event.kind === "encrypted" && !event.replaces && !event.annotates && !event.references)) && !known.has(event.id)) older.push(event);
       }
@@ -2501,9 +2544,15 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return { type: "m.room.encrypted", content: encrypted };
   }
 
+  /** An event of the timeline or of a thread, by the view's id for it. */
   private findEvent(room: Room, local: string): Shown | undefined {
     const id = this.byLocal.get(local);
-    return id ? room.events.find((e) => e.id === id) : undefined;
+    return id ? this.shownEvents(room).find((e) => e.id === id) : undefined;
+  }
+
+  /** The timeline's events and the threads' replies. */
+  private shownEvents(room: Room): Shown[] {
+    return [...room.events, ...[...room.threads.values()].flat()];
   }
 
   /**
@@ -2512,8 +2561,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
    * with the first file. Files sent are dropped from the list at once, so a
    * failure part way sends only the rest next time.
    */
-  private async send(text: string, replyTo?: string): Promise<void> {
+  private async send(text: string, replyTo?: string, thread?: string): Promise<void> {
     const room = this.selectedRoom();
+    if (thread) return this.sendToThread(room, thread, text);
     const files = room ? (this.pending.get(room.id) ?? []) : [];
     if (!room || this.uploading.has(room.id) || (text.trim() === "" && files.length === 0)) return;
     const session = this.session!;
@@ -2540,16 +2590,70 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.render();
   }
 
-  private async sendText(session: MxSession, room: Room, text: string, replied: Shown | undefined): Promise<void> {
+  /**
+   * Sends text, as a reply or into a thread. A thread's reply points at the
+   * thread's latest message as a fallback reply (is_falling_back), as the
+   * spec has it, for clients without threads.
+   */
+  private async sendText(session: MxSession, room: Room, text: string, replied: Shown | undefined, root?: Shown): Promise<void> {
     const mentioned = this.mentioned(session, text);
     const content: Record<string, unknown> = { msgtype: "m.text", body: text, "m.mentions": mentioned.length > 0 ? { user_ids: mentioned } : {} };
     const html = this.messageHtml(room, text, mentioned);
     if (html) Object.assign(content, { format: HTML_FORMAT, formatted_body: html });
-    if (replied) content["m.relates_to"] = { "m.in_reply_to": { event_id: replied.id } };
+    if (root) {
+      const latest = room.threads.get(root.id)?.at(-1) ?? root;
+      content["m.relates_to"] = { rel_type: "m.thread", event_id: root.id, is_falling_back: true, "m.in_reply_to": { event_id: latest.id } };
+    } else if (replied) content["m.relates_to"] = { "m.in_reply_to": { event_id: replied.id } };
     const id = await this.sendContent(session, room, content);
     const sent: Message = { kind: "message", id, sender: session.userId, ts: Date.now(), content: sentContent("m.text", text, content), mentions: mentioned };
-    if (replied) sent.replyTo = replied.id;
+    if (root) sent.thread = root.id;
+    else if (replied) sent.replyTo = replied.id;
     this.addEvent(room, sent, false);
+  }
+
+  /** Sends text into a thread of the open room; picked files wait for the conversation's composer. */
+  private async sendToThread(room: Room | undefined, local: string, text: string): Promise<void> {
+    const root = room ? this.findEvent(room, local) : undefined;
+    if (!room || !root || text.trim() === "") return;
+    this.stopTyping();
+    await this.attempt("Message not sent", async () => {
+      await this.sendText(this.session!, room, text, undefined, root);
+      this.publish();
+    });
+  }
+
+  /** Opens a message's thread beside the open room, fetching its latest replies; or closes it. */
+  private async openThread(local: string | undefined): Promise<void> {
+    const room = this.selectedRoom();
+    const root = room && local ? this.findEvent(room, local) : undefined;
+    const open: ThreadOpen | undefined = room && root ? { roomId: room.id, rootId: root.id, loading: true } : undefined;
+    this.threadOpen = open;
+    this.render();
+    if (!room || !open) return;
+    try {
+      const path = `/v1/rooms/${encodeURIComponent(room.id)}/relations/${encodeURIComponent(open.rootId)}/m.thread`;
+      const answer = await this.deps.api.request(this.session!, "GET", path, undefined, { limit: String(THREAD_PAGE), dir: "b" });
+      const parsed = (Array.isArray(answer.chunk) ? answer.chunk.slice(0, THREAD_PAGE) : []).flatMap((raw) => parseEvent(raw) ?? []);
+      for (const event of await this.decryptAll(room.id, parsed)) {
+        if ((event.kind === "message" || event.kind === "encrypted") && event.thread === open.rootId) this.addReply(room, open.rootId, event, false);
+      }
+      if (typeof answer.next_batch === "string") open.more = true;
+    } catch (error) {
+      open.error = `Could not load the thread: ${friendly(error)}`;
+    }
+    open.loading = false;
+    if (this.threadOpen === open) this.render();
+  }
+
+  /** The open thread as the view shows it: its root and replies, and why nothing may be sent into it. */
+  private threadState(room: Room, open: ThreadOpen, locked: string | undefined, reactions: Map<string, Map<string, Set<string>>>, emojiUrls: Map<string, string>): NativeThreadView {
+    const root = room.events.find((e) => e.id === open.rootId);
+    const events = [...(root ? [root] : []), ...(room.threads.get(open.rootId) ?? [])];
+    const thread: NativeThreadView = { rootId: this.local(open.rootId), messages: events.map((e) => this.toNative(room, e, locked !== undefined, reactions, emojiUrls)), loading: open.loading };
+    if (open.error) thread.error = open.error;
+    if (open.more) thread.note = `Only the latest ${THREAD_PAGE} replies are listed; older ones may be missing.`;
+    if (locked) thread.locked = locked;
+    return thread;
   }
 
   /**
@@ -2774,7 +2878,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   /** The media a shown message carries, by the id of the event its content came from. */
   private mediaOf(room: Room, id: string): MxMedia | undefined {
-    for (const event of room.events) {
+    for (const event of this.shownEvents(room)) {
       if (event.kind !== "message") continue;
       const shown = this.shownContent(room, event);
       if (shown.id === id) return shown.content.attachment;
@@ -3491,6 +3595,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     };
     if (room.pinned.includes(event.id)) native.pinned = true;
     if (!locked) native.canPin = true;
+    // A thread's root: the replies the homeserver counted, or those known here if more.
+    const replies = room.threads.get(event.id) ?? [];
+    const counted = event.kind === "message" ? event.threadInfo : undefined;
+    const latest = replies.at(-1)?.sender ?? counted?.latest;
+    const count = Math.max(counted?.count ?? 0, replies.length);
+    if (count > 0) native.thread = latest ? { count, latest: this.memberName(room, latest) } : { count };
     if (event.kind !== "message") return native;
     if (!mine && this.mentionsMe(room, event)) native.mentionsMe = true;
     // A quiet note on the author line: the message decrypted, but from a device its owner has not verified.
@@ -3616,9 +3726,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             ...(this.unreadAt?.roomId === room.id ? { unread: this.unreadView(room, this.unreadAt) } : {}),
             ...(this.pins?.roomId === room.id ? { pins: this.pins.list } : {}),
             ...(this.search?.roomId === room.id ? { search: this.search.results } : {}),
+            ...(this.threadOpen?.roomId === room.id ? { thread: this.threadState(room, this.threadOpen, locked, reactions, emojiUrls) } : {}),
             ...(this.membersOpen && this.memberList?.roomId === room.id ? { members: this.memberView(room, this.memberList) } : {}),
             // A locked room takes nothing from here; typing notices follow the user's setting.
-            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: true, stickers: !locked, pins: true, search: true, forward: !locked },
+            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: true, stickers: !locked, pins: true, search: true, forward: !locked, threads: true },
           }
         : null,
       // After the messages, which fill it.

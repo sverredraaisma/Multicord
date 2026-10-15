@@ -276,6 +276,10 @@ export type MxEvent =
       /** It mentions the whole room (m.mentions.room). */
       mentionsRoom?: boolean;
       replyTo?: string;
+      /** Set on a thread's replies: the thread's root event. They show in the thread, not the timeline. */
+      thread?: string;
+      /** A thread's root: its replies as the homeserver counted them (bundled m.thread aggregation), and who sent the latest. */
+      threadInfo?: { count: number; latest?: string };
       /** Set on edits: the event this one replaces, with the new content. */
       replaces?: string;
       /** Decrypted messages from a device its owner has not verified: why, in a few words. */
@@ -293,6 +297,8 @@ export type MxEvent =
       annotates?: string;
       /** Set when it refers to another event (m.reference), as a poll's votes and end do: never a message of its own. */
       references?: string;
+      /** Set when it is a thread's reply: the thread's root (the relation stays unencrypted). */
+      thread?: string;
       /** Why it could not be decrypted, once that was tried. */
       problem?: string;
     })
