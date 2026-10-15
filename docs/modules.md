@@ -92,6 +92,7 @@ Native engine fields:
 | `capabilities` | `{ directMessages, messagePreviews, voice, screenShare }`. The shell reads the manifest's, not the adapter's, so keep them equal: export the adapter's as `CAPABILITIES` from `adapter.ts`, and a test in `tests/main/modules.test.ts` compares them for every native module. |
 | `screenShare` | Route `getDisplayMedia` in the module's view through the shell's screen picker. Set it exactly when `capabilities.screenShare` is set (tested for modules with `voice`). |
 | `holdsMedia` | The engine holds media back until the view asks (`mediaKey` and `loadMedia`). The view then gets this service's limit for media that loads by itself, and Settings offers a per-service choice of it. Give such attachments their `size` where the platform says it: media of unknown size waits for a click unless any size may load. |
+| `sendsTyping` | The module tells others while the user types. Settings then offers the service a choice of following the general "Send typing indicators" switch or its own on or off, and the engine gets the answer as `typing` (`TYPING_SETTING`) in its settings values, beside its declared fields, with changes through `applySettings()`. Send no typing indicator while it is `false`, and stop one already running when it turns off. No module may declare a field named `typing`. |
 
 #### Service settings
 
@@ -109,7 +110,7 @@ The values are stored in `settings.json` under the service (`services[id].option
 - The adapter's `settingsStatus()` says what Settings shows with each field: `{ [key]: { text?, disabled? } }`, e.g. what is remembered, or `disabled` when an action has nothing to do. `serveAdapter` sends it when it changes (after each `sync()` and each Settings command). Texts are capped at 500 characters, and Settings shows only declared keys. Never put secrets in it.
 - A `load()` module reads its values from `ModuleHost.settings()`; changes reach its adapter's `applySettings()`.
 
-Matrix (`typing`, `forgetCallServices`) and Telegram (`forgetApiId`) show how.
+Matrix (`slidingSync`, `forgetCallServices`) and Telegram (`forgetApiId`) show how. Settings the shell itself offers per service (notifications, the limit for media that loads by itself, typing indicators) are not fields: they follow from the manifest (`holdsMedia`, `sendsTyping`).
 
 ### The engine side
 
@@ -186,6 +187,7 @@ The boundaries of the protocol and sandbox are covered in `tests/main/engineHost
 - [ ] `hosts` if the platform has fixed hosts; otherwise `lockHosts()` once they are known.
 - [ ] `storage` only if the module must keep keys across restarts.
 - [ ] `usesVoiceSettings` and `screenShare` if it runs calls with screen sharing.
+- [ ] `sendsTyping` if it sends typing indicators, and none while its `typing` value is `false`.
 - [ ] `notice` if using the platform here carries a risk users should know about.
 - [ ] `settings` for anything users may want to change or reset per service, instead of a screen or secret of the module's own.
 - [ ] Added to `MODULES` in `src/main/modules/index.ts`, and the expected lists in `tests/main/modules.test.ts` updated.

@@ -242,9 +242,56 @@ describe("media that loads by itself", () => {
   });
 });
 
+describe("typing indicators", () => {
+  it("are sent unless turned off in general or for a service, checked strictly", async () => {
+    const { typingIndicators } = await import("../../src/shared/settings");
+    expect(DEFAULT_SETTINGS.general.typingIndicators).toBe(true);
+    expect(parseSettings({ general: { typingIndicators: false } }).general.typingIndicators).toBe(false);
+    expect(parseSettings({ general: { typingIndicators: "no" } }).general.typingIndicators).toBe(true);
+    for (const bad of ["inherit", 0, null]) expect(isSettingsPatch({ general: { typingIndicators: bad } })).toBe(false);
+    expect(isSettingsPatch({ services: { mx: { typing: false }, tg: { typing: "inherit" } } })).toBe(true);
+    for (const bad of ["on", 1, null]) expect(isSettingsPatch({ services: { mx: { typing: bad } } })).toBe(false);
+
+    const off = applySettingsPatch(DEFAULT_SETTINGS, { general: { typingIndicators: false }, services: { mx: { typing: true }, tg: { typing: false } } });
+    expect(typingIndicators(off, "mx")).toBe(true);
+    expect(typingIndicators(off, "tg")).toBe(false);
+    expect(typingIndicators(off, "other")).toBe(false);
+    expect(typingIndicators(DEFAULT_SETTINGS, "other")).toBe(true);
+    // Changing something else keeps a service's choice; "inherit" drops it.
+    expect(applySettingsPatch(off, { services: { tg: { notifications: false } } }).services.tg).toEqual({ notifications: false, typing: false });
+    expect(applySettingsPatch(off, { services: { tg: { typing: "inherit" } } }).services.tg).toEqual({ notifications: true });
+    expect(parseSettings({ services: { tg: { notifications: true, typing: false }, mx: { notifications: true, typing: "no" } } }).services).toEqual({
+      tg: { notifications: true, typing: false },
+      mx: { notifications: true },
+    });
+  });
+
+  it("carry over Matrix's own typing toggle, keeping its other values", () => {
+    const parsed = parseSettings({
+      services: {
+        a: { notifications: true, options: { typing: false, slidingSync: false } },
+        b: { notifications: false, options: { typing: true } },
+        // The shell's own choice wins over an old one.
+        c: { notifications: true, typing: true, options: { typing: false } },
+        d: { notifications: true, options: { typing: "dark", slidingSync: true } },
+      },
+    });
+    expect(parsed.services).toEqual({
+      a: { notifications: true, typing: false, options: { slidingSync: false } },
+      b: { notifications: false, typing: true },
+      c: { notifications: true, typing: true },
+      d: { notifications: true, options: { slidingSync: true } },
+    });
+  });
+
+  it("is a key no module may declare a field of its own for", () => {
+    expect(isServiceSettingFields([{ kind: "toggle", key: "typing", label: "Typing", default: true }])).toBe(false);
+  });
+});
+
 describe("settings modules declare for their services", () => {
   const FIELDS: ServiceSettingField[] = [
-    { kind: "toggle", key: "typing", label: "Send typing notices", default: true },
+    { kind: "toggle", key: "quiet", label: "Quiet hours", default: true },
     { kind: "choice", key: "theme", label: "Theme", hint: "Colours", options: [{ value: "light", label: "Light" }, { value: "dark", label: "Dark" }], default: "light" },
     { kind: "action", key: "forget", label: "Forget", confirm: "Sure?" },
   ];
@@ -277,36 +324,36 @@ describe("settings modules declare for their services", () => {
   });
 
   it("gives each toggle and choice its stored value when it fits, else the default; actions have none", () => {
-    expect(serviceSettingValues(FIELDS, undefined)).toEqual({ typing: true, theme: "light" });
-    expect(serviceSettingValues(undefined, { typing: false })).toEqual({});
-    expect(serviceSettingValues(FIELDS, { typing: false, theme: "dark", forget: true, other: true })).toEqual({ typing: false, theme: "dark" });
-    expect(serviceSettingValues(FIELDS, { typing: "no", theme: "blue" })).toEqual({ typing: true, theme: "light" });
+    expect(serviceSettingValues(FIELDS, undefined)).toEqual({ quiet: true, theme: "light" });
+    expect(serviceSettingValues(undefined, { quiet: false })).toEqual({});
+    expect(serviceSettingValues(FIELDS, { quiet: false, theme: "dark", forget: true, other: true })).toEqual({ quiet: false, theme: "dark" });
+    expect(serviceSettingValues(FIELDS, { quiet: "no", theme: "blue" })).toEqual({ quiet: true, theme: "light" });
     // Stored values never reach a module through the prototype.
-    expect(serviceSettingValues(FIELDS, JSON.parse('{"__proto__": {"typing": false}}'))).toEqual({ typing: true, theme: "light" });
+    expect(serviceSettingValues(FIELDS, JSON.parse('{"__proto__": {"quiet": false}}'))).toEqual({ quiet: true, theme: "light" });
   });
 
   it("lets a patch change only declared toggles and choices, with fitting values", () => {
-    expect(fitsServiceFields(FIELDS, { typing: false, theme: "dark" })).toBe(true);
+    expect(fitsServiceFields(FIELDS, { quiet: false, theme: "dark" })).toBe(true);
     expect(fitsServiceFields(FIELDS, {})).toBe(true);
-    for (const bad of [{ typing: "dark" }, { theme: true }, { theme: "blue" }, { forget: true }, { other: true }] as ServiceSettingValues[]) expect(fitsServiceFields(FIELDS, bad)).toBe(false);
-    expect(fitsServiceFields(undefined, { typing: true })).toBe(false);
+    for (const bad of [{ quiet: "dark" }, { theme: true }, { theme: "blue" }, { forget: true }, { other: true }] as ServiceSettingValues[]) expect(fitsServiceFields(FIELDS, bad)).toBe(false);
+    expect(fitsServiceFields(undefined, { quiet: true })).toBe(false);
   });
 
   it("stores values leniently, patches them strictly and merges them per key", () => {
-    const parsed = parseSettings({ services: { m: { notifications: true, options: { typing: false, theme: "dark", "Bad-Key": true, n: 5, s: "Not Ok" } }, e: { notifications: true, options: { "Bad-Key": true } }, f: { notifications: true, options: [] } } });
-    expect(parsed.services).toEqual({ m: { notifications: true, options: { typing: false, theme: "dark" } }, e: { notifications: true }, f: { notifications: true } });
+    const parsed = parseSettings({ services: { m: { notifications: true, options: { quiet: false, theme: "dark", "Bad-Key": true, n: 5, s: "Not Ok" } }, e: { notifications: true, options: { "Bad-Key": true } }, f: { notifications: true, options: [] } } });
+    expect(parsed.services).toEqual({ m: { notifications: true, options: { quiet: false, theme: "dark" } }, e: { notifications: true }, f: { notifications: true } });
     const capped = parseSettings({ services: { m: { notifications: true, options: Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`k${i}`, true])) } } });
     expect(Object.keys(capped.services.m!.options!)).toHaveLength(MAX_SERVICE_FIELDS);
 
-    expect(isSettingsPatch({ services: { m: { options: { typing: false, theme: "dark" } } } })).toBe(true);
-    for (const options of [[], { "Bad-Key": true }, { typing: 1 }, { theme: "Not Ok" }, Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`k${i}`, true]))]) {
+    expect(isSettingsPatch({ services: { m: { options: { quiet: false, theme: "dark" } } } })).toBe(true);
+    for (const options of [[], { "Bad-Key": true }, { quiet: 1 }, { theme: "Not Ok" }, Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`k${i}`, true]))]) {
       expect(isSettingsPatch({ services: { m: { options } } })).toBe(false);
     }
-    const one = applySettingsPatch(DEFAULT_SETTINGS, { services: { m: { options: { typing: false } } } });
-    expect(one.services.m).toEqual({ notifications: true, options: { typing: false } });
+    const one = applySettingsPatch(DEFAULT_SETTINGS, { services: { m: { options: { quiet: false } } } });
+    expect(one.services.m).toEqual({ notifications: true, options: { quiet: false } });
     const two = applySettingsPatch(one, { services: { m: { options: { theme: "dark" } } } });
-    expect(two.services.m).toEqual({ notifications: true, options: { typing: false, theme: "dark" } });
-    expect(applySettingsPatch(two, { services: { m: { notifications: false } } }).services.m).toEqual({ notifications: false, options: { typing: false, theme: "dark" } });
+    expect(two.services.m).toEqual({ notifications: true, options: { quiet: false, theme: "dark" } });
+    expect(applySettingsPatch(two, { services: { m: { notifications: false } } }).services.m).toEqual({ notifications: false, options: { quiet: false, theme: "dark" } });
     const full = { ...DEFAULT_SETTINGS, services: { m: { notifications: true, options: Object.fromEntries(Array.from({ length: MAX_SERVICE_FIELDS }, (_, i) => [`k${i}`, true])) } } };
     const kept = applySettingsPatch(full, { services: { m: { options: { last: false } } } }).services.m!.options!;
     expect(Object.keys(kept)).toHaveLength(MAX_SERVICE_FIELDS);

@@ -269,7 +269,10 @@ describe("settings modules declare", () => {
     });
     const services = settings.state().services;
     const mx = services.find((s) => s.id === "mx")!;
-    expect(mx.settings!.map((f) => f.key)).toEqual(["typing", "slidingSync", "forgetCallServices"]);
+    expect(mx.settings!.map((f) => f.key)).toEqual(["slidingSync", "forgetCallServices"]);
+    // Typing indicators are the shell's setting, offered for modules that send them.
+    expect(mx.sendsTyping).toBe(true);
+    expect(services.find((s) => s.id === "discord")).not.toHaveProperty("sendsTyping");
     expect(mx.settingsStatus).toEqual({ forgetCallServices: { text: "Remembered: a.org" } });
     // Declares settings but reports nothing (or is off): no status.
     expect(services.find((s) => s.id === "telegram")!.settings!.map((f) => f.key)).toEqual(["forgetApiId"]);
@@ -280,18 +283,18 @@ describe("settings modules declare", () => {
   it("stores values only for the service's own declared toggles and choices", async () => {
     withMatrix();
     const { settings, deps, last } = controller();
-    await settings.handle({ type: "update", patch: { services: { mx: { options: { typing: false } } } } });
-    expect(deps.store.get().services.mx).toEqual({ notifications: true, options: { typing: false } });
-    for (const options of [{ typing: "dark" }, { forgetCallServices: true }, { other: true }] as ServiceSettingValues[]) {
+    await settings.handle({ type: "update", patch: { services: { mx: { options: { slidingSync: false } } } } });
+    expect(deps.store.get().services.mx).toEqual({ notifications: true, options: { slidingSync: false } });
+    for (const options of [{ slidingSync: "dark" }, { typing: false }, { forgetCallServices: true }, { other: true }] as ServiceSettingValues[]) {
       await settings.handle({ type: "update", patch: { services: { mx: { options } } } });
       expect(last().error).toBe("That setting does not exist for this service.");
     }
     // Not for another module's fields, nor for a service that does not exist.
-    await settings.handle({ type: "update", patch: { services: { discord: { options: { typing: false } } } } });
+    await settings.handle({ type: "update", patch: { services: { discord: { options: { slidingSync: false } } } } });
     expect(last().error).toBe("That setting does not exist for this service.");
-    await settings.handle({ type: "update", patch: { services: { nope: { options: { typing: false } } } } });
+    await settings.handle({ type: "update", patch: { services: { nope: { options: { slidingSync: false } } } } });
     expect(last().error).toBe("That setting does not exist for this service.");
-    expect(deps.store.get().services.mx).toEqual({ notifications: true, options: { typing: false } });
+    expect(deps.store.get().services.mx).toEqual({ notifications: true, options: { slidingSync: false } });
     // Notifications and resets need no fields.
     await settings.handle({ type: "update", patch: { services: { discord: { notifications: false }, mx: null } } });
     expect(last().error).toBeUndefined();

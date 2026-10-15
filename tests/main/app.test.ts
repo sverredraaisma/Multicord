@@ -977,7 +977,7 @@ describe("settings", () => {
   it("gives each engine its own service's settings values, checked against its module's fields", async () => {
     fs.writeFileSync(
       path.join(userData, "settings.json"),
-      JSON.stringify({ services: { mx: { notifications: true, options: { typing: false, sneaky: true } }, mx2: { notifications: true, options: { typing: "no" } } } }),
+      JSON.stringify({ services: { mx: { notifications: true, typing: false, options: { slidingSync: false, sneaky: true } }, mx2: { notifications: true, options: { slidingSync: "no" } } } }),
     );
     const { handle } = await shellWith([
       { id: "mx", name: "Matrix", url: "https://x.org", module: "matrix-native" },
@@ -985,21 +985,31 @@ describe("settings", () => {
     ]);
     const engineOf = (id: string) => WebContentsView.instances.find((v) => v.options.webPreferences.partition === `persist:engine_${id}` || v.options.webPreferences.partition === `engine_${id}`)!;
     const info = (id: string) => ipcMain.invoke(ENGINE_IPC.invoke, senderEvent(engineOf(id)), { type: "info" });
-    expect(await info("mx")).toMatchObject({ id: "mx", settings: { typing: false } });
-    expect(await info("mx2")).toMatchObject({ id: "mx2", settings: { typing: true } });
+    expect(((await info("mx")) as { settings: unknown }).settings).toEqual({ typing: false, slidingSync: false });
+    expect(((await info("mx2")) as { settings: unknown }).settings).toEqual({ typing: true, slidingSync: true });
     expect(await info("telegram")).toMatchObject({ settings: {} });
     expect(await info("fluxer")).not.toHaveProperty("settings");
 
     // A change reaches only that service's engine.
     engineOf("mx").webContents.send.mockClear();
     engineOf("mx2").webContents.send.mockClear();
-    handle.settingsStore.update({ services: { mx2: { options: { typing: false } } } });
-    expect(engineOf("mx2").webContents.send).toHaveBeenCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: false, slidingSync: true } });
+    handle.settingsStore.update({ services: { mx2: { options: { slidingSync: false } } } });
+    expect(engineOf("mx2").webContents.send).toHaveBeenCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: true, slidingSync: false } });
     expect(engineOf("mx").webContents.send).not.toHaveBeenCalledWith(ENGINE_IPC.command, expect.objectContaining({ type: "settings" }));
     handle.settingsStore.update({ general: { closeToTray: false } });
     expect(engineOf("mx2").webContents.send).toHaveBeenCalledTimes(1);
     handle.settingsStore.update({ services: { mx2: null } });
     expect(engineOf("mx2").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: true, slidingSync: true } });
+
+    // The general typing choice reaches every engine that sends typing, unless the service chose its own.
+    engineOf("mx").webContents.send.mockClear();
+    engineOf("telegram").webContents.send.mockClear();
+    handle.settingsStore.update({ general: { typingIndicators: false } });
+    expect(engineOf("mx2").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: false, slidingSync: true } });
+    expect(engineOf("mx").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: false, slidingSync: false } });
+    expect(engineOf("telegram").webContents.send).not.toHaveBeenCalledWith(ENGINE_IPC.command, expect.objectContaining({ type: "settings" }));
+    handle.settingsStore.update({ services: { mx: { typing: true } } });
+    expect(engineOf("mx").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: true, slidingSync: false } });
   });
 
   it("shows what an engine says about its settings while the page is open, and runs its actions", async () => {

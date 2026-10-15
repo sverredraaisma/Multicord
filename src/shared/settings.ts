@@ -76,6 +76,8 @@ export interface GeneralSettings {
   richPresence: boolean;
   /** Media a native view fetches on request loads by itself up to this size; services may choose their own. */
   mediaAutoLoad: MediaAutoLoad;
+  /** Native modules tell others while the user types; services may choose their own. */
+  typingIndicators: boolean;
 }
 
 /** How much held-back media loads by itself: nothing, up to a size, or anything. */
@@ -132,6 +134,8 @@ export interface ServiceSettings {
   notifications: boolean;
   /** Its own limit for media that loads by itself; absent: the general one. */
   mediaAutoLoad?: MediaAutoLoad;
+  /** Its own choice of sending typing indicators, where its module sends them (ModuleManifest.sendsTyping); absent: the general one. */
+  typing?: boolean;
   /**
    * Values for the settings its module declares (ModuleManifest.settings).
    * Stored loosely; serviceSettingValues() checks them against the fields.
@@ -157,6 +161,13 @@ export type ServiceSettingValues = Record<string, boolean | string>;
 
 /** What a running service says about its fields now, by key: a line of text, and whether an action has nothing to do. */
 export type ServiceSettingStatus = Record<string, { text?: string; disabled?: boolean }>;
+
+/**
+ * The key under which a module that sends typing indicators gets the
+ * service's choice in its values, beside its own fields. The shell sets it,
+ * so no module may declare a field of that name.
+ */
+export const TYPING_SETTING = "typing";
 
 /** Fields a module may declare, and so values and statuses a service may have. */
 export const MAX_SERVICE_FIELDS = 16;
@@ -206,7 +217,7 @@ export function isServiceSettingFields(value: unknown): value is ServiceSettingF
   if (!Array.isArray(value) || value.length > MAX_SERVICE_FIELDS) return false;
   const keys = new Set<string>();
   return value.every((field: unknown) => {
-    if (!isRecord(field) || !isSettingKey(field.key) || keys.has(field.key) || !isLabel(field.label) || !(field.hint === undefined || isLabel(field.hint, 300))) return false;
+    if (!isRecord(field) || !isSettingKey(field.key) || field.key === TYPING_SETTING || keys.has(field.key) || !isLabel(field.label) || !(field.hint === undefined || isLabel(field.hint, 300))) return false;
     keys.add(field.key);
     switch (field.kind) {
       case "toggle":
@@ -276,6 +287,11 @@ export function mediaAutoLoadLimit(settings: AppSettings, id: string): number {
   return AUTO_LOAD_BYTES[serviceSettings(settings, id).mediaAutoLoad ?? settings.general.mediaAutoLoad];
 }
 
+/** Whether a service sends typing indicators: its own choice, else the general one. */
+export function typingIndicators(settings: AppSettings, id: string): boolean {
+  return serviceSettings(settings, id).typing ?? settings.general.typingIndicators;
+}
+
 export const DEFAULT_SETTINGS: AppSettings = {
   general: {
     closeToTray: true,
@@ -289,6 +305,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     autoUpdate: true,
     richPresence: false,
     mediaAutoLoad: "5mb",
+    typingIndicators: true,
   },
   voice: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, enhancedNoiseSuppression: false, pushToTalkGlobal: false },
   // Off by default: global shortcuts take keys away from every other app.
@@ -315,8 +332,8 @@ const SHORTCUT_KEYS: readonly ShortcutAction[] = ["toggleMute", "toggleDeafen", 
 export interface SettingsPatch {
   general?: Partial<GeneralSettings>;
   shortcuts?: Partial<ShortcutSettings>;
-  /** Per service: fields to change, or null to go back to the defaults. A media limit of "inherit" drops the service's own. */
-  services?: Record<string, (Partial<Omit<ServiceSettings, "mediaAutoLoad">> & { mediaAutoLoad?: MediaAutoLoad | "inherit" }) | null>;
+  /** Per service: fields to change, or null to go back to the defaults. A media limit or typing choice of "inherit" drops the service's own. */
+  services?: Record<string, (Partial<Omit<ServiceSettings, "mediaAutoLoad" | "typing">> & { mediaAutoLoad?: MediaAutoLoad | "inherit"; typing?: boolean | "inherit" }) | null>;
   voice?: Partial<Record<"input" | "output" | "camera", DeviceChoice | null>> &
     Partial<Pick<VoiceSettings, "echoCancellation" | "noiseSuppression" | "autoGainControl" | "enhancedNoiseSuppression" | "pushToTalkGlobal">> & { pushToTalk?: string | null };
 }
@@ -335,6 +352,7 @@ const GENERAL_CHECKS: { [K in keyof GeneralSettings]: (value: unknown) => value 
   autoUpdate: (v): v is boolean => typeof v === "boolean",
   richPresence: (v): v is boolean => typeof v === "boolean",
   mediaAutoLoad: isMediaAutoLoad,
+  typingIndicators: (v): v is boolean => typeof v === "boolean",
 };
 const GENERAL_KEYS = Object.keys(GENERAL_CHECKS) as (keyof GeneralSettings)[];
 const VOICE_FLAGS = ["echoCancellation", "noiseSuppression", "autoGainControl", "enhancedNoiseSuppression", "pushToTalkGlobal"] as const;
@@ -374,7 +392,13 @@ export function parseSettings(raw: unknown): AppSettings {
       settings.services[id] = { notifications: value.notifications };
       if (isMediaAutoLoad(value.mediaAutoLoad)) settings.services[id].mediaAutoLoad = value.mediaAutoLoad;
       const options = parseServiceSettingValues(value.options);
-      if (options) settings.services[id].options = options;
+      // Matrix kept its typing choice among its own fields before it became a shell setting: carry it over.
+      if (options && Object.hasOwn(options, TYPING_SETTING)) {
+        if (typeof options[TYPING_SETTING] === "boolean") settings.services[id].typing = options[TYPING_SETTING];
+        delete options[TYPING_SETTING];
+      }
+      if (typeof value.typing === "boolean") settings.services[id].typing = value.typing;
+      if (options && Object.keys(options).length > 0) settings.services[id].options = options;
     }
   }
   return settings;
@@ -393,6 +417,7 @@ export function isSettingsPatch(value: unknown): value is SettingsPatch {
       const fits = ([key, field]: [string, unknown]): boolean =>
         (key === "notifications" && typeof field === "boolean") ||
         (key === "mediaAutoLoad" && (field === "inherit" || isMediaAutoLoad(field))) ||
+        (key === "typing" && (field === "inherit" || typeof field === "boolean")) ||
         (key === "options" && isServiceSettingValues(field));
       if (!isRecord(v) || !Object.entries(v).every(fits)) return false;
     }
@@ -434,10 +459,12 @@ export function applySettingsPatch(settings: AppSettings, patch: SettingsPatch):
     if (value === null) delete next.services[id];
     else if (Object.keys(next.services).length < MAX_SERVICE_SETTINGS || Object.hasOwn(next.services, id)) {
       const current = serviceSettings(next, id);
-      const { mediaAutoLoad, ...rest } = value;
+      const { mediaAutoLoad, typing, ...rest } = value;
       const merged: ServiceSettings = { ...current, ...rest };
       if (mediaAutoLoad === "inherit") delete merged.mediaAutoLoad;
       else if (mediaAutoLoad) merged.mediaAutoLoad = mediaAutoLoad;
+      if (typing === "inherit") delete merged.typing;
+      else if (typing !== undefined) merged.typing = typing;
       // Values merge per key, so changing one keeps the others; at most MAX_SERVICE_FIELDS are kept.
       if (value.options) merged.options = Object.fromEntries(Object.entries({ ...current.options, ...value.options }).slice(-MAX_SERVICE_FIELDS));
       next.services[id] = merged;
@@ -483,6 +510,8 @@ export interface ServiceInfo {
   settingsStatus?: ServiceSettingStatus;
   /** Its module holds media back until asked, so the limit for media that loads by itself applies (ModuleManifest.holdsMedia). */
   holdsMedia?: boolean;
+  /** Its module sends typing indicators, so the service may choose its own (ModuleManifest.sendsTyping). */
+  sendsTyping?: boolean;
 }
 
 /** A module the user can add services (or extra accounts) from. */

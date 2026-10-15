@@ -129,6 +129,7 @@ export class SettingsController {
       };
       if (manifest?.notice) service.notice = manifest.notice;
       if (manifest?.holdsMedia) service.holdsMedia = true;
+      if (manifest?.sendsTyping) service.sendsTyping = true;
       if (adapter) service.account = adapter.accountStatus?.() ?? { state: "unknown" };
       const health = adapter?.health?.();
       if (health) service.health = health;

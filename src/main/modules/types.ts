@@ -53,6 +53,13 @@ export interface ModuleManifest {
    * that loads by itself, and Settings offers a per-service choice of it.
    */
   holdsMedia?: boolean;
+  /**
+   * Engines only: the module tells others while the user types. Its
+   * services get the "Send typing indicators" setting (the general one, or
+   * the service's own) as `typing` (TYPING_SETTING) in their settings
+   * values, and changes through applySettings().
+   */
+  sendsTyping?: boolean;
   /** Engines only: what the module supports. */
   capabilities?: PlatformAdapter["capabilities"];
   /**

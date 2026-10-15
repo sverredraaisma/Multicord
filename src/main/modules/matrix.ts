@@ -26,15 +26,10 @@ export const matrixNativeModule: PlatformModule = {
     // Media is downloaded (and decrypted) in the engine when the view asks.
     holdsMedia: true,
     capabilities: { directMessages: true, messagePreviews: true, voice: true, screenShare: true },
+    // "Send typing indicators" comes from the shell, as SETTING.typing.
+    sendsTyping: true,
     // Keys as SETTING in src/modules/matrix/adapter.ts names them (tested).
     settings: [
-      {
-        kind: "toggle",
-        key: "typing",
-        label: "Send typing notices",
-        hint: "Others in a room see while you type. Matrix sends these unencrypted, also in encrypted rooms.",
-        default: true,
-      },
       {
         kind: "toggle",
         key: "slidingSync",

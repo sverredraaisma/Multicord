@@ -62,11 +62,14 @@ describe("module registry", () => {
   });
 
   it("declares well-formed settings, with the keys its code handles", async () => {
-    const { isServiceSettingFields } = await import("../../src/shared/settings");
+    const { isServiceSettingFields, TYPING_SETTING } = await import("../../src/shared/settings");
     for (const { manifest } of MODULES) expect(manifest.settings === undefined || isServiceSettingFields(manifest.settings), manifest.id).toBe(true);
     const keys = (id: string) => findModule(id)!.manifest.settings!.map((f) => f.key);
     const { SETTING } = await import("../../src/modules/matrix/adapter");
-    expect(keys("matrix-native")).toEqual(Object.values(SETTING));
+    // Typing comes from the shell, for modules that send typing indicators.
+    expect(SETTING.typing).toBe(TYPING_SETTING);
+    expect(findModule("matrix-native")!.manifest.sendsTyping).toBe(true);
+    expect(keys("matrix-native")).toEqual(Object.values(SETTING).filter((key) => key !== TYPING_SETTING));
     const { FORGET_API_ID } = await import("../../src/modules/telegram/adapter");
     expect(keys("telegram")).toEqual([FORGET_API_ID]);
   });

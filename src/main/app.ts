@@ -35,7 +35,7 @@ import {
 import type { ActivityUpdate, HealthCheck, PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
 import { FAVOURITES_IPC, isFavouritesAction, MEDIA_SCHEME, type FavouritesState } from "../shared/favourites";
-import { isSettingsAction, mediaAutoLoadLimit, serviceSettings, serviceSettingValues, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
+import { isSettingsAction, mediaAutoLoadLimit, serviceSettings, serviceSettingValues, SETTINGS_IPC, stepZoom, TYPING_SETTING, typingIndicators, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import { EngineHub, engineStoragePartition } from "./engineHost";
 import { downloadMedia, FavouritesStore } from "./favourites";
@@ -218,7 +218,14 @@ export async function createShell(
   /** Notifications from this service: on in general and not turned off for it. */
   const notificationsOn = (id: string): boolean => general().notifications && serviceSettings(settingsStore.get(), id).notifications;
   /** One service's values for the settings its module declares, checked against them: stored values are untrusted. */
-  const settingValues = (manifest: PlatformModule["manifest"], id: string) => serviceSettingValues(manifest.settings, serviceSettings(settingsStore.get(), id).options);
+  const settingValues = (manifest: PlatformModule["manifest"], id: string) => {
+    const values = serviceSettingValues(manifest.settings, serviceSettings(settingsStore.get(), id).options);
+    // The shell's own setting, beside the module's: whether this service sends typing indicators.
+    if (manifest.sendsTyping) values[TYPING_SETTING] = typingIndicators(settingsStore.get(), id);
+    return values;
+  };
+  /** Modules that get settings values: those declaring fields, and those sending typing indicators. */
+  const takesSettings = (manifest: PlatformModule["manifest"]): boolean => (manifest.settings?.length ?? 0) > 0 || manifest.sendsTyping === true;
   let activePlatform = platforms[0]!.id;
   /** What the content area shows: a platform, the settings page, or the Messages list beside a conversation. */
   let mode: "platform" | "settings" | "messages" = "platform";
@@ -345,7 +352,7 @@ export async function createShell(
       capabilities: manifest.capabilities ?? { directMessages: false, messagePreviews: false, voice: false, screenShare: false },
       view,
       secrets: credentials.scope(def.id),
-      ...(manifest.settings?.length ? { settings: () => settingValues(manifest, def.id) } : {}),
+      ...(takesSettings(manifest) ? { settings: () => settingValues(manifest, def.id) } : {}),
     });
     return {
       adapter: engine.adapter,
@@ -397,9 +404,10 @@ export async function createShell(
     manifests.set(def.id, module.manifest);
     await registry.add(adapter, def.name, { label: module.manifest.label, color: module.manifest.color });
     // Each service gets its own values only, whenever they change.
-    if (module.manifest.settings?.length) {
+    if (takesSettings(module.manifest)) {
       settingsStore.changed.on(({ patch }) => {
-        if (patch.services && Object.hasOwn(patch.services, def.id)) adapter.applySettings?.(settingValues(module.manifest, def.id));
+        const typing = module.manifest.sendsTyping === true && patch.general?.typingIndicators !== undefined;
+        if (typing || (patch.services && Object.hasOwn(patch.services, def.id))) adapter.applySettings?.(settingValues(module.manifest, def.id));
       });
     }
     if (module.manifest.usesVoiceSettings) {

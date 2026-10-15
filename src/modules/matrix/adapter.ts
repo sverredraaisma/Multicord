@@ -28,7 +28,7 @@ import {
   type NativeVoiceSession,
   type VoiceNoticeFlag,
 } from "../../shared/native";
-import { MAX_STATUS_TEXT, type AccountStatus, type ServiceSettingStatus, type ServiceSettingValues } from "../../shared/settings";
+import { MAX_STATUS_TEXT, TYPING_SETTING, type AccountStatus, type ServiceSettingStatus, type ServiceSettingValues } from "../../shared/settings";
 import {
   MatrixError,
   matrixErrcode,
@@ -195,8 +195,8 @@ export interface MatrixAdapterDeps {
   settings?: ServiceSettingValues;
 }
 
-/** The keys of the settings the manifest declares for each Matrix service. */
-export const SETTING = { typing: "typing", slidingSync: "slidingSync", forgetCallServices: "forgetCallServices" } as const;
+/** The keys of the settings each Matrix service gets: the manifest's, and the shell's typing choice (sendsTyping). */
+export const SETTING = { typing: TYPING_SETTING, slidingSync: "slidingSync", forgetCallServices: "forgetCallServices" } as const;
 
 /** The distinct hosts of these URLs, skipping any that are missing. */
 export function hostsOf(...urls: (string | undefined)[]): string[] {

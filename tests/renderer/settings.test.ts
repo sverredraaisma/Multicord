@@ -212,7 +212,7 @@ describe("services tab", () => {
 
   it("shows the settings a service's module declares, with what the service says about them", () => {
     const fields: ServiceInfo["settings"] = [
-      { kind: "toggle", key: "typing", label: "Send typing notices", hint: "Others see it.", default: true },
+      { kind: "toggle", key: "quiet", label: "Quiet hours", hint: "Others see it.", default: true },
       { kind: "choice", key: "theme", label: "Theme", options: [{ value: "light", label: "Light" }, { value: "dark", label: "Dark" }], default: "light" },
       { kind: "action", key: "forget", label: "Forget call services", hint: "Looked up again.", confirm: "Click again to forget" },
       { kind: "action", key: "reload", label: "Reload" },
@@ -224,15 +224,15 @@ describe("services tab", () => {
         service({ id: "off", enabled: false, settings: fields }),
       ],
     });
-    state.settings = { ...state.settings, services: { mx: { notifications: true, options: { typing: false, theme: "blue" } } } };
+    state.settings = { ...state.settings, services: { mx: { notifications: true, options: { quiet: false, theme: "blue" } } } };
     mount(state);
     const field = (key: string, id = "mx") => q(`.service-setting[data-key="${key}"]`, row(id));
 
-    const typing = q<HTMLInputElement>("input", field("typing"));
-    expect(field("typing").textContent).toContain("Others see it.");
-    expect(typing.checked).toBe(false);
-    change(typing, true);
-    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { mx: { options: { typing: true } } } } });
+    const quiet = q<HTMLInputElement>("input", field("quiet"));
+    expect(field("quiet").textContent).toContain("Others see it.");
+    expect(quiet.checked).toBe(false);
+    change(quiet, true);
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { mx: { options: { quiet: true } } } } });
 
     // A stored value that does not fit shows the default.
     const theme = q<HTMLSelectElement>('select[aria-label="Theme"]', field("theme"));
@@ -251,7 +251,7 @@ describe("services tab", () => {
     expect(button("Reload", field("reload")).disabled).toBe(true);
     expect(button("Reload", field("reload", "idle")).disabled).toBe(true);
     expect(button("Forget call services", field("forget", "idle")).disabled).toBe(true);
-    expect(q<HTMLInputElement>("input", field("typing", "idle")).checked).toBe(true);
+    expect(q<HTMLInputElement>("input", field("quiet", "idle")).checked).toBe(true);
     expect(row("off").querySelector(".service-settings")).toBeNull();
     expect(row("idle").querySelector(".setting-status")).toBeNull();
   });
@@ -269,6 +269,25 @@ describe("services tab", () => {
     change(limit("mx"), "inherit");
     expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { mx: { mediaAutoLoad: "inherit" } } } });
     expect(row("fx").querySelector(".service-settings")).toBeNull();
+  });
+
+  it("lets a service whose module sends typing indicators choose for itself", () => {
+    const state = viewState({ services: [service({ id: "tg", sendsTyping: true }), service({ id: "mx", sendsTyping: true }), service({ id: "fx", sendsTyping: true }), service({ id: "dc" })] });
+    state.settings = { ...state.settings, general: { ...state.settings.general, typingIndicators: false }, services: { mx: { notifications: true, typing: true }, fx: { notifications: true, typing: false } } };
+    mount(state);
+    const typing = (id: string) => q<HTMLSelectElement>('.service-setting[data-key="typing"] select', row(id));
+    expect(optionTexts(typing("tg"))).toEqual(["As in General (Off)", "On", "Off"]);
+    expect([typing("tg").value, typing("mx").value, typing("fx").value]).toEqual(["inherit", "on", "off"]);
+    change(typing("tg"), "on");
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { tg: { typing: true } } } });
+    change(typing("tg"), "off");
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { tg: { typing: false } } } });
+    change(typing("mx"), "inherit");
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { services: { mx: { typing: "inherit" } } } });
+    expect(row("dc").querySelector(".service-settings")).toBeNull();
+    state.settings.general.typingIndicators = true;
+    mount(state);
+    expect(optionTexts(typing("tg"))[0]).toBe("As in General (On)");
   });
 
   it("runs an action without a confirmation on the first click", () => {
@@ -452,7 +471,7 @@ describe("banners", () => {
 describe("general and about", () => {
   it("general switches reflect state and send updates", () => {
     const state = viewState();
-    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, streamerMode: "on", openLinks: false, autoUpdate: false, richPresence: false, mediaAutoLoad: "5mb" };
+    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, streamerMode: "on", openLinks: false, autoUpdate: false, richPresence: false, mediaAutoLoad: "5mb", typingIndicators: false };
     mount(state);
     expect(switchFor("tray").checked).toBe(false);
     expect(switchFor("Start with").checked).toBe(true);
@@ -484,6 +503,9 @@ describe("general and about", () => {
     expect([autoLoad.value, optionTexts(autoLoad).at(-1)]).toEqual(["5mb", "Any size"]);
     change(autoLoad, "25mb");
     expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { mediaAutoLoad: "25mb" } } });
+    expect(switchFor("Send typing").checked).toBe(false);
+    change(switchFor("Send typing"), true);
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { typingIndicators: true } } });
   });
 
   it("shows where updating stands, with the buttons that fit", () => {

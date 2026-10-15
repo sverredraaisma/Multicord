@@ -225,6 +225,7 @@ export class SettingsPage {
     links: { row: HTMLElement; input: HTMLInputElement; label: HTMLElement };
     autoUpdate: HTMLInputElement;
     richPresence: HTMLInputElement;
+    typing: HTMLInputElement;
     talkEverywhere: HTMLInputElement;
     keys: Record<ShortcutAction | "pushToTalk", { set(value: string | null, problem?: string): void }>;
     updateStatus: HTMLElement;
@@ -489,7 +490,25 @@ export class SettingsPage {
         "Pictures, video and sound that Matrix and Telegram fetch on request load by themselves when the service says they are this size or smaller. Larger ones, and those of unknown size, load when you click them. Stickers always load. Each service can choose its own under Services & accounts.",
       ),
     );
-    general.append(grouping.row, links.row, autoUpdate.row, richPresence.row, el(doc, "h2", undefined, "Media"), autoLoadRow, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
+    const typing = switchRow(
+      doc,
+      "Send typing indicators",
+      "Others see while you type in Multicord's own chat views; web apps such as Discord decide for themselves. Each service can choose otherwise under Services & accounts.",
+      (on) => this.update({ general: { typingIndicators: on } }),
+    );
+    general.append(
+      grouping.row,
+      links.row,
+      autoUpdate.row,
+      richPresence.row,
+      el(doc, "h2", undefined, "Media"),
+      autoLoadRow,
+      el(doc, "h2", undefined, "Privacy"),
+      streamerRow,
+      typing.row,
+      el(doc, "h2", undefined, "Appearance"),
+      zoomRow,
+    );
     const launchHint = el(doc, "p", "hint", "Starting with your computer is not available on this system.");
     launchHint.hidden = true;
     const secretsNote = el(doc, "p", "notice", "This system has no secure storage for passwords, so you will need to sign in to your services again after each restart.");
@@ -566,6 +585,7 @@ export class SettingsPage {
       links: { ...links, label: links.row.querySelector<HTMLElement>(".switch-label")! },
       autoUpdate: autoUpdate.input,
       richPresence: richPresence.input,
+      typing: typing.input,
       talkEverywhere: talkEverywhere.input,
       keys,
       updateStatus,
@@ -634,6 +654,7 @@ export class SettingsPage {
     parts.links.input.checked = general.openLinks;
     parts.autoUpdate.checked = general.autoUpdate;
     parts.richPresence.checked = general.richPresence;
+    parts.typing.checked = general.typingIndicators;
     const taken = new Set(state.shortcutErrors ?? []);
     for (const action of ["toggleMute", "toggleDeafen", "showApp"] as const) {
       parts.keys[action].set(state.settings.shortcuts[action], taken.has(action) ? "Another app already uses this shortcut." : undefined);
@@ -704,7 +725,7 @@ export class SettingsPage {
       info.append(title, status);
       if (service.notice) info.append(el(doc, "p", "service-notice", service.notice));
       info.append(actions);
-      if (service.enabled && (service.settings?.length || service.holdsMedia)) info.append(this.serviceFields(service));
+      if (service.enabled && (service.settings?.length || service.holdsMedia || service.sendsTyping)) info.append(this.serviceFields(service));
       const { row, input } = switchRow(doc, "On", undefined, (on) => this.api.act({ type: "setEnabled", id: service.id, enabled: on }));
       row.classList.add("service-switch");
       input.checked = service.enabled;
@@ -717,7 +738,8 @@ export class SettingsPage {
 
   /**
    * The service's own limit for media that loads by itself, where its module
-   * holds media back, and the settings its module declares: toggles, choices
+   * holds media back, its own choice of typing indicators where its module
+   * sends them, and the settings its module declares: toggles, choices
    * and action buttons, with what the service says about each.
    */
   private serviceFields(service: ServiceInfo): HTMLElement {
@@ -733,6 +755,28 @@ export class SettingsPage {
       row.dataset.key = "mediaAutoLoad";
       const text = el(doc, "span", "switch-text");
       text.append(el(doc, "span", "switch-label", "Auto-load media up to"), el(doc, "small", "hint", "Media of unknown size waits for a click."));
+      row.append(text, select);
+      box.append(row);
+    }
+    if (service.sendsTyping) {
+      const select = el(doc, "select");
+      select.setAttribute("aria-label", "Send typing indicators");
+      for (const [value, label] of [
+        ["inherit", `As in General (${settings.general.typingIndicators ? "On" : "Off"})`],
+        ["on", "On"],
+        ["off", "Off"],
+      ] as const) {
+        const option = el(doc, "option", undefined, label);
+        option.value = value;
+        select.append(option);
+      }
+      const own = serviceSettings(settings, service.id).typing;
+      select.value = own === undefined ? "inherit" : own ? "on" : "off";
+      select.addEventListener("change", () => this.update({ services: { [service.id]: { typing: select.value === "inherit" ? "inherit" : select.value === "on" } } }));
+      const row = el(doc, "div", "service-setting");
+      row.dataset.key = "typing";
+      const text = el(doc, "span", "switch-text");
+      text.append(el(doc, "span", "switch-label", "Send typing indicators"), el(doc, "small", "hint", "Others see while you type."));
       row.append(text, select);
       box.append(row);
     }
