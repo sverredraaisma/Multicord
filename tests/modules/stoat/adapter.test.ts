@@ -436,6 +436,23 @@ describe("StoatAdapter custom emoji", () => {
 });
 
 describe("StoatAdapter messages", () => {
+  it("names custom emoji in messages where no file server can draw them", async () => {
+    const { adapter, chat, online } = setup({
+      token: "saved",
+      routes: [
+        (url) => (url.endsWith("/api/") ? { status: 200, body: { ws: "wss://events.test" } } : undefined),
+        (url) => (url.includes("/messages?") ? { status: 200, body: { messages: [message(461, GENERAL, { content: "yes", replies: [ulid(460)] }), message(460, GENERAL, { content: `:${EMOJI}:` })], users: [ANA] } } : undefined),
+      ],
+    });
+    await online();
+    await adapter.openConversation(GENERAL);
+    const [first, second] = chat().channel!.messages;
+    expect(first!.content).toBe(":party:");
+    // Replies quote plain text: the name.
+    expect(second!.reply).toEqual({ author: "Ana", content: ":party:" });
+    expect(chat().emojiUrls).toEqual({});
+  });
+
   it("renders authors, mentions, emoji, replies, reactions and attachments", async () => {
     const { adapter, chat, event, online, routes } = setup({ token: "saved" });
     routes.push((url) =>
@@ -468,6 +485,8 @@ describe("StoatAdapter messages", () => {
     await adapter.openConversation(GENERAL);
     const [system, unknown, bridged, mine, rich] = chat().channel!.messages;
     expect(system).toMatchObject({ author: "System", content: "@Ana joined", canEdit: false, canDelete: false, mine: false });
+    // Known emoji are drawn from the file server; the Messages list keeps their names.
+    expect(chat().emojiUrls).toEqual({ [EMOJI]: `https://cdn.test/emojis/${EMOJI}` });
     expect(unknown).toMatchObject({ author: "Unknown user", avatarUrl: undefined });
     expect(bridged).toMatchObject({ author: "Bridged", avatarUrl: undefined, reply: undefined });
     expect(mine).toMatchObject({ author: "me", mine: true, canEdit: true, canDelete: true, source: "mine" });
@@ -475,7 +494,7 @@ describe("StoatAdapter messages", () => {
       id: ulid(460),
       author: "Ana",
       avatarUrl: "https://cdn.test/avatars/av1",
-      content: `hi @me <@${ulid(77)}> see #lobby <#${ulid(78)}> :party: :${ulid(79)}:`,
+      content: `hi @me <@${ulid(77)}> see #lobby <#${ulid(78)}> <:party:${EMOJI}> :${ulid(79)}:`,
       timestamp: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
       edited: true,
       mine: false,

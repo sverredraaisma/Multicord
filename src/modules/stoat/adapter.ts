@@ -628,8 +628,12 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     return message.attachments.map((a) => `📎 ${a.filename}`).join(", ").slice(0, 500);
   }
 
-  /** Message text with user and channel mentions and custom emoji resolved to names. */
-  private renderContent(content: string): string {
+  /**
+   * Message text with user and channel mentions resolved to names, and
+   * custom emoji to their names, or, given `shown`, to <:name:id> for the
+   * view to draw, noting each such emoji in `shown`.
+   */
+  private renderContent(content: string, shown?: Set<string>): string {
     return content
       .replace(new RegExp(`<@(${ULID})>`, "g"), (match, id: string) => (this.state.users.has(id) ? `@${this.userName(id)}` : match))
       .replace(new RegExp(`<#(${ULID})>`, "g"), (match, id: string) => {
@@ -638,11 +642,14 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       })
       .replace(new RegExp(`:(${ULID}):`, "g"), (match, id: string) => {
         const emoji = this.state.emojis.get(id);
-        return emoji ? `:${emoji.name}:` : match;
+        if (!emoji) return match;
+        if (!shown || !this.emojiUrl(id)) return `:${emoji.name}:`;
+        shown.add(id);
+        return `<${emoji.animated ? "a" : ""}:${emoji.name}:${id}>`;
       });
   }
 
-  private viewMessage(message: StoatMessage): NativeMessage {
+  private viewMessage(message: StoatMessage, shown: Set<string>): NativeMessage {
     const mine = message.authorId === this.state.meId;
     const editable = mine && message.system === undefined;
     const replyId = message.replies[0];
@@ -652,7 +659,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       id: message.id,
       author: this.authorName(message),
       avatarUrl: message.masquerade ? undefined : this.fileUrl(author?.avatar),
-      content: this.renderContent(message.system ?? message.content),
+      content: this.renderContent(message.system ?? message.content, shown),
       timestamp: new Date(idTime(message.id)).toISOString(),
       edited: message.edited,
       mine,
@@ -713,6 +720,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       case "chat": {
         const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
         const server = this.selection.kind === "server" ? this.state.servers.get(this.selection.serverId) : undefined;
+        const shown = new Set<string>();
         return {
           screen: "chat",
           platform,
@@ -723,7 +731,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
             ? {
                 id: channel.id,
                 name: this.channelTitle(channel),
-                messages: (this.state.messages.get(channel.id) ?? []).map((m) => this.viewMessage(m)),
+                messages: (this.state.messages.get(channel.id) ?? []).map((m) => this.viewMessage(m, shown)),
                 loading: this.loading.has(channel.id),
                 hasOlder: this.hasOlder.get(channel.id) ?? false,
                 typing: this.state.typingIn(channel.id).map((u) => displayName(u)),
@@ -734,6 +742,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
               }
             : null,
           customEmoji: channel ? this.customEmoji(channel) : [],
+          // Pictures of the custom emoji in the messages above; only emoji with a picture were noted.
+          emojiUrls: Object.fromEntries([...shown].map((id) => [id, this.emojiUrl(id)!])),
           voice: null,
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };
