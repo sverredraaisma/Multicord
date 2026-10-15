@@ -29,6 +29,8 @@ export interface TgMessage {
   out: boolean;
   /** The sender's display name, where known (group and channel messages). */
   sender?: string;
+  /** The sending user's id, where a user sent it (not a channel posting as itself); in private chats, only for incoming messages. */
+  senderId?: string;
   /** It mentions the user or answers one of theirs. */
   mentioned?: boolean;
   text: string;
@@ -56,8 +58,46 @@ export interface TgDialog {
   mutedUntil?: number;
   /** Nothing can be sent here: a channel only its admins post in, or a group the user may not write in. */
   readOnly?: boolean;
+  /** Its members may be listed, as far as the dialog tells: groups the user is in, channels they administer. */
+  members?: boolean;
   lastMessage?: TgMessage;
   date: number;
+}
+
+/** How recently a user was online, as far as their privacy settings tell: "recently" is all many of them show. */
+export type TgPresence = "online" | "recently" | "offline";
+
+export interface TgMember {
+  /** The user's id. */
+  id: string;
+  name: string;
+  bot: boolean;
+  /** The chat's creator, or one of its admins. */
+  role?: "owner" | "admin";
+  /** An admin's custom title. */
+  rank?: string;
+  presence: TgPresence;
+}
+
+export interface TgMemberPage {
+  members: TgMember[];
+  /** How many members the chat has, as Telegram counts them. */
+  total: number;
+  /** Where the next page starts; absent after the last. */
+  next?: number;
+  /** Telegram does not let the user see this chat's members. */
+  hidden?: boolean;
+}
+
+export interface TgProfile {
+  id: string;
+  name: string;
+  bot: boolean;
+  presence: TgPresence;
+  /** "@name". */
+  username?: string;
+  /** Their bio. */
+  about?: string;
 }
 
 export type TgSignIn = { done: true } | { password: true; hint?: string } | { signUp: true };
@@ -83,6 +123,14 @@ export interface TelegramApi {
   markRead(chatId: string, maxId: number): Promise<void>;
   /** A small profile picture as a data: URL. */
   avatar(chatId: string): Promise<string | undefined>;
+  /**
+   * A page of a group's or channel's members, from `offset` (a page's
+   * `next`). Supergroups and channels give their admins first, then the
+   * most recent members.
+   */
+  members(chatId: string, offset: number, limit: number): Promise<TgMemberPage>;
+  /** What a user shows others: name, username, bio and how recently they were online. */
+  profile(userId: string): Promise<TgProfile>;
   /** A message's media (or its thumbnail), as bytes; undefined when there is none. */
   download(chatId: string, messageId: number, thumbnail: boolean): Promise<Uint8Array | undefined>;
   onUpdate(cb: (update: TgUpdate) => void): void;

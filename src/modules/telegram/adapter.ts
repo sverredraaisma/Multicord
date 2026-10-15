@@ -2,15 +2,20 @@ import type { AsyncSecretStore } from "../../engine/runtime";
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeMarkdown } from "../../shared/markdown";
-import type { NativeAction, NativeAttachment, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeSidebarItem, NativeViewState } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
-import { isChannelPeer, telegramError, type TelegramApi, type TelegramCredentials, type TgChatKind, type TgDialog, type TgFile, type TgMessage, type TgUpdate, type TgUser } from "./api";
+import { isChannelPeer, telegramError, type TelegramApi, type TelegramCredentials, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgUpdate, type TgUser } from "./api";
 
 /** Chats listed: one-to-one chats, groups and channels together, most recent first. */
 export const DIALOG_LIMIT = 200;
 export const PAGE_SIZE = 50;
 /** Profile pictures fetched per refresh; the rest show initials. */
 export const AVATAR_LIMIT = 40;
+/** Members fetched per page, and at most for one chat: big groups list their first ones and count the rest. */
+export const MEMBER_PAGE = 50;
+export const MEMBER_LIMIT = 200;
+/** Members' profile pictures fetched per chat; the rest show initials. */
+export const MEMBER_AVATAR_LIMIT = 30;
 /** Largest media shown in the view (it travels as a data: URL); bigger files say so. */
 export const MAX_MEDIA_BYTES = 40 * 1024 * 1024;
 /** Media kept in memory for the view, all files together; the oldest go first. */
@@ -40,6 +45,16 @@ export interface TelegramAdapterDeps {
 }
 
 type Step = "api" | "phone" | "code" | "password" | "connecting" | "chat";
+
+/** A chat's members as fetched so far. */
+interface MemberList {
+  members: TgMember[];
+  total: number;
+  /** Where the next page starts; absent once there is none, or the bound is reached. */
+  next?: number;
+  loading: boolean;
+  error?: string;
+}
 
 /** What the user sees for Telegram's error names. */
 const FRIENDLY: Record<string, string> = {
@@ -135,6 +150,15 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly mediaFailed = new Map<string, string>();
   private readonly mediaLoading = new Set<string>();
   private selected: string | undefined;
+  /** The view's member panel is open: the selected chat's members are fetched and shown. */
+  private membersOpen = false;
+  private readonly memberLists = new Map<string, MemberList>();
+  /** Chats whose members Telegram turned out not to show the user. */
+  private readonly membersHidden = new Set<string>();
+  /** Users whose pictures were asked for, so none is asked twice. */
+  private readonly avatarsAsked = new Set<string>();
+  /** The profile card the view asked for last. */
+  private profile: NativeProfile | undefined;
   private visible = false;
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   /** Counts sign-outs, so work started for one account stops for the next. */
@@ -272,6 +296,11 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.hasOlder.clear();
     // Another account may sign in next; its chats must not show these pictures.
     this.avatars.clear();
+    this.avatarsAsked.clear();
+    this.memberLists.clear();
+    this.membersHidden.clear();
+    this.membersOpen = false;
+    this.profile = undefined;
     this.session++;
     this.selected = undefined;
     this.directsChanged.emit([]);
@@ -306,6 +335,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.loadOlder();
       case "loadMedia":
         return this.loadMedia(action.key);
+      case "members":
+        return this.setMembersOpen(action.open);
+      case "loadMembers":
+        return this.loadMembers(action.offset);
+      case "profile":
+        return this.showProfile(action.id);
       case "logout":
         return this.signOut();
       default:
@@ -473,6 +508,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (!this.dialog(chatId)) return;
     this.selected = chatId;
     this.render();
+    if (this.membersOpen && !this.memberLists.has(chatId)) void this.fetchMembers(chatId);
     if (!this.messages.has(chatId)) await this.fetchHistory(chatId, undefined);
     if (this.visible) await this.markRead(chatId);
   }
@@ -605,6 +641,155 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     }
   }
 
+  // --- Members and profiles -----------------------------------------------------
+
+  /** Telegram lets the user see who is in this chat, as far as is known. */
+  private canListMembers(dialog: TgDialog): boolean {
+    return dialog.members === true && !this.membersHidden.has(dialog.chatId);
+  }
+
+  /** The view's member panel opened (fetching the open chat's members afresh) or closed. */
+  private async setMembersOpen(open: boolean): Promise<void> {
+    this.membersOpen = open;
+    if (!open || !this.selected) return this.render();
+    this.memberLists.delete(this.selected);
+    await this.fetchMembers(this.selected);
+  }
+
+  /** The next page for the panel; `offset` is how many the view lists, so a page already asked for is not asked again. */
+  private async loadMembers(offset: number): Promise<void> {
+    const list = this.selected ? this.memberLists.get(this.selected) : undefined;
+    if (!this.membersOpen || !list || list.loading || list.next === undefined || offset !== list.members.length) return;
+    await this.fetchMembers(this.selected!);
+  }
+
+  private async fetchMembers(chatId: string): Promise<void> {
+    const dialog = this.dialog(chatId);
+    const api = this.api;
+    if (!dialog || !api || !this.canListMembers(dialog)) return this.render();
+    // A first page, or the next (loadMembers checks there is one and that it is not being fetched).
+    const list = this.memberLists.get(chatId) ?? { members: [], total: 0, loading: false };
+    list.loading = true;
+    list.error = undefined;
+    this.memberLists.set(chatId, list);
+    this.render();
+    const session = this.session;
+    try {
+      const page = await api.members(chatId, list.next ?? 0, MEMBER_PAGE);
+      if (session !== this.session) return;
+      if (page.hidden) return this.hideMembers(chatId);
+      const known = new Set(list.members.map((m) => m.id));
+      list.members.push(...page.members.filter((m) => !known.has(m.id)).slice(0, MEMBER_LIMIT - list.members.length));
+      list.total = page.total;
+      list.next = list.members.length < MEMBER_LIMIT ? page.next : undefined;
+    } catch (error) {
+      if (session !== this.session) return;
+      // Groups that hide their members from all but admins.
+      if (telegramError(error) === "CHAT_ADMIN_REQUIRED") return this.hideMembers(chatId);
+      list.error = `Could not load members: ${friendly(error)}`;
+    }
+    list.loading = false;
+    this.render();
+    await this.loadMemberAvatars(list);
+  }
+
+  /** Telegram does not show the user this chat's members: the view stops offering them. */
+  private hideMembers(chatId: string): void {
+    this.membersHidden.add(chatId);
+    this.memberLists.delete(chatId);
+    this.render();
+  }
+
+  /** Pictures for the first members, once each; the rest show initials. */
+  private async loadMemberAvatars(list: MemberList): Promise<void> {
+    const session = this.session;
+    let found = false;
+    for (const member of list.members.slice(0, MEMBER_AVATAR_LIMIT)) {
+      if (this.avatars.has(member.id) || this.avatarsAsked.has(member.id) || !this.api) continue;
+      this.avatarsAsked.add(member.id);
+      const url = await this.api.avatar(member.id).catch(() => undefined);
+      if (session !== this.session) return;
+      if (url) {
+        this.avatars.set(member.id, url);
+        found = true;
+      }
+    }
+    if (found) this.render();
+  }
+
+  /** The member panel's list for a chat: admins, then members, those online first. */
+  private memberView(dialog: TgDialog): NativeMemberList | undefined {
+    const list = this.memberLists.get(dialog.chatId);
+    if (!this.membersOpen || !list || !this.canListMembers(dialog)) return undefined;
+    const rank = (m: TgMember) => (m.presence === "online" ? 0 : m.presence === "recently" ? 1 : 2);
+    const sorted = [...list.members].sort((a, b) => rank(a) - rank(b));
+    const admins = sorted.filter((m) => m.role).sort((a, b) => Number(b.role === "owner") - Number(a.role === "owner"));
+    const others = sorted.filter((m) => !m.role);
+    const sections = [];
+    if (admins.length > 0) sections.push({ name: "Admins", members: admins.map((m) => this.nativeMember(m)) });
+    if (others.length > 0) sections.push({ name: "Members", members: others.map((m) => this.nativeMember(m)) });
+    const view: NativeMemberList = { sections, hasMore: list.next !== undefined, loading: list.loading };
+    // Those not fetched: past the last page there are none to count, however Telegram counts.
+    const more = list.next !== undefined || list.members.length >= MEMBER_LIMIT ? list.total - list.members.length : 0;
+    if (more > 0) view.more = more;
+    if (list.error) view.error = list.error;
+    return view;
+  }
+
+  private nativeMember(member: TgMember): NativeMember {
+    const row: NativeMember = { id: member.id, name: member.id === this.me?.id ? this.me.name : member.name, presence: member.presence === "online" ? "online" : "offline" };
+    const avatar = this.avatars.get(member.id);
+    if (avatar) row.avatarUrl = avatar;
+    const status = member.rank ?? (member.bot ? "Bot" : member.presence === "recently" ? "last seen recently" : undefined);
+    if (status) row.status = status;
+    return row;
+  }
+
+  /**
+   * A user's profile card: what the open chat's member list knows at once
+   * (their role), then their name, username, bio and picture from Telegram.
+   * Only what Telegram shows other users; never a phone number.
+   */
+  private async showProfile(id: string): Promise<void> {
+    const api = this.api;
+    if (!/^\d{1,18}$/.test(id) || !api) return;
+    const member = this.selected ? this.memberLists.get(this.selected)?.members.find((m) => m.id === id) : undefined;
+    const profile: NativeProfile = { id, loading: true };
+    if (member?.role) profile.roles = [{ name: member.rank ?? (member.role === "owner" ? "Owner" : "Admin") }];
+    const known = this.avatars.get(id);
+    if (known) profile.avatarUrl = known;
+    this.profile = profile;
+    this.render();
+    const session = this.session;
+    const current = () => session === this.session && this.profile === profile;
+    try {
+      const found = await api.profile(id);
+      if (!current()) return;
+      Object.assign(profile, this.profileView(found));
+    } catch {
+      // Telegram may not know the user from here; the card keeps what the view has.
+    }
+    if (!current()) return;
+    if (!known && !this.avatarsAsked.has(id)) {
+      this.avatarsAsked.add(id);
+      const url = await api.avatar(id).catch(() => undefined);
+      if (!current()) return;
+      if (url) this.avatars.set(id, url);
+      if (url) profile.avatarUrl = url;
+    }
+    delete profile.loading;
+    this.render();
+  }
+
+  private profileView(found: TgProfile): Partial<NativeProfile> {
+    const view: Partial<NativeProfile> = { name: found.id === this.me?.id ? this.me.name : found.name, presence: found.presence === "online" ? "online" : "offline" };
+    const status = found.bot ? "Bot" : found.presence === "recently" ? "last seen recently" : undefined;
+    if (status) view.status = status;
+    if (found.username) view.username = found.username;
+    if (found.about) view.about = found.about;
+    return view;
+  }
+
   // --- Output -------------------------------------------------------------------
 
   directs(): DirectConversation[] {
@@ -645,6 +830,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       attachments: message.file ? [this.attachment(message, message.file)] : [],
     };
     if (native.canEdit) native.source = message.text;
+    const authorId = message.out ? this.me?.id : message.senderId;
+    if (authorId) native.authorId = authorId;
     if (replied) native.reply = { author: replied.out ? (this.me?.name ?? "You") : (replied.sender ?? dialog.title), content: messageText(replied).slice(0, 100) };
     return native;
   }
@@ -711,6 +898,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     }
     const dialog = this.selected ? this.dialog(this.selected) : undefined;
     const locked = dialog?.readOnly ? (dialog.kind === "channel" ? "Only the channel's admins post here." : "You cannot send messages in this group.") : undefined;
+    const members = dialog ? this.memberView(dialog) : undefined;
     return {
       screen: "chat",
       platform,
@@ -729,10 +917,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
             uploading: false,
             ...(locked ? { locked } : {}),
             // Reactions, files and typing notices are not offered here yet.
-            can: { reply: !locked, react: false, attach: false, typing: false, members: false },
+            can: { reply: !locked, react: false, attach: false, typing: false, members: this.canListMembers(dialog) },
+            ...(members ? { members } : {}),
           }
         : null,
       voice: null,
+      ...(this.profile ? { profile: this.profile } : {}),
       error: this.error,
     };
   }

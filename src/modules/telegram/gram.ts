@@ -10,7 +10,22 @@ import { LogLevel } from "telegram/extensions/Logger";
 import { returnBigInt } from "telegram/Helpers";
 import { computeCheck } from "telegram/Password";
 import { StringSession } from "telegram/sessions/StringSession";
-import { telegramError, type TelegramApi, type TelegramCredentials, type TgDialog, type TgFile, type TgMessage, type TgSignIn, type TgUpdate, type TgUser } from "./api";
+import {
+  isChannelPeer,
+  telegramError,
+  type TelegramApi,
+  type TelegramCredentials,
+  type TgDialog,
+  type TgFile,
+  type TgMember,
+  type TgMemberPage,
+  type TgMessage,
+  type TgPresence,
+  type TgProfile,
+  type TgSignIn,
+  type TgUpdate,
+  type TgUser,
+} from "./api";
 
 /** Largest profile picture passed on (as a data: URL); bigger ones show initials. */
 const MAX_AVATAR_BYTES = 140_000;
@@ -106,26 +121,55 @@ const banned = (rights: Api.TypeChatBannedRights | undefined): boolean => rights
 /**
  * What a dialog's entity is to the view: a one-to-one chat, a group (basic,
  * super or broadcast group) or a broadcast channel, and whether the user may
- * write there. Undefined for chats the user can no longer open (forbidden)
- * and basic groups that moved into a supergroup (listed as that).
+ * write there and list its members. Undefined for chats the user can no
+ * longer open (forbidden) and basic groups that moved into a supergroup
+ * (listed as that).
  */
-export function describeChat(entity: unknown): { kind: TgDialog["kind"]; title: string; bot: boolean; readOnly: boolean } | undefined {
-  if (entity instanceof Api.User) return { kind: "user", title: entity.self ? SAVED_MESSAGES : userName(entity), bot: entity.bot === true, readOnly: false };
+export function describeChat(entity: unknown): { kind: TgDialog["kind"]; title: string; bot: boolean; readOnly: boolean; members: boolean } | undefined {
+  if (entity instanceof Api.User) return { kind: "user", title: entity.self ? SAVED_MESSAGES : userName(entity), bot: entity.bot === true, readOnly: false, members: false };
   if (entity instanceof Api.Chat) {
     if (entity.deactivated || entity.migratedTo) return undefined;
     const admin = entity.creator === true || entity.adminRights !== undefined;
-    return { kind: "group", title: entity.title || "Group", bot: false, readOnly: entity.left === true || (!admin && banned(entity.defaultBannedRights)) };
+    const left = entity.left === true;
+    return { kind: "group", title: entity.title || "Group", bot: false, readOnly: left || (!admin && banned(entity.defaultBannedRights)), members: !left };
   }
   if (entity instanceof Api.Channel) {
     const title = entity.title || "Channel";
-    // Only admins with the right post in a broadcast channel, and in a broadcast group (gigagroup).
-    if (!entity.megagroup) return { kind: "channel", title, bot: false, readOnly: !(entity.creator === true || entity.adminRights?.postMessages === true) };
     const admin = entity.creator === true || entity.adminRights !== undefined;
+    // Only admins with the right post in a broadcast channel, and in a broadcast group (gigagroup); only admins see a channel's subscribers.
+    if (!entity.megagroup) return { kind: "channel", title, bot: false, readOnly: !(entity.creator === true || entity.adminRights?.postMessages === true), members: admin };
     const silenced = entity.gigagroup === true || banned(entity.bannedRights) || banned(entity.defaultBannedRights);
-    return { kind: "group", title, bot: false, readOnly: entity.left === true || (!admin && silenced) };
+    const left = entity.left === true;
+    return { kind: "group", title, bot: false, readOnly: left || (!admin && silenced), members: !left };
   }
   return undefined;
 }
+
+/** How recently a user was online, as their status says. */
+export function presenceOf(status: Api.TypeUserStatus | undefined): TgPresence {
+  if (status instanceof Api.UserStatusOnline) return "online";
+  return status instanceof Api.UserStatusRecently ? "recently" : "offline";
+}
+
+/** The users among a chat's participants, with their role there; deleted accounts are left out. */
+export function membersOf(participants: readonly unknown[], users: readonly unknown[]): TgMember[] {
+  const byId = new Map<string, Api.User>();
+  for (const user of users) if (user instanceof Api.User) byId.set(user.id.toString(), user);
+  return participants.flatMap((participant): TgMember[] => {
+    const id = (participant as { userId?: { toString(): string } } | undefined)?.userId?.toString();
+    const user = id ? byId.get(id) : undefined;
+    if (!id || !user || user.deleted) return [];
+    const member: TgMember = { id, name: userName(user), bot: user.bot === true, presence: presenceOf(user.status) };
+    if (participant instanceof Api.ChatParticipantCreator || participant instanceof Api.ChannelParticipantCreator) member.role = "owner";
+    else if (participant instanceof Api.ChatParticipantAdmin || participant instanceof Api.ChannelParticipantAdmin) member.role = "admin";
+    const rank = (participant as { rank?: unknown }).rank;
+    if (typeof rank === "string" && rank !== "") member.rank = rank;
+    return [member];
+  });
+}
+
+/** A member count from Telegram, kept sane. */
+const total = (value: unknown): number => (typeof value === "number" && Number.isInteger(value) && value > 0 ? Math.min(value, 100_000_000) : 0);
 
 /** A count from Telegram, kept sane: a whole number from 0 to a million. */
 const tally = (value: unknown): number => (typeof value === "number" && Number.isInteger(value) && value > 0 ? Math.min(value, 1_000_000) : 0);
@@ -144,6 +188,9 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
     const sender = entityName(message.sender) ?? (message.postAuthor || undefined);
     if (sender) out.sender = sender;
   }
+  // Who sent it, for their profile: the user named as sender, or in a private chat the other side.
+  const from = message.fromId instanceof Api.PeerUser ? message.fromId.userId : message.peerId instanceof Api.PeerUser && message.out !== true ? message.peerId.userId : undefined;
+  if (from !== undefined) out.senderId = from.toString();
   if (message.mentioned === true) out.mentioned = true;
   const media = mediaLabel(message.media);
   if (media) out.media = media;
@@ -207,6 +254,7 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         if (!chat || !/^-?\d{1,18}$/.test(chatId)) return [];
         const dialog: TgDialog = { chatId, kind: chat.kind, title: chat.title, bot: chat.bot, unreadCount: tally(d.unreadCount), unreadMentions: tally(d.unreadMentionsCount), date: d.date };
         if (chat.readOnly) dialog.readOnly = true;
+        if (chat.members) dialog.members = true;
         const settings = d.dialog.notifySettings;
         // A Unix time; "muted for ever" is the largest 32-bit one.
         const mutedUntil = settings instanceof Api.PeerNotifySettings ? settings.muteUntil : undefined;
@@ -226,6 +274,46 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       await client.markAsRead(peer(chatId), maxId);
       // Reading a group also reads the mentions in it, as Telegram's apps do once they are seen.
       if (chatId.startsWith("-")) await client.invoke(new Api.messages.ReadMentions({ peer: await client.getInputEntity(peer(chatId)) }));
+    },
+    members: async (chatId, offset, limit): Promise<TgMemberPage> => {
+      if (!isChannelPeer(chatId)) {
+        // A basic group's members come whole with its full info; it has a few hundred at most.
+        const full = await client.invoke(new Api.messages.GetFullChat({ chatId: returnBigInt(chatId.slice(1)) }));
+        const participants = full.fullChat instanceof Api.ChatFull && full.fullChat.participants instanceof Api.ChatParticipants ? full.fullChat.participants.participants : undefined;
+        if (!participants) return { members: [], total: 0, hidden: true };
+        const all = membersOf(participants, full.users);
+        const end = offset + limit;
+        return { members: all.slice(offset, end), total: all.length, ...(end < all.length ? { next: end } : {}) };
+      }
+      const channel = peer(chatId);
+      const page = (filter: Api.TypeChannelParticipantsFilter, from: number) =>
+        client.invoke(new Api.channels.GetParticipants({ channel, filter, offset: from, limit, hash: returnBigInt(0) }));
+      let count: number | undefined;
+      let admins: TgMember[] = [];
+      if (offset === 0) {
+        // Groups may hide their members from all but admins, and channels always do.
+        const full = await client.invoke(new Api.channels.GetFullChannel({ channel }));
+        if (!(full.fullChat instanceof Api.ChannelFull) || full.fullChat.canViewParticipants !== true) return { members: [], total: 0, hidden: true };
+        count = full.fullChat.participantsCount;
+        // Admins first: they need not be among the recent members.
+        const found = await page(new Api.ChannelParticipantsAdmins(), 0);
+        if (found instanceof Api.channels.ChannelParticipants) admins = membersOf(found.participants, found.users);
+      }
+      const found = await page(new Api.ChannelParticipantsRecent(), offset);
+      if (!(found instanceof Api.channels.ChannelParticipants)) return { members: admins, total: total(count) };
+      const listed = new Set(admins.map((m) => m.id));
+      const members = [...admins, ...membersOf(found.participants, found.users).filter((m) => !listed.has(m.id))];
+      const result: TgMemberPage = { members, total: total(count ?? found.count) };
+      if (found.participants.length >= limit) result.next = offset + found.participants.length;
+      return result;
+    },
+    profile: async (userId): Promise<TgProfile> => {
+      const full = await client.invoke(new Api.users.GetFullUser({ id: peer(userId) }));
+      const user = full.users.find((u): u is Api.User => u instanceof Api.User && u.id.toString() === userId);
+      const profile: TgProfile = { id: userId, name: userName(user), bot: user?.bot === true, presence: presenceOf(user?.status) };
+      if (user?.username) profile.username = `@${user.username}`;
+      if (full.fullUser.about) profile.about = full.fullUser.about;
+      return profile;
     },
     avatar: async (chatId) => {
       const photo = await client.downloadProfilePhoto(peer(chatId), { isBig: false });

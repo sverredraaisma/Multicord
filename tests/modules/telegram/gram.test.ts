@@ -12,11 +12,15 @@ const h = vi.hoisted(() => {
     "MessageMediaGeo", "MessageMediaGeoLive", "MessageMediaVenue", "MessageMediaContact", "MessageMediaPoll",
     "PeerUser", "PeerChat", "PeerChannel", "Message", "MessageReplyHeader", "User", "Chat", "Channel", "ChatForbidden", "PeerNotifySettings",
     "Photo", "PhotoSize", "PhotoSizeProgressive", "DocumentAttributeImageSize", "DocumentAttributeAnimated",
+    "UserStatusOnline", "UserStatusRecently", "UserStatusOffline", "ChatFull", "ChatParticipants", "ChatParticipantsForbidden", "ChatParticipant", "ChatParticipantAdmin",
+    "ChatParticipantCreator", "ChannelFull", "ChannelParticipant", "ChannelParticipantAdmin", "ChannelParticipantCreator", "ChannelParticipantsRecent", "ChannelParticipantsAdmins",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
     account: { GetPassword: class extends Base {} },
-    messages: { ReadMentions: class extends Base {} },
+    messages: { ReadMentions: class extends Base {}, GetFullChat: class extends Base {} },
+    channels: { GetFullChannel: class extends Base {}, GetParticipants: class extends Base {}, ChannelParticipants: class extends Base {} },
+    users: { GetFullUser: class extends Base {} },
   };
   for (const name of names) Api[name] = class extends Base {};
 
@@ -68,7 +72,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { chatIdOf, createGramApi, describeChat, mediaFile, mediaLabel, SAVED_MESSAGES, toMessage } from "../../../src/modules/telegram/gram";
+import { chatIdOf, createGramApi, describeChat, mediaFile, mediaLabel, membersOf, presenceOf, SAVED_MESSAGES, toMessage } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -127,14 +131,14 @@ describe("describeChat", () => {
   const rights = (props: Record<string, unknown>) => props;
 
   it("describes users, bots and the chat with yourself", () => {
-    expect(describeChat(make(Api.User, { firstName: "Ana", bot: true }))).toEqual({ kind: "user", title: "Ana", bot: true, readOnly: false });
-    expect(describeChat(make(Api.User, { firstName: "Me", self: true }))).toEqual({ kind: "user", title: SAVED_MESSAGES, bot: false, readOnly: false });
+    expect(describeChat(make(Api.User, { firstName: "Ana", bot: true }))).toEqual({ kind: "user", title: "Ana", bot: true, readOnly: false, members: false });
+    expect(describeChat(make(Api.User, { firstName: "Me", self: true }))).toEqual({ kind: "user", title: SAVED_MESSAGES, bot: false, readOnly: false, members: false });
   });
 
   it("describes basic groups, read-only when left or when members may not write", () => {
-    expect(describeChat(make(Api.Chat, { title: "Family" }))).toEqual({ kind: "group", title: "Family", bot: false, readOnly: false });
+    expect(describeChat(make(Api.Chat, { title: "Family" }))).toEqual({ kind: "group", title: "Family", bot: false, readOnly: false, members: true });
     expect(describeChat(make(Api.Chat, { title: "" }))).toMatchObject({ title: "Group" });
-    expect(describeChat(make(Api.Chat, { title: "Old", left: true }))).toMatchObject({ readOnly: true });
+    expect(describeChat(make(Api.Chat, { title: "Old", left: true }))).toMatchObject({ readOnly: true, members: false });
     expect(describeChat(make(Api.Chat, { title: "Quiet", defaultBannedRights: rights({ sendMessages: true }) }))).toMatchObject({ readOnly: true });
     expect(describeChat(make(Api.Chat, { title: "Quiet", defaultBannedRights: rights({ sendPlain: true }), adminRights: {} }))).toMatchObject({ readOnly: false });
     expect(describeChat(make(Api.Chat, { title: "Quiet", defaultBannedRights: rights({ sendMessages: true }), creator: true }))).toMatchObject({ readOnly: false });
@@ -148,16 +152,16 @@ describe("describeChat", () => {
   });
 
   it("describes broadcast channels, open only to their posting admins", () => {
-    expect(describeChat(make(Api.Channel, { title: "News", broadcast: true }))).toEqual({ kind: "channel", title: "News", bot: false, readOnly: true });
-    expect(describeChat(make(Api.Channel, { title: "", broadcast: true, creator: true }))).toEqual({ kind: "channel", title: "Channel", bot: false, readOnly: false });
-    expect(describeChat(make(Api.Channel, { title: "News", adminRights: { postMessages: true } }))).toMatchObject({ readOnly: false });
+    expect(describeChat(make(Api.Channel, { title: "News", broadcast: true }))).toEqual({ kind: "channel", title: "News", bot: false, readOnly: true, members: false });
+    expect(describeChat(make(Api.Channel, { title: "", broadcast: true, creator: true }))).toEqual({ kind: "channel", title: "Channel", bot: false, readOnly: false, members: true });
+    expect(describeChat(make(Api.Channel, { title: "News", adminRights: { postMessages: true } }))).toMatchObject({ readOnly: false, members: true });
     expect(describeChat(make(Api.Channel, { title: "News", adminRights: { editMessages: true } }))).toMatchObject({ readOnly: true });
   });
 
   it("describes supergroups as groups, read-only when left, banned, silenced or a broadcast group", () => {
     const group = (props: Record<string, unknown>) => describeChat(make(Api.Channel, { title: "Club", megagroup: true, ...props }));
-    expect(group({})).toEqual({ kind: "group", title: "Club", bot: false, readOnly: false });
-    expect(group({ left: true })).toMatchObject({ readOnly: true });
+    expect(group({})).toEqual({ kind: "group", title: "Club", bot: false, readOnly: false, members: true });
+    expect(group({ left: true })).toMatchObject({ readOnly: true, members: false });
     expect(group({ bannedRights: rights({ sendMessages: true }) })).toMatchObject({ readOnly: true });
     expect(group({ defaultBannedRights: rights({ sendPlain: true }) })).toMatchObject({ readOnly: true });
     expect(group({ gigagroup: true })).toMatchObject({ readOnly: true });
@@ -312,7 +316,7 @@ describe("createGramApi", () => {
     await expect(api.dialogs(20)).resolves.toEqual([
       { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, lastMessage: toMessage(last, "1") },
       { chatId: "2", kind: "user", title: "@bo", bot: false, unreadCount: 0, unreadMentions: 0, date: 90, mutedUntil: 2147483647 },
-      { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85 },
+      { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, members: true },
       { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true },
     ]);
     expect(client.getDialogs).toHaveBeenCalledWith({ limit: 20 });
@@ -474,5 +478,124 @@ describe("downloads", () => {
     expect(await api.download("42", 7, false)).toBeUndefined();
     client.getMessages.mockResolvedValue([undefined]);
     expect(await api.download("42", 8, false)).toBeUndefined();
+  });
+});
+
+describe("members and profiles", () => {
+  const user = (id: number, props: Record<string, unknown> = {}) => make(Api.User, { id: BigInt(id), firstName: `U${id}`, ...props });
+  const part = (cls: unknown, id: number, props: Record<string, unknown> = {}) => make(cls as never, { userId: BigInt(id), ...props });
+
+  it("maps user statuses to how recently they were online", () => {
+    expect(presenceOf(make(Api.UserStatusOnline))).toBe("online");
+    expect(presenceOf(make(Api.UserStatusRecently))).toBe("recently");
+    expect(presenceOf(make(Api.UserStatusOffline))).toBe("offline");
+    expect(presenceOf(undefined)).toBe("offline");
+  });
+
+  it("names a message's sending user, or the other side of a private chat", () => {
+    const base = { id: 5, date: 1000, message: "hi" };
+    expect(toMessage(make(Api.Message, { ...base, peerId: make(Api.PeerChat, { chatId: 1n }), fromId: make(Api.PeerUser, { userId: 7n }) }), "-1").senderId).toBe("7");
+    expect(toMessage(make(Api.Message, { ...base, peerId: make(Api.PeerUser, { userId: 9n }) }), "9").senderId).toBe("9");
+    expect(toMessage(make(Api.Message, { ...base, out: true, peerId: make(Api.PeerUser, { userId: 9n }) }), "9")).not.toHaveProperty("senderId");
+    expect(toMessage(make(Api.Message, { ...base, peerId: make(Api.PeerChannel, { channelId: 1n }), fromId: make(Api.PeerChannel, { channelId: 1n }) }), "-1001")).not.toHaveProperty("senderId");
+  });
+
+  it("maps participants to members with their role, leaving out deleted and unknown users", () => {
+    const users = [user(1, { status: make(Api.UserStatusOnline) }), user(2, { bot: true, username: "bot" }), user(3), user(4, { deleted: true }), {}];
+    expect(
+      membersOf(
+        [part(Api.ChatParticipantCreator, 1), part(Api.ChannelParticipantAdmin, 2, { rank: "Helper" }), part(Api.ChatParticipantAdmin, 3, { rank: "" }), part(Api.ChatParticipant, 4), part(Api.ChatParticipant, 5), {}, undefined],
+        users,
+      ),
+    ).toEqual([
+      { id: "1", name: "U1", bot: false, presence: "online", role: "owner" },
+      { id: "2", name: "U2", bot: true, presence: "offline", role: "admin", rank: "Helper" },
+      { id: "3", name: "U3", bot: false, presence: "offline", role: "admin" },
+    ]);
+    expect(membersOf([part(Api.ChannelParticipantCreator, 1), part(Api.ChannelParticipant, 3)], users).map((m) => m.role)).toEqual(["owner", undefined]);
+  });
+
+  describe("through the client", () => {
+    let client: InstanceType<typeof h.FakeClient>;
+    let api: ReturnType<typeof createGramApi>;
+    beforeEach(() => {
+      api = createGramApi({ apiId: 1, apiHash: "h" }, "", { os: "linux", appVersion: "1" });
+      client = h.FakeClient.instances.at(-1)!;
+    });
+
+    it("pages a basic group's members out of its full info", async () => {
+      const participants = make(Api.ChatParticipants, { participants: [1, 2, 3].map((id) => part(Api.ChatParticipant, id)) });
+      client.invoke.mockResolvedValue({ fullChat: make(Api.ChatFull, { participants }), users: [user(1), user(2), user(3)] });
+      const first = await api.members("-7", 0, 2);
+      expect(first).toEqual({ members: [expect.objectContaining({ id: "1" }), expect.objectContaining({ id: "2" })], total: 3, next: 2 });
+      const request = client.invoke.mock.calls[0]![0] as { chatId: unknown };
+      expect(request).toBeInstanceOf(Api.messages.GetFullChat);
+      expect(request.chatId).toBe(7n);
+      await expect(api.members("-7", 2, 2)).resolves.toEqual({ members: [expect.objectContaining({ id: "3" })], total: 3 });
+      // A group the user is no longer in shows no members.
+      client.invoke.mockResolvedValue({ fullChat: make(Api.ChatFull, { participants: make(Api.ChatParticipantsForbidden) }), users: [] });
+      await expect(api.members("-7", 0, 2)).resolves.toEqual({ members: [], total: 0, hidden: true });
+      client.invoke.mockResolvedValue({ fullChat: {}, users: [] });
+      await expect(api.members("-7", 0, 2)).resolves.toMatchObject({ hidden: true });
+    });
+
+    it("lists a supergroup's admins first, then its recent members, a page at a time", async () => {
+      const page = (ids: number[], parts: unknown[], count = 500) => make(Api.channels.ChannelParticipants, { count, participants: parts, users: ids.map((id) => user(id)) });
+      client.invoke.mockImplementation(async (request: { filter?: unknown; offset?: number }) => {
+        if (request instanceof Api.channels.GetFullChannel) return { fullChat: make(Api.ChannelFull, { canViewParticipants: true, participantsCount: 1234 }), users: [] };
+        if (request.filter instanceof Api.ChannelParticipantsAdmins) return page([1], [part(Api.ChannelParticipantCreator, 1)]);
+        return page([1, 2], [part(Api.ChannelParticipantCreator, 1), part(Api.ChannelParticipant, 2)]);
+      });
+      const first = await api.members("-1001234", 0, 2);
+      expect(first.members.map((m) => [m.id, m.role])).toEqual([["1", "owner"], ["2", undefined]]);
+      expect(first).toMatchObject({ total: 1234, next: 2 });
+      const requests = client.invoke.mock.calls.map((c) => c[0] as { channel: unknown; offset: number; limit: number; hash: unknown; filter: unknown });
+      expect(requests[0]).toBeInstanceOf(Api.channels.GetFullChannel);
+      expect(requests[0]!.channel).toBe(-1001234n);
+      expect(requests[1]).toMatchObject({ offset: 0, limit: 2, hash: 0n });
+      expect(requests[1]!.filter).toBeInstanceOf(Api.ChannelParticipantsAdmins);
+      expect(requests[2]!.filter).toBeInstanceOf(Api.ChannelParticipantsRecent);
+
+      // Later pages ask for recent members only, and the last one says so.
+      client.invoke.mockClear();
+      client.invoke.mockResolvedValue(page([3], [part(Api.ChannelParticipant, 3)], 0));
+      await expect(api.members("-1001234", 2, 2)).resolves.toEqual({ members: [expect.objectContaining({ id: "3" })], total: 0 });
+      expect(client.invoke).toHaveBeenCalledTimes(1);
+      expect(client.invoke.mock.calls[0]![0]).toMatchObject({ offset: 2 });
+      client.invoke.mockResolvedValue({});
+      await expect(api.members("-1001234", 2, 2)).resolves.toEqual({ members: [], total: 0 });
+    });
+
+    it("counts members from the page when the full info has none, and keeps admins when the recent page is unchanged", async () => {
+      client.invoke.mockImplementation(async (request: { filter?: unknown }) => {
+        if (request instanceof Api.channels.GetFullChannel) return { fullChat: make(Api.ChannelFull, { canViewParticipants: true }), users: [] };
+        if (request.filter instanceof Api.ChannelParticipantsAdmins) return {};
+        return make(Api.channels.ChannelParticipants, { count: 2_000_000_000, participants: [], users: [] });
+      });
+      await expect(api.members("-1001234", 0, 2)).resolves.toEqual({ members: [], total: 100_000_000 });
+      client.invoke.mockImplementation(async (request: { filter?: unknown }) => {
+        if (request instanceof Api.channels.GetFullChannel) return { fullChat: make(Api.ChannelFull, { canViewParticipants: true, participantsCount: 9 }), users: [] };
+        if (request.filter instanceof Api.ChannelParticipantsAdmins) return make(Api.channels.ChannelParticipants, { count: 1, participants: [part(Api.ChannelParticipantAdmin, 1)], users: [user(1)] });
+        return {};
+      });
+      await expect(api.members("-1001234", 0, 2)).resolves.toEqual({ members: [expect.objectContaining({ id: "1", role: "admin" })], total: 9 });
+    });
+
+    it("says when Telegram hides a supergroup's or channel's members", async () => {
+      for (const fullChat of [make(Api.ChannelFull, { canViewParticipants: false }), make(Api.ChannelFull), {}]) {
+        client.invoke.mockResolvedValue({ fullChat, users: [] });
+        await expect(api.members("-1001234", 0, 50)).resolves.toEqual({ members: [], total: 0, hidden: true });
+      }
+    });
+
+    it("fetches a profile: name, username, bio and presence, never more", async () => {
+      client.invoke.mockResolvedValue({ fullUser: { about: "Hello", phone: "+31600000000" }, users: [user(8), user(7, { username: "ana", status: make(Api.UserStatusRecently), phone: "+31611111111" })] });
+      await expect(api.profile("7")).resolves.toEqual({ id: "7", name: "U7", bot: false, presence: "recently", username: "@ana", about: "Hello" });
+      const request = client.invoke.mock.calls[0]![0] as { id: unknown };
+      expect(request).toBeInstanceOf(Api.users.GetFullUser);
+      expect(request.id).toBe(7n);
+      client.invoke.mockResolvedValue({ fullUser: {}, users: [] });
+      await expect(api.profile("7")).resolves.toEqual({ id: "7", name: "Telegram user", bot: false, presence: "offline" });
+    });
   });
 });

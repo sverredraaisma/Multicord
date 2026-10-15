@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgDialog, TgMessage, TgSignIn, TgUpdate } from "../../../src/modules/telegram/api";
-import { AVATAR_LIMIT, DIALOG_LIMIT, FORGET_API_ID, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
+import type { TelegramApi, TelegramCredentials, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgUpdate } from "../../../src/modules/telegram/api";
+import { AVATAR_LIMIT, DIALOG_LIMIT, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import type { NativeAction, NativeViewState } from "../../../src/shared/native";
 
@@ -36,6 +36,8 @@ class FakeTelegramApi implements TelegramApi {
   remove = vi.fn(async (_chatId: string, _ids: number[]) => {});
   markRead = vi.fn(async (_chatId: string, _maxId: number) => {});
   avatar = vi.fn(async (_chatId: string): Promise<string | undefined> => undefined);
+  members = vi.fn(async (_chatId: string, _offset: number, _limit: number): Promise<TgMemberPage> => ({ members: [], total: 0 }));
+  profile = vi.fn(async (userId: string): Promise<TgProfile> => ({ id: userId, name: `User ${userId}`, bot: false, presence: "offline" }));
   download = vi.fn(async (_chatId: string, _id: number, _thumbnail: boolean): Promise<Uint8Array | undefined> => new Uint8Array([104, 105]));
   onUpdate = vi.fn((cb: (update: TgUpdate) => void) => void (this.listener = cb));
   session = vi.fn(() => "sess");
@@ -1206,5 +1208,313 @@ describe("groups and channels", () => {
     expect(ctx.messageIds()).toEqual(["1", "2"]);
     ctx.api.emit({ type: "delete", chatId: SUPER, ids: [2] });
     expect(ctx.messageIds()).toEqual(["1"]);
+  });
+});
+
+describe("members and profiles", () => {
+  const GROUP = "-123";
+  const NEWS = "-1009876543210";
+  const dialogs = () => [
+    dlg("1", { date: 50 }),
+    dlg(GROUP, { kind: "group", title: "Family", date: 40, members: true }),
+    dlg(NEWS, { kind: "channel", title: "News", date: 20, readOnly: true }),
+  ];
+  const member = (id: string, extra: Partial<TgMember> = {}): TgMember => ({ id, name: `M${id}`, bot: false, presence: "offline", ...extra });
+  const page = (members: TgMember[], total: number, next?: number): TgMemberPage => (next === undefined ? { members, total } : { members, total, next });
+
+  async function inGroup() {
+    const ctx = await signedIn({ dialogs: dialogs() });
+    await ctx.act({ type: "select", channelId: viewId(GROUP) });
+    await flush();
+    return ctx;
+  }
+  const channel = (ctx: Awaited<ReturnType<typeof inGroup>>) => ctx.chat().channel!;
+
+  it("offers members in groups the user is in, not in private chats or channels they do not run", async () => {
+    const ctx = await inGroup();
+    expect(channel(ctx).can.members).toBe(true);
+    expect(channel(ctx)).not.toHaveProperty("members");
+    await ctx.act({ type: "select", channelId: "1" });
+    expect(channel(ctx).can.members).toBe(false);
+    await ctx.act({ type: "select", channelId: viewId(NEWS) });
+    expect(channel(ctx).can.members).toBe(false);
+    expect(ctx.api.members).not.toHaveBeenCalled();
+  });
+
+  it("lists admins, then members, those online first, once the panel opens", async () => {
+    const ctx = await inGroup();
+    let release!: (page: TgMemberPage) => void;
+    ctx.api.members.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    const opening = ctx.act({ type: "members", open: true });
+    expect(channel(ctx).members).toEqual({ sections: [], hasMore: false, loading: true });
+    release(
+      page(
+        [
+          member("4", { presence: "recently" }),
+          member("5", { presence: "online", bot: true }),
+          member("2", { role: "admin", rank: "Helper", presence: "online" }),
+          member("3", { role: "owner" }),
+          member("9", { name: "Me again" }),
+        ],
+        120,
+        5,
+      ),
+    );
+    await opening;
+    expect(ctx.api.members).toHaveBeenCalledWith(GROUP, 0, MEMBER_PAGE);
+    expect(channel(ctx).members).toEqual({
+      sections: [
+        { name: "Admins", members: [{ id: "3", name: "M3", presence: "offline" }, { id: "2", name: "M2", presence: "online", status: "Helper" }] },
+        {
+          name: "Members",
+          members: [
+            { id: "5", name: "M5", presence: "online", status: "Bot" },
+            { id: "4", name: "M4", presence: "offline", status: "last seen recently" },
+            { id: "9", name: "Me", presence: "offline" },
+          ],
+        },
+      ],
+      more: 115,
+      hasMore: true,
+      loading: false,
+    });
+  });
+
+  it("loads further pages once each, from the number listed, up to MEMBER_LIMIT", async () => {
+    const ctx = await inGroup();
+    let offset = 0;
+    ctx.api.members.mockImplementation(async (_chat, from, limit) => {
+      expect(from).toBe(offset);
+      offset = from + limit;
+      return page(Array.from({ length: limit }, (_, i) => member(String(from + i + 100))), 5000, from + limit);
+    });
+    await ctx.act({ type: "members", open: true });
+    await ctx.act({ type: "loadMembers", offset: 3 });
+    expect(ctx.api.members).toHaveBeenCalledTimes(1);
+    for (let listed = MEMBER_PAGE; listed < MEMBER_LIMIT; listed += MEMBER_PAGE) await ctx.act({ type: "loadMembers", offset: listed });
+    expect(ctx.api.members).toHaveBeenCalledTimes(MEMBER_LIMIT / MEMBER_PAGE);
+    const list = channel(ctx).members!;
+    expect(list.sections[0]!.members).toHaveLength(MEMBER_LIMIT);
+    expect(list).toMatchObject({ more: 5000 - MEMBER_LIMIT, hasMore: false });
+    await ctx.act({ type: "loadMembers", offset: MEMBER_LIMIT });
+    expect(ctx.api.members).toHaveBeenCalledTimes(MEMBER_LIMIT / MEMBER_PAGE);
+  });
+
+  it("drops members a later page repeats, and counts none past the last page", async () => {
+    const ctx = await inGroup();
+    ctx.api.members.mockResolvedValueOnce(page([member("1"), member("2")], 10, 2)).mockResolvedValueOnce(page([member("2"), member("3")], 10));
+    await ctx.act({ type: "members", open: true });
+    await ctx.act({ type: "loadMembers", offset: 2 });
+    expect(channel(ctx).members!.sections[0]!.members.map((m) => m.id)).toEqual(["1", "2", "3"]);
+    expect(channel(ctx).members).toMatchObject({ hasMore: false });
+    expect(channel(ctx).members).not.toHaveProperty("more");
+  });
+
+  it("ignores loadMembers while closed, without a list or while a page loads", async () => {
+    const ctx = await inGroup();
+    await ctx.act({ type: "loadMembers", offset: 0 });
+    let release!: (page: TgMemberPage) => void;
+    ctx.api.members.mockResolvedValueOnce(page([member("1")], 5, 1)).mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    await ctx.act({ type: "members", open: true });
+    const loading = ctx.act({ type: "loadMembers", offset: 1 });
+    await ctx.act({ type: "loadMembers", offset: 1 });
+    release(page([member("2")], 5));
+    await loading;
+    expect(ctx.api.members).toHaveBeenCalledTimes(2);
+    await ctx.act({ type: "members", open: false });
+    expect(channel(ctx)).not.toHaveProperty("members");
+    await ctx.act({ type: "loadMembers", offset: 2 });
+    expect(ctx.api.members).toHaveBeenCalledTimes(2);
+  });
+
+  it("fetches afresh when the panel opens again, and for each group opened meanwhile", async () => {
+    const ctx = await inGroup();
+    await ctx.act({ type: "members", open: true });
+    await ctx.act({ type: "members", open: false });
+    await ctx.act({ type: "members", open: true });
+    expect(ctx.api.members).toHaveBeenCalledTimes(2);
+    // Private chats have no list; a group not yet listed is fetched once.
+    await ctx.act({ type: "select", channelId: "1" });
+    expect(channel(ctx)).not.toHaveProperty("members");
+    await ctx.act({ type: "select", channelId: viewId(GROUP) });
+    expect(ctx.api.members).toHaveBeenCalledTimes(2);
+    const other = await signedIn({ dialogs: [...dialogs(), dlg("-77", { kind: "group", title: "Two", date: 1, members: true })] });
+    await other.act({ type: "members", open: true });
+    expect(other.api.members).not.toHaveBeenCalled();
+    await other.act({ type: "select", channelId: viewId("-77") });
+    await flush();
+    expect(other.api.members).toHaveBeenCalledWith("-77", 0, MEMBER_PAGE);
+  });
+
+  it("stops offering members Telegram does not show, and reports other failures", async () => {
+    const ctx = await inGroup();
+    ctx.api.members.mockResolvedValueOnce({ members: [], total: 0, hidden: true });
+    await ctx.act({ type: "members", open: true });
+    expect(channel(ctx).can.members).toBe(false);
+    expect(channel(ctx)).not.toHaveProperty("members");
+    // Once known, the list is not asked for again.
+    await ctx.act({ type: "members", open: true });
+    expect(ctx.api.members).toHaveBeenCalledTimes(1);
+
+    const admins = await inGroup();
+    admins.api.members.mockRejectedValueOnce(tgError("CHAT_ADMIN_REQUIRED"));
+    await admins.act({ type: "members", open: true });
+    expect(channel(admins).can.members).toBe(false);
+
+    const failing = await inGroup();
+    failing.api.members.mockRejectedValueOnce(tgError("FLOOD_WAIT_30"));
+    await failing.act({ type: "members", open: true });
+    expect(channel(failing).members).toMatchObject({ error: "Could not load members: Too many attempts. Wait a while and try again.", loading: false });
+  });
+
+  it("forgets a list that arrives after signing out", async () => {
+    const ctx = await inGroup();
+    let release!: (page: TgMemberPage) => void;
+    ctx.api.members.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    const opening = ctx.act({ type: "members", open: true });
+    ctx.api.authorized.mockResolvedValue(false);
+    await ctx.adapter.signOut();
+    release(page([member("1")], 1));
+    await opening;
+    let failRelease!: (error: unknown) => void;
+    const again = await inGroup();
+    again.api.members.mockImplementationOnce(() => new Promise((_resolve, reject) => (failRelease = reject)));
+    const failing = again.act({ type: "members", open: true });
+    again.api.authorized.mockResolvedValue(false);
+    await again.adapter.signOut();
+    failRelease(new Error("late"));
+    await failing;
+    expect(again.prompt().prompt.id).toBe("phone");
+  });
+
+  it("opens the panel with no chat selected without fetching", async () => {
+    const ctx = await signedIn({ dialogs: dialogs() });
+    await ctx.act({ type: "members", open: true });
+    await ctx.act({ type: "loadMembers", offset: 0 });
+    expect(ctx.api.members).not.toHaveBeenCalled();
+  });
+
+  it("shows the first members' pictures, asking for each once", async () => {
+    const ctx = await inGroup();
+    const members = Array.from({ length: MEMBER_AVATAR_LIMIT + 5 }, (_, i) => member(String(i + 100)));
+    ctx.api.members.mockResolvedValue(page(members, members.length));
+    ctx.api.avatar.mockImplementation(async (id) => (id === "100" ? "data:image/jpeg;base64,AA" : id === "101" ? Promise.reject(new Error("no")) : undefined));
+    ctx.api.avatar.mockClear();
+    await ctx.act({ type: "members", open: true });
+    expect(ctx.api.avatar).toHaveBeenCalledTimes(MEMBER_AVATAR_LIMIT);
+    expect(channel(ctx).members!.sections[0]!.members[0]).toMatchObject({ id: "100", avatarUrl: "data:image/jpeg;base64,AA" });
+    await ctx.act({ type: "members", open: false });
+    await ctx.act({ type: "members", open: true });
+    expect(ctx.api.avatar).toHaveBeenCalledTimes(MEMBER_AVATAR_LIMIT);
+  });
+
+  it("stops fetching pictures after signing out", async () => {
+    const ctx = await inGroup();
+    ctx.api.members.mockResolvedValue(page([member("100"), member("101")], 2));
+    let release!: (url: string) => void;
+    ctx.api.avatar.mockImplementationOnce(() => new Promise<string>((resolve) => (release = resolve)));
+    ctx.api.avatar.mockClear();
+    const opening = ctx.act({ type: "members", open: true });
+    await flush();
+    ctx.api.authorized.mockResolvedValue(false);
+    await ctx.adapter.signOut();
+    release("data:late");
+    await opening;
+    expect(ctx.api.avatar).toHaveBeenCalledTimes(1);
+  });
+
+  it("names message authors by id: the sender, or the user for their own", async () => {
+    const ctx = await signedIn({ dialogs: dialogs() });
+    ctx.api.history.mockResolvedValueOnce([msg(GROUP, 1, { senderId: "5", sender: "Ana" }), msg(GROUP, 2, { out: true }), msg(GROUP, 3)]);
+    await ctx.act({ type: "select", channelId: viewId(GROUP) });
+    await flush();
+    expect(ctx.chat().channel!.messages.map((m) => m.authorId)).toEqual(["5", "9", undefined]);
+  });
+
+  describe("profiles", () => {
+    it("answers with what Telegram shows: name, username, bio, presence and picture", async () => {
+      const ctx = await inGroup();
+      ctx.api.members.mockResolvedValue(page([member("5", { role: "admin", rank: "Helper" }), member("6", { role: "owner" }), member("7", { role: "admin" })], 3));
+      ctx.api.avatar.mockImplementation(async (id) => (id === "5" ? "data:image/jpeg;base64,BB" : undefined));
+      await ctx.act({ type: "members", open: true });
+      let release!: (profile: TgProfile) => void;
+      ctx.api.profile.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+      const asking = ctx.act({ type: "profile", id: "5" });
+      expect(ctx.chat().profile).toEqual({ id: "5", loading: true, roles: [{ name: "Helper" }], avatarUrl: "data:image/jpeg;base64,BB" });
+      release({ id: "5", name: "Ana", bot: false, presence: "recently", username: "@ana", about: "Hi" });
+      await asking;
+      expect(ctx.chat().profile).toEqual({ id: "5", roles: [{ name: "Helper" }], name: "Ana", presence: "offline", status: "last seen recently", username: "@ana", about: "Hi", avatarUrl: "data:image/jpeg;base64,BB" });
+      await ctx.act({ type: "profile", id: "6" });
+      expect(ctx.chat().profile).toMatchObject({ roles: [{ name: "Owner" }] });
+      await ctx.act({ type: "profile", id: "7" });
+      expect(ctx.chat().profile).toMatchObject({ roles: [{ name: "Admin" }] });
+      // A picture known already is not asked for again.
+      ctx.api.avatar.mockClear();
+      await ctx.act({ type: "profile", id: "5" });
+      expect(ctx.api.avatar).not.toHaveBeenCalled();
+      expect(ctx.chat().profile).toMatchObject({ avatarUrl: "data:image/jpeg;base64,BB" });
+    });
+
+    it("names bots and the user, and keeps the card when Telegram cannot tell more", async () => {
+      const ctx = await signedIn({ dialogs: dialogs() });
+      ctx.api.profile.mockResolvedValueOnce({ id: "8", name: "Helper", bot: true, presence: "online" });
+      ctx.api.avatar.mockResolvedValueOnce("data:image/jpeg;base64,CC");
+      await ctx.act({ type: "profile", id: "8" });
+      expect(ctx.chat().profile).toEqual({ id: "8", name: "Helper", presence: "online", status: "Bot", avatarUrl: "data:image/jpeg;base64,CC" });
+      ctx.api.profile.mockResolvedValueOnce({ id: "9", name: "Telegram name", bot: false, presence: "offline" });
+      await ctx.act({ type: "profile", id: "9" });
+      expect(ctx.chat().profile).toEqual({ id: "9", name: "Me", presence: "offline" });
+      ctx.api.profile.mockRejectedValueOnce(new Error("Could not find the input entity"));
+      ctx.api.avatar.mockRejectedValueOnce(new Error("no"));
+      await ctx.act({ type: "profile", id: "10" });
+      expect(ctx.chat().profile).toEqual({ id: "10" });
+    });
+
+    it("ignores ids that are not Telegram users, and answers that came too late", async () => {
+      const ctx = await signedIn({ dialogs: dialogs() });
+      await ctx.act({ type: "profile", id: "@ana:example.org" });
+      expect(ctx.api.profile).not.toHaveBeenCalled();
+      let release!: (profile: TgProfile) => void;
+      ctx.api.profile.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+      const first = ctx.act({ type: "profile", id: "5" });
+      await ctx.act({ type: "profile", id: "6" });
+      release({ id: "5", name: "Late", bot: false, presence: "offline" });
+      await first;
+      expect(ctx.chat().profile).toMatchObject({ id: "6" });
+      // A picture arriving after another card opened is dropped too.
+      let picture!: (url: string) => void;
+      ctx.api.avatar.mockImplementationOnce(() => new Promise<string>((resolve) => (picture = resolve)));
+      const third = ctx.act({ type: "profile", id: "11" });
+      await flush();
+      await ctx.act({ type: "profile", id: "12" });
+      picture("data:late");
+      await third;
+      expect(ctx.chat().profile).toMatchObject({ id: "12" });
+      expect(ctx.chat().profile).not.toHaveProperty("avatarUrl");
+      // So is a failure.
+      let fail!: (error: unknown) => void;
+      ctx.api.profile.mockImplementationOnce(() => new Promise((_resolve, reject) => (fail = reject)));
+      const fourth = ctx.act({ type: "profile", id: "13" });
+      await ctx.act({ type: "profile", id: "14" });
+      fail(new Error("gone"));
+      await fourth;
+      expect(ctx.chat().profile).toMatchObject({ id: "14" });
+    });
+
+    it("is forgotten on sign-out, and not asked for while signed out", async () => {
+      const ctx = await signedIn({ dialogs: dialogs() });
+      let release!: (profile: TgProfile) => void;
+      ctx.api.profile.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+      const asking = ctx.act({ type: "profile", id: "5" });
+      ctx.api.authorized.mockResolvedValue(false);
+      await ctx.adapter.signOut();
+      release({ id: "5", name: "Late", bot: false, presence: "offline" });
+      await asking;
+      const fresh = setup({ builtIn: CREDS });
+      await fresh.act({ type: "profile", id: "5" });
+      expect(fresh.api.profile).not.toHaveBeenCalled();
+      await fresh.act({ type: "members", open: true });
+      expect(fresh.renders.at(-1)).toBeDefined();
+    });
   });
 });
