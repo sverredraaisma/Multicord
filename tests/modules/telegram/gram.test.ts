@@ -7,7 +7,7 @@ const h = vi.hoisted(() => {
     }
   }
   const names = [
-    "MessageMediaEmpty", "MessageMediaWebPage", "WebPage", "UpdatePinnedMessages", "UpdatePinnedChannelMessages", "InputMessagesFilterPinned", "Poll", "PollAnswer", "PollResults", "PollAnswerVoters", "UpdateMessagePoll", "MessageMediaPhoto", "MessageMediaDocument", "Document",
+    "MessageMediaEmpty", "MessageMediaWebPage", "WebPage", "UpdatePinnedMessages", "UpdatePinnedChannelMessages", "InputMessagesFilterPinned", "Poll", "PollAnswer", "PollResults", "InputMediaPoll", "TextWithEntities", "PollAnswerVoters", "UpdateMessagePoll", "MessageMediaPhoto", "MessageMediaDocument", "Document",
     "DocumentAttributeSticker", "DocumentAttributeAudio", "DocumentAttributeVideo", "DocumentAttributeFilename",
     "MessageMediaGeo", "MessageMediaGeoLive", "MessageMediaVenue", "MessageMediaContact", "MessageMediaPoll",
     "PeerUser", "PeerChat", "PeerChannel", "Message", "MessageReplyHeader", "User", "Chat", "Channel", "ChatForbidden", "PeerNotifySettings",
@@ -56,6 +56,7 @@ const h = vi.hoisted(() => {
       FavedStickers: class extends Base {},
       UpdatePinnedMessage: class extends Base {},
       ForwardMessages: class extends Base {},
+      EditMessage: class extends Base {},
       SendVote: class extends Base {},
       GetDialogFilters: class extends Base {},
       Search: class extends Base {},
@@ -130,7 +131,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { allowedOf, apiEntities, foldersOf, foundMessages, MAX_FOLDER_PEERS, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview, pollOf, pollResultsOf } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, foldersOf, foundMessages, MAX_FOLDER_PEERS, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, pollsBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview, pollOf, pollResultsOf } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -194,6 +195,7 @@ describe("polls", () => {
       results: { voters: [{ option: "MA==", votes: 3, chosen: true }, { option: "MQ==", votes: 0, correct: true }], total: 4, min: false },
     });
     expect(pollOf(make(Api.MessageMediaPoll, { poll: make(Api.Poll, { id: 1n, question: 5, answers: [], closed: true, quiz: true }) }))).toEqual({ id: "1", question: "", answers: [], multiple: false, closed: true, quiz: true });
+    expect(pollOf(make(Api.MessageMediaPoll, { poll: make(Api.Poll, { id: 2n, question: "Q", answers: [], publicVoters: true }) }))).toMatchObject({ publicVoters: true });
     expect(pollOf(make(Api.MessageMediaPoll, { poll: {} }))).toBeUndefined();
     expect(pollOf(undefined)).toBeUndefined();
     expect(pollResultsOf(make(Api.PollResults, { min: true }))).toEqual({ voters: [], min: true });
@@ -458,7 +460,7 @@ describe("createGramApi", () => {
         { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, readUpTo: 7, lastMessage: toMessage(last, "1") },
         { chatId: "2", kind: "user", title: "@bo", bot: false, unreadCount: 0, unreadMentions: 0, date: 90, mutedUntil: 2147483647 },
         // Unmuted by its own setting (0), where "none" follows the defaults.
-        { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, mutedUntil: 0, members: true, noMedia: true, noStickers: true },
+        { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, mutedUntil: 0, members: true, noMedia: true, noStickers: true, noPolls: true },
         { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true, left: true },
       ],
     });
@@ -546,6 +548,29 @@ describe("createGramApi", () => {
     const vote = client.invoke.mock.calls[0]![0] as { peer: unknown; msgId: number; options: Buffer[] };
     expect(vote).toBeInstanceOf(Api.messages.SendVote);
     expect([vote.peer, vote.msgId, vote.options.map((o) => [...o])]).toEqual([7n, 3, [[48], [1, 2]]]);
+  });
+
+  it("starts polls with answers numbered by their place, and closes them as they are", async () => {
+    client.sendFile.mockResolvedValue(make(Api.Message, { id: 9, date: 1, out: true, message: "" }));
+    await expect(api.sendPoll("-1005", { question: "Lunch?", answers: ["Pizza", "Soup"], multiple: true, publicVoters: false }, 10)).resolves.toMatchObject({ id: 9, chatId: "-1005" });
+    const [peer, options] = client.sendFile.mock.calls[0]! as unknown as [bigint, { file: { poll: Record<string, unknown> }; caption: string; replyTo: number }];
+    expect(peer).toBe(-1005n);
+    expect(options).toMatchObject({ caption: "", replyTo: 10 });
+    expect(options.file).toBeInstanceOf(Api.InputMediaPoll);
+    const poll = options.file.poll as { id: bigint; question: { text: string }; answers: { text: { text: string; entities: unknown[] }; option: Buffer }[] };
+    expect(poll).toBeInstanceOf(Api.Poll);
+    expect(poll).toMatchObject({ id: 8000n, question: { text: "Lunch?", entities: [] }, multipleChoice: true, publicVoters: false, quiz: false, closed: false });
+    expect(poll.answers.map((a) => [a.text.text, [...a.option]])).toEqual([["Pizza", [0]], ["Soup", [1]]]);
+    client.invoke.mockResolvedValue({});
+    const shown = { id: "77", question: "Q", answers: [{ option: "MA==", text: "A" }], multiple: false, closed: false, quiz: true, publicVoters: true };
+    await api.closePoll("7", 3, shown);
+    const request = client.invoke.mock.calls[0]![0] as { peer: unknown; id: number; media: { poll: Record<string, unknown> & { answers: { option: Buffer }[] } } };
+    expect(request).toBeInstanceOf(Api.messages.EditMessage);
+    expect(request).toMatchObject({ peer: 7n, id: 3 });
+    expect(request.media.poll).toMatchObject({ id: 77n, question: { text: "Q" }, multipleChoice: false, publicVoters: true, quiz: true, closed: true });
+    expect(request.media.poll.answers.map((a) => [...a.option])).toEqual([[48]]);
+    await api.closePoll("7", 3, { ...shown, publicVoters: undefined, quiz: false });
+    expect((client.invoke.mock.calls[1]![0] as typeof request).media.poll).toMatchObject({ publicVoters: false, quiz: false });
   });
 
   it("returns history oldest first, skipping service messages", async () => {
@@ -1216,6 +1241,9 @@ describe("sending files", () => {
     expect(mediaBanned(make(Api.Channel, { megagroup: true, creator: true, bannedRights: { sendMedia: true } }))).toBe(false);
     expect(mediaBanned(make(Api.Channel, { megagroup: true }))).toBe(false);
     expect(mediaBanned(make(Api.User))).toBe(false);
+    expect(pollsBanned(make(Api.Chat, { defaultBannedRights: { sendPolls: true } }))).toBe(true);
+    expect(pollsBanned(make(Api.Channel, { megagroup: true, bannedRights: { sendMedia: true } }))).toBe(true);
+    expect(pollsBanned(make(Api.Chat, { defaultBannedRights: { sendStickers: true } }))).toBe(false);
   });
 
   describe("through the client", () => {

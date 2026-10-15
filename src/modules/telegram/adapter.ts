@@ -541,6 +541,10 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.showPins(action.open);
       case "vote":
         return this.vote(Number(action.messageId), action.options);
+      case "createPoll":
+        return this.createPoll(action.question, action.answers, action.multiple, action.anonymous);
+      case "endPoll":
+        return this.endPoll(Number(action.messageId));
       case "forward":
         return this.forward(Number(action.messageId), action.channelId);
       case "search":
@@ -1894,7 +1898,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     // Edited as the markdown it shows, so formatting survives the edit.
     if (native.canEdit) native.source = markdown;
     if (message.pinned) native.pinned = true;
-    if (message.poll) native.poll = this.pollView(message.poll, dialog);
+    if (message.poll) native.poll = this.pollView(message.poll, dialog, message.out);
     // Who may pin in a group is up to its admins, and Telegram refuses where the user may not; in a forum, within the message's topic.
     if (!dialog.readOnly) native.canPin = true;
     // Telegram's own flag: it mentions the user, or answers one of their messages.
@@ -1918,7 +1922,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   /** A poll as the view shows it: its answers by their place, with votes where Telegram shows them. Voting needs a chat the user is still in. */
-  private pollView(poll: TgPoll, dialog: TgDialog): NativePoll {
+  private pollView(poll: TgPoll, dialog: TgDialog, mine: boolean): NativePoll {
     const results = new Map((poll.results?.voters ?? []).map((v) => [v.option, v]));
     const options = poll.answers.map((answer, index): NativePollOption => {
       const option: NativePollOption = { id: String(index), text: answer.text };
@@ -1931,7 +1935,42 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const view: NativePoll = { question: poll.question, options, multiple: poll.multiple, closed: poll.closed };
     if (poll.results?.total !== undefined) view.total = poll.results.total;
     if (!poll.closed && !dialog.left) view.canVote = true;
+    // The user's own polls end from here; quizzes, which they start elsewhere, stay as Telegram's apps end them.
+    if (!poll.closed && !dialog.left && mine && !poll.quiz) view.canEnd = true;
     return view;
+  }
+
+  /** Where the user may start a poll: a group or channel they may write and start polls in (in a forum, a topic). */
+  private canPoll(dialog: TgDialog): boolean {
+    return dialog.kind !== "user" && dialog.readOnly !== true && dialog.noPolls !== true && dialog.left !== true && !(dialog.forum && this.topic === undefined);
+  }
+
+  /**
+   * Starts a poll in the open chat (in a forum, in the open topic). Votes
+   * stay anonymous unless the user chose otherwise in a group; channels
+   * take anonymous polls only.
+   */
+  private async createPoll(question: string, answers: string[], multiple: boolean, anonymous: boolean | undefined): Promise<void> {
+    // Chats are selected only while signed in.
+    const dialog = this.selected ? this.dialog(this.selected) : undefined;
+    if (!dialog || !this.canPoll(dialog)) return;
+    const topic = this.topic;
+    const publicVoters = dialog.kind === "group" && anonymous === false;
+    await this.attempt("Poll not sent", async () => {
+      this.onUpdate({ type: "message", message: await this.api!.sendPoll(dialog.chatId, { question, answers, multiple, publicVoters }, topic) });
+    });
+  }
+
+  /** Ends a poll the user sent in the open conversation; it shows as ended at once, and Telegram's update brings the final results. */
+  private async endPoll(messageId: number): Promise<void> {
+    const key = this.current();
+    const message = key ? this.messages.get(key)?.find((m) => m.id === messageId) : undefined;
+    const poll = message?.poll;
+    if (!poll || !message.out || poll.closed || poll.quiz || this.dialog(message.chatId)?.left) return;
+    await this.attempt("Poll not ended", async () => {
+      await this.api!.closePoll(message.chatId, message.id, poll);
+      this.onUpdate({ type: "poll", pollId: poll.id, results: poll.results ?? { voters: [], min: true }, closed: true });
+    });
   }
 
   /** Votes in a poll of the open conversation; Telegram's update then shows the new results. */
@@ -2049,7 +2088,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       ...(this.unreadAt?.key === key ? { unread: this.unreadView(key, this.unreadAt) } : {}),
       ...(this.pins?.key === key ? { pins: this.pins.list } : {}),
       ...(this.search?.key === key ? { search: this.search.results } : {}),
-      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked && this.typingIndicators, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: true, search: true, forward: true },
+      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked && this.typingIndicators, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: true, search: true, forward: true, polls: this.canPoll(dialog), anonymousPolls: this.canPoll(dialog) && dialog.kind === "group" },
     };
   }
 

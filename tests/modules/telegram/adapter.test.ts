@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgFolder, TgMember, TgQrLogin, TgMemberPage, TgMessage, TgNotifyDefaults, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import type { TelegramApi, TelegramCredentials, TgNewPoll, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgFolder, TgMember, TgQrLogin, TgMemberPage, TgMessage, TgNotifyDefaults, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
 import { MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
 import { QR_REFRESH_MAX_MS, QR_REFRESH_MIN_MS } from "../../../src/modules/telegram/adapter";
 import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, DIALOG_PAGE, DIALOG_PAGE_MS, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, MUTE_FOREVER, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
@@ -40,6 +40,10 @@ class FakeTelegramApi implements TelegramApi {
   search = vi.fn(async (chatId: string, _query: string, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1)]);
   forward = vi.fn(async (_from: string, _id: number, _to: string, _topic?: number) => {});
   vote = vi.fn(async (_chatId: string, _id: number, _options: string[]) => {});
+  sendPoll = vi.fn(async (chatId: string, poll: TgNewPoll, _topicId?: number) =>
+    msg(chatId, 500, { out: true, text: "", media: "📊 Poll", poll: { id: "90", question: poll.question, answers: poll.answers.map((text, i) => ({ option: String(i), text })), multiple: poll.multiple, closed: false, quiz: false } }),
+  );
+  closePoll = vi.fn(async (_chatId: string, _id: number, _poll: TgPoll) => {});
   send = vi.fn(async (chatId: string, text: TgText, _replyTo?: number) => msg(chatId, 200, { out: true, ...text }));
   sentFiles = 300;
   sendFile = vi.fn(async (chatId: string, file: FileSource, caption: TgText, _replyTo?: number) => msg(chatId, this.sentFiles++, { out: true, ...caption, media: file.filename }));
@@ -889,7 +893,7 @@ describe("chat view", () => {
     await Promise.all([first, second]);
     expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE, undefined);
     expect(ctx.chat().channel).toMatchObject({ loading: false, hasOlder: false });
-    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false, stickers: true, pins: true, search: true, forward: true });
+    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false, stickers: true, pins: true, search: true, forward: true, polls: false, anonymousPolls: false });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
 
     await ctx.adapter.openConversation("1");
@@ -3427,12 +3431,85 @@ describe("polls", () => {
     expect(ctx.chat().error).toMatch(/^Vote not counted: /);
   });
 
+  it("starts polls in groups and channels, with the choice of anonymous votes in groups", async () => {
+    const ctx = await signedIn({ dialogs: [dlg("-6", { kind: "group" }), dlg("-1007", { kind: "channel" }), ...defaultDialogs()] });
+    await ctx.act({ type: "createPoll", question: "Q", answers: ["A", "B"], multiple: false });
+    await ctx.act({ type: "select", channelId: viewId("-6") });
+    expect(ctx.chat().channel!.can).toMatchObject({ polls: true, anonymousPolls: true });
+    await ctx.act({ type: "createPoll", question: "Lunch?", answers: ["Pizza", "Soup"], multiple: true, anonymous: false });
+    expect(ctx.api.sendPoll).toHaveBeenLastCalledWith("-6", { question: "Lunch?", answers: ["Pizza", "Soup"], multiple: true, publicVoters: true }, undefined);
+    const sent = ctx.chat().channel!.messages.at(-1)!;
+    expect(sent.poll).toMatchObject({ question: "Lunch?", canVote: true, canEnd: true });
+    await ctx.act({ type: "createPoll", question: "Q", answers: ["A", "B"], multiple: false });
+    expect(ctx.api.sendPoll).toHaveBeenLastCalledWith("-6", expect.objectContaining({ publicVoters: false }), undefined);
+    // Channels take anonymous polls only.
+    await ctx.act({ type: "select", channelId: viewId("-1007") });
+    expect(ctx.chat().channel!.can).toMatchObject({ polls: true, anonymousPolls: false });
+    await ctx.act({ type: "createPoll", question: "Q", answers: ["A", "B"], multiple: false, anonymous: false });
+    expect(ctx.api.sendPoll).toHaveBeenLastCalledWith("-1007", expect.objectContaining({ publicVoters: false }), undefined);
+    ctx.api.sendPoll.mockRejectedValueOnce(tgError("CHAT_SEND_POLL_FORBIDDEN"));
+    await ctx.act({ type: "createPoll", question: "Q", answers: ["A", "B"], multiple: false });
+    expect(ctx.chat().error).toMatch(/^Poll not sent: /);
+  });
+
+  it("offers no polls in one-to-one chats, where they are barred, nor outside a forum's topics", async () => {
+    const ctx = await signedIn({ dialogs: [dlg("-6", { kind: "group", noPolls: true }), dlg("-8", { kind: "group", readOnly: true }), dlg("-9", { kind: "group", left: true }), ...defaultDialogs()] });
+    for (const id of ["1", viewId("-6"), viewId("-8"), viewId("-9")]) {
+      await ctx.act({ type: "select", channelId: id });
+      expect(ctx.chat().channel!.can).toMatchObject({ polls: false, anonymousPolls: false });
+      await ctx.act({ type: "createPoll", question: "Q", answers: ["A", "B"], multiple: false });
+    }
+    expect(ctx.api.sendPoll).not.toHaveBeenCalled();
+    const forum = await signedIn({ dialogs: [dlg("-1005", { kind: "group", forum: true }), ...defaultDialogs()] });
+    forum.api.topics.mockResolvedValue([{ id: 10, title: "T10", unreadCount: 0, unreadMentions: 0, date: 1 }]);
+    await forum.act({ type: "select", channelId: viewId("-1005") });
+    await forum.act({ type: "createPoll", question: "Q", answers: ["A", "B"], multiple: false });
+    expect(forum.api.sendPoll).not.toHaveBeenCalled();
+    await forum.act({ type: "select", channelId: forum.rows().find((r) => r.name === "T10")!.id });
+    await flush();
+    expect(forum.chat().channel!.can.polls).toBe(true);
+    await forum.act({ type: "createPoll", question: "Q", answers: ["A", "B"], multiple: false });
+    expect(forum.api.sendPoll).toHaveBeenLastCalledWith("-1005", expect.anything(), 10);
+  });
+
+  it("ends the user's own polls, not quizzes or others' polls", async () => {
+    const ctx = await signedIn({ dialogs: [dlg("-6", { kind: "group" }), ...defaultDialogs()] });
+    const mine = poll({ results: { voters: [{ option: "MA==", votes: 2, chosen: true }], total: 2, min: false } });
+    ctx.api.history.mockResolvedValueOnce([
+      msg("-6", 1, { text: "", poll: mine, out: true }),
+      msg("-6", 2, { text: "", poll: poll({ id: "78" }) }),
+      msg("-6", 3, { text: "", poll: poll({ id: "79", quiz: true }), out: true }),
+      msg("-6", 4, { text: "", poll: poll({ id: "80" }), out: true }),
+    ]);
+    await ctx.act({ type: "select", channelId: viewId("-6") });
+    const shown = ctx.chat().channel!.messages;
+    expect(shown.map((m) => m.poll!.canEnd === true)).toEqual([true, false, false, true]);
+    for (const id of ["2", "3", "99"]) await ctx.act({ type: "endPoll", messageId: id });
+    expect(ctx.api.closePoll).not.toHaveBeenCalled();
+    await ctx.act({ type: "endPoll", messageId: "1" });
+    expect(ctx.api.closePoll).toHaveBeenLastCalledWith("-6", 1, mine);
+    expect(ctx.chat().channel!.messages[0]!.poll).toMatchObject({ closed: true, total: 2, options: [{ id: "0", text: "Pizza", votes: 2, chosen: true }, { id: "1", text: "Soup" }] });
+    expect(ctx.chat().channel!.messages[0]!.poll).not.toHaveProperty("canEnd");
+    await ctx.act({ type: "endPoll", messageId: "1" });
+    expect(ctx.api.closePoll).toHaveBeenCalledTimes(1);
+    ctx.api.closePoll.mockRejectedValueOnce(tgError("MESSAGE_ID_INVALID"));
+    await ctx.act({ type: "endPoll", messageId: "4" });
+    expect(ctx.chat().error).toMatch(/^Poll not ended: /);
+    expect(ctx.chat().channel!.messages[3]!.poll!.closed).toBe(false);
+    await ctx.act({ type: "endPoll", messageId: "4" });
+    expect(ctx.chat().channel!.messages[3]!.poll!.closed).toBe(true);
+  });
+
   it("takes no votes where the user left, or with no conversation open", async () => {
     const ctx = await signedIn({ dialogs: [dlg("-6", { kind: "group", left: true, readOnly: true }), ...defaultDialogs()] });
     await ctx.act({ type: "vote", messageId: "1", options: ["0"] });
-    ctx.api.history.mockResolvedValueOnce([msg("-6", 1, { text: "", poll: poll() })]);
+    await ctx.act({ type: "endPoll", messageId: "1" });
+    ctx.api.history.mockResolvedValueOnce([msg("-6", 1, { text: "", poll: poll(), out: true })]);
     await ctx.act({ type: "select", channelId: viewId("-6") });
     expect(ctx.chat().channel!.messages[0]!.poll!.canVote).toBeUndefined();
+    expect(ctx.chat().channel!.messages[0]!.poll!.canEnd).toBeUndefined();
+    await ctx.act({ type: "endPoll", messageId: "1" });
     expect(ctx.api.vote).not.toHaveBeenCalled();
+    expect(ctx.api.closePoll).not.toHaveBeenCalled();
   });
 });

@@ -32,6 +32,7 @@ import {
   type TgMember,
   type TgMemberPage,
   type TgMessage,
+  type TgNewPoll,
   type TgNotifyDefaults,
   type TgPresence,
   type TgPoll,
@@ -207,6 +208,28 @@ export const mediaBanned = (entity: unknown): boolean => restricted(entity, (r) 
 
 /** Whether the user may write in a group but not send stickers there: barred from them, or from all media. */
 export const stickersBanned = (entity: unknown): boolean => restricted(entity, (r) => r.sendMedia === true || r.sendStickers === true);
+
+/** Whether the user may write in a group but not start polls there: barred from them, or from all media. */
+export const pollsBanned = (entity: unknown): boolean => restricted(entity, (r) => r.sendMedia === true || r.sendPolls === true);
+
+/**
+ * A poll as Telegram takes it: question and answers as plain text, each
+ * answer's option bytes (its place, for a new poll), and how it is set.
+ * Closing sends the poll as it is, with closed set.
+ */
+export function inputPoll(id: Api.long, question: string, answers: { option: Uint8Array; text: string }[], flags: { multiple: boolean; publicVoters: boolean; quiz?: boolean; closed?: boolean }): Api.InputMediaPoll {
+  const text = (value: string) => new Api.TextWithEntities({ text: value, entities: [] });
+  const poll = new Api.Poll({
+    id,
+    question: text(question),
+    answers: answers.map((a) => new Api.PollAnswer({ text: text(a.text), option: Buffer.from(a.option) })),
+    multipleChoice: flags.multiple,
+    publicVoters: flags.publicVoters,
+    quiz: flags.quiz === true,
+    closed: flags.closed === true,
+  });
+  return new Api.InputMediaPoll({ poll });
+}
 
 /** Whether a dialog's entity is a forum group, and whether only its admins start topics there. */
 export function forumOf(entity: unknown): { forum: boolean; noTopics: boolean } {
@@ -395,6 +418,7 @@ export function pollOf(media: Api.TypeMessageMedia | undefined): TgPoll | undefi
   const poll = media.poll;
   const answers = poll.answers.flatMap((a) => (a instanceof Api.PollAnswer ? [{ option: base64Of(a.option), text: plainText(a.text) }] : []));
   const out: TgPoll = { id: poll.id.toString(), question: plainText(poll.question), answers, multiple: poll.multipleChoice === true, closed: poll.closed === true, quiz: poll.quiz === true };
+  if (poll.publicVoters === true) out.publicVoters = true;
   const results = pollResultsOf(media.results);
   if (results) out.results = results;
   return out;
@@ -650,6 +674,7 @@ export function dialogsOf(found: readonly Dialog[]): TgDialog[] {
     if (d.entity instanceof Api.User && (d.entity.contact === true || d.entity.self === true)) dialog.contact = true;
     if (mediaBanned(d.entity)) dialog.noMedia = true;
     if (stickersBanned(d.entity)) dialog.noStickers = true;
+    if (pollsBanned(d.entity)) dialog.noPolls = true;
     const forum = forumOf(d.entity);
     if (forum.forum) dialog.forum = true;
     if (forum.noTopics) dialog.noTopics = true;
@@ -836,6 +861,17 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       if (topicId !== undefined) return searchTopic(chatId, query, new Api.InputMessagesFilterEmpty(), limit, topicId);
       const found = await client.getMessages(peer(chatId), { limit, search: query });
       return found.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId));
+    },
+    sendPoll: async (chatId, poll: TgNewPoll, topicId) => {
+      // Each answer's option is its place, as Telegram's apps number them.
+      const answers = poll.answers.map((text, i) => ({ option: Uint8Array.of(i), text }));
+      const media = inputPoll(readBigIntFromBuffer(generateRandomBytes(8), true, true), poll.question, answers, poll);
+      return toMessage(await client.sendFile(peer(chatId), { file: media, caption: "", ...topicReply(undefined, topicId) }), chatId);
+    },
+    closePoll: async (chatId, messageId, poll) => {
+      const answers = poll.answers.map((a) => ({ option: Buffer.from(a.option, "base64"), text: a.text }));
+      const media = inputPoll(returnBigInt(poll.id), poll.question, answers, { multiple: poll.multiple, publicVoters: poll.publicVoters === true, quiz: poll.quiz, closed: true });
+      await client.invoke(new Api.messages.EditMessage({ peer: peer(chatId), id: messageId, media }));
     },
     pin: async (chatId, id, pin) => {
       await client.invoke(new Api.messages.UpdatePinnedMessage({ peer: peer(chatId), id, unpin: !pin, silent: true }));

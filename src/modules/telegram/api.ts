@@ -88,7 +88,17 @@ export interface TgPoll {
   multiple: boolean;
   closed: boolean;
   quiz: boolean;
+  /** Who voted for what shows (not anonymous). */
+  publicVoters?: boolean;
   results?: TgPollResults;
+}
+
+/** A poll to start: its question and answers in order. */
+export interface TgNewPoll {
+  question: string;
+  answers: string[];
+  multiple: boolean;
+  publicVoters: boolean;
 }
 
 /** How a poll stands, as far as Telegram shows the user (often only after they voted). */
@@ -151,6 +161,8 @@ export interface TgDialog {
   noMedia?: boolean;
   /** The user may write here, but not send stickers (barred from them, or from all media). */
   noStickers?: boolean;
+  /** The user may write here, but not start polls (barred from them, or from all media). */
+  noPolls?: boolean;
   /** The user left it, or was removed: they can only read what is left. */
   left?: boolean;
   /** It is in the user's archive (Telegram's folder 1). */
@@ -346,6 +358,10 @@ export interface TelegramApi {
   search(chatId: string, query: string, limit: number, topicId?: number): Promise<TgMessage[]>;
   /** Votes in a poll: the options (base64) chosen, replacing earlier ones; none takes the vote back. */
   vote(chatId: string, messageId: number, options: string[]): Promise<void>;
+  /** Starts a poll, in a forum in a topic. */
+  sendPoll(chatId: string, poll: TgNewPoll, topicId?: number): Promise<TgMessage>;
+  /** Closes a poll the user sent (editing its message): votes stop and the results show. */
+  closePoll(chatId: string, messageId: number, poll: TgPoll): Promise<void>;
   /** Pins a message quietly (no notification), or unpins it. */
   pin(chatId: string, id: number, pin: boolean): Promise<void>;
   /** Sends text, in a forum into a topic. */
