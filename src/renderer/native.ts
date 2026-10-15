@@ -201,7 +201,7 @@ export class NativeView {
     stage.hidden = true;
     const speakers = el(doc, "div", "voice-speakers");
     speakers.hidden = true;
-    this.call = new VoiceCall(stage, speakers, (message) => this.api.act({ type: "voiceError", message }), undefined, undefined, this.denoiser, this.e2eeWorker);
+    this.call = new VoiceCall(stage, speakers, (message, notice) => this.api.act(notice ? { type: "voiceNotice", message, ...notice } : { type: "voiceError", message }), undefined, undefined, this.denoiser, this.e2eeWorker);
     if (this.voiceSettings) void this.call.configure(this.voiceSettings);
     const reply = el(doc, "div", "reply-bar");
     reply.hidden = true;

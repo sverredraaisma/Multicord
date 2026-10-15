@@ -95,6 +95,11 @@ describe("voice action validation", () => {
     expect(isNativeAction({ type: "voiceState", mute: true, deaf: false, video: false })).toBe(false);
     expect(isNativeAction({ type: "voiceError", message: "ICE failed" })).toBe(true);
     expect(isNativeAction({ type: "voiceError", message: "" })).toBe(false);
+    expect(isNativeAction({ type: "voiceNotice", message: "No camera" })).toBe(true);
+    expect(isNativeAction({ type: "voiceNotice", message: "No camera", off: "video" })).toBe(true);
+    expect(isNativeAction({ type: "voiceNotice", message: "No screen", off: "stream" })).toBe(true);
+    expect(isNativeAction({ type: "voiceNotice", message: "x", off: "mute" })).toBe(false);
+    expect(isNativeAction({ type: "voiceNotice", message: "" })).toBe(false);
   });
 });
 

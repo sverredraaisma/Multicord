@@ -7,6 +7,7 @@ import { formatSize, formatTime, insertAtCursor, NativeView, QUICK_REACTIONS, st
 import type { NativeApi } from "../../src/preload/native";
 import type { NativeMessage, NativeViewState } from "../../src/shared/native";
 import { DEFAULT_SETTINGS, type VoiceSettings } from "../../src/shared/settings";
+import { Room, resetLiveKit } from "../mocks/livekit";
 
 type Chat = Extract<NativeViewState, { screen: "chat" }>;
 
@@ -568,6 +569,19 @@ describe("voice", () => {
     video: false,
     stream: false,
     ...extra,
+  });
+
+  it("tells the engine whether a call problem ended the call", async () => {
+    resetLiveKit();
+    view.update(chat({ voice: voice({ url: "wss://v", token: "t" }) }));
+    await vi.waitFor(() => expect(Room.instances).toHaveLength(1));
+    const room = Room.instances[0]!;
+    await vi.waitFor(() => expect(room.localParticipant.setMicrophoneEnabled).toHaveBeenCalled());
+    room.localParticipant.setCameraEnabled.mockRejectedValueOnce(new Error("busy"));
+    view.update(chat({ voice: voice({ url: "wss://v", token: "t", video: true }) }));
+    await vi.waitFor(() => expect(act).toHaveBeenCalledWith({ type: "voiceNotice", message: "The camera could not start: busy", off: "video" }));
+    room.emit("disconnected");
+    expect(act).toHaveBeenLastCalledWith({ type: "voiceError", message: "Disconnected from voice" });
   });
 
   it("joins voice channels from the sidebar and lists who is there", () => {

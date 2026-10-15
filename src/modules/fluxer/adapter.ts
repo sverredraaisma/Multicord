@@ -7,6 +7,7 @@ import {
   type NativeSidebarItem,
   type NativeViewState,
   type NativeVoiceSession,
+  type VoiceNoticeFlag,
 } from "../../shared/native";
 import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
@@ -196,6 +197,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.setVoiceFlags(action);
       case "voiceError":
         return this.leaveVoice(`Voice failed: ${action.message}`);
+      case "voiceNotice":
+        return this.voiceNotice(action.message, action.off);
       case "removeAttachment":
         this.pending.get(this.selectedChannelId ?? "")?.splice(action.index, 1);
         return this.render();
@@ -529,6 +532,15 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       self_stream: voice.stream,
     });
     this.render();
+  }
+
+  /** A problem the call survives: shown, with the camera or screen share that failed turned off for everyone. */
+  private voiceNotice(message: string, off: VoiceNoticeFlag | undefined): void {
+    const voice = this.voice;
+    if (!voice) return;
+    this.error = message;
+    if (off) this.setVoiceFlags({ mute: voice.mute, deaf: voice.deaf, video: voice.video, stream: voice.stream, [off]: false });
+    else this.render();
   }
 
   private leaveVoice(error: string | undefined): void {

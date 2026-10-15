@@ -2427,8 +2427,17 @@ describe("joining a call", () => {
     const ctx = await withCalls();
     await ctx.open("Lounge");
     await ctx.join("Start a call in Lounge");
+    // A camera that won't start leaves the call going, the camera off.
+    await ctx.act({ type: "voiceState", mute: false, deaf: false, video: true, stream: true });
+    await ctx.act({ type: "voiceNotice", message: "The camera could not start: busy", off: "video" });
+    expect(ctx.voice()).toMatchObject({ video: false, stream: true });
+    expect(ctx.chat().error).toBe("The camera could not start: busy");
+    await ctx.act({ type: "voiceNotice", message: "Could not switch devices: gone" });
+    expect(ctx.voice()).toMatchObject({ stream: true });
     await ctx.act({ type: "voiceError", message: "Disconnected from voice" });
     expect(ctx.voice()).toBeNull();
+    expect(ctx.chat().error).toBe("The call ended: Disconnected from voice");
+    await ctx.act({ type: "voiceNotice", message: "late" }); // no call any more
     expect(ctx.chat().error).toBe("The call ended: Disconnected from voice");
     await ctx.join("Start a call in Lounge");
     await ctx.live(sync({ left: ["!lounge:x.org"] }));

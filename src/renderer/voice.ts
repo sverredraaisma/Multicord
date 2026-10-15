@@ -11,7 +11,7 @@ import {
   type RoomOptions,
   type TrackProcessor,
 } from "livekit-client";
-import type { NativeMediaKey, NativeVoiceSession } from "../shared/native";
+import type { NativeMediaKey, NativeVoiceSession, VoiceNoticeFlag } from "../shared/native";
 import { DEFAULT_SETTINGS, type DeviceChoice, type VoiceSettings } from "../shared/settings";
 import type { DeviceInfo } from "./media";
 
@@ -86,7 +86,11 @@ export class VoiceCall {
   constructor(
     private readonly stage: HTMLElement,
     private readonly speakers: HTMLElement,
-    private readonly onError: (message: string) => void,
+    /**
+     * Reports a problem. With a notice the call goes on (`off` names a flag
+     * that could not be turned on); without one the call is lost.
+     */
+    private readonly onError: (message: string, notice?: { off?: VoiceNoticeFlag }) => void,
     private readonly createRoom: (options: RoomOptions) => Room = (options) => new Room(options),
     private readonly devices: () => Promise<DeviceInfo[]> = listDevices,
     /** Makes the enhanced noise suppression processor; absent where it cannot run. */
@@ -113,7 +117,8 @@ export class VoiceCall {
         if (ids.camera) await room.switchActiveDevice("videoinput", ids.camera);
         await this.syncDenoise(room);
       })
-      .catch((error: unknown) => this.onError(message(error)));
+      // The call goes on with the devices it had.
+      .catch((error: unknown) => this.onError(`Could not switch devices: ${message(error)}`, {}));
     return this.queue;
   }
 
@@ -203,11 +208,25 @@ export class VoiceCall {
       await room.localParticipant.setMicrophoneEnabled(micOn);
       if (micOn) await this.syncDenoise(room);
     }
-    if (flags.video !== this.applied.video) await room.localParticipant.setCameraEnabled(flags.video);
-    if (flags.stream !== this.applied.stream) await room.localParticipant.setScreenShareEnabled(flags.stream, { audio: SHARED_AUDIO });
+    // A camera or screen that won't start (busy, missing, the picker cancelled) leaves the call as it was.
+    const video = flags.video === this.applied.video ? flags.video : await this.toggle("video", flags.video, () => room.localParticipant.setCameraEnabled(flags.video));
+    const stream =
+      flags.stream === this.applied.stream ? flags.stream : await this.toggle("stream", flags.stream, () => room.localParticipant.setScreenShareEnabled(flags.stream, { audio: SHARED_AUDIO }));
     // Deafened: keep receiving, but play nothing.
     for (const audio of this.speakers.querySelectorAll("audio")) audio.muted = flags.deaf;
-    this.applied = { mute: flags.mute, deaf: flags.deaf, video: flags.video, stream: flags.stream };
+    this.applied = { mute: flags.mute, deaf: flags.deaf, video, stream };
+  }
+
+  /** Turns the camera or screen share on or off; whether it is on afterwards. */
+  private async toggle(flag: VoiceNoticeFlag, on: boolean, change: () => Promise<unknown>): Promise<boolean> {
+    try {
+      await change();
+      return on;
+    } catch (error) {
+      if (!on) throw error;
+      this.onError(`${flag === "video" ? "The camera" : "Screen sharing"} could not start: ${message(error)}`, { off: flag });
+      return false;
+    }
   }
 
   /**
@@ -222,7 +241,7 @@ export class VoiceCall {
       try {
         await mic.setProcessor(this.denoiser());
       } catch (error) {
-        this.onError(`Enhanced noise suppression could not start: ${message(error)}`);
+        this.onError(`Enhanced noise suppression could not start: ${message(error)}`, {});
       }
     } else if (!this.settings.enhancedNoiseSuppression && running) {
       await mic.stopProcessor();

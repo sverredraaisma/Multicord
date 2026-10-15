@@ -1030,8 +1030,17 @@ describe("FluxerAdapter voice", () => {
     const ctx = await online();
     await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
     ctx.grant();
+    // A camera that won't start: still in the call, the camera off for everyone.
+    await ctx.adapter.handleAction({ type: "voiceState", mute: false, deaf: false, video: true, stream: false });
+    await ctx.adapter.handleAction({ type: "voiceNotice", message: "The camera could not start: busy", off: "video" });
+    expect(ctx.chat()).toMatchObject({ voice: { video: false }, error: "The camera could not start: busy" });
+    expect(ctx.sockets.at(-1)!.sent.at(-1)).toMatchObject({ d: { self_video: false } });
+    await ctx.adapter.handleAction({ type: "voiceNotice", message: "Could not switch devices: gone" });
+    expect(ctx.chat()).toMatchObject({ voice: { channelId: "112" }, error: "Could not switch devices: gone" });
     await ctx.adapter.handleAction({ type: "voiceError", message: "ICE failed" });
     expect(ctx.chat()).toMatchObject({ voice: null, error: "Voice failed: ICE failed" });
+    await ctx.adapter.handleAction({ type: "voiceNotice", message: "late" }); // no call any more
+    expect(ctx.chat().error).toBe("Voice failed: ICE failed");
 
     await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
     ctx.sockets.at(-1)!.receive({ op: 0, s: 10, t: "READY", d: readyPayload() });

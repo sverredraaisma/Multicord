@@ -77,6 +77,28 @@ describe("VoiceCall", () => {
     expect(speakers.querySelectorAll<HTMLAudioElement>("audio")[1]!.muted).toBe(true);
   });
 
+  it("stays in the call when the camera or screen share won't start", async () => {
+    await call.sync(session());
+    const room = Room.instances[0]!;
+    room.localParticipant.setCameraEnabled.mockRejectedValueOnce(new Error("Requested device not found"));
+    room.localParticipant.setScreenShareEnabled.mockRejectedValueOnce(new Error("Permission denied"));
+    await call.sync(session({ video: true, stream: true }));
+    expect(onError.mock.calls).toEqual([
+      ["The camera could not start: Requested device not found", { off: "video" }],
+      ["Screen sharing could not start: Permission denied", { off: "stream" }],
+    ]);
+    expect(room.disconnect).not.toHaveBeenCalled();
+    // Still off as far as the call knows: the session turning them off changes nothing, asking again tries again.
+    await call.sync(session());
+    expect(room.localParticipant.setCameraEnabled).toHaveBeenCalledTimes(1);
+    await call.sync(session({ video: true }));
+    expect(room.localParticipant.setCameraEnabled).toHaveBeenCalledTimes(2);
+    // Turning one off that fails is the call's own trouble.
+    room.localParticipant.setCameraEnabled.mockRejectedValueOnce(new Error("gone"));
+    await call.sync(session());
+    expect(onError).toHaveBeenLastCalledWith("gone");
+  });
+
   it("shows remote and local video and removes it again", async () => {
     await call.sync(session());
     const room = Room.instances[0]!;
@@ -197,7 +219,7 @@ describe("devices", () => {
     await call.sync(session());
     Room.instances[0]!.switchActiveDevice.mockRejectedValueOnce(new Error("NotFoundError"));
     await call.configure(DEFAULT_SETTINGS.voice);
-    expect(onError).toHaveBeenCalledWith("NotFoundError");
+    expect(onError).toHaveBeenCalledWith("Could not switch devices: NotFoundError", {});
   });
 
   it("lists devices through the browser when not given a source", async () => {
@@ -241,7 +263,7 @@ describe("enhanced noise suppression", () => {
     const call = new VoiceCall(stage, speakers, onError, undefined, undefined, denoiser);
     await call.configure(on);
     await call.sync(session());
-    expect(onError).toHaveBeenCalledWith("Enhanced noise suppression could not start: no worklet");
+    expect(onError).toHaveBeenCalledWith("Enhanced noise suppression could not start: no worklet", {});
 
     const plain = new VoiceCall(stage, speakers, onError);
     await plain.configure(on);

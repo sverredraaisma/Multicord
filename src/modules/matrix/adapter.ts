@@ -3,7 +3,7 @@ import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../share
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { MAX_DIRECTS } from "../../shared/engine";
 import { escapeMarkdown } from "../../shared/markdown";
-import type { NativeAction, NativeAttachment, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState, NativeVoiceMember, NativeVoiceSession } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState, NativeVoiceMember, NativeVoiceSession, VoiceNoticeFlag } from "../../shared/native";
 import type { AccountStatus } from "../../shared/settings";
 import {
   MatrixError,
@@ -675,6 +675,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.setCallFlags(action);
       case "voiceError":
         return this.leaveCall(`The call ended: ${action.message}`);
+      case "voiceNotice":
+        return this.callNotice(action.message, action.off);
       case "loadMedia":
         return this.loadMedia(action.key);
       default:
@@ -1954,6 +1956,14 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private setCallFlags(flags: { mute: boolean; deaf: boolean; video: boolean; stream: boolean }): void {
     if (!this.call) return;
     this.callFlags = { mute: flags.mute, deaf: flags.deaf, video: flags.video, stream: flags.stream };
+    this.render();
+  }
+
+  /** A problem the call survives: shown, with the camera or screen share that failed turned off. */
+  private callNotice(message: string, off: VoiceNoticeFlag | undefined): void {
+    if (!this.call) return;
+    if (off) this.callFlags = { ...this.callFlags, [off]: false };
+    this.error = message;
     this.render();
   }
 

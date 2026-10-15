@@ -187,6 +187,9 @@ export type NativeViewState =
       error?: string;
     };
 
+/** A call feature that may fail to start on its own. */
+export type VoiceNoticeFlag = "video" | "stream";
+
 export type NativeAction =
   | { type: "ready" }
   | { type: "login"; identity: string; password: string }
@@ -208,6 +211,8 @@ export type NativeAction =
   | { type: "leaveVoice" }
   | { type: "voiceState"; mute: boolean; deaf: boolean; video: boolean; stream: boolean }
   | { type: "voiceError"; message: string }
+  /** A problem the call survives (a camera that won't open); `off` names the flag that could not be turned on. */
+  | { type: "voiceNotice"; message: string; off?: VoiceNoticeFlag }
   | { type: "removeAttachment"; index: number }
   /** Fetch an attachment the engine holds back until asked (NativeAttachment.mediaKey). */
   | { type: "loadMedia"; key: string }
@@ -262,6 +267,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return [v.mute, v.deaf, v.video, v.stream].every((flag) => typeof flag === "boolean");
     case "voiceError":
       return text(v.message, 1, 500);
+    case "voiceNotice":
+      return text(v.message, 1, 500) && (v.off === undefined || v.off === "video" || v.off === "stream");
     case "loadMedia":
       return typeof v.key === "string" && /^[A-Za-z0-9:._-]{1,200}$/.test(v.key);
     case "createPost":
