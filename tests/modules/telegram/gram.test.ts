@@ -20,6 +20,7 @@ const h = vi.hoisted(() => {
     "UpdateUserTyping", "UpdateChatUserTyping", "UpdateChannelUserTyping", "SendMessageTypingAction", "SendMessageCancelAction", "SendMessageUploadPhotoAction",
     "SendMessageRecordVideoAction", "SendMessageUploadVideoAction", "SendMessageRecordAudioAction", "SendMessageUploadAudioAction", "SendMessageUploadDocumentAction",
     "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
+    "InputFile", "InputFileBig", "InputMediaUploadedPhoto", "InputMediaUploadedDocument",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
@@ -34,6 +35,7 @@ const h = vi.hoisted(() => {
     },
     channels: { GetFullChannel: class extends Base {}, GetParticipants: class extends Base {}, ChannelParticipants: class extends Base {} },
     users: { GetFullUser: class extends Base {} },
+    upload: { SaveFilePart: class extends Base {}, SaveBigFilePart: class extends Base {} },
   };
   for (const name of names) Api[name] = class extends Base {};
 
@@ -47,6 +49,7 @@ const h = vi.hoisted(() => {
     getDialogs = vi.fn();
     getMessages = vi.fn();
     sendMessage = vi.fn();
+    sendFile = vi.fn();
     editMessage = vi.fn();
     deleteMessages = vi.fn(async () => []);
     markAsRead = vi.fn(async () => true);
@@ -76,7 +79,11 @@ vi.mock("telegram/events/EditedMessage", () => ({ EditedMessage: h.eventClass() 
 vi.mock("telegram/events/NewMessage", () => ({ NewMessage: h.eventClass() }));
 vi.mock("telegram/events/Raw", () => ({ Raw: h.eventClass() }));
 vi.mock("telegram/extensions/Logger", () => ({ LogLevel: { ERROR: "error" } }));
-vi.mock("telegram/Helpers", () => ({ returnBigInt: (value: string) => BigInt(value) }));
+vi.mock("telegram/Helpers", () => ({
+  returnBigInt: (value: string) => BigInt(value),
+  generateRandomBytes: (count: number) => Buffer.alloc(count, 1),
+  readBigIntFromBuffer: (buffer: Buffer) => BigInt(buffer.length * 1000),
+}));
 vi.mock("telegram/Password", () => ({ computeCheck: async (request: unknown, password: string) => ({ request, password }) }));
 vi.mock("telegram/sessions/StringSession", () => ({
   StringSession: class {
@@ -87,7 +94,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, toMessage, typingOf } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, mediaBanned, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, toMessage, typingOf } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -321,7 +328,7 @@ describe("createGramApi", () => {
     client.getDialogs.mockResolvedValue([
       { ...none, id: 1n, unreadCount: 2, unreadMentionsCount: 0, date: 100, message: last, entity: make(Api.User, { firstName: "Ana", bot: true }) },
       { ...settings({ muteUntil: 2147483647 }), id: 2n, unreadCount: 0, unreadMentionsCount: 0, date: 90, entity: make(Api.User, { username: "bo" }) },
-      { ...settings({ muteUntil: 0 }), id: -7n, unreadCount: 3, unreadMentionsCount: 1, date: 85, entity: make(Api.Chat, { title: "Family" }) },
+      { ...settings({ muteUntil: 0 }), id: -7n, unreadCount: 3, unreadMentionsCount: 1, date: 85, entity: make(Api.Chat, { title: "Family", defaultBannedRights: { sendMedia: true } }) },
       { ...none, id: -1001234567890n, unreadCount: 2_000_000, unreadMentionsCount: -1, date: 80, entity: make(Api.Channel, { title: "News", broadcast: true, left: true }) },
       { ...none, id: 3n, unreadCount: 0, unreadMentionsCount: 0, date: 75, entity: {} },
       { ...none, id: 4n, unreadCount: 0, unreadMentionsCount: 0, date: 70, entity: make(Api.ChatForbidden) },
@@ -331,7 +338,7 @@ describe("createGramApi", () => {
     await expect(api.dialogs(20)).resolves.toEqual([
       { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, lastMessage: toMessage(last, "1") },
       { chatId: "2", kind: "user", title: "@bo", bot: false, unreadCount: 0, unreadMentions: 0, date: 90, mutedUntil: 2147483647 },
-      { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, members: true },
+      { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, members: true, noMedia: true },
       { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true, left: true },
     ]);
     expect(client.getDialogs).toHaveBeenCalledWith({ limit: 20 });
@@ -837,6 +844,99 @@ describe("typing", () => {
       expect((client.getEntity.mock.calls[0]![0] as { userId: unknown }).userId).toBe(8n);
       client.getEntity.mockResolvedValue(make(Api.Channel, { title: "x" }));
       await expect(api.userName("8")).resolves.toBeUndefined();
+    });
+  });
+});
+
+describe("sending files", () => {
+  const source = (filename: string, size: number, contentType: string) => {
+    const read = vi.fn(async (start: number, end: number) => new Uint8Array(end - start).fill(start / UPLOAD_PART));
+    return { filename, size, contentType, read };
+  };
+
+  it("sends JPEG and PNG pictures as photos, videos as videos, the rest as documents", () => {
+    const uploaded = make(Api.InputFile);
+    expect(uploadMedia(uploaded, source("a.jpg", 10, "image/jpeg"), "a.jpg")).toBeInstanceOf(Api.InputMediaUploadedPhoto);
+    expect(uploadMedia(uploaded, source("a.png", 10, "IMAGE/PNG"), "a.png")).toBeInstanceOf(Api.InputMediaUploadedPhoto);
+    const big = uploadMedia(uploaded, source("a.png", 10 * 1024 * 1024 + 1, "image/png"), "a.png") as { mimeType: string; attributes: unknown[] };
+    expect(big).toBeInstanceOf(Api.InputMediaUploadedDocument);
+    expect(big.mimeType).toBe("image/png");
+    const video = uploadMedia(uploaded, source("v.mp4", 10, "video/mp4"), "v.mp4") as { attributes: { supportsStreaming?: boolean; fileName?: string }[] };
+    expect(video.attributes[0]).toBeInstanceOf(Api.DocumentAttributeFilename);
+    expect(video.attributes[0]!.fileName).toBe("v.mp4");
+    expect(video.attributes[1]).toBeInstanceOf(Api.DocumentAttributeVideo);
+    expect(video.attributes[1]!.supportsStreaming).toBe(true);
+    const webm = uploadMedia(uploaded, source("v.webm", 10, "video/webm"), "v.webm") as { attributes: { supportsStreaming?: boolean }[] };
+    expect(webm.attributes[1]!.supportsStreaming).toBe(false);
+    const doc = uploadMedia(uploaded, source("x", 10, "not a type"), "x") as { mimeType: string; attributes: unknown[] };
+    expect(doc).toMatchObject({ mimeType: "application/octet-stream" });
+    expect(doc.attributes).toHaveLength(1);
+  });
+
+  it("names files by their last path part, without control characters", () => {
+    expect(fileName("C:\\dir\\a.txt")).toBe("a.txt");
+    expect(fileName("x/y/b" + String.fromCharCode(7) + "c.pdf")).toBe("bc.pdf");
+    expect(fileName("  ")).toBe("file");
+    expect(fileName("n".repeat(300))).toHaveLength(255);
+  });
+
+  it("knows who may not send media: those a group's rules or their restrictions bar, not admins", () => {
+    expect(mediaBanned(make(Api.Chat, { defaultBannedRights: { sendMedia: true } }))).toBe(true);
+    expect(mediaBanned(make(Api.Chat, { defaultBannedRights: { sendMedia: true }, adminRights: {} }))).toBe(false);
+    expect(mediaBanned(make(Api.Channel, { megagroup: true, bannedRights: { sendMedia: true } }))).toBe(true);
+    expect(mediaBanned(make(Api.Channel, { megagroup: true, creator: true, bannedRights: { sendMedia: true } }))).toBe(false);
+    expect(mediaBanned(make(Api.Channel, { megagroup: true }))).toBe(false);
+    expect(mediaBanned(make(Api.User))).toBe(false);
+  });
+
+  describe("through the client", () => {
+    let client: InstanceType<typeof h.FakeClient>;
+    let api: ReturnType<typeof createGramApi>;
+    beforeEach(() => {
+      api = createGramApi({ apiId: 1, apiHash: "h" }, "", { os: "linux", appVersion: "1" });
+      client = h.FakeClient.instances.at(-1)!;
+      client.invoke.mockResolvedValue(true);
+      client.sendFile.mockResolvedValue(make(Api.Message, { id: 9, date: 1, out: true, message: "cap" }));
+    });
+
+    it("uploads a small file in parts and sends it with its caption, formatting and reply", async () => {
+      const file = source("dir/a.png", UPLOAD_PART + 10, "image/png");
+      await expect(api.sendFile("-7", file, { text: "cap", entities: [{ type: "bold", offset: 0, length: 3 }] }, 4)).resolves.toMatchObject({ id: 9, chatId: "-7" });
+      const parts = client.invoke.mock.calls.map((c) => c[0] as { fileId: unknown; filePart: number; bytes: Buffer });
+      expect(parts.map((p) => [p.constructor, p.filePart, p.bytes.length, p.fileId])).toEqual([
+        [Api.upload.SaveFilePart, 0, UPLOAD_PART, 8000n],
+        [Api.upload.SaveFilePart, 1, 10, 8000n],
+      ]);
+      expect(file.read).toHaveBeenCalledWith(0, UPLOAD_PART + 10);
+      const [peer, options] = client.sendFile.mock.calls[0]! as unknown as [bigint, { file: { file: { parts: number; name: string } }; caption: string; replyTo: number; formattingEntities: unknown[] }];
+      expect(peer).toBe(-7n);
+      expect(options).toMatchObject({ caption: "cap", replyTo: 4 });
+      expect(options.formattingEntities[0]).toBeInstanceOf(Api.MessageEntityBold);
+      expect(options.file).toBeInstanceOf(Api.InputMediaUploadedPhoto);
+      expect(options.file.file).toBeInstanceOf(Api.InputFile);
+      expect(options.file.file).toMatchObject({ parts: 2, name: "a.png" });
+    });
+
+    it("uploads a big file as one, reading a few parts at a time", async () => {
+      const size = 20 * UPLOAD_PART + 1;
+      const file = source("big.bin", size, "application/octet-stream");
+      await api.sendFile("7", file, { text: "", entities: [] });
+      expect(file.read.mock.calls).toEqual([[0, 16 * UPLOAD_PART], [16 * UPLOAD_PART, size]]);
+      const parts = client.invoke.mock.calls.map((c) => c[0] as { filePart: number; fileTotalParts: number; bytes: Buffer });
+      expect(parts).toHaveLength(21);
+      expect(parts.every((p) => p instanceof Api.upload.SaveBigFilePart && p.fileTotalParts === 21)).toBe(true);
+      expect(parts[20]!.bytes.length).toBe(1);
+      // Parts 16 to 20 come from the second read.
+      expect(parts[17]!.bytes[0]).toBe(16);
+      const options = client.sendFile.mock.calls[0]![1] as { file: { file: unknown } };
+      expect(options.file.file).toBeInstanceOf(Api.InputFileBig);
+    });
+
+    it("stops when a file changed while it was read", async () => {
+      const file = source("a.txt", 100, "text/plain");
+      file.read.mockResolvedValue(new Uint8Array(50));
+      await expect(api.sendFile("7", file, { text: "", entities: [] })).rejects.toThrow("a.txt changed while it was sent");
+      expect(client.sendFile).not.toHaveBeenCalled();
     });
   });
 });

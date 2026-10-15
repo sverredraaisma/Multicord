@@ -1,8 +1,10 @@
-import type { AsyncSecretStore } from "../../engine/runtime";
+import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
 import type { NativeAction, NativeAttachment, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeViewState } from "../../shared/native";
+import { MAX_HTTP_BODY } from "../../shared/engine";
+import { MAX_ATTACHMENTS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
 import { isChannelPeer, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgReaction, type TgUpdate, type TgUser } from "./api";
 
@@ -18,6 +20,14 @@ export const TYPING_SHOWN_MS = 6000;
 export const TYPING_REPEAT_MS = 5000;
 /** Most people shown typing in one chat. */
 const MAX_TYPING = 10;
+/**
+ * Largest file sent: what the engine's bridge carries in one request, as for
+ * every module's uploads (Telegram itself takes 2 GB).
+ */
+export const MAX_UPLOAD_BYTES = MAX_HTTP_BODY;
+/** Longest caption, Telegram's default (Premium allows 4096); longer text goes in a message of its own after the files. */
+export const CAPTION_LIMIT = 1024;
+const PREMIUM_CAPTION_LIMIT = 4096;
 /** Members fetched per page, and at most for one chat: big groups list their first ones and count the rest. */
 export const MEMBER_PAGE = 50;
 export const MEMBER_LIMIT = 200;
@@ -47,6 +57,8 @@ export interface TelegramAdapterDeps {
   /** API credentials built into this build of Multicord, if any. */
   builtInCredentials?: TelegramCredentials;
   createApi(credentials: TelegramCredentials, session: string): TelegramApi;
+  /** Lets the user pick files; the engine reads only what was picked. */
+  files?: { pick(): Promise<FileSource[]> };
   /** Bytes of loaded media kept for the view (default MEDIA_CACHE_BYTES). */
   mediaBudget?: number;
 }
@@ -179,6 +191,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private ownTyping: { chatId: string; sent: number } | undefined;
   /** Names of people typing, as Telegram told them; and those asked for. */
   private readonly names = new Map<string, string>();
+  /** Files picked for each chat's next message, and the chats whose files are being sent. */
+  private readonly pending = new Map<string, FileSource[]>();
+  private readonly uploading = new Set<string>();
   private readonly namesAsked = new Set<string>();
   /** The profile card the view asked for last. */
   private profile: NativeProfile | undefined;
@@ -334,6 +349,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.ownTyping = undefined;
     this.names.clear();
     this.namesAsked.clear();
+    this.pending.clear();
+    this.uploading.clear();
     this.session++;
     this.selected = undefined;
     this.directsChanged.emit([]);
@@ -378,10 +395,15 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.react(action.messageId, action.emoji, action.add);
       case "typing":
         return this.sendTyping();
+      case "attach":
+        return this.attach();
+      case "removeAttachment":
+        if (this.selected && !this.uploading.has(this.selected)) this.pending.get(this.selected)?.splice(action.index, 1);
+        return this.render();
       case "logout":
         return this.signOut();
       default:
-        // Uploads, forums and voice are not offered for Telegram.
+        // Forums and voice are not offered for Telegram.
         return;
     }
   }
@@ -594,15 +616,73 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     }
   }
 
-  /** Sends the user's markdown as Telegram formatting. */
+  /**
+   * Sends the user's markdown as Telegram formatting, after the files picked
+   * for it, each a message of its own: the text is the last one's caption
+   * where it fits one, else a message after them, and a reply goes with the
+   * first. Files sent are dropped from the list at once, so a failure part
+   * way sends only the rest next time.
+   */
   private async send(content: string, replyTo?: string): Promise<void> {
     const chatId = this.selected;
     const text = fromMarkdown(content);
-    if (!chatId || text.text.trim() === "" || !this.api || this.dialog(chatId)?.readOnly) return;
+    const files = chatId ? (this.pending.get(chatId) ?? []) : [];
+    const hasText = text.text.trim() !== "";
+    if (!chatId || !this.api || this.dialog(chatId)?.readOnly || this.uploading.has(chatId) || (!hasText && files.length === 0)) return;
     this.stopTyping(chatId);
+    const reply = replyTo ? Number(replyTo) : undefined;
+    const uploading = files.length > 0;
+    if (uploading) {
+      this.uploading.add(chatId);
+      this.render();
+    }
+    const session = this.session;
+    const captioned = uploading && hasText && text.text.length <= (this.me?.premium ? PREMIUM_CAPTION_LIMIT : CAPTION_LIMIT);
     await this.attempt("Message not sent", async () => {
-      const sent = await this.api!.send(chatId, text, replyTo ? Number(replyTo) : undefined);
-      this.onUpdate({ type: "message", message: sent });
+      let first = true;
+      while (files.length > 0) {
+        const caption = files.length === 1 && captioned ? text : { text: "", entities: [] };
+        const sent = await this.api!.sendFile(chatId, files[0]!, caption, first ? reply : undefined);
+        // Signed out meanwhile: the rest stays unsent.
+        if (session !== this.session) return;
+        files.shift();
+        first = false;
+        this.onUpdate({ type: "message", message: sent });
+      }
+      if (hasText && !captioned) this.onUpdate({ type: "message", message: await this.api!.send(chatId, text, first ? reply : undefined) });
+    });
+    if (!uploading || session !== this.session) return;
+    this.uploading.delete(chatId);
+    if (files.length === 0) this.pending.delete(chatId);
+    this.render();
+  }
+
+  /** Where the user may send files: a chat they may write in that does not bar media, with a file picker at hand. */
+  private canAttach(dialog: TgDialog): boolean {
+    return this.deps.files !== undefined && dialog.readOnly !== true && dialog.noMedia !== true;
+  }
+
+  /** Adds files from the OS picker to the open chat's next message, leaving out any that cannot be sent. */
+  private async attach(): Promise<void> {
+    const chatId = this.selected;
+    const dialog = chatId ? this.dialog(chatId) : undefined;
+    if (!chatId || !dialog || !this.canAttach(dialog) || this.uploading.has(chatId)) return;
+    await this.attempt("Could not attach", async () => {
+      // Picked first: the shell lets the engine open the picker only right after the user asked.
+      const picked = await this.deps.files!.pick();
+      const list = this.pending.get(chatId) ?? [];
+      for (const file of picked) {
+        const name = file.filename.slice(0, 100) || "A file";
+        if (list.length >= MAX_ATTACHMENTS) {
+          this.error = `At most ${MAX_ATTACHMENTS} files per message.`;
+          break;
+        }
+        if (file.size > MAX_UPLOAD_BYTES) this.error = `${name} is larger than the ${MAX_UPLOAD_BYTES / 1024 / 1024} MB Multicord sends.`;
+        else if (file.size <= 0) this.error = `${name} is empty.`;
+        else list.push(file);
+      }
+      if (list.length > 0) this.pending.set(chatId, list);
+      this.render();
     });
   }
 
@@ -1127,11 +1207,11 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
             loading: this.loading.has(dialog.chatId),
             hasOlder: this.hasOlder.get(dialog.chatId) ?? false,
             typing: this.typingNames(dialog),
-            pending: [],
-            uploading: false,
+            pending: (this.pending.get(dialog.chatId) ?? []).map((f) => ({ name: f.filename, size: f.size })),
+            uploading: this.uploading.has(dialog.chatId),
             ...(locked ? { locked } : {}),
             // Reactions, files and typing notices are not offered here yet.
-            can: { reply: !locked, react: this.canReact(dialog), attach: false, typing: !locked, members: this.canListMembers(dialog) },
+            can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog) },
             ...(members ? { members } : {}),
           }
         : null,

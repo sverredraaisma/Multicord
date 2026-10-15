@@ -3,6 +3,8 @@
 // seconds, as Telegram sends them. Chat ids are GramJS's marked ids: a
 // user's id, -id for a basic group, -100id for a supergroup or channel.
 
+import type { FileSource } from "../../engine/runtime";
+
 export interface TgUser {
   id: string;
   name: string;
@@ -95,6 +97,8 @@ export interface TgDialog {
   readOnly?: boolean;
   /** Its members may be listed, as far as the dialog tells: groups the user is in, channels they administer. */
   members?: boolean;
+  /** The user may write here, but not send photos, videos or files. */
+  noMedia?: boolean;
   /** The user left it, or was removed: they can only read what is left. */
   left?: boolean;
   lastMessage?: TgMessage;
@@ -159,6 +163,8 @@ export interface TelegramApi {
   /** Messages before `beforeId` (or the newest), oldest first. */
   history(chatId: string, beforeId: number | undefined, limit: number): Promise<TgMessage[]>;
   send(chatId: string, text: TgText, replyTo?: number): Promise<TgMessage>;
+  /** Uploads a picked file and sends it, with a caption. */
+  sendFile(chatId: string, file: FileSource, caption: TgText, replyTo?: number): Promise<TgMessage>;
   edit(chatId: string, id: number, text: TgText): Promise<TgMessage>;
   remove(chatId: string, ids: number[]): Promise<void>;
   markRead(chatId: string, maxId: number): Promise<void>;

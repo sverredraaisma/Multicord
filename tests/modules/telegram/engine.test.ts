@@ -79,6 +79,17 @@ describe("Telegram engine", () => {
     await vi.waitFor(() => expect(bridge.emit).toHaveBeenCalledWith({ type: "settingsStatus", status: { forgetApiId: { text: "No API ID entered yet.", disabled: true } } }));
   });
 
+  it("lets the user pick files through the shell", async () => {
+    const { bridge } = fakeBridge({ session: "stored" });
+    const api = fakeApi(true);
+    vi.mocked(api.dialogs).mockResolvedValue([{ chatId: "1", kind: "user", title: "Ana", bot: false, unreadCount: 0, unreadMentions: 0, date: 1 }]);
+    Object.assign(api, { history: vi.fn(async () => []), reactionList: vi.fn(async () => []), markRead: vi.fn(async () => {}) });
+    const adapter = await startTelegramEngine(bridge, { builtIn: CREDENTIALS, appVersion: "1.0.0", createApi: () => api });
+    await adapter.openConversation("1");
+    await adapter.handleAction({ type: "attach" });
+    expect(bridge.request).toHaveBeenCalledWith({ type: "pickFiles" });
+  });
+
   it("uses the GramJS implementation by default", async () => {
     vi.mocked(createGramApi).mockReturnValue(fakeApi(false));
     const { bridge } = fakeBridge();

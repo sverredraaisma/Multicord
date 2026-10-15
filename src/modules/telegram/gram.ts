@@ -3,12 +3,13 @@
 // network policy allows.
 
 import { Api, TelegramClient } from "telegram";
+import type { FileSource } from "../../engine/runtime";
 import { DeletedMessage, type DeletedMessageEvent } from "telegram/events/DeletedMessage";
 import { EditedMessage, type EditedMessageEvent } from "telegram/events/EditedMessage";
 import { NewMessage, type NewMessageEvent } from "telegram/events/NewMessage";
 import { Raw } from "telegram/events/Raw";
 import { LogLevel } from "telegram/extensions/Logger";
-import { returnBigInt } from "telegram/Helpers";
+import { generateRandomBytes, readBigIntFromBuffer, returnBigInt } from "telegram/Helpers";
 import { computeCheck } from "telegram/Password";
 import { StringSession } from "telegram/sessions/StringSession";
 import {
@@ -150,6 +151,13 @@ export function describeChat(entity: unknown): { kind: TgDialog["kind"]; title: 
     return { kind: "group", title, bot: false, readOnly: left || (!admin && silenced), members: !left, left };
   }
   return undefined;
+}
+
+/** Whether the user may write in a group but not send media there: its rules or their own restrictions, which admins are free of. */
+export function mediaBanned(entity: unknown): boolean {
+  if (!(entity instanceof Api.Chat || entity instanceof Api.Channel) || entity.creator === true || entity.adminRights !== undefined) return false;
+  const rights = [entity.defaultBannedRights, entity instanceof Api.Channel ? entity.bannedRights : undefined];
+  return rights.some((r) => r?.sendMedia === true);
 }
 
 /** How recently a user was online, as their status says. */
@@ -297,6 +305,51 @@ export function typingOf(update: unknown): Extract<TgUpdate, { type: "typing" }>
 /** Text and its formatting, as GramJS sends them. */
 const outgoing = (text: TgText) => ({ formattingEntities: apiEntities(text.entities) });
 
+/** Telegram takes uploads in parts of 512 KB; files over 10 MB as "big" files. */
+export const UPLOAD_PART = 512 * 1024;
+const BIG_FILE = 10 * 1024 * 1024;
+/** Parts read through the bridge at once. */
+const PARTS_PER_READ = 16;
+/** Largest picture sent as a photo, Telegram's limit; larger ones go as files. */
+const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
+
+/** Uploads a picked file in parts, reading it a few parts at a time, and names the result for sending. */
+async function uploadFile(client: TelegramClient, file: FileSource, name: string): Promise<Api.TypeInputFile> {
+  const parts = Math.max(1, Math.ceil(file.size / UPLOAD_PART));
+  const big = file.size > BIG_FILE;
+  const id = readBigIntFromBuffer(generateRandomBytes(8), true, true);
+  for (let first = 0; first < parts; first += PARTS_PER_READ) {
+    const start = first * UPLOAD_PART;
+    const end = Math.min(file.size, start + PARTS_PER_READ * UPLOAD_PART);
+    const chunk = await file.read(start, end);
+    if (chunk.length !== end - start) throw new Error(`${name} changed while it was sent`);
+    for (let part = first; part < Math.min(parts, first + PARTS_PER_READ); part++) {
+      const bytes = Buffer.from(chunk.subarray((part - first) * UPLOAD_PART, (part - first + 1) * UPLOAD_PART));
+      await client.invoke(big ? new Api.upload.SaveBigFilePart({ fileId: id, filePart: part, fileTotalParts: parts, bytes }) : new Api.upload.SaveFilePart({ fileId: id, filePart: part, bytes }));
+    }
+  }
+  return big ? new Api.InputFileBig({ id, parts, name }) : new Api.InputFile({ id, parts, name, md5Checksum: "" });
+}
+
+/**
+ * How a picked file goes out: JPEG and PNG pictures (up to Telegram's
+ * 10 MB) as photos, videos as videos (Telegram reads their size and length
+ * itself), everything else as a document with its name.
+ */
+export function uploadMedia(uploaded: Api.TypeInputFile, file: FileSource, name: string): Api.TypeInputMedia {
+  const mime = /^[\w.+-]+\/[\w.+-]+$/.test(file.contentType) ? file.contentType.toLowerCase() : "application/octet-stream";
+  if ((mime === "image/jpeg" || mime === "image/png") && file.size <= MAX_PHOTO_BYTES) return new Api.InputMediaUploadedPhoto({ file: uploaded });
+  const attributes: Api.TypeDocumentAttribute[] = [new Api.DocumentAttributeFilename({ fileName: name })];
+  if (mime.startsWith("video/")) attributes.push(new Api.DocumentAttributeVideo({ duration: 0, w: 1, h: 1, supportsStreaming: mime === "video/mp4" }));
+  return new Api.InputMediaUploadedDocument({ file: uploaded, mimeType: mime, attributes });
+}
+
+/** A file name Telegram shows: its last path part, without control characters, at most 255 characters. */
+export function fileName(name: string): string {
+  const clean = Array.from(name.split(/[\\/]/).at(-1)!, (c) => (c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 ? "" : c)).join("").trim().slice(0, 255);
+  return clean || "file";
+}
+
 export function toMessage(message: Api.Message, chatId: string): TgMessage {
   const out: TgMessage = {
     id: message.id,
@@ -383,6 +436,7 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         if (chat.readOnly) dialog.readOnly = true;
         if (chat.members) dialog.members = true;
         if (chat.left) dialog.left = true;
+        if (mediaBanned(d.entity)) dialog.noMedia = true;
         const settings = d.dialog.notifySettings;
         // A Unix time; "muted for ever" is the largest 32-bit one.
         const mutedUntil = settings instanceof Api.PeerNotifySettings ? settings.muteUntil : undefined;
@@ -396,6 +450,11 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       return page.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId)).reverse();
     },
     send: async (chatId, text, replyTo) => toMessage(await client.sendMessage(peer(chatId), { message: text.text, replyTo, ...outgoing(text) }), chatId),
+    sendFile: async (chatId, file, caption, replyTo) => {
+      const name = fileName(file.filename);
+      const media = uploadMedia(await uploadFile(client, file, name), file, name);
+      return toMessage(await client.sendFile(peer(chatId), { file: media, caption: caption.text, replyTo, ...outgoing(caption) }), chatId);
+    },
     edit: async (chatId, id, text) => toMessage(await client.editMessage(peer(chatId), { message: id, text: text.text, ...outgoing(text) }), chatId),
     remove: async (chatId, ids) => void (await client.deleteMessages(peer(chatId), ids, { revoke: true })),
     markRead: async (chatId, maxId) => {

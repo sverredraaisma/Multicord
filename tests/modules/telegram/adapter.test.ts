@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
 import type { TelegramApi, TelegramCredentials, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgText, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
-import { AVATAR_LIMIT, DIALOG_LIMIT, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
+import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
-import type { NativeAction, NativeViewState } from "../../../src/shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeViewState } from "../../../src/shared/native";
+import type { FileSource } from "../../../src/engine/runtime";
 
 const HASH = "0123456789abcdef0123456789ABCDEF";
 const CREDS: TelegramCredentials = { apiId: 12, apiHash: HASH.toLowerCase() };
@@ -32,6 +33,8 @@ class FakeTelegramApi implements TelegramApi {
   dialogs = vi.fn(async (_limit: number) => this.dialogList.map((d) => ({ ...d })));
   history = vi.fn(async (chatId: string, _before: number | undefined, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1), msg(chatId, 2)]);
   send = vi.fn(async (chatId: string, text: TgText, _replyTo?: number) => msg(chatId, 200, { out: true, ...text }));
+  sentFiles = 300;
+  sendFile = vi.fn(async (chatId: string, file: FileSource, caption: TgText, _replyTo?: number) => msg(chatId, this.sentFiles++, { out: true, ...caption, media: file.filename }));
   edit = vi.fn(async (chatId: string, id: number, text: TgText) => msg(chatId, id, { out: true, ...text, edited: true }));
   remove = vi.fn(async (_chatId: string, _ids: number[]) => {});
   markRead = vi.fn(async (_chatId: string, _maxId: number) => {});
@@ -60,9 +63,14 @@ interface Options {
   builtIn?: TelegramCredentials;
   dialogs?: TgDialog[];
   authorized?: boolean;
+  /** No file picker, as where the engine offers none. */
+  noFiles?: boolean;
 }
 
 function setup(options: Options = {}) {
+  /** What the file picker returns next. */
+  const picked: FileSource[] = [];
+  const picker = { pick: vi.fn(async () => [...picked]) };
   const api = new FakeTelegramApi();
   api.dialogList = options.dialogs ?? defaultDialogs();
   api.isAuthorized = options.authorized ?? false;
@@ -82,6 +90,7 @@ function setup(options: Options = {}) {
     builtInCredentials: options.builtIn,
     createApi,
     mediaBudget: options.mediaBudget,
+    files: options.noFiles ? undefined : picker,
   });
   adapter.onDirectsChanged((d) => directs.push(d));
   adapter.onNotification((n) => notifications.push(n));
@@ -101,7 +110,7 @@ function setup(options: Options = {}) {
   const messageIds = () => chat().channel!.messages.map((m) => m.id);
   /** The chats in the sidebar, without section headings. */
   const rows = () => chat().sidebar.filter((i) => i.kind !== "category");
-  return { adapter, api, secrets, renders, directs, notifications, createApi, act, answer, last, prompt, chat, messageIds, rows };
+  return { adapter, api, secrets, renders, directs, notifications, createApi, act, answer, last, prompt, chat, messageIds, rows, picked, picker };
 }
 
 /** An adapter that resumed a stored session and shows the chat. */
@@ -525,6 +534,7 @@ describe("prompt handling", () => {
     await ctx.act({ type: "react", messageId: "1", emoji: "x", add: true });
     await ctx.act({ type: "typing" });
     await ctx.act({ type: "joinVoice", channelId: "1" });
+    await ctx.act({ type: "attach" });
     expect(ctx.renders).toHaveLength(renders + 1);
   });
 });
@@ -564,8 +574,7 @@ describe("chat view", () => {
     await Promise.all([first, second]);
     expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE);
     expect(ctx.chat().channel).toMatchObject({ loading: false, hasOlder: false });
-    // Files are not offered for Telegram yet.
-    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false });
+    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
 
     await ctx.adapter.openConversation("1");
@@ -1878,5 +1887,155 @@ describe("typing", () => {
     await ctx.act({ type: "typing" });
     expect(ctx.api.userName).not.toHaveBeenCalled();
     expect(ctx.api.typing).not.toHaveBeenCalled();
+  });
+});
+
+describe("sending files", () => {
+  const file = (filename: string, size = 3, contentType = "image/png"): FileSource => ({ filename, size, contentType, read: async () => new Uint8Array(size) });
+  const open = async (options: Options = {}) => {
+    const ctx = await signedIn(options);
+    await ctx.adapter.openConversation(options.dialogs?.[0]?.chatId ?? "1");
+    return ctx;
+  };
+  const pending = (ctx: Awaited<ReturnType<typeof open>>) => ctx.chat().channel!.pending;
+
+  it("offers files where the user may send them, with a picker", async () => {
+    const ctx = await open();
+    expect(ctx.chat().channel!.can.attach).toBe(true);
+    for (const extra of [{ readOnly: true }, { noMedia: true }]) {
+      const other = await open({ dialogs: [dlg("1", extra)] });
+      expect(other.chat().channel!.can.attach).toBe(false);
+      await other.act({ type: "attach" });
+      expect(other.picker.pick).not.toHaveBeenCalled();
+    }
+    const none = await open({ noFiles: true });
+    expect(none.chat().channel!.can.attach).toBe(false);
+    await none.act({ type: "attach" });
+    const unselected = await signedIn();
+    await unselected.act({ type: "attach" });
+    expect(unselected.picker.pick).not.toHaveBeenCalled();
+  });
+
+  it("lists picked files for the open chat, and drops one on request", async () => {
+    const ctx = await open();
+    ctx.picked.push(file("a.png"), file("b.pdf", 10, "application/pdf"));
+    await ctx.act({ type: "attach" });
+    expect(pending(ctx)).toEqual([{ name: "a.png", size: 3 }, { name: "b.pdf", size: 10 }]);
+    await ctx.act({ type: "removeAttachment", index: 0 });
+    expect(pending(ctx)).toEqual([{ name: "b.pdf", size: 10 }]);
+    // Another chat has its own list.
+    await ctx.adapter.openConversation("2");
+    expect(pending(ctx)).toEqual([]);
+    await ctx.act({ type: "removeAttachment", index: 0 });
+    const none = await signedIn();
+    await none.act({ type: "removeAttachment", index: 0 });
+  });
+
+  it("leaves out files too large or empty, and more than MAX_ATTACHMENTS", async () => {
+    const ctx = await open();
+    ctx.picked.push(file("huge.mp4", MAX_UPLOAD_BYTES + 1, "video/mp4"));
+    await ctx.act({ type: "attach" });
+    expect(ctx.chat().error).toBe("huge.mp4 is larger than the 50 MB Multicord sends.");
+    ctx.picked.splice(0, 1, file("", 0));
+    await ctx.act({ type: "attach" });
+    expect(ctx.chat().error).toBe("A file is empty.");
+    expect(pending(ctx)).toEqual([]);
+    ctx.picked.splice(0, 1, ...Array.from({ length: MAX_ATTACHMENTS + 2 }, (_, i) => file(`${i}.png`)));
+    await ctx.act({ type: "attach" });
+    expect(pending(ctx)).toHaveLength(MAX_ATTACHMENTS);
+    expect(ctx.chat().error).toBe(`At most ${MAX_ATTACHMENTS} files per message.`);
+  });
+
+  it("reports a picker that failed", async () => {
+    const ctx = await open();
+    ctx.picker.pick.mockRejectedValue(new Error("too late"));
+    await ctx.act({ type: "attach" });
+    expect(ctx.chat().error).toBe("Could not attach: too late");
+  });
+
+  it("sends each file, the text as the last one's caption and the reply with the first", async () => {
+    const ctx = await open();
+    ctx.picked.push(file("a.png"), file("b.png"));
+    await ctx.act({ type: "attach" });
+    let release!: () => void;
+    ctx.api.sendFile.mockImplementationOnce(async (chatId, f, caption) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return msg(chatId, 310, { out: true, text: caption.text, media: f.filename });
+    });
+    const sending = ctx.act({ type: "send", content: "**look**", replyTo: "2" });
+    await flush();
+    expect(ctx.chat().channel!.uploading).toBe(true);
+    // Nothing else goes while files go out.
+    await ctx.act({ type: "send", content: "other" });
+    await ctx.act({ type: "attach" });
+    await ctx.act({ type: "removeAttachment", index: 0 });
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    expect(ctx.picker.pick).toHaveBeenCalledTimes(1);
+    release();
+    await sending;
+    expect(ctx.api.sendFile.mock.calls.map((c) => [c[0], c[1].filename, c[2], c[3]])).toEqual([
+      ["1", "a.png", { text: "", entities: [] }, 2],
+      ["1", "b.png", { text: "look", entities: [{ type: "bold", offset: 0, length: 4 }] }, undefined],
+    ]);
+    expect(ctx.chat().channel).toMatchObject({ uploading: false, pending: [] });
+    expect(ctx.messageIds().slice(-2)).toEqual(["310", "300"]);
+  });
+
+  it("sends files alone, and text too long for a caption after them", async () => {
+    const ctx = await open();
+    ctx.picked.push(file("a.png"));
+    await ctx.act({ type: "attach" });
+    await ctx.act({ type: "send", content: "" });
+    expect(ctx.api.sendFile).toHaveBeenCalledTimes(1);
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    await ctx.act({ type: "attach" });
+    const long = "x".repeat(CAPTION_LIMIT + 1);
+    await ctx.act({ type: "send", content: long, replyTo: "2" });
+    expect(ctx.api.sendFile).toHaveBeenLastCalledWith("1", expect.anything(), { text: "", entities: [] }, 2);
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: long, entities: [] }, undefined);
+  });
+
+  it("gives Premium users longer captions", async () => {
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    ctx.api.me.mockResolvedValue({ id: "9", name: "Me", bot: false, premium: true });
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.openConversation("1");
+    ctx.picked.push(file("a.png"));
+    await ctx.act({ type: "attach" });
+    const long = "x".repeat(CAPTION_LIMIT + 1);
+    await ctx.act({ type: "send", content: long });
+    expect(ctx.api.sendFile).toHaveBeenCalledWith("1", expect.anything(), { text: long, entities: [] }, undefined);
+    expect(ctx.api.send).not.toHaveBeenCalled();
+  });
+
+  it("keeps the files not sent when one fails", async () => {
+    const ctx = await open();
+    ctx.picked.push(file("a.png"), file("b.png"));
+    await ctx.act({ type: "attach" });
+    ctx.api.sendFile.mockResolvedValueOnce(msg("1", 300, { out: true })).mockRejectedValueOnce(tgError("CHAT_SEND_PHOTOS_FORBIDDEN"));
+    await ctx.act({ type: "send", content: "hi" });
+    expect(ctx.chat().error).toBe("Message not sent: CHAT_SEND_PHOTOS_FORBIDDEN");
+    expect(ctx.chat().channel).toMatchObject({ uploading: false, pending: [{ name: "b.png", size: 3 }] });
+    expect(ctx.api.send).not.toHaveBeenCalled();
+  });
+
+  it("drops files and stops sending them on sign-out", async () => {
+    const ctx = await open();
+    ctx.picked.push(file("a.png"), file("b.png"));
+    await ctx.act({ type: "attach" });
+    let release!: () => void;
+    ctx.api.sendFile.mockImplementationOnce(async (chatId) => {
+      await new Promise<void>((resolve) => (release = resolve));
+      return msg(chatId, 300, { out: true });
+    });
+    const sending = ctx.act({ type: "send", content: "" });
+    await flush();
+    await ctx.act({ type: "logout" });
+    release();
+    await sending;
+    expect(ctx.api.sendFile).toHaveBeenCalledTimes(1);
+    await ctx.adapter.openConversation("1");
+    expect(ctx.chat().channel).toMatchObject({ uploading: false, pending: [] });
   });
 });
