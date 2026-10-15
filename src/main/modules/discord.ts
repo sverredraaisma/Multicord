@@ -39,6 +39,7 @@ export const discordModule: PlatformModule = {
     ipcMain.on(IPC.discordNotification, (event, notification) => {
       if (fromDiscord(event) && isRelayedNotification(notification)) adapter.relayNotification(notification);
     });
+    view.webContents.on("did-finish-load", () => adapter.replayActivities());
     enableScreenShare();
     return { adapter, start: () => void view.webContents.loadURL(def.url) };
   },

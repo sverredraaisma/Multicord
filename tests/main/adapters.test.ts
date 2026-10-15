@@ -262,8 +262,19 @@ describe("relayed Discord notifications", () => {
 
     const sendActivity = vi.fn();
     const update = { source: "rpc-1", activity: null };
-    new DiscordAdapter(navigate, "discord", click, sendActivity).setActivity(update);
+    const withActivity = new DiscordAdapter(navigate, "discord", click, sendActivity);
+    withActivity.setActivity(update);
     expect(sendActivity).toHaveBeenCalledWith(update);
+    // Shown activities are given again to a reloaded page; cleared ones are not.
+    const playing = { source: "rpc-2", activity: { application_id: "42", type: 0, flags: 0 } };
+    withActivity.setActivity(playing);
+    sendActivity.mockClear();
+    withActivity.replayActivities();
+    expect(sendActivity.mock.calls).toEqual([[playing]]);
+    withActivity.setActivity({ source: "rpc-2", activity: null });
+    sendActivity.mockClear();
+    withActivity.replayActivities();
+    expect(sendActivity).not.toHaveBeenCalled();
     new DiscordAdapter(navigate).setActivity(update); // default: nowhere to show it
   });
 });

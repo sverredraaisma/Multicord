@@ -1306,6 +1306,10 @@ describe("Rich Presence", () => {
     expect(detector.covered!("42")).toBe(true);
     detector.onActivity!({ source: "rpc-0", activity: { application_id: "7", type: 0, flags: 0 } });
     expect(detector.covered!("7")).toBe(false);
+    // A reloaded Discord page is given what is showing now.
+    discordView.webContents.send.mockClear();
+    discordView.webContents.emit("did-finish-load");
+    expect(discordView.webContents.send).toHaveBeenCalledWith(IPC.discordActivity, { source: "rpc-2", activity: { application_id: "42", type: 0, flags: 0 } });
     rpc.onActivity!({ source: "rpc-2", activity: null });
     expect(detector.covered!("42")).toBe(false);
 

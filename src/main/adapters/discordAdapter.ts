@@ -49,6 +49,8 @@ export class DiscordAdapter extends BaseAdapter {
   /** Channels whose call is ringing us; each call is reported once, when it starts. */
   private ringing = new Set<string>();
   private hooks: DiscordHealth | undefined;
+  /** The activities shown now, by source, to give Discord's page again after it reloads. */
+  private readonly activities = new Map<string, ActivityUpdate>();
 
   /** `id` tells accounts apart: each Discord account is its own platform instance. */
   constructor(
@@ -193,7 +195,14 @@ export class DiscordAdapter extends BaseAdapter {
 
   /** A notification Discord's page wanted to show; the shell shows it instead. */
   setActivity(update: ActivityUpdate): void {
+    if (update.activity) this.activities.set(update.source, update);
+    else this.activities.delete(update.source);
     this.sendActivity(update);
+  }
+
+  /** Discord's page (re)loaded: it knows nothing of the activities shown so far. */
+  replayActivities(): void {
+    for (const update of this.activities.values()) this.sendActivity(update);
   }
 
   relayNotification(notification: RelayedNotification): void {

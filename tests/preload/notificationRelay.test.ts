@@ -180,10 +180,34 @@ describe("discordActivityBridge", () => {
     expect(() => fire(JSON.stringify({ source: "rpc-1", activity: null }))).not.toThrow();
   });
 
-  it("does nothing until Discord's modules are there", () => {
+  it("holds updates, newest per app, until Discord's modules are there", () => {
+    vi.useFakeTimers();
+    discordActivityBridge("test:activity");
+    fire(JSON.stringify({ source: "rpc-1", activity: { name: "Old" } }));
+    fire(JSON.stringify({ source: "rpc-1", activity: { name: "New" } }));
+    fire(JSON.stringify({ source: "rpc-2", activity: null }));
+    (window as any).webpackChunkdiscord_app = { push: (chunk: any) => chunk[2]({}) }; // loading, no dispatcher yet
+    vi.advanceTimersByTime(1000);
+    const dispatch = vi.fn();
+    const chunks: any = [];
+    chunks.push = (chunk: any) => chunk[2]({ c: { m: { exports: { dispatch, subscribe() {}, _actionHandlers: {} } } } });
+    (window as any).webpackChunkdiscord_app = chunks;
+    vi.advanceTimersByTime(1000);
+    expect(dispatch.mock.calls).toEqual([
+      [{ type: "LOCAL_ACTIVITY_UPDATE", socketId: "rpc-1", pid: undefined, activity: { name: "New" } }],
+      [{ type: "LOCAL_ACTIVITY_UPDATE", socketId: "rpc-2", pid: undefined, activity: null }],
+    ]);
+    vi.useRealTimers();
+  });
+
+  it("gives up waiting after a minute, trying again on the next update", () => {
+    vi.useFakeTimers();
     discordActivityBridge("test:activity");
     fire(JSON.stringify({ source: "rpc-1", activity: null }));
-    (window as any).webpackChunkdiscord_app = { push: (chunk: any) => chunk[2]({}) };
+    vi.advanceTimersByTime(120_000);
+    expect(vi.getTimerCount()).toBe(0);
     fire(JSON.stringify({ source: "rpc-1", activity: null }));
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
   });
 });

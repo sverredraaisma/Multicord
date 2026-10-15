@@ -31,6 +31,27 @@ export function discordActivityBridge(eventName: string): void {
     return undefined;
   };
 
+  // Updates wait, newest per app, until Discord's modules have loaded.
+  const pending = new Map<string, any>();
+  let retries = 0;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const flush = (): void => {
+    timer = undefined;
+    dispatcher ??= findDispatcher();
+    if (!dispatcher) {
+      if (retries++ < 60) timer = setTimeout(flush, 1000);
+      return;
+    }
+    for (const update of pending.values()) {
+      try {
+        void dispatcher.dispatch({ type: "LOCAL_ACTIVITY_UPDATE", socketId: update.source, pid: update.pid, activity: update.activity });
+      } catch {
+        // Discord rejected it; nothing else depends on this.
+      }
+    }
+    pending.clear();
+  };
+
   document.addEventListener(eventName, (event) => {
     let update: any;
     try {
@@ -38,12 +59,7 @@ export function discordActivityBridge(eventName: string): void {
     } catch {
       return;
     }
-    dispatcher ??= findDispatcher();
-    if (!dispatcher) return;
-    try {
-      void dispatcher.dispatch({ type: "LOCAL_ACTIVITY_UPDATE", socketId: update.source, pid: update.pid, activity: update.activity });
-    } catch {
-      // Discord rejected it; nothing else depends on this.
-    }
+    pending.set(String(update.source), update);
+    if (timer === undefined) flush();
   });
 }
