@@ -28,6 +28,7 @@ import { SpacebarState, TYPING_MS } from "./state";
 import {
   ChannelType,
   MessageType,
+  NOTIFY_INHERIT,
   TEXT_CHANNEL_TYPES,
   compareIds,
   displayName,
@@ -229,6 +230,8 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
         return this.pin(action.messageId, action.pin);
       case "search":
         return this.searchMessages(action.query);
+      case "mute":
+        return this.mute(action.channelId, action.mute);
       case "logout":
         return this.logout();
       default:
@@ -669,6 +672,33 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
     await this.rest.typing(channelId).catch(() => undefined);
   }
 
+  /**
+   * Whether a channel's own mute may be changed from here: a guild's text
+   * channel (Spacebar keeps no settings for DMs), in a guild that is not
+   * muted as a whole, which the channel's mute could not undo.
+   */
+  private canMute(channel: SpacebarChannel, now: number = Date.now()): boolean {
+    return channel.guildId !== undefined && TEXT_CHANNEL_TYPES.has(channel.type) && (this.state.guildSettings.get(channel.guildId)?.mutedUntil ?? 0) <= now;
+  }
+
+  /**
+   * Mutes or unmutes a guild channel in the user's Spacebar settings, for
+   * good. Spacebar merges what is sent into what it stores, but checks each
+   * channel override whole, so the override goes complete.
+   */
+  private async mute(channelId: string, mute: boolean): Promise<void> {
+    const channel = this.state.channels.get(channelId);
+    if (!channel?.guildId || !this.rest || !this.canMute(channel) || this.state.isMuted(channel) === mute) return;
+    const guildId = channel.guildId;
+    const notifications = this.state.guildSettings.get(guildId)?.channels.get(channelId)?.notifications ?? NOTIFY_INHERIT;
+    // An end of 0 is how Spacebar stores "no end".
+    const override = { channel_id: channelId, message_notifications: notifications, muted: mute, mute_config: { end_time: 0, selected_time_window: -1 } };
+    await this.attempt(mute ? "Could not mute" : "Could not unmute", async () => {
+      this.state.applyGuildSettings(await this.rest!.setGuildSettings(guildId, { channel_overrides: { [channelId]: override } }), guildId);
+      this.state.changed.emit();
+    });
+  }
+
   /** Runs a user action, showing a failure in the view's banner. */
   private async attempt(failure: string, action: () => Promise<void>): Promise<void> {
     try {
@@ -695,10 +725,10 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
     );
   }
 
-  /** Notifies of DMs, and of guild messages that mention the user. */
+  /** Notifies of DMs, and of guild messages that mention the user, unless their channel is muted. */
   private notify(message: SpacebarMessage): void {
     const channel = this.state.channels.get(message.channelId);
-    if (!channel || (!isPrivate(channel) && !this.state.mentionsMe(message))) return;
+    if (!channel || (!isPrivate(channel) && !this.state.mentionsMe(message)) || this.state.isMuted(channel)) return;
     const author = this.nameOf(message.author);
     const guild = channel.guildId ? this.state.guilds.get(channel.guildId) : undefined;
     const where = channel.type === ChannelType.Dm ? "" : guild ? ` in #${channel.name ?? channel.id} (${guild.name})` : ` in ${this.channelTitle(channel)}`;
@@ -986,6 +1016,9 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
       unread: kind !== "category" && this.state.isUnread(channel),
       mentions: kind === "category" ? 0 : this.state.mentions(channel.id),
       active: channel.id === this.selectedChannelId,
+      // Muted on Spacebar (the channel, or its guild); the bell changes the channel's own mute where that can.
+      ...(kind === "text" && this.state.isMuted(channel) ? { muted: true } : {}),
+      ...(kind === "text" && this.canMute(channel) ? { canMute: true } : {}),
     });
     if (this.selection.kind === "home") return this.state.privateChannels().map((c) => item(c, "dm"));
     return this.state

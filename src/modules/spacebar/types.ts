@@ -122,6 +122,17 @@ export interface SpacebarReadState {
   mentionCount: number;
 }
 
+/** The user's notification settings for one guild, as far as muting goes. */
+export interface SpacebarGuildSettings {
+  /** Until when the whole guild is muted, epoch ms: 0 when it is not, Infinity for good. */
+  mutedUntil: number;
+  /** Channel overrides by channel id. */
+  channels: Map<string, { mutedUntil: number; notifications: number }>;
+}
+
+/** Discord's "use the guild's setting" level for a channel override's notifications. */
+export const NOTIFY_INHERIT = 3;
+
 /** Someone in a guild, as GET /guilds/{id}/members lists them. */
 export interface SpacebarMember {
   user: SpacebarUser;
@@ -303,6 +314,37 @@ export function parseReadState(value: unknown): SpacebarReadState | undefined {
   const last = isId(value.last_message_id) ? value.last_message_id : isId(value.message_id) ? value.message_id : undefined;
   if (last) state.lastMessageId = last;
   return state;
+}
+
+/**
+ * Until when a muted thing stays muted: 0 when it is not muted; else the
+ * mute config's end (an ISO date, or epoch ms), or Infinity without one.
+ * Spacebar stores an end of null as 0, which means for good as well.
+ */
+function mutedUntil(muted: unknown, config: unknown): number {
+  if (muted !== true) return 0;
+  const end = isRecord(config) ? config.end_time : undefined;
+  const at = typeof end === "string" ? Date.parse(end) : typeof end === "number" && end > 0 ? end : NaN;
+  return Number.isFinite(at) ? at : Infinity;
+}
+
+/**
+ * One guild's settings, from READY's user_guild_settings (channel overrides
+ * as a list naming their channel) or a settings write's answer (a map by
+ * channel id, and no guild id: the caller names the guild).
+ */
+export function parseGuildSettings(value: unknown, guildId?: string): [string, SpacebarGuildSettings] | undefined {
+  const guild = isRecord(value) && isId(value.guild_id) ? value.guild_id : guildId;
+  if (!isRecord(value) || !guild) return undefined;
+  const raw = value.channel_overrides;
+  const entries: [unknown, unknown][] = Array.isArray(raw) ? raw.map((o) => [isRecord(o) ? o.channel_id : undefined, o]) : isRecord(raw) ? Object.entries(raw) : [];
+  const channels = new Map<string, { mutedUntil: number; notifications: number }>();
+  for (const [id, o] of entries.slice(0, 1000)) {
+    if (!isId(id) || !isRecord(o)) continue;
+    const level = o.message_notifications;
+    channels.set(id, { mutedUntil: mutedUntil(o.muted, o.mute_config), notifications: Number.isInteger(level) && (level as number) >= 0 && (level as number) <= 3 ? (level as number) : NOTIFY_INHERIT });
+  }
+  return [guild, { mutedUntil: mutedUntil(value.muted, value.mute_config), channels }];
 }
 
 export function parseMember(value: unknown): SpacebarMember | undefined {

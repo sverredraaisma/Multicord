@@ -10,6 +10,7 @@ import {
   parseChannel,
   parseEmoji,
   parseGuild,
+  parseGuildSettings,
   parseMessage,
   parseReactionEmoji,
   parseReadState,
@@ -19,6 +20,7 @@ import {
   type SpacebarChannel,
   type SpacebarEmoji,
   type SpacebarGuild,
+  type SpacebarGuildSettings,
   type SpacebarMessage,
   type SpacebarReadState,
   type SpacebarRole,
@@ -48,6 +50,8 @@ export class SpacebarState {
   readonly ownRoles = new Map<string, string[]>();
   /** Who is typing where: channel id -> user id -> expiry (epoch ms). */
   readonly typing = new Map<string, Map<string, number>>();
+  /** The user's notification settings per guild: what is muted. */
+  readonly guildSettings = new Map<string, SpacebarGuildSettings>();
 
   readonly changed = new Emitter<void>();
   /** New messages from others, for acking in the open channel and notifying. */
@@ -55,7 +59,7 @@ export class SpacebarState {
 
   reset(): void {
     this.me = undefined;
-    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.emojis, this.roles, this.ownRoles, this.typing]) map.clear();
+    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.emojis, this.roles, this.ownRoles, this.typing, this.guildSettings]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -70,6 +74,8 @@ export class SpacebarState {
         for (const c of list(d.private_channels)) this.addChannel(parseChannel(c));
         // Spacebar sends read states as { entries }, as Discord does; a bare list is taken too.
         for (const r of isRecord(d.read_state) ? list(d.read_state.entries) : list(d.read_state)) this.setReadState(parseReadState(r));
+        // The same for the user's guild settings.
+        for (const s of isRecord(d.user_guild_settings) ? list(d.user_guild_settings.entries) : list(d.user_guild_settings)) this.applyGuildSettings(s);
         break;
       case "GUILD_CREATE":
         this.addGuild(data, undefined);
@@ -278,6 +284,18 @@ export class SpacebarState {
     return message.roleMentionIds.some((r) => roles.includes(r));
   }
 
+  /** One guild's settings, from READY or a write's answer (which does not name its guild, so the caller does). */
+  applyGuildSettings(value: unknown, guildId?: string): void {
+    const entry = parseGuildSettings(value, guildId);
+    if (entry) this.guildSettings.set(entry[0], entry[1]);
+  }
+
+  /** Whether the user muted a guild channel, or its whole guild, for now. DMs cannot be muted on Spacebar. */
+  isMuted(channel: SpacebarChannel, now: number = Date.now()): boolean {
+    const settings = channel.guildId ? this.guildSettings.get(channel.guildId) : undefined;
+    return (settings?.mutedUntil ?? 0) > now || (settings?.channels.get(channel.id)?.mutedUntil ?? 0) > now;
+  }
+
   /** Users typing in a channel right now, excluding ourselves. */
   typingIn(channelId: string, now: number = Date.now()): SpacebarUser[] {
     return [...(this.typing.get(channelId) ?? [])].filter(([, expires]) => expires > now).flatMap(([userId]) => this.users.get(userId) ?? []);
@@ -305,7 +323,7 @@ export class SpacebarState {
   }
 
   private removeGuild(guildId: string): void {
-    for (const map of [this.guilds, this.emojis, this.roles, this.ownRoles]) map.delete(guildId);
+    for (const map of [this.guilds, this.emojis, this.roles, this.ownRoles, this.guildSettings]) map.delete(guildId);
     for (const channel of [...this.channels.values()]) {
       if (channel.guildId !== guildId) continue;
       this.channels.delete(channel.id);

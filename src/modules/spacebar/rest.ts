@@ -201,6 +201,11 @@ export class SpacebarRest {
     await this.request(pin ? "PUT" : "DELETE", `/channels/${channelId}/pins/${messageId}`);
   }
 
+  /** Changes the user's notification settings for a guild (merged into what is stored), and returns them as stored. */
+  async setGuildSettings(guildId: string, changes: Record<string, unknown>): Promise<unknown> {
+    return this.request("PATCH", `/users/@me/guilds/${guildId}/settings`, changes);
+  }
+
   async typing(channelId: string): Promise<void> {
     await this.request("POST", `/channels/${channelId}/typing`);
   }

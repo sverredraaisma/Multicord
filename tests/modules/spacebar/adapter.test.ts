@@ -463,6 +463,70 @@ describe("SpacebarAdapter rail and conversations", () => {
     expect(calls.filter((c) => c.url.endsWith("/ack"))).toHaveLength(2);
   });
 
+  it("shows channels muted on Spacebar as muted, and mutes or unmutes a server channel", async () => {
+    const forGood = { end_time: 0, selected_time_window: -1 };
+    const settings = {
+      entries: [
+        {
+          guild_id: "100",
+          muted: false,
+          channel_overrides: [
+            { channel_id: "113", muted: true, mute_config: null, message_notifications: 1 },
+            { channel_id: "114", muted: true, mute_config: { end_time: "2026-10-16T11:00:00Z", selected_time_window: 3600 }, message_notifications: 3 },
+            "bad",
+          ],
+        },
+        { guild_id: "200", muted: true, mute_config: { end_time: Date.parse("2099-01-01T00:00:00Z") } },
+        { muted: true },
+      ],
+    };
+    let answer: Reply = { status: 200, body: { guild_id: null, channel_overrides: { "111": { channel_id: "111", muted: true, mute_config: forGood, message_notifications: 3 }, "113": { muted: true, message_notifications: 1 } } } };
+    const ctx = setup({ token: "saved", routes: [(url, init) => (url.includes("/users/@me/guilds/") && init.method === "PATCH" ? answer : undefined)] });
+    const notes = vi.fn();
+    ctx.adapter.onNotification(notes);
+    await ctx.adapter.start();
+    await ctx.goOnline({ ...readyPayload(), user_guild_settings: settings });
+    await ctx.adapter.openServer("100");
+    const row = (id: string) => ctx.chat().sidebar.find((i) => i.id === id)!;
+    expect(row("113")).toMatchObject({ muted: true, canMute: true });
+    expect(row("111")).toMatchObject({ canMute: true });
+    expect(row("111")).not.toHaveProperty("muted");
+    // A timed mute that ran out no longer counts; categories and voice channels have no bell.
+    expect(row("114")).not.toHaveProperty("muted");
+    expect(ctx.chat().sidebar.filter((i) => i.kind !== "text").some((i) => "muted" in i || "canMute" in i)).toBe(false);
+    // A muted channel does not notify, even of a mention.
+    await ctx.dispatch("MESSAGE_CREATE", message("1000", "113", { mentions: [ME] }));
+    expect(notes).not.toHaveBeenCalled();
+    await ctx.adapter.handleAction({ type: "mute", channelId: "111", mute: true });
+    const patch = () => ctx.calls.filter((c) => c.init.method === "PATCH").at(-1)!;
+    expect(patch().url).toBe(`${API}/users/@me/guilds/100/settings`);
+    expect(body(patch().init)).toEqual({ channel_overrides: { "111": { channel_id: "111", message_notifications: 3, muted: true, mute_config: forGood } } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(row("111")).toMatchObject({ muted: true, canMute: true });
+    // Unmuting keeps the channel's notification level.
+    answer = { status: 200, body: { channel_overrides: { "111": { muted: true }, "113": { muted: false } } } };
+    await ctx.adapter.handleAction({ type: "mute", channelId: "113", mute: false });
+    expect(body(patch().init)).toEqual({ channel_overrides: { "113": { channel_id: "113", message_notifications: 1, muted: false, mute_config: forGood } } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(row("113")).not.toHaveProperty("muted");
+    // A guild muted as a whole mutes its channels, and their own bell cannot undo it.
+    await ctx.adapter.openServer("200");
+    expect(row("211")).toMatchObject({ muted: true });
+    expect(row("211")).not.toHaveProperty("canMute");
+    // Nothing to change, DMs, unknown channels and muted guilds: nothing is sent.
+    const patches = ctx.calls.filter((c) => c.init.method === "PATCH").length;
+    for (const [channelId, mute] of [["111", true], ["900", true], ["404", true], ["211", false], ["112", true]] as const) await ctx.adapter.handleAction({ type: "mute", channelId, mute });
+    expect(ctx.calls.filter((c) => c.init.method === "PATCH")).toHaveLength(patches);
+    // Spacebar's refusal is shown; an answer it cannot read changes nothing.
+    answer = { status: 400, body: { message: "Invalid Form Body" } };
+    await ctx.adapter.handleAction({ type: "mute", channelId: "114", mute: true });
+    expect(ctx.last()).toMatchObject({ error: "Could not mute: Invalid Form Body" });
+    answer = { status: 200, body: "odd" };
+    await ctx.adapter.handleAction({ type: "mute", channelId: "114", mute: true });
+    await ctx.adapter.openServer("100");
+    expect(row("114")).not.toHaveProperty("muted");
+  });
+
   it("notifies of DMs and mentions, not of other guild messages", async () => {
     const { adapter, online, dispatch } = setup({ token: "saved" });
     const notes = vi.fn();
