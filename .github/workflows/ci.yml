@@ -1,4 +1,4 @@
-# Typecheck, tests with the 95% coverage gate, and a build, on every push and pull request.
+# Typecheck, tests with the 95% coverage gate, a build and a smoke test of the built app, on every push and pull request.
 name: CI
 
 on:
@@ -29,3 +29,13 @@ jobs:
       - run: npm ci
       - run: npm run check
       - run: npm run build
+      # Smoke test: starts the built app offline with a scratch profile and checks it over DevTools (scripts/smoke.mjs).
+      # Ubuntu 24.04 keeps unprivileged user namespaces from apps without an AppArmor profile; Chromium's sandbox needs them.
+      - if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" npm run smoke
+        timeout-minutes: 5
+      - if: runner.os != 'Linux'
+        run: npm run smoke
+        timeout-minutes: 5

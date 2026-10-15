@@ -13,14 +13,15 @@ export const ELECTRON = /** @type {string} */ (require("electron"));
 const WINDOWS = process.platform === "win32";
 
 /**
- * Starts an Electron with the given arguments, its output going to logFile.
+ * Starts an Electron with the given arguments, its output going to logFile
+ * (with the given environment, or else this process's).
  * @returns {import("node:child_process").ChildProcess}
  */
-export function launch(args, { cwd, logFile }) {
+export function launch(args, { cwd, logFile, env }) {
   const log = openSync(logFile, "a");
   try {
     // Own process group off Windows, so the whole tree can be signalled.
-    return spawn(ELECTRON, args, { cwd, stdio: ["ignore", log, log], detached: !WINDOWS, windowsHide: false });
+    return spawn(ELECTRON, args, { cwd, env, stdio: ["ignore", log, log], detached: !WINDOWS, windowsHide: false });
   } finally {
     // The child has its own handle; ours would keep Windows from removing the folder.
     closeSync(log);
