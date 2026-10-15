@@ -22,6 +22,7 @@ export const stoatNativeModule: PlatformModule = {
     // Calls in channels that are also voice channels, through the instance's LiveKit servers.
     usesVoiceSettings: true,
     screenShare: true,
+    sendsTyping: true,
     capabilities: { directMessages: true, messagePreviews: true, voice: true, screenShare: true },
   },
 };

@@ -39,7 +39,7 @@ class FakeSocket implements EventSocket {
 
 const channelOf = (url: string) => url.split("/channels/")[1]!.split(/[/?]/)[0]!;
 
-function setup(options: { token?: string; routes?: Handler[]; files?: StoatAdapterDeps["files"] } = {}) {
+function setup(options: { token?: string; routes?: Handler[]; files?: StoatAdapterDeps["files"]; settings?: StoatAdapterDeps["settings"] } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const routes: Handler[] = [...(options.routes ?? [])];
   const fetch = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -82,6 +82,7 @@ function setup(options: { token?: string; routes?: Handler[]; files?: StoatAdapt
     render: (state) => renders.push(state),
     rest: { sleep: async () => {} },
     files: options.files,
+    settings: options.settings,
   });
   const last = () => renders.at(-1)!;
   const chat = () => {
@@ -892,6 +893,30 @@ describe("StoatAdapter live updates", () => {
       { type: "BeginTyping", channel: GROUP },
       { type: "EndTyping", channel: GROUP },
     ]);
+  });
+
+  it("sends no typing while Settings turns it off, ending a notice in progress", async () => {
+    const off = setup({ token: "saved", settings: { typing: false } });
+    await off.online();
+    await off.adapter.openConversation(DM);
+    await off.adapter.handleAction({ type: "typing" });
+    expect(off.socket().sent.filter((m) => m.type === "BeginTyping")).toEqual([]);
+    expect(off.chat().channel!.can.typing).toBe(false);
+
+    const { adapter, socket, online } = setup({ token: "saved" });
+    await online();
+    await adapter.openConversation(DM);
+    const typing = () => socket().sent.filter((m) => m.type === "BeginTyping" || m.type === "EndTyping");
+    await adapter.handleAction({ type: "typing" });
+    adapter.applySettings({ typing: false });
+    await adapter.handleAction({ type: "typing" });
+    expect(typing()).toEqual([
+      { type: "BeginTyping", channel: DM },
+      { type: "EndTyping", channel: DM },
+    ]);
+    adapter.applySettings({});
+    await adapter.handleAction({ type: "typing" });
+    expect(typing()).toHaveLength(3);
   });
 
   it("marks the open channel read while the view is visible", async () => {

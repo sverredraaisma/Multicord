@@ -24,6 +24,7 @@ export async function startStoatEngine(
     },
     files: { pick: () => pickFiles(bridge), open: (file) => fileSource(bridge, file) },
     lockHosts: (hosts) => lockHosts(bridge, hosts),
+    settings: info.settings,
   });
   served = serveAdapter(bridge, adapter);
   await adapter.start();

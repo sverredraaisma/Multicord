@@ -1,7 +1,7 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
 import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeListedMessage, type NativeMember, type NativeMemberList, type NativeMemberSection, type NativePresence, type NativeProfile, MEMBER_ROWS_SHOWN, type NativeMessage, type NativeMessageList, type NativeSearchResults, type NativeSidebarItem, type NativeUnread, type NativeViewState, type NativeVoiceSession, type VoiceNoticeFlag } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
-import type { AccountStatus } from "../../shared/settings";
+import { TYPING_SETTING, type AccountStatus, type ServiceSettingValues } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { StoatEvents, type EventsStatus, type SocketFactory } from "./events";
@@ -49,6 +49,8 @@ export interface StoatAdapterDeps {
   files?: EngineFiles;
   /** Narrows what the engine may reach to these hosts, once they are known. */
   lockHosts?(hosts: string[]): Promise<void>;
+  /** This instance's settings values (TYPING_SETTING); changes come through applySettings(). */
+  settings?: ServiceSettingValues;
 }
 
 type Selection = { kind: "home" } | { kind: "server"; serverId: string };
@@ -96,6 +98,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   private typingTimer: ReturnType<typeof setTimeout> | undefined;
   /** Our own typing: where, since when, and the timer that ends it. */
   private ownTyping: { channelId: string; sent: number; stop: ReturnType<typeof setTimeout> } | undefined;
+  /** Settings' "Send typing indicators" for this service. */
+  private typingIndicators: boolean;
   private readonly pending = new Map<string, FileSource[]>();
   private readonly uploading = new Set<string>();
   /** Whether a session token is stored, so the account shows as signed in before it connects. */
@@ -119,6 +123,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
 
   constructor(private readonly deps: StoatAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
+    this.typingIndicators = deps.settings?.[TYPING_SETTING] !== false;
     this.state.changed.on(() => this.schedulePublish());
     // Typing indicators expire on their own; re-render when they may have.
     this.state.changed.on(() => {
@@ -739,7 +744,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
    */
   private sendTyping(now: number = Date.now()): void {
     const channelId = this.selectedChannelId;
-    if (!channelId || !this.events) return;
+    if (!channelId || !this.events || !this.typingIndicators) return;
     const current = this.ownTyping?.channelId === channelId ? this.ownTyping : undefined;
     if (!current) this.stopTyping();
     // Said again once the last notice is old enough; a keystroke in the same millisecond is no reason.
@@ -748,6 +753,12 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     if (renew) this.events.command({ type: "BeginTyping", channel: channelId });
     clearTimeout(current?.stop);
     this.ownTyping = { channelId, sent, stop: setTimeout(() => this.stopTyping(), TYPING_IDLE_MS) };
+  }
+
+  /** Settings changed: whether to send typing indicators; turned off while typing, the notice ends now. */
+  applySettings(values: ServiceSettingValues): void {
+    this.typingIndicators = values[TYPING_SETTING] !== false;
+    if (!this.typingIndicators) this.stopTyping();
   }
 
   private stopTyping(): void {
@@ -1266,7 +1277,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(members ? { members } : {}),
                 // Files need the instance's file server (Autumn).
                 // Saved Notes has nobody else in it: no one to type to or list.
-                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: others, members: others, pins: true, search: true, forward: true, call: Boolean(channel.voice && this.instance?.voiceNodes) },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: others && this.typingIndicators, members: others, pins: true, search: true, forward: true, call: Boolean(channel.voice && this.instance?.voiceNodes) },
               }
             : null,
           customEmoji: channel ? this.customEmoji(channel) : [],
