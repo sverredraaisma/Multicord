@@ -2129,4 +2129,89 @@ describe("polls in the view", () => {
     root.querySelector<HTMLButtonElement>("button.poll-option")!.click();
     expect(act).toHaveBeenLastCalledWith({ type: "vote", messageId: "10", options: ["a"] });
   });
+
+  it("ends a poll after confirmation", () => {
+    view.update(chat({ channel: { ...chat().channel!, messages: [msg("10", { poll: { question: "Q", options: [{ id: "a", text: "A" }], multiple: false, closed: false, canEnd: true } })] } }));
+    const end = () => [...root.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "End poll")!.click();
+    const confirm = vi.fn(() => false);
+    Object.defineProperty(window, "confirm", { value: confirm, configurable: true, writable: true });
+    end();
+    expect(confirm).toHaveBeenCalledWith("End this poll? Voting stops for everyone.");
+    expect(act).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    end();
+    expect(act).toHaveBeenLastCalledWith({ type: "endPoll", messageId: "10" });
+    delete (window as { confirm?: unknown }).confirm;
+    act.mockClear();
+    end();
+    expect(act).toHaveBeenCalledOnce();
+  });
+
+  describe("creating one", () => {
+    const POLLS = { ...ALL, polls: true };
+    const withPolls = (can: object = POLLS, extra: object = {}) => chat({ channel: { ...chat().channel!, can: can as typeof ALL, ...extra } });
+    const button = () => root.querySelector<HTMLButtonElement>(".poll-button")!;
+    const dialog = () => root.querySelector<HTMLElement>(".poll-dialog")!;
+    const fill = () => {
+      dialog().querySelector<HTMLInputElement>(".poll-question-input")!.value = "Lunch?";
+      const answers = [...dialog().querySelectorAll<HTMLInputElement>(".poll-answers input")];
+      answers[0]!.value = "Pizza";
+      answers[1]!.value = "Soup";
+    };
+
+    it("offers the poll form only where the conversation takes polls", () => {
+      view.update(chat());
+      expect(button().hidden).toBe(true);
+      view.update(withPolls(POLLS, { locked: "Encrypted" }));
+      expect(button().hidden).toBe(true);
+      view.update(withPolls(POLLS, { posts: [] }));
+      expect(button().hidden).toBe(true);
+      view.update(chat({ channel: null }));
+      expect(button().hidden).toBe(true);
+      button().click();
+      expect(dialog().hidden).toBe(true);
+      view.update(withPolls());
+      expect(button().hidden).toBe(false);
+      expect(button().getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("opens the form, keeps what is typed across updates, and sends the poll", () => {
+      view.update(withPolls());
+      button().click();
+      expect(dialog().hidden).toBe(false);
+      expect(button().getAttribute("aria-expanded")).toBe("true");
+      expect(document.activeElement).toBe(dialog().querySelector(".poll-question-input"));
+      // Without the choice, the module decides who sees the votes.
+      expect(dialog().querySelectorAll('input[type="checkbox"]')).toHaveLength(1);
+      fill();
+      view.update(withPolls());
+      expect(dialog().querySelector<HTMLInputElement>(".poll-question-input")!.value).toBe("Lunch?");
+      dialog().querySelector("form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+      expect(act).toHaveBeenLastCalledWith({ type: "createPoll", question: "Lunch?", answers: ["Pizza", "Soup"], multiple: false });
+      expect(dialog().hidden).toBe(true);
+      expect(dialog().childElementCount).toBe(0);
+      expect(document.activeElement).toBe(button());
+    });
+
+    it("offers anonymous votes where the user may choose, and closes on cancel, another conversation or the button", () => {
+      view.update(withPolls({ ...POLLS, anonymousPolls: true }));
+      button().click();
+      expect(dialog().querySelectorAll('input[type="checkbox"]')).toHaveLength(2);
+      fill();
+      dialog().querySelector<HTMLButtonElement>(".poll-form-buttons .link")!.click();
+      expect(dialog().hidden).toBe(true);
+      button().click();
+      // A fresh form: nothing kept from the one cancelled.
+      expect(dialog().querySelector<HTMLInputElement>(".poll-question-input")!.value).toBe("");
+      button().click();
+      expect(dialog().hidden).toBe(true);
+      button().click();
+      view.update(chat({ channel: { ...withPolls().channel!, id: "3", name: "Ana" } }));
+      expect(dialog().hidden).toBe(true);
+      button().click();
+      view.update(withPolls(ALL));
+      expect(dialog().hidden).toBe(true);
+      expect(act).not.toHaveBeenCalledWith(expect.objectContaining({ type: "createPoll" }));
+    });
+  });
 });

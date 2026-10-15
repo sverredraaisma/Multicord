@@ -9,7 +9,8 @@ import { messageItem, type MessageHandlers } from "../../src/renderer/components
 import { matchMentions, MAX_MENTION_SUGGESTIONS, mentionCandidates, mentionOptions, mentionQuery } from "../../src/renderer/components/mentions";
 import { isOwnReaction, quickReactions } from "../../src/renderer/components/reactions";
 import { moduleLabel, serverIcon, serverTooltip } from "../../src/renderer/components/serverIcon";
-import type { NativeMessage } from "../../src/shared/native";
+import { pollForm } from "../../src/renderer/components/panels";
+import { MAX_NEW_POLL_ANSWERS, type NativeMessage } from "../../src/shared/native";
 
 beforeEach(() => {
   document.body.innerHTML = "";
@@ -424,6 +425,92 @@ describe("polls", () => {
     const noHandler = messageItem(document, { ...base, poll: { question: "Q", options: [{ id: "a", text: "A" }], multiple: false, closed: false, canVote: true } }, { ...h, onVote: undefined });
     expect(buttons(noHandler)).toHaveLength(0);
     expect(messageItem(document, { ...base, poll: "junk" as never }, h).querySelector(".poll")).toBeNull();
+  });
+
+  it("offers to end a poll the user may end, where there is a handler for it", () => {
+    const onEndPoll = vi.fn();
+    const poll = { question: "Q", options: [{ id: "a", text: "A" }], multiple: false, closed: false, canEnd: true };
+    const actions = (item: HTMLElement) => [...item.querySelectorAll<HTMLButtonElement>(".message-actions button")];
+    const item = messageItem(document, { ...base, poll }, { ...handlers(), onEndPoll });
+    actions(item).find((b) => b.textContent === "End poll")!.click();
+    expect(onEndPoll).toHaveBeenCalledWith(expect.objectContaining({ id: "5" }));
+    for (const shown of [messageItem(document, { ...base, poll }, handlers()), messageItem(document, { ...base, poll: { ...poll, closed: true } }, { ...handlers(), onEndPoll }), messageItem(document, base, { ...handlers(), onEndPoll })]) {
+      expect(actions(shown).map((b) => b.textContent)).not.toContain("End poll");
+    }
+  });
+});
+
+describe("the new poll form", () => {
+  const make = (anonymity = false) => {
+    const onCreate = vi.fn();
+    const onCancel = vi.fn();
+    const form = pollForm(document, anonymity, { onCreate, onCancel });
+    document.body.append(form);
+    const answers = () => [...form.querySelectorAll<HTMLInputElement>(".poll-answers input")];
+    const removers = () => [...form.querySelectorAll<HTMLButtonElement>(".poll-answers button")];
+    const add = form.querySelector<HTMLButtonElement>(".poll-add")!;
+    const question = form.querySelector<HTMLInputElement>(".poll-question-input")!;
+    const submit = () => form.dispatchEvent(new Event("submit", { cancelable: true }));
+    const error = form.querySelector<HTMLElement>(".member-error")!;
+    const boxes = () => [...form.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')];
+    return { form, onCreate, onCancel, answers, removers, add, question, submit, error, boxes };
+  };
+
+  it("starts with two answers, adds up to ten and removes down to two, numbering them", () => {
+    const { answers, removers, add } = make();
+    expect(answers().map((a) => a.placeholder)).toEqual(["Answer 1", "Answer 2"]);
+    expect(removers().every((r) => r.hidden)).toBe(true);
+    add.click();
+    expect(document.activeElement).toBe(answers()[2]);
+    expect(removers().some((r) => r.hidden)).toBe(false);
+    for (let i = 3; i < MAX_NEW_POLL_ANSWERS; i++) add.click();
+    expect(answers()).toHaveLength(MAX_NEW_POLL_ANSWERS);
+    expect(add.hidden).toBe(true);
+    removers()[0]!.click();
+    expect(add.hidden).toBe(false);
+    expect(answers().map((a) => a.getAttribute("aria-label")).at(-1)).toBe(`Answer ${MAX_NEW_POLL_ANSWERS - 1}`);
+    expect(removers()[0]!.getAttribute("aria-label")).toBe("Remove answer 1");
+  });
+
+  it("says what is missing, and hands on a tidy poll", () => {
+    const { onCreate, answers, add, question, submit, error, boxes } = make();
+    submit();
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toBe("Write a question.");
+    question.value = "  Lunch?\t";
+    answers()[0]!.value = "Pizza";
+    submit();
+    expect(error.textContent).toBe("Give at least 2 answers.");
+    add.click();
+    answers()[1]!.value = " ";
+    answers()[2]!.value = "Pizza ";
+    submit();
+    expect(error.textContent).toBe("Each answer can be given only once.");
+    expect(onCreate).not.toHaveBeenCalled();
+    answers()[2]!.value = "Soup";
+    expect(boxes()).toHaveLength(1);
+    boxes()[0]!.click();
+    submit();
+    expect(error.hidden).toBe(true);
+    expect(onCreate).toHaveBeenCalledWith({ question: "Lunch?", answers: ["Pizza", "Soup"], multiple: true });
+  });
+
+  it("offers anonymous votes where the conversation lets the user choose, and cancels", () => {
+    const { form, onCreate, onCancel, answers, question, submit, boxes } = make(true);
+    question.value = "Q";
+    answers()[0]!.value = "A";
+    answers()[1]!.value = "B";
+    expect(boxes()[1]!.checked).toBe(true);
+    submit();
+    expect(onCreate).toHaveBeenLastCalledWith({ question: "Q", answers: ["A", "B"], multiple: false, anonymous: true });
+    boxes()[1]!.click();
+    submit();
+    expect(onCreate).toHaveBeenLastCalledWith(expect.objectContaining({ anonymous: false }));
+    form.querySelector<HTMLButtonElement>(".poll-form-buttons .link")!.click();
+    form.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    form.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(onCancel).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -317,6 +317,8 @@ export interface NativePoll {
   total?: number;
   /** The user may vote here (`vote` actions); without it the poll only shows. */
   canVote?: boolean;
+  /** The user may end it (an `endPoll` action), as the one who started it; only while it is open. */
+  canEnd?: boolean;
 }
 
 export interface NativePollOption {
@@ -333,6 +335,12 @@ export interface NativePollOption {
 
 export const MAX_POLL_OPTIONS = 20;
 const MAX_POLL_QUESTION = 300;
+/** How many answers a new poll has, as the poll form offers them: Telegram takes at most 10. */
+export const MIN_NEW_POLL_ANSWERS = 2;
+export const MAX_NEW_POLL_ANSWERS = 10;
+/** A new poll's question and each answer, at most (Telegram's limits). */
+export const MAX_NEW_POLL_QUESTION = 255;
+export const MAX_NEW_POLL_ANSWER = 100;
 export const isPollOptionId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,64}$/.test(value);
 
 /** A poll as the view trusts it: a question, 1 to MAX_POLL_OPTIONS options with usable ids (each once) and texts cut short; undefined otherwise. */
@@ -357,6 +365,7 @@ export function messagePoll(value: unknown): NativePoll | undefined {
   const poll: NativePoll = { question, options, multiple: v.multiple === true, closed: v.closed === true };
   if (typeof v.total === "number" && Number.isInteger(v.total) && v.total >= 0) poll.total = Math.min(v.total, 100_000_000);
   if (v.canVote === true) poll.canVote = true;
+  if (v.canEnd === true && !poll.closed) poll.canEnd = true;
   return poll;
 }
 
@@ -669,9 +678,13 @@ export interface NativeChannelCan {
   threads?: boolean;
   /** Start or join a call in it: the header's call button sends a `joinVoice` action with the conversation's id. */
   call?: boolean;
+  /** Start polls in it (the composer's poll form: `createPoll` actions); ending one is per poll (NativePoll.canEnd). */
+  polls?: boolean;
+  /** Choose whether a new poll's voters stay anonymous (createPoll's `anonymous`); without it the module decides. */
+  anonymousPolls?: boolean;
 }
 
-export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins", "search", "forward", "threads", "call"] as const satisfies readonly (keyof NativeChannelCan)[];
+export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins", "search", "forward", "threads", "call", "polls", "anonymousPolls"] as const satisfies readonly (keyof NativeChannelCan)[];
 
 /** A conversation's flags as the view trusts them: each on only when it is exactly `true`. */
 export function channelCan(value: unknown): Required<NativeChannelCan> {
@@ -1115,6 +1128,15 @@ export type NativeAction =
   | { type: "thread"; rootId?: string }
   /** Votes in a poll of the open conversation (NativePoll.canVote): the options chosen, replacing earlier ones; none takes the vote back. */
   | { type: "vote"; messageId: string; options: string[] }
+  /**
+   * Starts a poll in the open conversation (can.polls): a question and
+   * MIN_NEW_POLL_ANSWERS to MAX_NEW_POLL_ANSWERS answers, each once, whether
+   * more than one may be chosen, and (where can.anonymousPolls) whether
+   * voters stay anonymous.
+   */
+  | { type: "createPoll"; question: string; answers: string[]; multiple: boolean; anonymous?: boolean }
+  /** Ends a poll of the open conversation that the user may end (NativePoll.canEnd): voting stops and the results show. */
+  | { type: "endPoll"; messageId: string }
   /** Accepts an invitation, or joins a conversation the sidebar lists as joinable. */
   | { type: "join"; channelId: string }
   /** Declines an invitation. */
@@ -1142,6 +1164,14 @@ function isPromptValues(value: unknown): value is Record<string, string> {
   return entries.length <= MAX_PROMPT_FIELDS && entries.every(([name, v]) => /^[A-Za-z][A-Za-z0-9]{0,31}$/.test(name) && text(v, 0, 1024));
 }
 const content = (value: unknown): boolean => text(value, 1, MAX_MESSAGE_LENGTH) && (value as string).trim() !== "";
+/** A new poll's question or answer: a line of text, not blank, without control characters. */
+const pollText = (value: unknown, max: number): boolean => text(value, 1, max) && (value as string).trim() !== "" && !/\p{Cc}/u.test(value as string);
+
+/** A new poll's answers: as many as the form offers, each a usable line, none twice (as trimmed). */
+function isPollAnswers(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length < MIN_NEW_POLL_ANSWERS || value.length > MAX_NEW_POLL_ANSWERS) return false;
+  return value.every((answer) => pollText(answer, MAX_NEW_POLL_ANSWER)) && new Set(value.map((answer: string) => answer.trim())).size === value.length;
+}
 
 export function isNativeAction(value: unknown): value is NativeAction {
   if (typeof value !== "object" || value === null) return false;
@@ -1182,6 +1212,10 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return typeof v.open === "boolean";
     case "vote":
       return id(v.messageId) && Array.isArray(v.options) && v.options.length <= MAX_POLL_OPTIONS && v.options.every(isPollOptionId) && new Set(v.options).size === v.options.length;
+    case "createPoll":
+      return pollText(v.question, MAX_NEW_POLL_QUESTION) && isPollAnswers(v.answers) && typeof v.multiple === "boolean" && (v.anonymous === undefined || typeof v.anonymous === "boolean");
+    case "endPoll":
+      return id(v.messageId);
     case "forward":
       return id(v.messageId) && id(v.channelId);
     case "join":

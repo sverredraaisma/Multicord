@@ -317,7 +317,7 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
 .typing { min-height: 18px; padding: 0 16px 2px; color: var(--muted); font-size: 12px; }
 .composer-row { display: flex; gap: 8px; align-items: flex-end; margin: 0 16px 16px; }
 .composer-row .composer { flex: 1; margin: 0; }
-.attach {
+.attach, .poll-button {
   flex: none;
   width: 40px;
   height: 40px;
@@ -329,6 +329,7 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
   cursor: pointer;
 }
 .attach:disabled { opacity: 0.5; cursor: default; }
+.poll-button { font-size: 18px; }
 .pending-files { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 16px 6px; padding: 0; list-style: none; }
 .pending-files:empty { display: none; }
 .pending-file, .uploading {
@@ -648,6 +649,18 @@ button.thread-summary:hover { text-decoration: underline; }
 .forward-targets { display: flex; flex-direction: column; gap: 2px; max-height: 240px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
 .forward-target { width: 100%; padding: 6px 8px; border: 0; border-radius: 4px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
 .forward-target:hover, .forward-target:focus-visible { background: var(--surface); }
+/* A new poll. */
+.poll-dialog { align-items: stretch; }
+.poll-form { display: flex; flex-direction: column; gap: 8px; }
+.poll-form .profile-name { margin-top: 0; }
+.poll-form input:not([type="checkbox"]) { min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); font: inherit; }
+.poll-answers { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.poll-answer { display: flex; gap: 4px; align-items: center; }
+.poll-answer input { flex: 1; }
+.poll-add { align-self: flex-start; }
+.poll-check { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+.poll-form .member-error { margin: 0; }
+.poll-form-buttons { display: flex; gap: 8px; justify-content: flex-end; }
 
 /* Emoji, sticker, GIF and favourites picker */
 .media-picker {

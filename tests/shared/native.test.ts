@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, chatFolders, incomingCall, MAX_FOLDERS, MAX_QR_TEXT, promptQr, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_THREAD_MESSAGES, threadSummary, threadView, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
+import { channelCan, chatFolders, incomingCall, MAX_FOLDERS, MAX_QR_TEXT, promptQr, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_THREAD_MESSAGES, threadSummary, threadView, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, MAX_NEW_POLL_ANSWER, MAX_NEW_POLL_ANSWERS, MAX_NEW_POLL_QUESTION, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -183,8 +183,8 @@ describe("media requests", () => {
 
 describe("conversation capability flags", () => {
   it("turns a flag on only when it is exactly true", () => {
-    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false, pins: false, search: false, forward: false, threads: false, call: false };
-    const all = { reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true, forward: true, threads: true, call: true };
+    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false, pins: false, search: false, forward: false, threads: false, call: false, polls: false, anonymousPolls: false };
+    const all = { reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true, forward: true, threads: true, call: true, polls: true, anonymousPolls: true };
     expect(channelCan(all)).toEqual(all);
     expect(channelCan({ reply: true, react: "yes", attach: 1, members: "true", stickers: "yes", extra: true })).toEqual({ ...none, reply: true });
     for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual(none);
@@ -651,5 +651,27 @@ describe("polls", () => {
       }),
     ).toEqual({ question: "Q".repeat(300), options: [{ id: "a", text: "A", votes: 3, chosen: true, correct: true }, { id: "b", text: "B" }], multiple: true, closed: false, total: 7, canVote: true });
     expect(messagePoll({ question: "Q", options: [{ id: "a", text: "A" }], total: 1.5, closed: true })).toEqual({ question: "Q", options: [{ id: "a", text: "A" }], multiple: false, closed: true });
+  });
+
+  it("lets the user end an open poll only", () => {
+    const poll = { question: "Q", options: [{ id: "a", text: "A" }] };
+    expect(messagePoll({ ...poll, canEnd: true })).toMatchObject({ canEnd: true });
+    expect(messagePoll({ ...poll, canEnd: true, closed: true })).not.toHaveProperty("canEnd");
+    expect(messagePoll({ ...poll, canEnd: "yes" })).not.toHaveProperty("canEnd");
+  });
+
+  it("validates new polls: a question, two to ten distinct answers, and the choices as booleans", () => {
+    const poll = { type: "createPoll", question: "Lunch?", answers: ["Pizza", "Soup"], multiple: false };
+    expect(isNativeAction(poll)).toBe(true);
+    expect(isNativeAction({ ...poll, anonymous: true, multiple: true })).toBe(true);
+    expect(isNativeAction({ ...poll, question: "Q".repeat(MAX_NEW_POLL_QUESTION), answers: Array.from({ length: MAX_NEW_POLL_ANSWERS }, (_, i) => `${i}`.padEnd(MAX_NEW_POLL_ANSWER, "x")) })).toBe(true);
+    for (const question of ["", "  ", "a\nb", "a\tb", "Q".repeat(MAX_NEW_POLL_QUESTION + 1), 5]) expect(isNativeAction({ ...poll, question })).toBe(false);
+    for (const answers of [["Only"], Array.from({ length: MAX_NEW_POLL_ANSWERS + 1 }, (_, i) => `a${i}`), ["A", " "], ["A", "A "], ["A", "x".repeat(MAX_NEW_POLL_ANSWER + 1)], ["A", 5], "A,B"]) {
+      expect(isNativeAction({ ...poll, answers })).toBe(false);
+    }
+    expect(isNativeAction({ ...poll, multiple: "no" })).toBe(false);
+    expect(isNativeAction({ ...poll, anonymous: 1 })).toBe(false);
+    expect(isNativeAction({ type: "endPoll", messageId: "5" })).toBe(true);
+    expect(isNativeAction({ type: "endPoll", messageId: "$x" })).toBe(false);
   });
 });

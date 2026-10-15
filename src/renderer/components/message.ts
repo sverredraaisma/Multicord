@@ -255,6 +255,8 @@ export interface MessageHandlers {
   onCopy?(message: NativeMessage): void;
   /** Votes in the message's poll; without it polls only show. */
   onVote?(message: NativeMessage, options: string[]): void;
+  /** Ends the message's poll, where the poll says the user may (canEnd); without it no poll offers ending. */
+  onEndPoll?(message: NativeMessage): void;
   /** Opens the message's thread, where the conversation has threads (can.threads); without it threads only show their summary. */
   onOpenThread?(message: NativeMessage): void;
   /** Brings the original of a reply into sight (replies whose preview names it); without it the quote is plain text. */
@@ -294,6 +296,7 @@ function messageActions(doc: Document, message: NativeMessage, handlers: Message
   if (message.canPin === true && handlers.onPin) action(message.pinned === true ? "Unpin" : "Pin", () => handlers.onPin!(message, message.pinned !== true));
   if (can?.forward === true && handlers.onForward) action("Forward", () => handlers.onForward!(message));
   if (can?.threads === true && handlers.onOpenThread) action("Thread", () => handlers.onOpenThread!(message));
+  if (messagePoll(message.poll)?.canEnd === true && handlers.onEndPoll) action("End poll", () => handlers.onEndPoll!(message));
   if (message.content.trim() !== "" && handlers.onCopy) action("Copy text", () => handlers.onCopy!(message));
   return bar;
 }

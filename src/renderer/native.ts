@@ -14,7 +14,7 @@ import { typingText } from "./components/format";
 import { memberPanel, profileCard, type ProfileCardData } from "./components/members";
 import { matchMentions, mentionCandidates, mentionOptionId, mentionOptions, mentionQuery, type MentionCandidate } from "./components/mentions";
 import { autoLoads, favouriteKind, messageItem, type MessageHandlers } from "./components/message";
-import { forumPosts, listedMessages, pendingFiles, postForm, replyBar, voicePanel } from "./components/panels";
+import { forumPosts, listedMessages, pendingFiles, pollForm, postForm, replyBar, voicePanel } from "./components/panels";
 import { isOwnReaction } from "./components/reactions";
 import { VoiceCall } from "./voice";
 
@@ -102,6 +102,8 @@ export class NativeView {
   private searched = false;
   /** The thread the side panel shows, by its root message. */
   private threadRoot: string | undefined;
+  /** The new poll form is open, for the open conversation. */
+  private pollOpen = false;
   /** The mention being typed in the composer, while it has suggestions: where its "@" is, who fits, and the highlighted one. */
   private mention: { start: number; options: MentionCandidate[]; active: number } | undefined;
   /** Sidebar categories the user folded away (true) or opened (false), by id; the rest start as the module says. */
@@ -433,8 +435,16 @@ export class NativeView {
     emoji.addEventListener("click", () => this.toggleComposerPicker());
     const composerPicker = el(doc, "div", "composer-picker");
     composerPicker.hidden = true;
+    // A new poll, where the conversation takes them.
+    const pollButton = el(doc, "button", "poll-button", "📊");
+    pollButton.type = "button";
+    pollButton.title = "Create a poll";
+    pollButton.setAttribute("aria-label", "Create a poll");
+    pollButton.setAttribute("aria-haspopup", "dialog");
+    pollButton.hidden = true;
+    pollButton.addEventListener("click", () => this.setPollOpen(!this.pollOpen));
     const composerRow = el(doc, "div", "composer-row");
-    composerRow.append(attach, composer, emoji, composerPicker, mentionList);
+    composerRow.append(attach, pollButton, composer, emoji, composerPicker, mentionList);
     // Why the composer is off in a conversation that takes no messages from here.
     const notice = el(doc, "div", "locked-notice");
     notice.hidden = true;
@@ -505,7 +515,12 @@ export class NativeView {
       threadComposer.value = "";
     });
     threadPanel.append(threadClose, el(doc, "h3", "member-section", "Thread"), threadStatus, threadMessages, threadNotice, threadComposer);
-    area.append(main, messagePanel, threadPanel, members, profile, forward);
+    // The new poll form, over the conversation like the forward dialog.
+    const pollDialog = el(doc, "section", "profile-card poll-dialog");
+    pollDialog.setAttribute("role", "dialog");
+    pollDialog.setAttribute("aria-labelledby", "poll-title");
+    pollDialog.hidden = true;
+    area.append(main, messagePanel, threadPanel, members, profile, forward, pollDialog);
 
     const layout = el(doc, "div", "chat");
     layout.append(sidebar, area);
@@ -532,6 +547,8 @@ export class NativeView {
       threadComposer,
       profile,
       forward,
+      pollButton,
+      pollDialog,
       banner,
       callBar,
       callButton,
@@ -973,6 +990,10 @@ export class NativeView {
     },
     onPin: (message, pin) => this.api.act({ type: "pin", messageId: message.id, pin }),
     onVote: (message, options) => this.api.act({ type: "vote", messageId: message.id, options }),
+    onEndPoll: (message) => {
+      const win = this.doc.defaultView;
+      if (!win?.confirm || win.confirm("End this poll? Voting stops for everyone.")) this.api.act({ type: "endPoll", messageId: message.id });
+    },
     onOpenThread: (message) => this.api.act({ type: "thread", rootId: message.id }),
     onForward: (message) => {
       this.forwardFor = message;
@@ -1090,6 +1111,45 @@ export class NativeView {
     dialog.replaceChildren(close, title, what, list, note);
     const again = kept === undefined ? undefined : [...dialog.querySelectorAll("button")].find((b) => `${b.className}|${b.textContent}` === kept);
     if (focus || kept !== undefined) (again ?? dialog.querySelector<HTMLButtonElement>(".forward-target") ?? close).focus();
+  }
+
+  /** Opens the new poll form with its question in focus, or closes it, giving focus back to its button. */
+  private setPollOpen(open: boolean): void {
+    this.pollOpen = open;
+    this.updatePoll();
+    if (open) this.parts.pollDialog!.querySelector<HTMLInputElement>(".poll-question-input")?.focus();
+    else this.parts.pollButton!.focus();
+  }
+
+  /**
+   * The poll button, where the open conversation takes polls, and the new
+   * poll form while it is open. The form is made when it opens and kept
+   * across updates, so what is typed survives; it closes when the
+   * conversation no longer takes a poll from here.
+   */
+  private updatePoll(): void {
+    const button = this.parts.pollButton as HTMLButtonElement;
+    const dialog = this.parts.pollDialog!;
+    const channel = this.lastState?.channel;
+    const usable = Boolean(channel) && this.can.polls && !channel!.locked && !channel!.posts;
+    button.hidden = !usable;
+    button.setAttribute("aria-expanded", String(this.pollOpen && usable));
+    if (!usable) this.pollOpen = false;
+    if (!this.pollOpen) {
+      dialog.hidden = true;
+      return dialog.replaceChildren();
+    }
+    if (!dialog.hidden) return;
+    dialog.hidden = false;
+    dialog.replaceChildren(
+      pollForm(this.doc, this.can.anonymousPolls, {
+        onCreate: (poll) => {
+          this.api.act({ type: "createPoll", ...poll });
+          this.setPollOpen(false);
+        },
+        onCancel: () => this.setPollOpen(false),
+      }),
+    );
   }
 
   /** Opens the search panel with its field in focus, or ends the search. */
@@ -1248,6 +1308,7 @@ export class NativeView {
       this.jumpNote = undefined;
       // The module drops a search when another conversation opens.
       this.forwardFor = undefined;
+      this.pollOpen = false;
       this.searchOpen = false;
       this.searched = false;
       (this.parts.searchInput as HTMLInputElement).value = "";
@@ -1270,6 +1331,7 @@ export class NativeView {
     this.updateCall();
     this.updateThread();
     this.updateForward();
+    this.updatePoll();
     this.updateProfile();
     this.parts.typing!.textContent = typingText(channel?.typing ?? []);
 

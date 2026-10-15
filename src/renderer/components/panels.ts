@@ -1,4 +1,4 @@
-import { MAX_MESSAGE_LENGTH, type NativeForumPost, type NativeListedMessage, type NativeMessageList, type NativeVoiceSession } from "../../shared/native";
+import { MAX_MESSAGE_LENGTH, MAX_NEW_POLL_ANSWER, MAX_NEW_POLL_ANSWERS, MAX_NEW_POLL_QUESTION, MIN_NEW_POLL_ANSWERS, type NativeForumPost, type NativeListedMessage, type NativeMessageList, type NativeVoiceSession } from "../../shared/native";
 import { avatar } from "./avatar";
 import { countBadge, el } from "./dom";
 import { formatSize, formatTime } from "./format";
@@ -138,4 +138,101 @@ export function listedMessages(doc: Document, list: NativeMessageList, onOpen: (
   if (list.loading) parts.push(el(doc, "p", "member-note", "Loading…"));
   else if (list.messages.length === 0 && !list.error) parts.push(el(doc, "p", "member-note", empty));
   return parts;
+}
+
+/** A poll the form made, as a createPoll action takes it. */
+export interface NewPoll {
+  question: string;
+  answers: string[];
+  multiple: boolean;
+  anonymous?: boolean;
+}
+
+/** A line typed or pasted into the form: control characters (a pasted tab) become spaces, and the ends are trimmed. */
+const pollLine = (value: string): string => value.replace(/\p{Cc}/gu, " ").trim();
+
+/**
+ * The new poll form: a question, MIN_NEW_POLL_ANSWERS to
+ * MAX_NEW_POLL_ANSWERS answers (added one by one, the empty ones left out),
+ * whether more than one may be chosen and, where `anonymity` offers the
+ * choice, whether votes stay anonymous (on at first). It says what is
+ * missing rather than handing on a poll the module would drop.
+ */
+export function pollForm(doc: Document, anonymity: boolean, handlers: { onCreate(poll: NewPoll): void; onCancel(): void }): HTMLFormElement {
+  const form = el(doc, "form", "poll-form");
+  const title = el(doc, "h3", "profile-name", "New poll");
+  title.id = "poll-title";
+  const question = el(doc, "input", "poll-question-input");
+  question.name = "question";
+  question.placeholder = "Question";
+  question.setAttribute("aria-label", "Question");
+  question.maxLength = MAX_NEW_POLL_QUESTION;
+  const answers = el(doc, "ol", "poll-answers");
+  const add = el(doc, "button", "link poll-add", "Add answer");
+  add.type = "button";
+  const fields = () => [...answers.querySelectorAll<HTMLInputElement>("input")];
+  // Each answer is numbered by its place; one can go while more than the fewest remain.
+  const renumber = () => {
+    const rows = fields();
+    rows.forEach((input, i) => {
+      input.placeholder = `Answer ${i + 1}`;
+      input.setAttribute("aria-label", `Answer ${i + 1}`);
+      const remove = input.nextElementSibling as HTMLButtonElement;
+      remove.setAttribute("aria-label", `Remove answer ${i + 1}`);
+      remove.hidden = rows.length <= MIN_NEW_POLL_ANSWERS;
+    });
+    add.hidden = rows.length >= MAX_NEW_POLL_ANSWERS;
+  };
+  const addAnswer = () => {
+    const li = el(doc, "li", "poll-answer");
+    const input = el(doc, "input");
+    input.maxLength = MAX_NEW_POLL_ANSWER;
+    const remove = el(doc, "button", "link", "×");
+    remove.type = "button";
+    remove.addEventListener("click", () => {
+      li.remove();
+      renumber();
+    });
+    li.append(input, remove);
+    answers.append(li);
+    renumber();
+    return input;
+  };
+  for (let i = 0; i < MIN_NEW_POLL_ANSWERS; i++) addAnswer();
+  add.addEventListener("click", () => addAnswer().focus());
+  const check = (label: string, checked: boolean) => {
+    const box = el(doc, "input");
+    box.type = "checkbox";
+    box.checked = checked;
+    const row = el(doc, "label", "poll-check");
+    row.append(box, doc.createTextNode(` ${label}`));
+    return { box, row };
+  };
+  const multiple = check("Allow more than one answer", false);
+  const anonymous = anonymity ? check("Anonymous votes", true) : undefined;
+  const error = el(doc, "p", "member-error");
+  error.setAttribute("role", "alert");
+  error.hidden = true;
+  const cancel = el(doc, "button", "link", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => handlers.onCancel());
+  const submit = el(doc, "button", "primary", "Create poll");
+  submit.type = "submit";
+  const buttons = el(doc, "div", "poll-form-buttons");
+  buttons.append(cancel, submit);
+  form.append(title, question, answers, add, multiple.row, ...(anonymous ? [anonymous.row] : []), error, buttons);
+  form.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") handlers.onCancel();
+  });
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const asked = pollLine(question.value);
+    const given = fields().map((input) => pollLine(input.value)).filter((answer) => answer !== "");
+    const problem = asked === "" ? "Write a question." : given.length < MIN_NEW_POLL_ANSWERS ? `Give at least ${MIN_NEW_POLL_ANSWERS} answers.` : new Set(given).size < given.length ? "Each answer can be given only once." : undefined;
+    error.textContent = problem ?? "";
+    error.hidden = !problem;
+    if (problem) return;
+    handlers.onCreate({ question: asked, answers: given, multiple: multiple.box.checked, ...(anonymous ? { anonymous: anonymous.box.checked } : {}) });
+  });
+  return form;
 }
