@@ -193,6 +193,87 @@ export interface NativeMessage {
   mentionsMe?: boolean;
   /** What the composer inserts to mention the author, in the platform's syntax (e.g. `<@id>`, `@username`); read through mentionText(). */
   authorMention?: string;
+  /** Link previews the platform made for it, shown as cards; read through messageEmbeds(). */
+  embeds?: NativeEmbed[];
+}
+
+/**
+ * A link preview as the platform supplies it (Multicord never fetches pages
+ * itself to make one). Every field is optional; a card needs at least a
+ * title, a description or a picture.
+ */
+export interface NativeEmbed {
+  /** Where the title leads: https only. */
+  url?: string;
+  /** The site's name, e.g. "YouTube". */
+  site?: string;
+  title?: string;
+  /** Plain text with the platform's markdown. */
+  description?: string;
+  /** "#rrggbb", the bar along its side. */
+  color?: string;
+  image?: NativeEmbedImage;
+}
+
+export interface NativeEmbedImage {
+  /** https, or a data: URL the engine made; absent while it has to be loaded (mediaKey). */
+  url?: string;
+  /** Set when the engine fetches the picture on request (a loadMedia action with this key). */
+  mediaKey?: string;
+  width?: number;
+  height?: number;
+  /** Bytes, when known. */
+  size?: number;
+  /** A small picture beside the text, rather than a large one under it. */
+  thumbnail?: boolean;
+}
+
+export const MAX_EMBEDS = 5;
+export const MAX_EMBED_TITLE = 256;
+export const MAX_EMBED_DESCRIPTION = 1000;
+
+/**
+ * A message's link previews as the view trusts them: at most MAX_EMBEDS,
+ * texts cut short, links https only, pictures only from addresses the view
+ * may show (isShownUrl) or a media key; cards with nothing to show dropped.
+ */
+export function messageEmbeds(value: unknown): NativeEmbed[] {
+  const embeds: NativeEmbed[] = [];
+  for (const raw of Array.isArray(value) ? value.slice(0, MAX_EMBEDS * 2) : []) {
+    if (embeds.length >= MAX_EMBEDS) break;
+    const v = record(raw);
+    if (!v) continue;
+    const embed: NativeEmbed = {};
+    if (isHttps(v.url)) embed.url = v.url;
+    const site = shortText(v.site);
+    if (site) embed.site = site;
+    const title = shortText(v.title, MAX_EMBED_TITLE);
+    if (title) embed.title = title;
+    const description = shortText(v.description, MAX_EMBED_DESCRIPTION);
+    if (description) embed.description = description;
+    const color = colorOf(v.color);
+    if (color) embed.color = color;
+    const image = embedImage(v.image);
+    if (image) embed.image = image;
+    if (title || description || image) embeds.push(embed);
+  }
+  return embeds;
+}
+
+function embedImage(value: unknown): NativeEmbedImage | undefined {
+  const v = record(value);
+  if (!v) return undefined;
+  const image: NativeEmbedImage = {};
+  if (isShownUrl(v.url)) image.url = v.url;
+  else if (isMediaKey(v.mediaKey)) image.mediaKey = v.mediaKey;
+  else return undefined;
+  if (count(v.width) && count(v.height)) {
+    image.width = Math.min(count(v.width), 4096);
+    image.height = Math.min(count(v.height), 4096);
+  }
+  if (count(v.size)) image.size = count(v.size);
+  if (v.thumbnail === true) image.thumbnail = true;
+  return image;
 }
 
 export interface NativeForumPost {

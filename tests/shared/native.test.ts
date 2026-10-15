@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, memberList, memberProfile, mentionText, NATIVE_IPC, unreadMarker } from "../../src/shared/native";
+import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, memberList, memberProfile, mentionText, NATIVE_IPC, unreadMarker } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -432,5 +432,39 @@ describe("stickers, emoji and GIFs", () => {
     expect(gifResults({ query: 5, results: "no" })).toEqual({ query: "", results: [], loading: false });
     const many = Array.from({ length: MAX_GIF_RESULTS + 3 }, (_, i) => ({ id: `g${i}`, url: "https://g/x", preview: "https://g/x.gif" }));
     expect(gifResults({ results: many })!.results).toHaveLength(MAX_GIF_RESULTS);
+  });
+});
+
+describe("messageEmbeds", () => {
+  it("keeps sane link previews, cut short and within the caps", () => {
+    expect(messageEmbeds(undefined)).toEqual([]);
+    expect(messageEmbeds([null, "x", {}, { url: "https://a.b/c" }])).toEqual([]);
+    expect(
+      messageEmbeds([
+        {
+          url: "https://a.b/c",
+          site: "Site",
+          title: "T".repeat(MAX_EMBED_TITLE + 5),
+          description: "D".repeat(MAX_EMBED_DESCRIPTION + 5),
+          color: "#ff0000",
+          image: { url: "https://a.b/i.png", width: 10_000, height: 20, size: 5, thumbnail: true },
+        },
+      ]),
+    ).toEqual([
+      {
+        url: "https://a.b/c",
+        site: "Site",
+        title: "T".repeat(MAX_EMBED_TITLE),
+        description: "D".repeat(MAX_EMBED_DESCRIPTION),
+        color: "#ff0000",
+        image: { url: "https://a.b/i.png", width: 4096, height: 20, size: 5, thumbnail: true },
+      },
+    ]);
+    // Links other than https, odd colours and pictures from elsewhere are left out.
+    expect(messageEmbeds([{ url: "javascript:alert(1)", title: "x", color: "red", image: { url: "http://a/i.png" } }])).toEqual([{ title: "x" }]);
+    expect(messageEmbeds([{ image: { mediaKey: "m:1", width: 5, thumbnail: "yes" } }])).toEqual([{ image: { mediaKey: "m:1" } }]);
+    expect(messageEmbeds([{ title: "x", image: "no" }])).toEqual([{ title: "x" }]);
+    const many = Array.from({ length: MAX_EMBEDS + 3 }, (_, i) => ({ title: `t${i}` }));
+    expect(messageEmbeds(many)).toHaveLength(MAX_EMBEDS);
   });
 });

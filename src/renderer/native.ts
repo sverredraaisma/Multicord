@@ -3,7 +3,7 @@ import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_MESSAGE_LENGTH, memberList, memberProfile, stickerPacks, unreadMarker, type NativeUnread } from "../shared/native";
+import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_MESSAGE_LENGTH, memberList, memberProfile, messageEmbeds, stickerPacks, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
@@ -715,7 +715,9 @@ export class NativeView {
    * is asked for once it comes into sight (all of it where nothing can tell).
    */
   private watchAutoLoads(scroller: HTMLElement, channel: ChatState["channel"]): void {
-    const held = new Set((channel?.messages ?? []).flatMap((m) => m.attachments.flatMap((a) => (a.mediaKey && !a.url ? [a.mediaKey] : []))));
+    const held = new Set(
+      (channel?.messages ?? []).flatMap((m) => [...m.attachments, ...messageEmbeds(m.embeds).flatMap((e) => (e.image ? [e.image] : []))].flatMap((a) => (a.mediaKey && !a.url ? [a.mediaKey] : []))),
+    );
     this.autoQueue = this.autoQueue.filter((key) => held.has(key));
     for (const key of [...this.autoLoading.keys()]) if (!held.has(key)) this.autoLoaded(key);
     const waiting = [...scroller.querySelectorAll<HTMLElement>("[data-auto-load]")];

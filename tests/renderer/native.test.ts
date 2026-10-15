@@ -1165,6 +1165,20 @@ describe("media requests from the view", () => {
     }
   }
 
+  it("loads link preview pictures by itself like attachments", () => {
+    vi.stubGlobal("IntersectionObserver", undefined);
+    view.setMediaAutoLoad(5 * MB);
+    view.update(
+      chat({
+        channel: {
+          ...chat().channel!,
+          messages: [msg("10", { embeds: [{ title: "a", image: { mediaKey: "e:1", size: 10 } }, { title: "b" }, { title: "c", image: { url: "https://x/y.png" } }] })],
+        },
+      }),
+    );
+    expect(asked()).toEqual(["e:1"]);
+  });
+
   it("asks the engine for held-back media once", () => {
     vi.stubGlobal("IntersectionObserver", undefined);
     const state = withFiles([{ name: "s", kind: "sticker", mediaKey: "m:1" }]);

@@ -154,6 +154,17 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
 .attachment.sticker-name { color: var(--muted); }
 .attachment { display: block; margin-top: 6px; color: #00a8fc; }
 .attachment.expired { color: var(--muted); }
+/* Link previews the platform made: a card with a coloured bar. */
+.embed { display: flex; gap: 12px; max-width: 432px; margin-top: 6px; padding: 8px 12px; border-left: 4px solid var(--embed-color, var(--border)); border-radius: 4px; background: var(--panel); }
+.embed:not(.with-thumbnail) { flex-direction: column; gap: 0; }
+.embed-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
+.embed-site { color: var(--muted); font-size: 12px; }
+.embed-title { color: var(--text); font-weight: 600; }
+a.embed-title { color: #00a8fc; text-decoration: none; }
+a.embed-title:hover { text-decoration: underline; }
+.embed-description { color: var(--text); font-size: 14px; }
+.embed .embed-thumbnail { flex: none; max-width: 80px; max-height: 80px; }
+.embed .embed-image { max-width: 100%; }
 .composer {
   margin: 0 16px 16px;
   padding: 11px 14px;

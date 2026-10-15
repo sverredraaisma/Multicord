@@ -162,6 +162,50 @@ describe("messages", () => {
   });
 });
 
+describe("link previews", () => {
+  const handlers = (): MessageHandlers => ({ onReply: vi.fn(), onToggleReactionPicker: vi.fn(), onReact: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(), onLoadMedia: vi.fn() });
+  const base: NativeMessage = { id: "5", author: "Ana", content: "see", timestamp: "", edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] };
+
+  it("shows cards with a linked title, text and a picture, and nothing from malformed ones", () => {
+    const item = messageItem(
+      document,
+      {
+        ...base,
+        embeds: [
+          { url: "https://a.b/c", site: "Site", title: "Title", description: "**bold**", color: "#ff0000", image: { url: "https://a.b/i.png", thumbnail: true } },
+          { title: "Plain", image: { url: "https://a.b/big.png", width: 400, height: 200 } },
+          { site: "Only site", description: "words" },
+          { url: "https://x" } as never,
+        ],
+      },
+      handlers(),
+    );
+    const cards = item.querySelectorAll<HTMLElement>(".embed");
+    expect(cards).toHaveLength(3);
+    const link = cards[0]!.querySelector<HTMLAnchorElement>("a.embed-title")!;
+    expect([link.textContent, link.href, link.target, link.rel]).toEqual(["Title", "https://a.b/c", "_blank", "noreferrer"]);
+    expect(cards[0]!.querySelector(".embed-site")!.textContent).toBe("Site");
+    expect(cards[0]!.querySelector(".embed-description strong")!.textContent).toBe("bold");
+    expect(cards[0]!.style.getPropertyValue("--embed-color")).toBe("#ff0000");
+    expect(cards[0]!.classList.contains("with-thumbnail")).toBe(true);
+    expect(cards[0]!.querySelector("img.embed-thumbnail")!.getAttribute("alt")).toBe("Title");
+    expect(cards[1]!.querySelector("div.embed-title")!.textContent).toBe("Plain");
+    expect(cards[1]!.querySelector("img.embed-image")).not.toBeNull();
+    expect(cards[2]!.querySelector(".embed-title")).toBeNull();
+    expect(messageItem(document, { ...base, embeds: "no" as never }, handlers()).querySelector(".embed")).toBeNull();
+  });
+
+  it("loads held-back pictures through the engine, named by the site when untitled", () => {
+    const h = handlers();
+    const item = messageItem(document, { ...base, embeds: [{ site: "Telegram", description: "x", image: { mediaKey: "m:9", size: 2048 } }, { description: "y", image: { mediaKey: "m:8" } }] }, h);
+    const load = item.querySelector<HTMLButtonElement>(".embed button.attachment.load")!;
+    expect(load.textContent).toBe("Show Telegram (2.0 KB)");
+    load.click();
+    expect(h.onLoadMedia).toHaveBeenCalledWith("m:9");
+    expect(item.querySelectorAll(".embed button.attachment.load")[1]!.textContent).toBe("Show Preview");
+  });
+});
+
 describe("mention suggestions", () => {
   const base = { content: "", timestamp: "2026-10-14T12:00:00Z", edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] };
 

@@ -1,7 +1,7 @@
 import type { FavouriteKind } from "../../shared/favourites";
-import { isShownUrl, type NativeAttachment, type NativeChannelCan, type NativeMessage } from "../../shared/native";
+import { isShownUrl, messageEmbeds, type NativeAttachment, type NativeChannelCan, type NativeEmbed, type NativeMessage } from "../../shared/native";
 import { avatar } from "./avatar";
-import { el } from "./dom";
+import { el, setColor } from "./dom";
 import { formatSize, formatTime } from "./format";
 import { renderMarkdown, type MarkdownOptions } from "./markdown";
 import { quickReactions, reactionChip } from "./reactions";
@@ -132,6 +132,50 @@ export function attachment(doc: Document, file: NativeAttachment, onLoad?: (key:
   }
 }
 
+/**
+ * A link preview the platform made, as a card: the site, the title (a link
+ * that opens in the browser where it has one), the description and a
+ * picture, beside the text when it is a thumbnail. Pictures the engine
+ * holds back load like attachments do. Input comes through messageEmbeds().
+ */
+export function embedCard(
+  doc: Document,
+  embed: NativeEmbed,
+  onLoad?: (key: string) => void,
+  autoLoad?: (file: NativeAttachment) => true | string,
+  options: MarkdownOptions = {},
+): HTMLElement {
+  const card = el(doc, "article", "embed");
+  setColor(card, "--embed-color", embed.color);
+  const text = el(doc, "div", "embed-text");
+  if (embed.site) text.append(el(doc, "div", "embed-site", embed.site));
+  if (embed.title) {
+    if (embed.url) {
+      const link = el(doc, "a", "embed-title", embed.title);
+      link.href = embed.url;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.title = embed.url;
+      text.append(link);
+    } else text.append(el(doc, "div", "embed-title", embed.title));
+  }
+  if (embed.description) {
+    const description = renderMarkdown(doc, embed.description, options);
+    description.classList.add("embed-description");
+    text.append(description);
+  }
+  card.append(text);
+  const image = embed.image;
+  if (image) {
+    const file: NativeAttachment = { name: embed.title ?? embed.site ?? "Preview", kind: "image", url: image.url, mediaKey: image.mediaKey, width: image.width, height: image.height, size: image.size };
+    const shown = attachment(doc, file, onLoad, autoLoad);
+    shown.classList.add(image.thumbnail ? "embed-thumbnail" : "embed-image");
+    card.classList.toggle("with-thumbnail", image.thumbnail === true);
+    card.append(shown);
+  }
+  return card;
+}
+
 /** What a shown attachment would be as a favourite, if it can be one: a sticker, a GIF (or looping video) or a picture. */
 export function favouriteKind(file: NativeAttachment): FavouriteKind | undefined {
   // The shell keeps only what it can fetch (https) or is handed (a data: URL of a picture or video).
@@ -260,6 +304,7 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
     wrap.append(shown, star);
     body.append(wrap);
   }
+  for (const embed of messageEmbeds(message.embeds)) body.append(embedCard(doc, embed, handlers.onLoadMedia, handlers.autoLoad, options));
 
   // Where reactions cannot be given, the ones others gave still show.
   const canReact = options.can?.react !== false;
