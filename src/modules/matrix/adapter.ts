@@ -21,7 +21,7 @@ import {
   type MxSession,
   type MxSync,
 } from "./api";
-import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, ringContent, type CallParticipant } from "./calls";
+import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, type CallParticipant } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { cleanName, MAX_CALL_MEMBERS, serviceUrl, userId } from "./events";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
@@ -1689,10 +1689,14 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     clearTimeout(this.callTimer);
     void call.keys?.update(this.participants(room));
     // A call starting in a DM rings the other side, as Element does.
-    if (this.dmUsers.has(room.id) && this.othersInCall(room).length === 0) {
-      void this.sendContent(session, room, ringContent(call.membershipEventId!, "audio", Date.now()), RTC_NOTIFICATION_TYPE).catch((error: unknown) => this.log(`Ring not sent: ${friendly(error)}`));
-    }
+    if (this.dmUsers.has(room.id) && this.othersInCall(room).length === 0) void this.ring(session, room, call);
     this.render();
+  }
+
+  /** Rings the other side of a DM. Element rings only for a call whose slot is open, so it is opened first; older clients ring without it. */
+  private async ring(session: MxSession, room: Room, call: MatrixCall): Promise<void> {
+    await this.deps.api.sendState(session, room.id, RTC_SLOT_TYPE, SLOT_ID, slotContent(call.encrypted)).catch((error: unknown) => this.log(`Call slot not opened: ${friendly(error)}`));
+    await this.sendContent(session, room, ringContent(call.membershipEventId!, "audio", Date.now()), RTC_NOTIFICATION_TYPE).catch((error: unknown) => this.log(`Ring not sent: ${friendly(error)}`));
   }
 
   /** Leaves our call, if any: the view hangs up at once, the membership goes after. */
@@ -1877,6 +1881,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private viewState(): NativeViewState {
     const platform = this.deps.def.name;
     if (this.step === "connecting") return { screen: "connecting", platform, status: this.status! };
+    // A verification can move on before it says so (our "They match" is still being sent while a sync renders): the screen is its phase's.
+    if (isVerifyStep(this.step) && this.verification) this.step = VERIFY_STEPS[this.verification.state().phase];
     if (this.step !== "chat") {
       // The waiting screens have nothing to submit.
       const waiting = this.step === "verify-wait" || this.step === "verify-confirmed";

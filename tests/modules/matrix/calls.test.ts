@@ -15,6 +15,7 @@ import {
   parseCallKey,
   RENEW_MARGIN_MS,
   ringContent,
+  slotContent,
   RING_LIFETIME_MS,
   type CallKeysDeps,
   type MatrixCallDeps,
@@ -64,6 +65,11 @@ describe("membership events", () => {
       lifetime: RING_LIFETIME_MS,
       "m.call.intent": "audio",
     });
+  });
+
+  it("opens the call's slot, with per-device media keys in encrypted rooms", () => {
+    expect(slotContent(false)).toEqual({ status: "open", application: { type: "m.call" } });
+    expect(slotContent(true)).toEqual({ status: "open", application: { type: "m.call" }, encryption: { type: "org.matrix.msc4143.per_member" } });
   });
 });
 

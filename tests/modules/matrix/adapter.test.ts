@@ -1796,6 +1796,16 @@ describe("verifying with another device", () => {
     expect(ctx.chat().sidebar.find((i) => i.id === "security")).toBeUndefined();
   });
 
+  it("shows the phase a verification is in when a sync renders before it says it moved on", async () => {
+    const ctx = await withCrypto();
+    await startOutgoing(ctx);
+    ctx.e2ee.outgoing.set({ phase: "emoji", emoji: EMOJI });
+    // Our "They match" is still on its way: the flow has confirmed but not yet called back.
+    ctx.e2ee.outgoing.current = { phase: "confirmed" };
+    await ctx.live(sync({}));
+    expect(ctx.prompt()).toMatchObject({ prompt: { id: "verify-confirmed", submit: "Waiting…" }, busy: true });
+  });
+
   it("points to the recovery key when the backup key did not come over", async () => {
     const ctx = await withCrypto();
     await startOutgoing(ctx);
@@ -2287,6 +2297,8 @@ describe("joining a call", () => {
     expect(ctx.voice()).toMatchObject({ url: "wss://sfu.call.x.org/", token: "jwt1" });
     expect(ctx.voice()).not.toHaveProperty("e2ee");
     expect(ctx.api.sendState).toHaveBeenCalledWith(SESSION, "!dm:x.org", "org.matrix.msc3401.call.member", MY_KEY, expect.objectContaining({ application: "m.call", device_id: "D" }));
+    // Element rings only for an open call slot.
+    expect(ctx.api.sendState).toHaveBeenCalledWith(SESSION, "!dm:x.org", "org.matrix.msc4143.rtc.slot", "m.call#ROOM", { status: "open", application: { type: "m.call" } });
     expect(ctx.api.send).toHaveBeenCalledWith(
       SESSION,
       "!dm:x.org",
@@ -2319,6 +2331,16 @@ describe("joining a call", () => {
     ctx.api.send.mockRejectedValueOnce(new Error("offline"));
     await ctx.join("Start a call in Bo");
     expect(ctx.log).toHaveBeenCalledWith("Ring not sent: offline");
+    await ctx.act({ type: "leaveVoice" });
+    // Without the slot (e.g. no right to set it), it still rings, for clients that do without one.
+    ctx.api.sendState.mockImplementation(async (_s, _room, type) => {
+      if (type === "org.matrix.msc4143.rtc.slot") throw new Error("forbidden");
+      return "$state";
+    });
+    ctx.api.send.mockClear();
+    await ctx.join("Start a call in Bo");
+    expect(ctx.log).toHaveBeenCalledWith("Call slot not opened: forbidden");
+    expect(ctx.api.send).toHaveBeenCalledWith(SESSION, "!dm:x.org", expect.objectContaining({ notification_type: "ring" }), "org.matrix.msc4075.rtc.notification");
     await ctx.act({ type: "leaveVoice" });
     await ctx.live(callSync("!dm:x.org", [BO_KEY, callMember(BO, "BD", { createdTs: 1 })]));
     ctx.api.send.mockClear();

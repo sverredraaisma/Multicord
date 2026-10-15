@@ -39,7 +39,10 @@ const MAX_KEY_RETRIES = 5;
 const KEYS_PER_DEVICE = 4;
 /** Keys from devices whose membership has not arrived yet, kept until it does. */
 const MAX_PENDING_KEYS = 50;
-const SLOT_ID = "m.call#ROOM";
+/** The room's call, as MatrixRTC names it (MSC4143): the ring's slot, and the state key of the slot event. */
+export const SLOT_ID = "m.call#ROOM";
+/** The state event saying whether a room's call is open (MSC4143); Element rings only for an open one. */
+export const RTC_SLOT_TYPE = "org.matrix.msc4143.rtc.slot";
 /** How long a ring we send lasts (Element's default). */
 export const RING_LIFETIME_MS = 90_000;
 
@@ -89,6 +92,13 @@ export function ringContent(membershipEventId: string, intent: string, now: numb
     lifetime: RING_LIFETIME_MS,
     "m.call.intent": intent,
   };
+}
+
+/** The room's call slot, open; an encrypted room's call has per-device media keys, as Element Call's do. */
+export function slotContent(encrypted: boolean): Record<string, unknown> {
+  const content: Record<string, unknown> = { status: "open", application: { type: "m.call" } };
+  if (encrypted) content.encryption = { type: "org.matrix.msc4143.per_member" };
+  return content;
 }
 
 /** The LiveKit server is on a host the engine (and so the view) may not reach. */
