@@ -522,6 +522,15 @@ describe("typing", () => {
   });
 });
 
+describe("muting conversations", () => {
+  it("sends a mute action from a row's bell", () => {
+    const base = chat();
+    view.update(chat({ sidebar: [...base.sidebar.slice(0, 2), { ...base.sidebar[2]!, muted: true, canMute: true }] }));
+    root.querySelector<HTMLButtonElement>('.mute-toggle[aria-label="Unmute Ana"]')!.click();
+    expect(act).toHaveBeenCalledWith({ type: "mute", channelId: "3", mute: false });
+  });
+});
+
 describe("mentions", () => {
   const people = [msg("10", { author: "Ana", authorId: "a", authorMention: "<@a>" }), msg("11", { author: "Bo", authorId: "b" }), msg("12", { author: "Me", authorId: "m", mine: true })];
   const withPeople = (extra: Partial<NonNullable<Chat["channel"]>> = {}) =>

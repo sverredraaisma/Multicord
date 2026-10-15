@@ -65,6 +65,32 @@ describe("channel items", () => {
     expect(onJoinVoice).toHaveBeenCalledWith("2");
     expect(voice.querySelector(".voice-members")).toBeNull();
   });
+
+  it("show muted conversations in words too, and offer a mute bell where the module can mute them", () => {
+    const onMute = vi.fn();
+    const handlers = { onSelect: vi.fn(), onJoinVoice: vi.fn(), onMute };
+    const base = { id: "1", name: "Ana", kind: "dm" as const, unread: true, mentions: 0, active: false };
+    const plain = channelItem(document, base, handlers);
+    expect(plain.querySelector(".channel")!.classList.contains("muted")).toBe(false);
+    expect(plain.querySelector(".muted-mark, .mute-toggle")).toBeNull();
+
+    const muted = channelItem(document, { ...base, muted: true, canMute: true }, handlers);
+    expect(muted.querySelector(".channel")!.classList.contains("muted")).toBe(true);
+    expect(muted.querySelector(".muted-mark")!.getAttribute("aria-label")).toBe("Muted");
+    const unmute = muted.querySelector<HTMLButtonElement>(".mute-toggle")!;
+    expect(unmute.getAttribute("aria-pressed")).toBe("true");
+    expect(unmute.getAttribute("aria-label")).toBe("Unmute Ana");
+    unmute.click();
+    expect(onMute).toHaveBeenLastCalledWith("1", false);
+
+    const mute = channelItem(document, { ...base, canMute: true }, handlers).querySelector<HTMLButtonElement>(".mute-toggle")!;
+    expect(mute.getAttribute("aria-label")).toBe("Mute Ana");
+    mute.click();
+    expect(onMute).toHaveBeenLastCalledWith("1", true);
+    // Not offered without the module saying it can, or without a handler.
+    expect(channelItem(document, { ...base, canMute: "yes" as unknown as boolean }, handlers).querySelector(".mute-toggle")).toBeNull();
+    expect(channelItem(document, { ...base, canMute: true }, { onSelect: vi.fn(), onJoinVoice: vi.fn() }).querySelector(".mute-toggle")).toBeNull();
+  });
 });
 
 describe("reactions", () => {

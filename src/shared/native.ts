@@ -18,6 +18,10 @@ export interface NativeSidebarItem {
   active: boolean;
   /** Voice channels: who is connected. */
   members?: NativeVoiceMember[];
+  /** Its notifications are muted on the platform; the view shows it quieter. */
+  muted?: boolean;
+  /** The module can mute and unmute it from here (a `mute` action). */
+  canMute?: boolean;
 }
 
 export interface NativeVoiceMember {
@@ -656,6 +660,8 @@ export type NativeAction =
    * closed, so they do not travel with every update.
    */
   | { type: "picker"; open: boolean }
+  /** Mutes or unmutes a conversation's notifications on the platform, where its sidebar row says it can (canMute). */
+  | { type: "mute"; channelId: string; mute: boolean }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -703,6 +709,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return text(v.content, 0, MAX_MESSAGE_LENGTH) && (v.replyTo === undefined || id(v.replyTo));
     case "joinVoice":
       return id(v.channelId);
+    case "mute":
+      return id(v.channelId) && typeof v.mute === "boolean";
     case "voiceState":
       return [v.mute, v.deaf, v.video, v.stream].every((flag) => typeof flag === "boolean");
     case "voiceError":

@@ -91,6 +91,26 @@
 .channel.unread { color: var(--text); font-weight: 600; }
 .channel .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel .badge { position: static; border: 0; }
+/* Muted conversations: dimmer, with a crossed-out bell; the bell beside a row mutes or unmutes it. */
+.channel.muted, .channel.muted.unread { color: var(--muted); font-weight: normal; opacity: 0.7; }
+.muted-mark { display: inline-flex; }
+.muted-icon, .mute-icon { width: 14px; height: 14px; fill: currentColor; }
+.channels li.mutable { position: relative; }
+.channels li.mutable > .channel { padding-right: 32px; }
+.mute-toggle {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: none;
+  padding: 3px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+.mute-toggle:hover { background: var(--border); color: var(--text); }
+li.mutable:hover > .mute-toggle, li.mutable:focus-within > .mute-toggle { display: inline-flex; }
 .account { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: #232428; }
 .me { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 

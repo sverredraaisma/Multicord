@@ -776,6 +776,7 @@ export class NativeView {
       ...channelList(this.doc, state.sidebar, {
         onSelect: (channelId) => this.api.act({ type: "select", channelId }),
         onJoinVoice: (channelId) => this.api.act({ type: "joinVoice", channelId }),
+        onMute: (channelId, mute) => this.api.act({ type: "mute", channelId, mute }),
       }),
     );
 

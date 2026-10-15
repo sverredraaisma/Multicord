@@ -83,7 +83,8 @@ export const SAMPLE_CHANNELS: NativeSidebarItem[] = [
       { name: "Bo", muted: true, video: false },
     ],
   },
-  { id: "8", name: "Cy", kind: "dm", iconUrl: placeholderImage("#9b59b6", "C"), unread: true, mentions: 3, active: false },
+  { id: "8", name: "Cy", kind: "dm", iconUrl: placeholderImage("#9b59b6", "C"), unread: true, mentions: 3, active: false, canMute: true },
+  { id: "9", name: "Dee", kind: "dm", unread: true, mentions: 0, active: false, muted: true, canMute: true },
 ];
 
 const MARKDOWN_SAMPLE = [
@@ -192,7 +193,7 @@ export function renderGallery(root: HTMLElement): void {
       "The unified Messages list: every platform's DMs, most recent first, with previews where the platform gives them.",
       wrap(doc, "ul", "conversation-list", SAMPLE_CONVERSATIONS.map((c, i) => conversationItem(doc, c, { active: i === 1, now: SAMPLE_NOW, onOpen: log("open conversation") }))),
     ),
-    section(doc, "Channel list", "Categories, text channels, threads, forums, voice channels with members, and DMs.", wrap(doc, "ul", "channels", channelList(doc, SAMPLE_CHANNELS, { onSelect: log("select"), onJoinVoice: log("join voice") }))),
+    section(doc, "Channel list", "Categories, text channels, threads, forums, voice channels with members, and DMs, one of them muted.", wrap(doc, "ul", "channels", channelList(doc, SAMPLE_CHANNELS, { onSelect: log("select"), onJoinVoice: log("join voice"), onMute: log("mute") }))),
     section(
       doc,
       "Messages",

@@ -99,6 +99,16 @@ describe("forum post validation", () => {
   });
 });
 
+describe("mute actions", () => {
+  it("take a conversation id and whether to mute", () => {
+    expect(isNativeAction({ type: "mute", channelId: "5", mute: true })).toBe(true);
+    expect(isNativeAction({ type: "mute", channelId: "5", mute: false })).toBe(true);
+    expect(isNativeAction({ type: "mute", channelId: "x", mute: true })).toBe(false);
+    expect(isNativeAction({ type: "mute", channelId: "5", mute: "yes" })).toBe(false);
+    expect(isNativeAction({ type: "mute", channelId: "5" })).toBe(false);
+  });
+});
+
 describe("voice action validation", () => {
   it("validates joins, toggles and errors", () => {
     expect(isNativeAction({ type: "joinVoice", channelId: "5" })).toBe(true);
