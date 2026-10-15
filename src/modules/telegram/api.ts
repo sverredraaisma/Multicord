@@ -149,6 +149,8 @@ export interface TgDialog {
   noStickers?: boolean;
   /** The user left it, or was removed: they can only read what is left. */
   left?: boolean;
+  /** It is in the user's archive (Telegram's folder 1). */
+  archived?: boolean;
   lastMessage?: TgMessage;
   date: number;
 }
@@ -263,7 +265,9 @@ export type TgUpdate =
   /** Messages in a chat were pinned or unpinned. */
   | { type: "pins"; chatId: string; ids: number[]; pinned: boolean }
   /** A poll's results changed, or it closed; Telegram names only the poll. */
-  | { type: "poll"; pollId: string; results: TgPollResults; closed?: boolean };
+  | { type: "poll"; pollId: string; results: TgPollResults; closed?: boolean }
+  /** Chats moved into the archive or out of it (here or in another app, or by Telegram when an archived chat gets news). */
+  | { type: "archive"; peers: { chatId: string; archived: boolean }[] };
 
 export interface TelegramApi {
   connect(): Promise<void>;
@@ -296,6 +300,8 @@ export interface TelegramApi {
   markRead(chatId: string, maxId: number, topicId?: number): Promise<void>;
   /** Mutes a chat's notifications until a time (Unix seconds), or unmutes it with 0. */
   mute(chatId: string, until: number): Promise<void>;
+  /** Moves a chat into the archive, or out of it. */
+  archive(chatId: string, archived: boolean): Promise<void>;
   /** A forum's topics, most recently active first. */
   topics(chatId: string, limit: number): Promise<TgTopic[]>;
   /** Starts a topic in a forum; its id. */

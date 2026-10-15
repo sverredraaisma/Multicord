@@ -520,6 +520,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.react(action.messageId, action.emoji, action.add);
       case "mute":
         return this.mute(chatIdOfView(action.channelId), action.mute);
+      case "archive":
+        return this.archive(chatIdOfView(action.channelId), action.archive);
       case "typing":
         return this.sendTyping();
       case "attach":
@@ -1152,6 +1154,14 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         }
         return this.render();
       }
+      case "archive": {
+        for (const { chatId, archived } of update.peers) {
+          const dialog = this.dialog(chatId);
+          if (dialog && archived) dialog.archived = true;
+          else if (dialog) delete dialog.archived;
+        }
+        return this.render();
+      }
       case "pins": {
         const ids = new Set(update.ids);
         for (const list of this.loaded(update.chatId)) for (const [index, message] of list.entries()) if (ids.has(message.id)) list[index] = { ...message, pinned: update.pinned };
@@ -1317,6 +1327,16 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       if (mute) dialog.mutedUntil = until;
       else delete dialog.mutedUntil;
       this.publish();
+    });
+  }
+
+  /** Moves a chat into the archive or out of it in Telegram, and follows it here at once. Saved Messages stays out. */
+  private async archive(chatId: string, archive: boolean): Promise<void> {
+    const dialog = this.dialog(chatId);
+    if (!dialog || !this.api || chatId === this.me?.id || (dialog.archived === true) === archive) return;
+    await this.attempt(archive ? "Could not archive the chat" : "Could not move the chat out of the archive", async () => {
+      await this.api!.archive(chatId, archive);
+      this.onUpdate({ type: "archive", peers: [{ chatId, archived: archive }] });
     });
   }
 
@@ -1866,29 +1886,41 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     };
   }
 
+  /** A chat's row in the sidebar; an open forum lists its topics under it. */
+  private sidebarRows(d: TgDialog): NativeSidebarItem[] {
+    // Every chat shows its picture, so all are "dm" rows.
+    const selected = d.chatId === this.selected;
+    const item: NativeSidebarItem = { id: viewId(d.chatId), name: d.title, kind: "dm", ...this.badge(d), active: selected && this.topic === undefined, muted: this.muted(d), canMute: true };
+    const avatar = this.avatars.get(d.chatId);
+    if (avatar) item.iconUrl = avatar;
+    if (d.archived) item.archived = true;
+    // Saved Messages cannot be archived.
+    if (d.chatId !== this.me?.id) item.canArchive = true;
+    const rows = [item];
+    if (d.forum && selected) {
+      for (const t of this.topicList(d.chatId)) rows.push({ id: this.topicViewId(d.chatId, t.id), name: t.title, kind: "thread", unread: t.unreadCount > 0, mentions: t.unreadMentions, active: t.id === this.topic });
+    }
+    return rows;
+  }
+
   private viewState(): NativeViewState {
     const platform = this.deps.def.name;
     if (this.step === "connecting") return { screen: "connecting", platform, status: this.status ?? "Connecting…" };
     if (this.step !== "chat") return { screen: "prompt", platform, prompt: this.prompt(), busy: this.busy, status: this.status, error: this.error };
     const sidebar: NativeSidebarItem[] = [];
+    const listed = this.dialogs.filter((d) => !d.archived);
     for (const [kind, heading] of SECTIONS) {
-      const dialogs = this.dialogs.filter((d) => d.kind === kind);
+      const dialogs = listed.filter((d) => d.kind === kind);
       if (dialogs.length === 0) continue;
       sidebar.push({ id: `section-${kind}`, name: heading, kind: "category", unread: false, mentions: 0, active: false });
-      for (const d of dialogs) {
-        // Every chat shows its picture, so all are "dm" rows.
-        const selected = d.chatId === this.selected;
-        const item: NativeSidebarItem = { id: viewId(d.chatId), name: d.title, kind: "dm", ...this.badge(d), active: selected && this.topic === undefined, muted: this.muted(d), canMute: true };
-        const avatar = this.avatars.get(d.chatId);
-        if (avatar) item.iconUrl = avatar;
-        sidebar.push(item);
-        // An open forum lists its topics under it.
-        if (d.forum && selected) {
-          for (const t of this.topicList(d.chatId)) {
-            sidebar.push({ id: this.topicViewId(d.chatId, t.id), name: t.title, kind: "thread", unread: t.unreadCount > 0, mentions: t.unreadMentions, active: t.id === this.topic });
-          }
-        }
-      }
+      for (const d of dialogs) sidebar.push(...this.sidebarRows(d));
+    }
+    // Archived chats of every kind, in a section of their own that starts folded, as in Telegram's apps.
+    const archived = this.dialogs.filter((d) => d.archived);
+    if (archived.length > 0) {
+      const badges = archived.map((d) => this.badge(d));
+      sidebar.push({ id: "section-archive", name: "Archive", kind: "category", unread: badges.some((b) => b.unread), mentions: badges.reduce((sum, b) => sum + b.mentions, 0), active: false, collapsible: true, collapsed: true });
+      for (const d of archived) sidebar.push(...this.sidebarRows(d));
     }
     const dialog = this.selected ? this.dialog(this.selected) : undefined;
     // Stickers only while the picker is open, and only where they go as stickers: elsewhere the shell would send them as files, round a chat's rules.

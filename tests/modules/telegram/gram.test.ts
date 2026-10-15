@@ -22,7 +22,7 @@ const h = vi.hoisted(() => {
     "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
     "InputFile", "InputFileBig", "InputMediaUploadedPhoto", "InputMediaUploadedDocument",
     "PhotoPathSize", "VideoSize", "StickerSet", "InputStickerSetID", "InputMediaDocument", "InputDocument",
-    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings",
+    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings", "InputFolderPeer", "FolderPeer", "UpdateFolderPeers",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
@@ -55,6 +55,7 @@ const h = vi.hoisted(() => {
       CreateForumTopic: class extends Base {},
     },
     users: { GetFullUser: class extends Base {} },
+    folders: { EditPeerFolders: class extends Base {} },
     upload: { SaveFilePart: class extends Base {}, SaveBigFilePart: class extends Base {} },
   };
   for (const name of names) Api[name] = class extends Base {};
@@ -518,6 +519,20 @@ describe("createGramApi", () => {
     expect((client.invoke.mock.calls[1]![0] as { settings: { muteUntil: number } }).settings.muteUntil).toBe(0);
   });
 
+  it("moves a chat into the archive and out of it", async () => {
+    await expect(api.archive("-7", true)).resolves.toBeUndefined();
+    await api.archive("7", false);
+    const requests = client.invoke.mock.calls.map(([r]) => r as { folderPeers: { peer: unknown; folderId: number }[] });
+    expect(requests[0]).toBeInstanceOf(Api.folders.EditPeerFolders);
+    expect(requests[0]!.folderPeers[0]).toBeInstanceOf(Api.InputFolderPeer);
+    expect(requests.map((r) => r.folderPeers.map((p) => ({ ...p })))).toEqual([[{ peer: { input: -7n }, folderId: 1 }], [{ peer: { input: 7n }, folderId: 0 }]]);
+  });
+
+  it("marks archived dialogs", async () => {
+    client.getDialogs.mockResolvedValue([{ dialog: {}, id: 1n, archived: true, unreadCount: 0, unreadMentionsCount: 0, date: 1, entity: make(Api.User, { firstName: "A" }) }]);
+    expect((await api.dialogs(5)).dialogs[0]!.archived).toBe(true);
+  });
+
   describe("avatar", () => {
     it("returns a data URL for a small picture", async () => {
       client.downloadProfilePhoto.mockResolvedValue(Buffer.from("abc"));
@@ -555,6 +570,7 @@ describe("createGramApi", () => {
         Api.UpdatePinnedMessages,
         Api.UpdatePinnedChannelMessages,
         Api.UpdateMessagePoll,
+        Api.UpdateFolderPeers,
       ]);
     });
 
@@ -574,6 +590,10 @@ describe("createGramApi", () => {
       rawH(make(Api.UpdateMessagePoll, { pollId: 79n, results: {} }));
       expect(cb.mock.calls.splice(-2)).toEqual([[{ type: "poll", pollId: "77", results: { voters: [], total: 2, min: false }, closed: true }], [{ type: "poll", pollId: "78", results: { voters: [], min: false } }]]);
       expect(cb.mock.calls.splice(-2)).toEqual([[{ type: "pins", chatId: "-1", ids: [4], pinned: true }], [{ type: "pins", chatId: "-1001234567890", ids: [5], pinned: false }]]);
+      const folderPeer = (peer: unknown, folderId: number) => make(Api.FolderPeer, { peer, folderId });
+      rawH(make(Api.UpdateFolderPeers, { folderPeers: [folderPeer(make(Api.PeerUser, { userId: 8n }), 1), folderPeer(make(Api.PeerChat, { chatId: 2n }), 0), folderPeer({}, 1), {}] }));
+      rawH(make(Api.UpdateFolderPeers, { folderPeers: [{}] }));
+      expect(cb.mock.calls.splice(-1)).toEqual([[{ type: "archive", peers: [{ chatId: "8", archived: true }, { chatId: "-2", archived: false }] }]]);
       rawH(make(Api.UpdateUserTyping, { userId: 8n, action: make(Api.SendMessageTypingAction) }));
       expect(cb.mock.calls.at(-1)).toEqual([{ type: "typing", chatId: "8", userId: "8", active: true }]);
       cb.mock.calls.pop();

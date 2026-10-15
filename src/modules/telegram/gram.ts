@@ -403,6 +403,19 @@ export function pinsOf(update: unknown): Extract<TgUpdate, { type: "pins" }> | u
   return { type: "pins", chatId, ids: messages.filter((id) => Number.isInteger(id) && id > 0), pinned: pinned === true };
 }
 
+/** Telegram's folder for archived chats; the main list is folder 0. */
+const ARCHIVE_FOLDER = 1;
+
+/** Chats moved into the archive or out of it, as Telegram announces it. */
+export function archiveOf(update: unknown): Extract<TgUpdate, { type: "archive" }> | undefined {
+  if (!(update instanceof Api.UpdateFolderPeers)) return undefined;
+  const peers = update.folderPeers.flatMap((p) => {
+    const chatId = p instanceof Api.FolderPeer ? chatIdOf(p.peer) : undefined;
+    return chatId ? [{ chatId, archived: p.folderId === ARCHIVE_FOLDER }] : [];
+  });
+  return peers.length > 0 ? { type: "archive", peers } : undefined;
+}
+
 export function typingOf(update: unknown): Extract<TgUpdate, { type: "typing" }> | undefined {
   let chatId: string;
   let userId: string | undefined;
@@ -563,6 +576,7 @@ export function dialogsOf(found: readonly Dialog[]): TgDialog[] {
     if (chat.readOnly) dialog.readOnly = true;
     if (chat.members) dialog.members = true;
     if (chat.left) dialog.left = true;
+    if (d.archived === true) dialog.archived = true;
     if (mediaBanned(d.entity)) dialog.noMedia = true;
     if (stickersBanned(d.entity)) dialog.noStickers = true;
     const forum = forumOf(d.entity);
@@ -730,6 +744,10 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       // Reading a group also reads the mentions in it, as Telegram's apps do once they are seen.
       if (chatId.startsWith("-")) await client.invoke(new Api.messages.ReadMentions({ peer: await client.getInputEntity(peer(chatId)) }));
     },
+    archive: async (chatId, archived) => {
+      const folderPeer = new Api.InputFolderPeer({ peer: await client.getInputEntity(peer(chatId)), folderId: archived ? ARCHIVE_FOLDER : 0 });
+      await client.invoke(new Api.folders.EditPeerFolders({ folderPeers: [folderPeer] }));
+    },
     mute: async (chatId, until) => {
       const notifyPeer = new Api.InputNotifyPeer({ peer: await client.getInputEntity(peer(chatId)) });
       await client.invoke(new Api.account.UpdateNotifySettings({ peer: notifyPeer, settings: new Api.InputPeerNotifySettings({ muteUntil: until }) }));
@@ -872,11 +890,13 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         }
         const pins = pinsOf(update);
         if (pins) return cb(pins);
+        const archive = archiveOf(update);
+        if (archive) return cb(archive);
         if (!(update instanceof Api.UpdateMessageReactions)) return;
         const chatId = chatIdOf(update.peer);
         if (!chatId || !Number.isInteger(update.msgId) || update.msgId <= 0) return;
         cb({ type: "reactions", chatId, id: update.msgId, ...reactionsOf(update.reactions) });
-      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages, Api.UpdateMessagePoll] }));
+      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages, Api.UpdateMessagePoll, Api.UpdateFolderPeers] }));
     },
     session: () => (client.session as StringSession).save(),
     logOut: async () => void (await client.invoke(new Api.auth.LogOut())),

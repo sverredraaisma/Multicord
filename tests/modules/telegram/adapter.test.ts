@@ -45,6 +45,7 @@ class FakeTelegramApi implements TelegramApi {
   remove = vi.fn(async (_chatId: string, _ids: number[]) => {});
   markRead = vi.fn(async (_chatId: string, _maxId: number) => {});
   mute = vi.fn(async (_chatId: string, _until: number) => {});
+  archive = vi.fn(async (_chatId: string, _archived: boolean) => {});
   avatar = vi.fn(async (_chatId: string): Promise<string | undefined> => undefined);
   members = vi.fn(async (_chatId: string, _offset: number, _limit: number): Promise<TgMemberPage> => ({ members: [], total: 0 }));
   profile = vi.fn(async (userId: string): Promise<TgProfile> => ({ id: userId, name: `User ${userId}`, bot: false, presence: "offline" }));
@@ -565,10 +566,50 @@ describe("chat view", () => {
     await ctx.adapter.openConversation("2");
     expect(ctx.chat().sidebar).toEqual([
       { id: "section-user", name: "Direct messages", kind: "category", unread: false, mentions: 0, active: false },
-      { id: "1", name: "User 1", kind: "dm", unread: true, mentions: 2, active: false, muted: false, canMute: true },
-      { id: "2", name: "User 2", kind: "dm", unread: false, mentions: 0, active: true, muted: false, canMute: true },
-      { id: "3", name: "User 3", kind: "dm", unread: false, mentions: 0, active: false, muted: false, canMute: true },
+      { id: "1", name: "User 1", kind: "dm", unread: true, mentions: 2, active: false, muted: false, canMute: true, canArchive: true },
+      { id: "2", name: "User 2", kind: "dm", unread: false, mentions: 0, active: true, muted: false, canMute: true, canArchive: true },
+      { id: "3", name: "User 3", kind: "dm", unread: false, mentions: 0, active: false, muted: false, canMute: true, canArchive: true },
     ]);
+  });
+
+  describe("the archive", () => {
+    const archivedDialogs = () => [dlg("1", { date: 30 }), dlg("-5", { kind: "group", date: 20, archived: true, unreadCount: 4, unreadMentions: 1 }), dlg("2", { date: 10, archived: true, unreadCount: 2 }), dlg("9", { title: "Saved Messages", date: 5 })];
+    const sections = (ctx: Awaited<ReturnType<typeof signedIn>>) => ctx.chat().sidebar.map((i) => (i.kind === "category" ? `[${i.name}]` : i.id));
+
+    it("lists archived chats of every kind in an Archive section that starts folded, with their unread state summed", async () => {
+      const ctx = await signedIn({ dialogs: archivedDialogs() });
+      expect(sections(ctx)).toEqual(["[Direct messages]", "1", "9", "[Archive]", viewId("-5"), "2"]);
+      expect(ctx.chat().sidebar.find((i) => i.id === "section-archive")).toEqual({ id: "section-archive", name: "Archive", kind: "category", unread: true, mentions: 3, active: false, collapsible: true, collapsed: true });
+      expect(ctx.chat().sidebar.find((i) => i.id === "2")).toMatchObject({ archived: true, canArchive: true });
+      // Saved Messages cannot be archived.
+      expect(ctx.chat().sidebar.find((i) => i.id === "9")!.canArchive).toBeUndefined();
+    });
+
+    it("archives and unarchives chats from the sidebar, following Telegram's updates", async () => {
+      const ctx = await signedIn({ dialogs: archivedDialogs() });
+      await ctx.act({ type: "archive", channelId: "1", archive: true });
+      expect(ctx.api.archive).toHaveBeenCalledWith("1", true);
+      expect(sections(ctx)).toEqual(["[Direct messages]", "9", "[Archive]", "1", viewId("-5"), "2"]);
+      // Already there, Saved Messages, or a chat not listed: nothing to do.
+      await ctx.act({ type: "archive", channelId: "1", archive: true });
+      await ctx.act({ type: "archive", channelId: "9", archive: true });
+      await ctx.act({ type: "archive", channelId: "404", archive: true });
+      expect(ctx.api.archive).toHaveBeenCalledTimes(1);
+      await ctx.act({ type: "archive", channelId: "2", archive: false });
+      expect(ctx.api.archive).toHaveBeenLastCalledWith("2", false);
+      expect(sections(ctx)).toEqual(["[Direct messages]", "2", "9", "[Archive]", "1", viewId("-5")]);
+
+      ctx.api.emit({ type: "archive", peers: [{ chatId: "1", archived: false }, { chatId: "-5", archived: false }, { chatId: "404", archived: true }] });
+      expect(sections(ctx)).toEqual(["[Direct messages]", "1", "2", "9", "[Groups]", viewId("-5")]);
+
+      ctx.api.archive.mockRejectedValueOnce(tgError("PEER_ID_INVALID"));
+      await ctx.act({ type: "archive", channelId: "1", archive: true });
+      expect(ctx.chat().error).toBe("Could not archive the chat: PEER_ID_INVALID");
+      ctx.api.emit({ type: "archive", peers: [{ chatId: "1", archived: true }] });
+      ctx.api.archive.mockRejectedValueOnce(tgError("PEER_ID_INVALID"));
+      await ctx.act({ type: "archive", channelId: "1", archive: false });
+      expect(ctx.chat().error).toBe("Could not move the chat out of the archive: PEER_ID_INVALID");
+    });
   });
 
   it("has no channel until a chat is selected, and ignores unknown chats", async () => {
