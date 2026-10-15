@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createNativeApi } from "../../src/preload/native";
-import { isNativeAction, MAX_MESSAGE_LENGTH, NATIVE_IPC } from "../../src/shared/native";
+import { channelCan, isNativeAction, MAX_MESSAGE_LENGTH, NATIVE_IPC } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -139,5 +139,13 @@ describe("media requests", () => {
   it("accepts plain media keys only", () => {
     expect(isNativeAction({ type: "loadMedia", key: "tg:123:456" })).toBe(true);
     for (const key of ["", "a b", "<x>", "k".repeat(201), 5]) expect(isNativeAction({ type: "loadMedia", key })).toBe(false);
+  });
+});
+
+describe("conversation capability flags", () => {
+  it("turns a flag on only when it is exactly true", () => {
+    expect(channelCan({ reply: true, react: true, attach: true, typing: true })).toEqual({ reply: true, react: true, attach: true, typing: true });
+    expect(channelCan({ reply: true, react: "yes", attach: 1, extra: true })).toEqual({ reply: true, react: false, attach: false, typing: false });
+    for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual({ reply: false, react: false, attach: false, typing: false });
   });
 });

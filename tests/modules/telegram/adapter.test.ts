@@ -553,6 +553,8 @@ describe("chat view", () => {
     await Promise.all([first, second]);
     expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE);
     expect(ctx.chat().channel).toMatchObject({ loading: false, hasOlder: false });
+    // Reactions, files and typing notices are not offered for Telegram, so the view hides them.
+    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: false, attach: false, typing: false });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
 
     await ctx.adapter.openConversation("1");

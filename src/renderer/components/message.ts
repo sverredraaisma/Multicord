@@ -1,4 +1,4 @@
-import type { NativeAttachment, NativeMessage } from "../../shared/native";
+import type { NativeAttachment, NativeChannelCan, NativeMessage } from "../../shared/native";
 import { avatar } from "./avatar";
 import { el } from "./dom";
 import { formatSize, formatTime } from "./format";
@@ -122,17 +122,19 @@ export interface MessageOptions extends MarkdownOptions {
   reactionPicker?: HTMLElement;
   /** Whether the quick reaction palette is open. */
   reacting?: boolean;
+  /** What the conversation allows (NativeChannelView.can); everything when left out. */
+  can?: Pick<NativeChannelCan, "reply" | "react">;
 }
 
-function messageActions(doc: Document, message: NativeMessage, handlers: MessageHandlers): HTMLElement {
+function messageActions(doc: Document, message: NativeMessage, handlers: MessageHandlers, can: MessageOptions["can"]): HTMLElement {
   const bar = el(doc, "div", "message-actions");
   const action = (label: string, run: () => void) => {
     const button = el(doc, "button", undefined, label);
     button.addEventListener("click", run);
     bar.append(button);
   };
-  action("Reply", () => handlers.onReply(message));
-  action("React", () => handlers.onToggleReactionPicker(message));
+  if (can?.reply !== false) action("Reply", () => handlers.onReply(message));
+  if (can?.react !== false) action("React", () => handlers.onToggleReactionPicker(message));
   if (message.canEdit) action("Edit", () => handlers.onEdit(message));
   if (message.canDelete) action("Delete", () => handlers.onDelete(message));
   return bar;
@@ -168,18 +170,21 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
   }
   for (const file of message.attachments) body.append(attachment(doc, file, handlers.onLoadMedia));
 
-  if (message.reactions.length > 0 || options.reacting) {
+  // Where reactions cannot be given, the ones others gave still show.
+  const canReact = options.can?.react !== false;
+  const reacting = canReact && options.reacting === true;
+  if (message.reactions.length > 0 || reacting) {
     const row = el(doc, "div", "reactions");
     const react = (key: string, add: boolean) => handlers.onReact(message, key, add);
-    for (const reaction of message.reactions) row.append(reactionChip(doc, reaction, react));
-    if (options.reacting) {
+    for (const reaction of message.reactions) row.append(reactionChip(doc, reaction, canReact ? react : undefined));
+    if (reacting) {
       const more = handlers.onMoreReactions && (() => handlers.onMoreReactions!(message));
       row.append(quickReactions(doc, message.reactions, react, more));
     }
     body.append(row);
   }
-  if (options.reactionPicker) body.append(options.reactionPicker);
+  if (options.reactionPicker && canReact) body.append(options.reactionPicker);
 
-  li.append(avatar(doc, message.avatarUrl, message.author), body, messageActions(doc, message, handlers));
+  li.append(avatar(doc, message.avatarUrl, message.author), body, messageActions(doc, message, handlers, options.can));
   return li;
 }

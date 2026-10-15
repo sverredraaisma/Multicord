@@ -88,6 +88,7 @@ describe("TemplateAdapter", () => {
     expect(state.screen === "chat" && state.channel?.messages).toEqual([
       { id: "10", author: "bob", content: "hello", timestamp: HELLO.timestamp, edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] },
     ]);
+    expect(state.screen === "chat" && state.channel?.can).toEqual({ reply: false, react: false, attach: false, typing: false });
     expect(adapter.accountStatus()).toEqual({ state: "signed-in", name: "alice" });
     expect(directs).toHaveBeenLastCalledWith([
       { key: CONVERSATION, account: { platform: "template", instance: "chat.example.org", accountId: "default" }, title: "General", lastActivity: Date.parse(HELLO.timestamp), preview: "hello", unread: false, mentions: 0 },

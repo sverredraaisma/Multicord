@@ -297,6 +297,7 @@ describe("FluxerAdapter chat", () => {
     ]);
     expect(state.sidebar[3]).toMatchObject({ unread: true, mentions: 2 });
     expect(state.channel).toMatchObject({ id: "113", name: "lobby", loading: false, hasOlder: false });
+    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true });
     expect(state.channel!.messages[0]).toMatchObject({ id: "450", author: "Ana", content: "m450", mine: false });
     expect(calls.some((c) => c.url.includes("/channels/113/messages?limit=50"))).toBe(true);
 
@@ -784,6 +785,7 @@ describe("FluxerAdapter attachments", () => {
 
   it("queues picked files, removes them on request and uploads them with the message", async () => {
     const { adapter, chat, calls } = await withFiles([["a.txt", "b.txt", "c.txt"]]);
+    expect(chat().channel!.can.attach).toBe(true);
     await adapter.handleAction({ type: "attach" });
     expect(chat().channel!.pending).toEqual([
       { name: "a.txt", size: 2 },

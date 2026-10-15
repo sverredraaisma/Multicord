@@ -658,6 +658,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
             typing: [],
             pending: [],
             uploading: false,
+            // Reactions, files and typing notices are not offered here yet.
+            can: { reply: true, react: false, attach: false, typing: false },
           }
         : null,
       voice: null,

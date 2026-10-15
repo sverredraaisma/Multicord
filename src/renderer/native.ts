@@ -1,8 +1,8 @@
 import { screenAudioPatch } from "../shared/screenAudio";
 import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
-import type { NativeMessage, NativeViewState } from "../shared/native";
-import { MAX_MESSAGE_LENGTH } from "../shared/native";
+import type { NativeChannelCan, NativeMessage, NativeViewState } from "../shared/native";
+import { channelCan, MAX_MESSAGE_LENGTH } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
@@ -221,7 +221,7 @@ export class NativeView {
       this.setReply(undefined);
     });
     composer.addEventListener("input", () => {
-      if (composer.value.trim() !== "") this.api.act({ type: "typing" });
+      if (composer.value.trim() !== "" && this.can.typing) this.api.act({ type: "typing" });
     });
     const typing = el(doc, "div", "typing");
     const pending = el(doc, "ul", "pending-files");
@@ -356,6 +356,11 @@ export class NativeView {
     },
   };
 
+  /** What the open conversation allows; nothing while none is open. */
+  private get can(): NativeChannelCan {
+    return channelCan(this.lastState?.channel?.can);
+  }
+
   private messageItem(message: NativeMessage): HTMLElement {
     const editing = message.id === this.editingId;
     const editBox = this.parts.editBox as HTMLTextAreaElement;
@@ -363,6 +368,7 @@ export class NativeView {
     return messageItem(this.doc, message, this.messageHandlers, {
       customEmojiUrl: (id, animated) => this.emojiUrl(id, animated),
       editor: editing ? [editBox, el(this.doc, "p", "edit-hint", "Enter to save, Escape to cancel")] : undefined,
+      can: this.can,
       reacting: this.pickerFor === message.id,
       reactionPicker:
         this.fullPickerFor === message.id
@@ -410,6 +416,8 @@ export class NativeView {
     // Forums take posts through their own form, not the composer.
     field.disabled = !channel || uploading || Boolean(channel.posts) || Boolean(locked);
     (attach as HTMLButtonElement).disabled = !channel || uploading || Boolean(locked);
+    // Hidden, not just off, where the module takes no files at all.
+    attach!.hidden = Boolean(channel) && !this.can.attach;
     (this.parts.emoji as HTMLButtonElement).disabled = field.disabled;
     field.placeholder = channel && !locked ? `Message ${channel.name}` : "";
     this.parts.pending!.replaceChildren(

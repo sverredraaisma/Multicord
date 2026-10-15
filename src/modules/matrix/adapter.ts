@@ -2690,6 +2690,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             pending: (this.pending.get(room.id) ?? []).map((file) => ({ name: file.filename, size: file.size })),
             uploading: this.uploading.has(room.id),
             ...(locked ? { locked } : {}),
+            // A locked room takes nothing from here; typing notices follow the user's setting.
+            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices },
           }
         : null,
       voice: this.voiceSession(),

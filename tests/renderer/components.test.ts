@@ -113,6 +113,15 @@ describe("messages", () => {
     expect(h.onMoreReactions).toHaveBeenCalledWith(message);
     expect(messageItem(document, message, handlers(), { reacting: true }).querySelector(".more")).toBeNull();
   });
+
+  it("offers no reply or reactions where the conversation takes none", () => {
+    const picker = document.createElement("div");
+    picker.className = "full-picker";
+    const item = messageItem(document, message, handlers(), { reacting: true, reactionPicker: picker, can: { reply: false, react: false } });
+    expect(item.querySelectorAll(".message-actions button")).toHaveLength(0);
+    expect(item.querySelector(".reactions")).toBeNull();
+    expect(item.querySelector(".full-picker")).toBeNull();
+  });
 });
 
 describe("emoji picker", () => {

@@ -4,8 +4,8 @@ import { el } from "./dom";
 /** Reactions offered on a message without opening the full emoji picker. */
 export const QUICK_REACTIONS = ["👍", "❤️", "😂", "😮", "😢", "🎉"];
 
-/** One reaction chip: emoji (or custom emoji image) and count, highlighted when it is ours. */
-export function reactionChip(doc: Document, reaction: NativeReaction, onToggle: (key: string, add: boolean) => void): HTMLElement {
+/** One reaction chip: emoji (or custom emoji image) and count, highlighted when it is ours. Without onToggle it only shows. */
+export function reactionChip(doc: Document, reaction: NativeReaction, onToggle?: (key: string, add: boolean) => void): HTMLElement {
   const button = el(doc, "button", "reaction");
   button.classList.toggle("me", reaction.me);
   button.title = reaction.label;
@@ -18,7 +18,8 @@ export function reactionChip(doc: Document, reaction: NativeReaction, onToggle: 
     button.append(el(doc, "span", undefined, reaction.label));
   }
   button.append(el(doc, "span", "count", String(reaction.count)));
-  button.addEventListener("click", () => onToggle(reaction.key, !reaction.me));
+  if (onToggle) button.addEventListener("click", () => onToggle(reaction.key, !reaction.me));
+  else button.disabled = true;
   return button;
 }
 

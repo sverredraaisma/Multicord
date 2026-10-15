@@ -706,6 +706,7 @@ describe("conversations", () => {
     const { channel } = ctx.chat();
     expect(channel).toMatchObject({ id: ctx.item("Bo").id, name: "Bo", loading: false, hasOlder: true, typing: [], pending: [], uploading: false });
     expect(channel).not.toHaveProperty("locked");
+    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true });
     expect(ctx.item("Bo").active).toBe(true);
     expect(ctx.messages()).toEqual([
       {
@@ -863,6 +864,7 @@ describe("conversations", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     expect(ctx.chat().channel!.locked).toBe(ENCRYPTED_NOTICE);
+    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true });
     expect(ctx.messages()).toEqual([
       expect.objectContaining({ content: ENCRYPTED_TEXT.replace("—", "—"), author: ANA, canEdit: false, canDelete: false }),
       expect.objectContaining({ content: "before encryption", mine: true, canEdit: false, canDelete: true }),
@@ -1214,6 +1216,7 @@ describe("typing", () => {
     await off.open("Bo");
     await off.act({ type: "typing" });
     expect(off.api.typing).not.toHaveBeenCalled();
+    expect(off.chat().channel!.can.typing).toBe(false);
 
     const ctx = await signedIn();
     await ctx.open("Bo");
@@ -1269,6 +1272,7 @@ describe("uploads", () => {
     vi.stubGlobal("createImageBitmap", vi.fn(async (_blob: Blob) => ({ width: 4, height: 3, close: vi.fn() })));
     const ctx = await withFiles();
     await ctx.open("Bo");
+    expect(ctx.chat().channel!.can.attach).toBe(true);
     const png = text("not really a PNG");
     await ctx.attach(picked("cat.png", png, "image/png"));
     expect(ctx.chat().channel!.pending).toEqual([{ name: "cat.png", size: png.length }]);

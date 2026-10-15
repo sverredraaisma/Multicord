@@ -11,6 +11,8 @@ import { Room, resetLiveKit } from "../mocks/livekit";
 
 type Chat = Extract<NativeViewState, { screen: "chat" }>;
 
+const ALL = { reply: true, react: true, attach: true, typing: true };
+
 const login: NativeViewState = { screen: "login", platform: "Fluxer", identity: "email", busy: false };
 
 function msg(id: string, extra: Partial<NativeMessage> = {}): NativeMessage {
@@ -42,7 +44,7 @@ function chat(extra: Partial<Chat> = {}): Chat {
       { id: "3", name: "Ana", kind: "dm", iconUrl: "https://media/a.png", unread: false, mentions: 120, active: false },
       { id: "4", name: "Bo", kind: "dm", unread: false, mentions: 0, active: false },
     ],
-    channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: false, typing: [], pending: [], uploading: false },
+    channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL },
     ...extra,
   };
 }
@@ -144,6 +146,7 @@ describe("chat screen", () => {
           typing: [],
           pending: [],
           uploading: false,
+          can: ALL,
           messages: [
             msg("10", {
               content: "<img src=x onerror=alert(1)>",
@@ -206,14 +209,14 @@ describe("chat screen", () => {
   });
 
   it("offers older history and shows loading states", () => {
-    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: true, typing: [], pending: [], uploading: false } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: false, hasOlder: true, typing: [], pending: [], uploading: false, can: ALL } }));
     const older = root.querySelector<HTMLButtonElement>("button.older")!;
     expect(older.textContent).toBe("Load older messages");
     older.click();
     expect(act).toHaveBeenCalledWith({ type: "loadOlder" });
-    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: true, hasOlder: true, typing: [], pending: [], uploading: false } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [msg("10")], loading: true, hasOlder: true, typing: [], pending: [], uploading: false, can: ALL } }));
     expect(root.querySelector<HTMLButtonElement>("button.older")!.disabled).toBe(true);
-    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: true, hasOlder: false, typing: [], pending: [], uploading: false } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: true, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL } }));
     expect(root.querySelector(".older-row")!.textContent).toBe("Loading…");
   });
 
@@ -224,7 +227,7 @@ describe("chat screen", () => {
     Object.defineProperty(list, "scrollHeight", { get: () => list.children.length * 500, configurable: true });
     Object.defineProperty(list, "clientHeight", { value: 400, configurable: true });
     const update = (...ids: string[]) =>
-      view.update(chat({ channel: { id: "2", name: "general", messages: ids.map((id) => msg(id)), loading: false, hasOlder: false, typing: [], pending: [], uploading: false } }));
+      view.update(chat({ channel: { id: "2", name: "general", messages: ids.map((id) => msg(id)), loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL } }));
 
     // Reading at the top: older messages are prepended, the view stays on the same message.
     list.scrollTop = 0;
@@ -310,7 +313,7 @@ describe("helpers", () => {
 describe("message actions", () => {
   const ownMessage = msg("10", { mine: true, canEdit: true, canDelete: true, source: "raw <@2>", content: "raw @Ana" });
   const withMessages = (...messages: NativeMessage[]) =>
-    chat({ channel: { id: "2", name: "general", messages, loading: false, hasOlder: false, typing: [], pending: [], uploading: false } });
+    chat({ channel: { id: "2", name: "general", messages, loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL } });
   const button = (label: string, scope: ParentNode = root) =>
     [...scope.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === label);
 
@@ -425,6 +428,38 @@ describe("message actions", () => {
     expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "🎉", add: true });
   });
 
+  it("offers only what the conversation allows", () => {
+    const reacted = msg("11", { reactions: [{ key: "👍", label: "👍", count: 2, me: false }] });
+    const none = { reply: false, react: false, attach: false, typing: false };
+    const state = (can: unknown) =>
+      chat({ channel: { id: "2", name: "general", messages: [reacted], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: can as typeof ALL } });
+    view.update(state(ALL));
+    button("React")!.click();
+    expect(root.querySelector(".quick-reactions")).not.toBeNull();
+    view.update(state(none));
+    // The open palette closes; others' reactions still show but cannot be toggled.
+    expect(root.querySelectorAll(".message-actions button")).toHaveLength(0);
+    expect(root.querySelector(".quick-reactions")).toBeNull();
+    const chip = root.querySelector<HTMLButtonElement>(".reactions .reaction")!;
+    expect(chip.disabled).toBe(true);
+    chip.click();
+    expect(act).not.toHaveBeenCalledWith(expect.objectContaining({ type: "react" }));
+    const attach = root.querySelector<HTMLButtonElement>("button.attach")!;
+    expect(attach.hidden).toBe(true);
+    const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
+    composer.value = "h";
+    composer.dispatchEvent(new Event("input"));
+    expect(act).not.toHaveBeenCalledWith({ type: "typing" });
+    // A malformed flag counts as off.
+    view.update(state({ ...ALL, reply: "yes", attach: 1 }));
+    expect([...root.querySelectorAll(".message-actions button")].map((b) => b.textContent)).toEqual(["React"]);
+    expect(attach.hidden).toBe(true);
+    view.update(state(ALL));
+    expect(attach.hidden).toBe(false);
+    view.update(chat({ channel: null }));
+    expect(attach.hidden).toBe(false);
+  });
+
   it("shows reply previews and deleted originals", () => {
     view.update(withMessages(msg("11", { reply: { author: "Bo", content: "earlier" } }), msg("12", { reply: null })));
     const quotes = root.querySelectorAll(".reply");
@@ -437,7 +472,7 @@ describe("message actions", () => {
     view.update(withMessages(ownMessage));
     button("Reply")!.click();
     button("Edit")!.click();
-    view.update(chat({ channel: { id: "3", name: "other", messages: [ownMessage], loading: false, hasOlder: false, typing: [], pending: [], uploading: false } }));
+    view.update(chat({ channel: { id: "3", name: "other", messages: [ownMessage], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL } }));
     expect(root.querySelector<HTMLElement>(".reply-bar")!.hidden).toBe(true);
     expect(root.querySelector(".edit-box")).toBeNull();
   });
@@ -453,7 +488,7 @@ describe("typing", () => {
   });
 
   it("shows typing and reports our own typing", () => {
-    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: ["Ana"], pending: [], uploading: false } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: ["Ana"], pending: [], uploading: false, can: ALL } }));
     expect(root.querySelector(".typing")!.textContent).toBe("Ana is typing…");
     const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
     composer.value = "  ";
@@ -469,7 +504,7 @@ describe("typing", () => {
 
 describe("attachments", () => {
   const withFiles = (pending: { name: string; size: number }[], uploading = false) =>
-    chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: [], pending, uploading } });
+    chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: [], pending, uploading, can: ALL } });
 
   it("formats sizes", () => {
     expect(formatSize(512)).toBe("512 B");
@@ -515,7 +550,7 @@ describe("threads and forums", () => {
         { id: "6", name: "side chat", kind: "thread", unread: false, mentions: 0, active: false },
         { id: "7", name: "ideas", kind: "forum", unread: true, mentions: 0, active: true },
       ],
-      channel: { id: "7", name: "ideas", messages: [], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, posts },
+      channel: { id: "7", name: "ideas", messages: [], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL, posts },
     });
 
   it("marks threads and forums in the sidebar", () => {
@@ -661,7 +696,7 @@ describe("emoji and markdown", () => {
     chat({
       emojiBase: "https://media.fx/emojis",
       customEmoji: [{ id: "55", name: "party", animated: false }],
-      channel: { id: "2", name: "general", messages, loading: false, hasOlder: false, typing: [], pending: [], uploading: false },
+      channel: { id: "2", name: "general", messages, loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL },
     });
 
   it("inserts picked emoji at the cursor and closes the picker", () => {
@@ -729,7 +764,7 @@ describe("emoji and markdown", () => {
     const composer = () => root.querySelector<HTMLTextAreaElement>(".composer")!;
     view.update(chat());
     expect(notice().hidden).toBe(true);
-    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, locked: "Encrypted room" } }));
+    view.update(chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL, locked: "Encrypted room" } }));
     expect(notice().hidden).toBe(false);
     expect(notice().textContent).toBe("Encrypted room");
     expect(composer().disabled).toBe(true);

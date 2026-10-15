@@ -139,6 +139,34 @@ export interface NativeChannelView {
   posts?: NativeForumPost[];
   /** Set when nothing may be sent here, e.g. an encrypted room: why, shown in place of the composer. */
   locked?: string;
+  /** What this conversation takes from here besides text; the view offers only these. */
+  can: NativeChannelCan;
+}
+
+/**
+ * What the module supports in a conversation, beyond sending text (which
+ * `locked` rules out). Editing and deleting are per message
+ * (NativeMessage.canEdit, canDelete). A flag is on only when it is `true`:
+ * the view reads them with channelCan(), so a missing or malformed flag hides
+ * the control rather than offering something the module would drop.
+ */
+export interface NativeChannelCan {
+  /** Answer a message (send's replyTo). */
+  reply: boolean;
+  /** Add and remove reactions. */
+  react: boolean;
+  /** Pick files to send. */
+  attach: boolean;
+  /** Tell the others while the user types. */
+  typing: boolean;
+}
+
+export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing"] as const satisfies readonly (keyof NativeChannelCan)[];
+
+/** A conversation's flags as the view trusts them: each on only when it is exactly `true`. */
+export function channelCan(value: unknown): NativeChannelCan {
+  const flags = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  return Object.fromEntries(CHANNEL_CAN_FLAGS.map((flag) => [flag, flags[flag] === true])) as unknown as NativeChannelCan;
 }
 
 /** One input of a sign-in step. */

@@ -586,6 +586,7 @@ describe("StoatAdapter attachments", () => {
     const { adapter, chat, online, requests } = setup({ token: "saved", files: { pick } });
     await online();
     await adapter.openConversation(DM);
+    expect(chat().channel!.can.attach).toBe(true);
     await adapter.handleAction({ type: "attach" });
     expect(chat().channel!.pending).toEqual([
       { name: "a.png", size: 3 },
@@ -650,6 +651,7 @@ describe("StoatAdapter attachments", () => {
     await adapter.openConversation(DM);
     await adapter.handleAction({ type: "attach" });
     expect(chat().error).toBe("This Stoat instance does not accept files.");
+    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true });
     // Without a file server there are no avatar or icon URLs either.
     expect(chat().sidebar[0]!.iconUrl).toBeUndefined();
 
@@ -658,6 +660,7 @@ describe("StoatAdapter attachments", () => {
     await bare.adapter.openConversation(DM);
     await bare.adapter.handleAction({ type: "attach" });
     expect(bare.chat().error).toBeUndefined();
+    expect(bare.chat().channel!.can.attach).toBe(false);
   });
 });
 
