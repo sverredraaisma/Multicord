@@ -2,11 +2,11 @@ import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/run
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
-import type { NativeAction, NativeAttachment, NativeChannelView, NativeForumPost, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeChannelView, NativeForumPost, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
-import { GENERAL_TOPIC, isChannelPeer, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgReaction, type TgTopic, type TgUpdate, type TgUser } from "./api";
+import { FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /** Chats listed: one-to-one chats, groups and channels together, most recent first. */
 export const DIALOG_LIMIT = 200;
@@ -39,6 +39,29 @@ export const MEMBER_AVATAR_LIMIT = 30;
 export const MAX_MEDIA_BYTES = 40 * 1024 * 1024;
 /** Media kept in memory for the view, all files together; the oldest go first. */
 export const MEDIA_CACHE_BYTES = 200 * 1024 * 1024;
+/** Installed sticker sets fetched, in the user's order, and how many at once; later sets are not offered. */
+export const STICKER_SET_LIMIT = 100;
+const STICKER_SET_FETCHES = 3;
+/** Stickers offered per pack and in all, as many as the view shows. */
+export const PACK_STICKER_LIMIT = 300;
+export const STICKER_LIMIT = 5000;
+/**
+ * Stickers' pictures kept for the picker, all together. They travel with
+ * every view update, so they are kept apart from (and smaller than) the
+ * messages' media; stickers past it are not offered.
+ */
+export const STICKER_CACHE_BYTES = 24 * 1024 * 1024;
+/** Largest sticker file loaded whole (Telegram's own limit for static ones); larger static stickers show their thumbnail, larger video stickers are not offered. */
+export const MAX_STICKER_BYTES = 512 * 1024;
+/** Sticker pictures downloaded at once. */
+const STICKER_DOWNLOADS = 4;
+/** How long stickers' pictures gather before the view is updated with them. */
+export const STICKER_RENDER_MS = 250;
+/** Stickers are "tg:<document id>" in the view, their pictures' media keys "tgsticker:<document id>". */
+const STICKER_ID = "tg:";
+const STICKER_KEY = "tgsticker:";
+/** What a sticker's file is, as a data: URL; thumbnails are WebP. */
+const STICKER_MIME = { webp: "image/webp", webm: "video/webm", lottie: "image/webp" } as const;
 const SESSION_KEY = "session";
 const CREDENTIALS_KEY = "api";
 /** The Settings action (manifest `settings`) that forgets the API ID the user entered. */
@@ -63,6 +86,15 @@ export interface TelegramAdapterDeps {
   files?: EngineFiles;
   /** Bytes of loaded media kept for the view (default MEDIA_CACHE_BYTES). */
   mediaBudget?: number;
+  /** Bytes of stickers' pictures kept for the picker (default STICKER_CACHE_BYTES). */
+  stickerBudget?: number;
+}
+
+/** A sticker pack as fetched: a set, or the user's recent or favourite stickers. */
+interface StickerPack {
+  id: string;
+  name: string;
+  stickers: TgSticker[];
 }
 
 type Step = "api" | "phone" | "code" | "password" | "connecting" | "chat";
@@ -220,6 +252,17 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   /** Files picked for each conversation's next message, and the conversations whose files are being sent. */
   private readonly pending = new Map<string, FileSource[]>();
   private readonly uploading = new Set<string>();
+  /** The user's sticker packs as fetched this session, in the order offered; whether they were asked for. */
+  private stickerPacks: StickerPack[] = [];
+  private stickersAsked = false;
+  /** Stickers' pictures for the picker, by sticker id, as data: URLs; those that could not be loaded or kept; and those waiting or loading. */
+  private readonly stickerMedia = new Map<string, string>();
+  private stickerBytes = 0;
+  private readonly stickerFailed = new Set<string>();
+  private readonly stickerQueue: TgSticker[] = [];
+  private readonly stickerQueued = new Set<string>();
+  private stickerDownloads = 0;
+  private stickerRenderTimer: ReturnType<typeof setTimeout> | undefined;
   /** The profile card the view asked for last. */
   private profile: NativeProfile | undefined;
   private visible = false;
@@ -380,6 +423,16 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.topicsLoading.clear();
     this.topicViewIds.clear();
     this.topicsByView.clear();
+    // The next account has stickers of its own.
+    this.stickerPacks = [];
+    this.stickersAsked = false;
+    this.stickerMedia.clear();
+    this.stickerBytes = 0;
+    this.stickerFailed.clear();
+    this.stickerQueue.length = 0;
+    this.stickerQueued.clear();
+    clearTimeout(this.stickerRenderTimer);
+    this.stickerRenderTimer = undefined;
     this.session++;
     this.selected = undefined;
     this.topic = undefined;
@@ -418,7 +471,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       case "loadOlder":
         return this.loadOlder();
       case "loadMedia":
-        return this.loadMedia(action.key);
+        return action.key.startsWith(STICKER_KEY) ? this.loadSticker(action.key.slice(STICKER_KEY.length)) : this.loadMedia(action.key);
+      case "sendSticker":
+        return this.sendSticker(action.stickerId, action.replyTo);
       case "members":
         return this.setMembersOpen(action.open);
       case "loadMembers":
@@ -621,6 +676,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.selected = chatId;
     this.topic = topic;
     this.render();
+    void this.loadStickers();
     if (this.membersOpen && !this.memberLists.has(chatId)) void this.fetchMembers(chatId);
     void this.fetchAllowedReactions(chatId);
     // A forum shows its topic list; topics are opened from it, so it is listed by then.
@@ -1078,6 +1134,161 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
+  // --- Stickers -----------------------------------------------------------------
+
+  /** Where the user may send stickers: a chat they may write in that does not bar stickers or media, in a forum within a topic. */
+  private canSendStickers(dialog: TgDialog): boolean {
+    return dialog.readOnly !== true && dialog.noStickers !== true && !(dialog.forum && this.topic === undefined);
+  }
+
+  /**
+   * Fetches the user's sticker packs once a session, in the background: their
+   * favourite and recent stickers, then their installed sets, a few at once.
+   * Packs show as they arrive; one that fails is left out.
+   */
+  private async loadStickers(): Promise<void> {
+    if (this.stickersAsked) return;
+    this.stickersAsked = true;
+    const api = this.api!;
+    const session = this.session;
+    const sets = await api.stickerSets().catch(() => undefined);
+    if (session !== this.session) return;
+    // Asked again when a chat is opened next.
+    if (!sets) {
+      this.stickersAsked = false;
+      return;
+    }
+    const sources = [
+      { id: FAVED_STICKERS, name: "Favourite stickers" },
+      { id: RECENT_STICKERS, name: "Recent stickers" },
+      ...sets.slice(0, STICKER_SET_LIMIT).map((s) => ({ id: s.id, name: s.title })),
+    ];
+    const packs: (StickerPack | undefined)[] = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < sources.length) {
+        const index = next++;
+        const source = sources[index]!;
+        const stickers = await api.stickers(source.id).catch(() => []);
+        if (session !== this.session) return;
+        if (stickers.length === 0) continue;
+        packs[index] = { id: source.id === FAVED_STICKERS || source.id === RECENT_STICKERS ? source.id : `set:${source.id}`, name: source.name, stickers };
+        this.stickerPacks = packs.filter((p) => p !== undefined);
+        this.renderSoon();
+      }
+    };
+    await Promise.all(Array.from({ length: STICKER_SET_FETCHES }, worker));
+  }
+
+  /** Premium stickers only for Premium users; nothing that could not be loaded or kept, nor video stickers too large to load. */
+  private offerable(sticker: TgSticker): boolean {
+    // Stickers are fetched only once signed in, when the user is known.
+    return (sticker.premium !== true || this.me!.premium === true) && !this.stickerFailed.has(sticker.id) && !(sticker.format === "webm" && (sticker.size ?? 0) > MAX_STICKER_BYTES);
+  }
+
+  /** The picker shows a still: an animated vector sticker's, or a static sticker too large to load whole. */
+  private stillOnly(sticker: TgSticker): boolean {
+    return sticker.format === "lottie" || (sticker.size ?? 0) > MAX_STICKER_BYTES;
+  }
+
+  /** The stickers offered, as many as the view shows: per pack and in all. */
+  private offeredStickers(): NativeStickerPack[] {
+    const packs: NativeStickerPack[] = [];
+    let room = STICKER_LIMIT;
+    for (const pack of this.stickerPacks) {
+      const stickers: NativeSticker[] = [];
+      for (const sticker of pack.stickers) {
+        if (stickers.length >= PACK_STICKER_LIMIT || room <= 0) break;
+        if (!this.offerable(sticker)) continue;
+        stickers.push(this.nativeSticker(sticker));
+        room--;
+      }
+      if (stickers.length > 0) packs.push({ id: pack.id, name: pack.name, stickers });
+    }
+    return packs;
+  }
+
+  private nativeSticker(sticker: TgSticker): NativeSticker {
+    // A static sticker too large to load shows (and goes elsewhere) as its thumbnail, and says so.
+    const preview = sticker.format === "webp" && this.stillOnly(sticker);
+    const shown: NativeSticker = { id: STICKER_ID + sticker.id, name: `${sticker.emoji || "🙂"} sticker${preview ? " (small preview)" : ""}`, format: sticker.format };
+    if (sticker.emoji) shown.emoji = sticker.emoji;
+    const url = this.stickerMedia.get(sticker.id);
+    if (url) shown.url = url;
+    else shown.mediaKey = STICKER_KEY + sticker.id;
+    return shown;
+  }
+
+  /** A sticker offered now, by its id in the view. */
+  private offeredSticker(id: string): TgSticker | undefined {
+    if (!this.offeredStickers().some((p) => p.stickers.some((s) => s.id === id))) return undefined;
+    return this.stickerPacks.flatMap((p) => p.stickers).find((s) => STICKER_ID + s.id === id);
+  }
+
+  /** Queues a sticker's picture for the picker, once; the id comes from the view's media key, so it must be one offered. */
+  private loadSticker(id: string): void {
+    const sticker = this.offeredSticker(STICKER_ID + id);
+    if (!sticker || this.stickerMedia.has(id) || this.stickerQueued.has(id)) return;
+    this.stickerQueued.add(id);
+    this.stickerQueue.push(sticker);
+    this.pumpStickers();
+  }
+
+  /** Starts queued sticker downloads, a few at once. */
+  private pumpStickers(): void {
+    while (this.stickerDownloads < STICKER_DOWNLOADS && this.stickerQueue.length > 0) {
+      const sticker = this.stickerQueue.shift()!;
+      this.stickerDownloads++;
+      void this.downloadSticker(sticker).finally(() => {
+        this.stickerDownloads--;
+        this.pumpStickers();
+      });
+    }
+  }
+
+  /**
+   * A sticker's picture as a data: URL: the WebP for static ones, the WebM
+   * for video ones, the still thumbnail for animated vector ones (never the
+   * TGS). Once the stickers' budget is spent, the rest are not offered.
+   */
+  private async downloadSticker(sticker: TgSticker): Promise<void> {
+    const session = this.session;
+    const still = this.stillOnly(sticker);
+    const bytes = await this.api!.stickerFile(sticker.id, still).catch(() => undefined);
+    if (session !== this.session) return;
+    this.stickerQueued.delete(sticker.id);
+    const url = bytes && bytes.length <= MAX_STICKER_BYTES ? `data:${still ? STICKER_MIME.lottie : STICKER_MIME[sticker.format]};base64,${toBase64(bytes)}` : undefined;
+    if (url && this.stickerBytes + url.length <= (this.deps.stickerBudget ?? STICKER_CACHE_BYTES)) {
+      this.stickerMedia.set(sticker.id, url);
+      this.stickerBytes += url.length;
+    } else {
+      this.stickerFailed.add(sticker.id);
+    }
+    this.renderSoon();
+  }
+
+  /** Sends one of the stickers offered as a sticker, into the open chat or topic. */
+  private async sendSticker(stickerId: string, replyTo?: string): Promise<void> {
+    // Chats are selected only while signed in.
+    const dialog = this.selected ? this.dialog(this.selected) : undefined;
+    const sticker = this.offeredSticker(stickerId);
+    if (!dialog || !this.canSendStickers(dialog) || !sticker) return;
+    this.stopTyping(this.current()!);
+    const topic = this.topic;
+    await this.attempt("Sticker not sent", async () => {
+      this.onUpdate({ type: "message", message: await this.api!.sendSticker(dialog.chatId, sticker.id, replyTo ? Number(replyTo) : undefined, topic) });
+    });
+  }
+
+  /** Updates the view soon, gathering what arrives meanwhile (stickers' pictures, packs). */
+  private renderSoon(): void {
+    if (this.stickerRenderTimer) return;
+    this.stickerRenderTimer = setTimeout(() => {
+      this.stickerRenderTimer = undefined;
+      this.render();
+    }, STICKER_RENDER_MS);
+  }
+
   // --- Members and profiles -----------------------------------------------------
 
   /** Telegram lets the user see who is in this chat, as far as is known. */
@@ -1290,7 +1501,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const shown: NativeAttachment = { name: file.name, kind: file.kind, mime: file.mime, size: file.size, width: file.width, height: file.height };
     if (file.loop) shown.loop = true;
     const url = this.media.get(key);
-    if (url) shown.url = url;
+    // An animated vector sticker's still: the view shows it as one, labelled.
+    if (url && file.thumbnailOnly) shown.previewUrl = url;
+    else if (url) shown.url = url;
     else if (this.mediaFailed.has(key)) shown.unavailable = this.mediaFailed.get(key);
     else if (file.size !== undefined && file.size > MAX_MEDIA_BYTES) shown.unavailable = "too large to show here; open it in Telegram";
     else shown.mediaKey = key;
@@ -1309,7 +1522,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       const bytes = await this.api.download(chatId!, message.id, message.file.thumbnailOnly === true);
       if (!bytes) this.mediaFailed.set(key, "not available");
       else if (bytes.length > MAX_MEDIA_BYTES) this.mediaFailed.set(key, "too large to show here; open it in Telegram");
-      else this.remember(key, `data:${message.file.mime ?? "application/octet-stream"};base64,${toBase64(bytes)}`);
+      else this.remember(key, `data:${message.file.thumbnailOnly ? STICKER_MIME.lottie : (message.file.mime ?? "application/octet-stream")};base64,${toBase64(bytes)}`);
     } catch (error) {
       this.mediaFailed.set(key, `could not load: ${friendly(error)}`);
     } finally {
@@ -1367,7 +1580,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       pending: (this.pending.get(key) ?? []).map((f) => ({ name: f.filename, size: f.size })),
       uploading: this.uploading.has(key),
       ...shared,
-      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog) },
+      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog) },
     };
   }
 
@@ -1396,6 +1609,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       }
     }
     const dialog = this.selected ? this.dialog(this.selected) : undefined;
+    // Stickers only where they go as stickers: elsewhere the shell would send them as files, round a chat's rules.
+    const stickers = dialog && this.canSendStickers(dialog) ? this.offeredStickers() : [];
     return {
       screen: "chat",
       platform,
@@ -1404,6 +1619,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       sidebar,
       channel: dialog ? this.channelView(dialog) : null,
       voice: null,
+      ...(stickers.length > 0 ? { stickers } : {}),
       ...(this.profile ? { profile: this.profile } : {}),
       error: this.error,
     };

@@ -105,6 +105,8 @@ export interface TgDialog {
   noTopics?: boolean;
   /** The user may write here, but not send photos, videos or files. */
   noMedia?: boolean;
+  /** The user may write here, but not send stickers (barred from them, or from all media). */
+  noStickers?: boolean;
   /** The user left it, or was removed: they can only read what is left. */
   left?: boolean;
   lastMessage?: TgMessage;
@@ -163,7 +165,33 @@ export interface TgProfile {
   about?: string;
 }
 
-export type TgSignIn = { done: true } | { password: true; hint?: string } | { signUp: true };
+/** How a sticker is stored: a WebP picture, an animated vector sticker (TGS, a Lottie animation) or a WebM video. */
+export type TgStickerFormat = "webp" | "lottie" | "webm";
+
+/** A sticker the user has: in an installed set, or among their recent or favourite ones. */
+export interface TgSticker {
+  /** Its document's id. */
+  id: string;
+  /** The emoji it stands for. */
+  emoji: string;
+  format: TgStickerFormat;
+  /** Bytes, when known. */
+  size?: number;
+  /** Only Premium users may send it. */
+  premium?: boolean;
+}
+
+/** An installed sticker set, before its stickers are fetched. */
+export interface TgStickerSet {
+  id: string;
+  title: string;
+}
+
+/** The user's recent and favourite stickers, fetched like a set. */
+export const RECENT_STICKERS = "recent";
+export const FAVED_STICKERS = "faved";
+
+export type TgSignIn ={ done: true } | { password: true; hint?: string } | { signUp: true };
 
 export type TgUpdate =
   | { type: "message"; message: TgMessage }
@@ -218,6 +246,14 @@ export interface TelegramApi {
   userName(userId: string): Promise<string | undefined>;
   /** A message's media (or its thumbnail), as bytes; undefined when there is none. */
   download(chatId: string, messageId: number, thumbnail: boolean): Promise<Uint8Array | undefined>;
+  /** The user's installed sticker sets, in their order (regular stickers; not masks or custom emoji). */
+  stickerSets(): Promise<TgStickerSet[]>;
+  /** A set's stickers, or the user's recent (RECENT_STICKERS) or favourite (FAVED_STICKERS) ones. */
+  stickers(setId: string): Promise<TgSticker[]>;
+  /** A listed sticker's file, or its still thumbnail; undefined when there is none. */
+  stickerFile(id: string, thumbnail: boolean): Promise<Uint8Array | undefined>;
+  /** Sends a listed sticker, in a forum into a topic. */
+  sendSticker(chatId: string, id: string, replyTo?: number, topicId?: number): Promise<TgMessage>;
   onUpdate(cb: (update: TgUpdate) => void): void;
   /** The session to store, so the next start skips signing in. */
   session(): string;

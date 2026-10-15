@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import type { TelegramApi, TelegramCredentials, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import { MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
 import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import { MAX_ATTACHMENTS, type NativeAction, type NativeViewState } from "../../../src/shared/native";
@@ -49,6 +50,10 @@ class FakeTelegramApi implements TelegramApi {
   createTopic = vi.fn(async (_chatId: string, _title: string) => 77);
   userName = vi.fn(async (_userId: string): Promise<string | undefined> => undefined);
   download = vi.fn(async (_chatId: string, _id: number, _thumbnail: boolean): Promise<Uint8Array | undefined> => new Uint8Array([104, 105]));
+  stickerSets = vi.fn(async (): Promise<TgStickerSet[]> => []);
+  stickers = vi.fn(async (_setId: string): Promise<TgSticker[]> => []);
+  stickerFile = vi.fn(async (_id: string, _thumbnail: boolean): Promise<Uint8Array | undefined> => new Uint8Array([104, 105]));
+  sendSticker = vi.fn(async (chatId: string, _id: string, _replyTo?: number, _topicId?: number) => msg(chatId, 400, { out: true, text: "", media: "😀 Sticker" }));
   onUpdate = vi.fn((cb: (update: TgUpdate) => void) => void (this.listener = cb));
   session = vi.fn(() => "sess");
   logOut = vi.fn(async () => {});
@@ -61,6 +66,7 @@ class FakeTelegramApi implements TelegramApi {
 
 interface Options {
   mediaBudget?: number;
+  stickerBudget?: number;
   secrets?: Record<string, string>;
   builtIn?: TelegramCredentials;
   dialogs?: TgDialog[];
@@ -96,6 +102,7 @@ function setup(options: Options = {}) {
     builtInCredentials: options.builtIn,
     createApi,
     mediaBudget: options.mediaBudget,
+    stickerBudget: options.stickerBudget,
     files: options.noFiles ? undefined : picker,
   });
   adapter.onDirectsChanged((d) => directs.push(d));
@@ -580,7 +587,7 @@ describe("chat view", () => {
     await Promise.all([first, second]);
     expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE, undefined);
     expect(ctx.chat().channel).toMatchObject({ loading: false, hasOlder: false });
-    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false });
+    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false, stickers: true });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
 
     await ctx.adapter.openConversation("1");
@@ -1076,6 +1083,11 @@ describe("media", () => {
     await ctx.act({ type: "loadMedia", key: "tg:1:3" });
     expect(ctx.api.download).toHaveBeenLastCalledWith("1", 3, true); // the still of an animated sticker
     expect(ctx.api.download).toHaveBeenCalledTimes(2);
+    // Shown as the still it is, which the view labels as an animated sticker.
+    const still = ctx.chat().channel!.messages[2]!.attachments[0]!;
+    expect(still).toMatchObject({ kind: "sticker", previewUrl: "data:image/webp;base64,aGk=" });
+    expect(still).not.toHaveProperty("url");
+    expect(still).not.toHaveProperty("mediaKey");
   });
 
   it("says when media is too large, gone or failed, and ignores keys it did not give", async () => {
@@ -2310,5 +2322,236 @@ describe("forum topics", () => {
     fail();
     await again;
     expect(ctx.last().screen).not.toBe("chat");
+  });
+});
+
+describe("stickers", () => {
+  const stk = (id: string, extra: Partial<TgSticker> = {}): TgSticker => ({ id, emoji: "😀", format: "webp", ...extra });
+  const GROUP = "-1005";
+
+  interface StickerOptions extends Options {
+    premium?: boolean;
+  }
+
+  /** Signed in with these packs (set ids are digits; "faved" and "recent" the user's own), a chat open and the packs fetched. */
+  async function stickerChat(packs: Record<string, TgSticker[]>, options: StickerOptions = {}, chat = "1") {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true, ...options });
+    if (options.premium) ctx.api.me.mockResolvedValue({ id: "9", name: "Me", bot: false, premium: true });
+    ctx.api.stickerSets.mockResolvedValue(Object.keys(packs).filter((id) => /^\d+$/.test(id)).map((id) => ({ id, title: `Set ${id}` })));
+    ctx.api.stickers.mockImplementation(async (id: string) => packs[id] ?? []);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.act({ type: "select", channelId: viewId(chat) });
+    await settle();
+    return ctx;
+  }
+  const settle = async () => {
+    await flush();
+    await vi.advanceTimersByTimeAsync(STICKER_RENDER_MS);
+  };
+  type Ctx = Awaited<ReturnType<typeof stickerChat>>;
+  const packs = (ctx: Ctx) => ctx.chat().stickers ?? [];
+  const offered = (ctx: Ctx) => packs(ctx).flatMap((p) => p.stickers);
+
+  it("offers the user's favourite and recent stickers, then their sets, once a chat is opened", async () => {
+    const ctx = await stickerChat({ faved: [stk("1")], recent: [], "11": [stk("2", { emoji: "" })], "12": [stk("3")] });
+    expect(ctx.api.stickers.mock.calls.map((c) => c[0])).toEqual(["faved", "recent", "11", "12"]);
+    expect(packs(ctx).map((p) => [p.id, p.name])).toEqual([["faved", "Favourite stickers"], ["set:11", "Set 11"], ["set:12", "Set 12"]]);
+    expect(offered(ctx)[0]).toEqual({ id: "tg:1", name: "😀 sticker", format: "webp", emoji: "😀", mediaKey: "tgsticker:1" });
+    expect(offered(ctx)[1]).toEqual({ id: "tg:2", name: "🙂 sticker", format: "webp", mediaKey: "tgsticker:2" });
+    expect(ctx.chat().channel!.can.stickers).toBe(true);
+    // Fetched once a session.
+    await ctx.act({ type: "select", channelId: "2" });
+    await settle();
+    expect(ctx.api.stickerSets).toHaveBeenCalledTimes(1);
+    // Neither GIF search nor custom emoji is offered.
+    expect(ctx.chat().channel!.can.gifs).toBeUndefined();
+    expect(ctx.chat().customEmoji).toBeUndefined();
+  });
+
+  it("shows packs as they arrive, a few at a time, leaving out those that fail", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    await ctx.adapter.start();
+    await flush();
+    ctx.api.stickerSets.mockRejectedValueOnce(new Error("offline"));
+    await ctx.act({ type: "select", channelId: "1" });
+    await settle();
+    expect(ctx.api.stickers).not.toHaveBeenCalled();
+    // Asked again on the next chat.
+    const answers: ((stickers: TgSticker[]) => void)[] = [];
+    ctx.api.stickerSets.mockResolvedValue([{ id: "11", title: "Cats" }, { id: "12", title: "Dogs" }, { id: "13", title: "Owls" }]);
+    ctx.api.stickers.mockImplementation((id: string) => (id === "12" ? Promise.reject(new Error("gone")) : new Promise((resolve) => answers.push(resolve))));
+    await ctx.act({ type: "select", channelId: "2" });
+    await flush();
+    expect(ctx.api.stickers.mock.calls.map((c) => c[0])).toEqual(["faved", "recent", "11"]);
+    answers[2]!([stk("1")]);
+    await settle();
+    expect(packs(ctx).map((p) => p.id)).toEqual(["set:11"]);
+    expect(ctx.api.stickers.mock.calls.map((c) => c[0])).toEqual(["faved", "recent", "11", "12", "13"]);
+    answers[0]!([stk("2")]);
+    answers[1]!([]);
+    answers[3]!([stk("3")]);
+    await settle();
+    expect(packs(ctx).map((p) => p.id)).toEqual(["faved", "set:11", "set:13"]);
+  });
+
+  it("fetches at most so many sets, and offers as many stickers as the view shows", async () => {
+    const sets: Record<string, TgSticker[]> = {};
+    for (let i = 1; i <= STICKER_SET_LIMIT + 1; i++) sets[String(i)] = Array.from({ length: PACK_STICKER_LIMIT + 1 }, (_, j) => stk(`${i}${String(j).padStart(4, "0")}`));
+    const ctx = await stickerChat(sets);
+    expect(ctx.api.stickers).toHaveBeenCalledTimes(STICKER_SET_LIMIT + 2);
+    expect(ctx.api.stickers).not.toHaveBeenCalledWith(String(STICKER_SET_LIMIT + 1));
+    expect(packs(ctx)[0]!.stickers).toHaveLength(PACK_STICKER_LIMIT);
+    expect(offered(ctx)).toHaveLength(STICKER_LIMIT);
+  });
+
+  it("loads pictures for the picker: the file for static and video stickers, the still for animated ones and large static ones", async () => {
+    const ctx = await stickerChat({
+      "11": [stk("1"), stk("2", { format: "lottie" }), stk("3", { format: "webm", size: 1000 }), stk("4", { size: MAX_STICKER_BYTES + 1 }), stk("5", { format: "webm", size: MAX_STICKER_BYTES + 1 }), stk("6", { format: "webm" })],
+    });
+    // A video sticker too large to load is not offered; a large static one shows its thumbnail, and says so.
+    expect(offered(ctx).map((s) => [s.id, s.name, s.format])).toEqual([
+      ["tg:1", "😀 sticker", "webp"],
+      ["tg:2", "😀 sticker", "lottie"],
+      ["tg:3", "😀 sticker", "webm"],
+      ["tg:4", "😀 sticker (small preview)", "webp"],
+      ["tg:6", "😀 sticker", "webm"],
+    ]);
+    for (const id of ["1", "2", "3", "4"]) await ctx.act({ type: "loadMedia", key: `tgsticker:${id}` });
+    expect(ctx.api.stickerFile.mock.calls).toEqual([["1", false], ["2", true], ["3", false], ["4", true]]);
+    await flush();
+    // Gathered before the view hears of them.
+    expect(offered(ctx)[0]).not.toHaveProperty("url");
+    await settle();
+    expect(offered(ctx).map((s) => s.url)).toEqual(["data:image/webp;base64,aGk=", "data:image/webp;base64,aGk=", "data:video/webm;base64,aGk=", "data:image/webp;base64,aGk=", undefined]);
+    expect(offered(ctx)[0]).not.toHaveProperty("mediaKey");
+    // Loaded once; keys not offered are ignored.
+    for (const key of ["tgsticker:1", "tgsticker:5", "tgsticker:99"]) await ctx.act({ type: "loadMedia", key });
+    expect(ctx.api.stickerFile).toHaveBeenCalledTimes(4);
+  });
+
+  it("downloads a few pictures at once, each once", async () => {
+    const ctx = await stickerChat({ "11": ["1", "2", "3", "4", "5", "6"].map((id) => stk(id)) });
+    const answers: (() => void)[] = [];
+    ctx.api.stickerFile.mockImplementation(() => new Promise((resolve) => answers.push(() => resolve(new Uint8Array([1])))));
+    for (const id of ["1", "2", "3", "4", "5", "6", "6"]) await ctx.act({ type: "loadMedia", key: `tgsticker:${id}` });
+    expect(ctx.api.stickerFile).toHaveBeenCalledTimes(4);
+    answers[0]!();
+    answers[1]!();
+    await flush();
+    expect(ctx.api.stickerFile).toHaveBeenCalledTimes(6);
+    for (const answer of answers) answer();
+    await settle();
+    expect(offered(ctx).every((s) => s.url === "data:image/webp;base64,AQ==")).toBe(true);
+  });
+
+  it("leaves out stickers whose picture could not be loaded, is too large, or is past the budget", async () => {
+    const ctx = await stickerChat({ "11": ["1", "2", "3", "4", "5"].map((id) => stk(id)) }, { stickerBudget: 50 });
+    ctx.api.stickerFile.mockRejectedValueOnce(new Error("x")).mockResolvedValueOnce(undefined).mockResolvedValueOnce(new Uint8Array(MAX_STICKER_BYTES + 1));
+    for (const id of ["1", "2", "3", "4", "5"]) await ctx.act({ type: "loadMedia", key: `tgsticker:${id}` });
+    await settle();
+    // "data:image/webp;base64,aGk=" is 27 characters: one fits the budget.
+    expect(offered(ctx).map((s) => s.id)).toEqual(["tg:4"]);
+  });
+
+  it("offers Premium stickers only to Premium users", async () => {
+    const plain = await stickerChat({ "11": [stk("1"), stk("2", { premium: true })] });
+    expect(offered(plain).map((s) => s.id)).toEqual(["tg:1"]);
+    await plain.act({ type: "sendSticker", stickerId: "tg:2" });
+    expect(plain.api.sendSticker).not.toHaveBeenCalled();
+    const premium = await stickerChat({ "11": [stk("1"), stk("2", { premium: true })] }, { premium: true });
+    expect(offered(premium).map((s) => s.id)).toEqual(["tg:1", "tg:2"]);
+  });
+
+  it("offers stickers only where they may be sent as stickers", async () => {
+    const dialogs = [
+      dlg("1"),
+      dlg("-1", { kind: "channel", readOnly: true }),
+      dlg("-2", { kind: "group", noStickers: true }),
+      dlg(GROUP, { kind: "group", forum: true }),
+    ];
+    const ctx = await stickerChat({ "11": [stk("1")] }, { dialogs });
+    expect(offered(ctx)).toHaveLength(1);
+    for (const chat of ["-1", "-2", GROUP]) {
+      await ctx.act({ type: "select", channelId: viewId(chat) });
+      await settle();
+      expect(ctx.chat().stickers).toBeUndefined();
+      expect(ctx.chat().channel!.can.stickers).not.toBe(true);
+      await ctx.act({ type: "sendSticker", stickerId: "tg:1" });
+    }
+    expect(ctx.api.sendSticker).not.toHaveBeenCalled();
+    // In a forum, within a topic.
+    ctx.api.topics.mockResolvedValue([{ id: 10, title: "T10", unreadCount: 0, unreadMentions: 0, date: 1 }]);
+    await ctx.act({ type: "select", channelId: viewId(GROUP) });
+    await flush();
+    await ctx.act({ type: "select", channelId: ctx.rows().find((r) => r.kind === "thread")!.id });
+    await settle();
+    expect(ctx.chat().channel!.can.stickers).toBe(true);
+    await ctx.act({ type: "sendSticker", stickerId: "tg:1" });
+    expect(ctx.api.sendSticker).toHaveBeenCalledWith(GROUP, "1", undefined, 10);
+  });
+
+  it("sends an offered sticker as a sticker, as a reply where asked, and shows it", async () => {
+    const ctx = await stickerChat({ "11": [stk("1")] });
+    await ctx.act({ type: "sendSticker", stickerId: "tg:1", replyTo: "2" });
+    expect(ctx.api.sendSticker).toHaveBeenCalledWith("1", "1", 2, undefined);
+    expect(ctx.messageIds()).toContain("400");
+    // Only stickers offered.
+    await ctx.act({ type: "sendSticker", stickerId: "tg:9" });
+    expect(ctx.api.sendSticker).toHaveBeenCalledTimes(1);
+    ctx.api.sendSticker.mockRejectedValueOnce(tgError("CHAT_SEND_STICKERS_FORBIDDEN"));
+    await ctx.act({ type: "sendSticker", stickerId: "tg:1" });
+    expect(ctx.chat().error).toBe("Sticker not sent: CHAT_SEND_STICKERS_FORBIDDEN");
+  });
+
+  it("sends nothing without an open chat", async () => {
+    vi.useFakeTimers();
+    const ctx = await signedIn();
+    await ctx.act({ type: "sendSticker", stickerId: "tg:1" });
+    expect(ctx.api.sendSticker).not.toHaveBeenCalled();
+    expect(ctx.chat().stickers).toBeUndefined();
+  });
+
+  it("forgets stickers on sign-out, and drops what arrives after it", async () => {
+    const ctx = await stickerChat({ "11": [stk("1"), stk("2")] });
+    let loaded!: (bytes: Uint8Array) => void;
+    ctx.api.stickerFile.mockImplementationOnce(() => new Promise((resolve) => (loaded = resolve)));
+    await ctx.act({ type: "loadMedia", key: "tgsticker:1" });
+    await ctx.act({ type: "loadMedia", key: "tgsticker:2" });
+    await ctx.act({ type: "logout" });
+    loaded(new Uint8Array([1]));
+    await settle();
+    // Signed in again: fetched afresh, with what came late left out.
+    let sets!: (sets: TgStickerSet[]) => void;
+    ctx.api.stickerSets.mockImplementationOnce(() => new Promise((resolve) => (sets = resolve)));
+    await ctx.answer("phone", { phone: "+31612345678" });
+    await ctx.answer("code", { code: "1" });
+    await flush();
+    const opening = ctx.act({ type: "select", channelId: "1" });
+    await flush();
+    expect(ctx.chat().stickers).toBeUndefined();
+    await ctx.act({ type: "logout" });
+    sets([{ id: "11", title: "Cats" }]);
+    await opening;
+    await settle();
+    expect(ctx.api.stickers).toHaveBeenCalledTimes(3); // faved, recent and set 11, before the first sign-out
+  });
+
+  it("drops packs that arrive after sign-out", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    await ctx.adapter.start();
+    await flush();
+    ctx.api.stickerSets.mockResolvedValue([]);
+    const answers: ((stickers: TgSticker[]) => void)[] = [];
+    ctx.api.stickers.mockImplementation(() => new Promise((resolve) => answers.push(resolve)));
+    await ctx.act({ type: "select", channelId: "1" });
+    await flush();
+    await ctx.act({ type: "logout" });
+    for (const answer of answers) answer([stk("1")]);
+    await settle();
+    expect(ctx.api.stickers).toHaveBeenCalledTimes(2);
   });
 });

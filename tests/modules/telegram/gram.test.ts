@@ -21,6 +21,7 @@ const h = vi.hoisted(() => {
     "SendMessageRecordVideoAction", "SendMessageUploadVideoAction", "SendMessageRecordAudioAction", "SendMessageUploadAudioAction", "SendMessageUploadDocumentAction",
     "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
     "InputFile", "InputFileBig", "InputMediaUploadedPhoto", "InputMediaUploadedDocument",
+    "PhotoPathSize", "VideoSize", "StickerSet", "InputStickerSetID", "InputMediaDocument", "InputDocument",
     "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate",
   ];
   const Api: Record<string, unknown> = {
@@ -34,6 +35,14 @@ const h = vi.hoisted(() => {
       ReadDiscussion: class extends Base {},
       GetAvailableReactions: class extends Base {},
       AvailableReactions: class extends Base {},
+      GetAllStickers: class extends Base {},
+      AllStickers: class extends Base {},
+      GetStickerSet: class extends Base {},
+      StickerSet: class extends Base {},
+      GetRecentStickers: class extends Base {},
+      RecentStickers: class extends Base {},
+      GetFavedStickers: class extends Base {},
+      FavedStickers: class extends Base {},
     },
     channels: {
       GetFullChannel: class extends Base {},
@@ -102,7 +111,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, toMessage, typingOf } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -346,7 +355,7 @@ describe("createGramApi", () => {
     await expect(api.dialogs(20)).resolves.toEqual([
       { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, lastMessage: toMessage(last, "1") },
       { chatId: "2", kind: "user", title: "@bo", bot: false, unreadCount: 0, unreadMentions: 0, date: 90, mutedUntil: 2147483647 },
-      { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, members: true, noMedia: true },
+      { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, members: true, noMedia: true, noStickers: true },
       { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true, left: true },
     ]);
     expect(client.getDialogs).toHaveBeenCalledWith({ limit: 20 });
@@ -486,7 +495,7 @@ describe("mediaFile", () => {
     expect(mediaFile(doc({ mimeType: "image/webp", size: 5000 }, make(Api.DocumentAttributeSticker, { alt: "😀" }), make(Api.DocumentAttributeImageSize, { w: 512, h: 512 })))).toEqual({
       kind: "sticker", name: "😀 Sticker", mime: "image/webp", size: 5000, width: 512, height: 512,
     });
-    expect(mediaFile(doc({ mimeType: "application/x-tgsticker" }, make(Api.DocumentAttributeSticker, { alt: "" })))).toMatchObject({ kind: "sticker", name: "🙂 Sticker", mime: "image/webp", thumbnailOnly: true });
+    expect(mediaFile(doc({ mimeType: "application/x-tgsticker" }, make(Api.DocumentAttributeSticker, { alt: "" })))).toMatchObject({ kind: "sticker", name: "🙂 Sticker", mime: "application/x-tgsticker", thumbnailOnly: true });
     expect(mediaFile(doc({ mimeType: "video/webm" }, make(Api.DocumentAttributeSticker, { alt: "🎉" }), make(Api.DocumentAttributeVideo, { w: 512, h: 512 })))).toMatchObject({ kind: "sticker", mime: "video/webm", width: 512 });
     expect(mediaFile(doc({ mimeType: "audio/ogg", size: BigInt(4000) }, make(Api.DocumentAttributeAudio, { voice: true })))).toEqual({ kind: "audio", name: "Voice message", mime: "audio/ogg", size: 4000 });
     expect(mediaFile(doc({ mimeType: "audio/mpeg", size: { toJSNumber: () => 7 } }, make(Api.DocumentAttributeAudio, { performer: "Band", title: "Song" })))).toMatchObject({ name: "Band – Song", size: 7 });
@@ -527,6 +536,14 @@ describe("downloads", () => {
     expect(await api.download("42", 6, false)).toBeUndefined();
     client.downloadMedia.mockResolvedValue(new Uint8Array());
     expect(await api.download("42", 6, false)).toBeUndefined();
+    // Vector outlines are not counted, as GramJS leaves them out; with no thumbnail at all, nothing (never the file).
+    client.getMessages.mockResolvedValue([make(Api.Message, { id: 9, media: make(Api.MessageMediaDocument, { document: make(Api.Document, { attributes: [], thumbs: [make(Api.PhotoPathSize), {}] }) }) })]);
+    client.downloadMedia.mockClear().mockResolvedValue(new Uint8Array([3]));
+    await api.download("42", 9, true);
+    expect(client.downloadMedia).toHaveBeenLastCalledWith(expect.anything(), { thumb: 0 });
+    client.getMessages.mockResolvedValue([make(Api.Message, { id: 9, media: make(Api.MessageMediaDocument, { document: make(Api.Document, { attributes: [] }) }) })]);
+    expect(await api.download("42", 9, true)).toBeUndefined();
+    expect(client.downloadMedia).toHaveBeenCalledTimes(1);
     client.getMessages.mockResolvedValue([make(Api.Message, { id: 7 })]);
     expect(await api.download("42", 7, false)).toBeUndefined();
     client.getMessages.mockResolvedValue([undefined]);
@@ -1071,6 +1088,147 @@ describe("forum topics", () => {
       expect(read).toMatchObject({ peer: { input: -1005n }, msgId: 10, readMaxId: 40 });
       expect(mentions).toBeInstanceOf(Api.messages.ReadMentions);
       expect(mentions).toMatchObject({ topMsgId: 10 });
+    });
+  });
+});
+
+describe("stickers", () => {
+  const sticker = (id: unknown, mimeType: string, props: Record<string, unknown> = {}, alt: unknown = "😀") =>
+    make(Api.Document, { id, mimeType, attributes: [make(Api.DocumentAttributeSticker, { alt })], ...props });
+
+  it("reads sticker documents: static, animated vector and video ones, and which need Premium", () => {
+    expect(stickerOf(sticker(5n, "image/webp", { size: 3000 }))).toEqual({ id: "5", emoji: "😀", format: "webp", size: 3000 });
+    expect(stickerOf(sticker(-6n, "application/x-tgsticker", {}, ""))).toEqual({ id: "-6", emoji: "", format: "lottie" });
+    expect(stickerOf(sticker(7n, "video/webm", { videoThumbs: [make(Api.VideoSize, { type: "f" })] }, "x".repeat(33)))).toEqual({ id: "7", emoji: "", format: "webm", premium: true });
+    expect(stickerOf(sticker(8n, "video/webm", { videoThumbs: [make(Api.VideoSize, { type: "v" }), { type: "f" }] }))).not.toHaveProperty("premium");
+  });
+
+  it("leaves out what is not a sticker the picker can show", () => {
+    expect(stickerOf(undefined)).toBeUndefined();
+    expect(stickerOf(sticker(5n, "image/png"))).toBeUndefined();
+    expect(stickerOf(sticker(5n, "constructor"))).toBeUndefined();
+    expect(stickerOf(make(Api.Document, { id: 5n, mimeType: "image/webp", attributes: [] }))).toBeUndefined();
+    expect(stickerOf(sticker(10n ** 21n, "image/webp"))).toBeUndefined();
+  });
+
+  it("lists regular installed sets, not archived ones, masks or custom emoji", () => {
+    const set = (id: unknown, props: Record<string, unknown> = {}) => make(Api.StickerSet, { id, accessHash: 9n, title: `Set ${id}`, ...props });
+    const sets = stickerSetsOf([set(1n), set(2n, { archived: true }), set(3n, { masks: true }), set(4n, { emojis: true }), set(10n ** 21n), {}, set(5n, { title: "" }), set(6n, { title: "t".repeat(200) })]);
+    expect(sets.map((s) => s.set)).toEqual([
+      { id: "1", title: "Set 1" },
+      { id: "5", title: "Stickers" },
+      { id: "6", title: "t".repeat(100) },
+    ]);
+    expect(sets[0]!.input).toBeInstanceOf(Api.InputStickerSetID);
+    expect(sets[0]!.input).toMatchObject({ id: 1n, accessHash: 9n });
+  });
+
+  it("knows who may not send stickers: those barred from them or from all media, not admins", () => {
+    expect(stickersBanned(make(Api.Chat, { defaultBannedRights: { sendStickers: true } }))).toBe(true);
+    expect(stickersBanned(make(Api.Chat, { defaultBannedRights: { sendMedia: true } }))).toBe(true);
+    expect(stickersBanned(make(Api.Channel, { megagroup: true, bannedRights: { sendStickers: true } }))).toBe(true);
+    expect(stickersBanned(make(Api.Channel, { megagroup: true, adminRights: {}, bannedRights: { sendStickers: true } }))).toBe(false);
+    expect(stickersBanned(make(Api.Chat, { defaultBannedRights: { sendGifs: true } }))).toBe(false);
+    expect(stickersBanned(make(Api.User))).toBe(false);
+  });
+
+  it("finds the largest thumbnail GramJS downloads", () => {
+    expect(thumbIndex(undefined)).toBeUndefined();
+    expect(thumbIndex([make(Api.PhotoPathSize)])).toBeUndefined();
+    expect(thumbIndex([make(Api.PhotoPathSize), {}, {}])).toBe(1);
+  });
+
+  describe("through the client", () => {
+    let client: InstanceType<typeof h.FakeClient>;
+    let api: ReturnType<typeof createGramApi>;
+    const request = () => client.invoke.mock.calls.at(-1)![0] as Record<string, unknown>;
+    beforeEach(() => {
+      api = createGramApi({ apiId: 1, apiHash: "h" }, "", { os: "linux", appVersion: "1" });
+      client = h.FakeClient.instances.at(-1)!;
+    });
+
+    it("lists the installed sets, asking again with Telegram's hash and keeping them while unchanged", async () => {
+      client.invoke.mockResolvedValueOnce({});
+      await expect(api.stickerSets()).resolves.toEqual([]);
+      expect(request()).toBeInstanceOf(Api.messages.GetAllStickers);
+      expect(request()).toMatchObject({ hash: 0n });
+      client.invoke.mockResolvedValueOnce(make(Api.messages.AllStickers, { hash: 77n, sets: [make(Api.StickerSet, { id: 1n, accessHash: 2n, title: "Cats" })] }));
+      await expect(api.stickerSets()).resolves.toEqual([{ id: "1", title: "Cats" }]);
+      client.invoke.mockResolvedValueOnce({}); // not modified
+      await expect(api.stickerSets()).resolves.toEqual([{ id: "1", title: "Cats" }]);
+      expect(request()).toMatchObject({ hash: 77n });
+    });
+
+    it("lists a set's stickers, and the user's recent and favourite ones, leaving out what is not a sticker", async () => {
+      client.invoke.mockResolvedValueOnce(make(Api.messages.AllStickers, { hash: 1n, sets: [make(Api.StickerSet, { id: 1n, accessHash: 2n, title: "Cats" })] }));
+      await api.stickerSets();
+      client.invoke.mockResolvedValueOnce(make(Api.messages.StickerSet, { documents: [sticker(5n, "image/webp"), make(Api.Document, { attributes: [] })] }));
+      await expect(api.stickers("1")).resolves.toEqual([{ id: "5", emoji: "😀", format: "webp" }]);
+      expect(request()).toBeInstanceOf(Api.messages.GetStickerSet);
+      expect(request().stickerset).toBeInstanceOf(Api.InputStickerSetID);
+      client.invoke.mockResolvedValueOnce({});
+      await expect(api.stickers("1")).resolves.toEqual([]);
+      client.invoke.mockResolvedValueOnce(make(Api.messages.RecentStickers, { stickers: [sticker(6n, "video/webm")] }));
+      await expect(api.stickers("recent")).resolves.toMatchObject([{ id: "6", format: "webm" }]);
+      expect(request()).toBeInstanceOf(Api.messages.GetRecentStickers);
+      client.invoke.mockResolvedValueOnce({});
+      await expect(api.stickers("recent")).resolves.toEqual([]);
+      client.invoke.mockResolvedValueOnce(make(Api.messages.FavedStickers, { stickers: [sticker(7n, "application/x-tgsticker")] }));
+      await expect(api.stickers("faved")).resolves.toMatchObject([{ id: "7", format: "lottie" }]);
+      expect(request()).toBeInstanceOf(Api.messages.GetFavedStickers);
+      client.invoke.mockResolvedValueOnce({});
+      await expect(api.stickers("faved")).resolves.toEqual([]);
+      await expect(api.stickers("99")).rejects.toThrow("Telegram did not list this sticker set");
+    });
+
+    it("downloads a listed sticker, or its largest thumbnail; never one it did not list", async () => {
+      const document = sticker(5n, "application/x-tgsticker", { thumbs: [make(Api.PhotoPathSize), {}] });
+      client.invoke.mockResolvedValueOnce(make(Api.messages.RecentStickers, { stickers: [document, sticker(6n, "image/webp")] }));
+      await api.stickers("recent");
+      client.downloadMedia.mockResolvedValue(new Uint8Array([1]));
+      await expect(api.stickerFile("5", true)).resolves.toEqual(new Uint8Array([1]));
+      const [media, options] = client.downloadMedia.mock.calls.at(-1)! as unknown as [{ document: unknown }, unknown];
+      expect(media).toBeInstanceOf(Api.MessageMediaDocument);
+      expect(media.document).toBe(document);
+      expect(options).toEqual({ thumb: 0 });
+      await api.stickerFile("5", false);
+      expect(client.downloadMedia).toHaveBeenLastCalledWith(expect.anything(), {});
+      client.downloadMedia.mockClear();
+      // No thumbnail: nothing, rather than the animation itself.
+      await expect(api.stickerFile("6", true)).resolves.toBeUndefined();
+      expect(client.downloadMedia).not.toHaveBeenCalled();
+      await expect(api.stickerFile("8", false)).rejects.toThrow("Telegram did not list this sticker");
+    });
+
+    it("sends a listed sticker as itself, into a topic or as a reply", async () => {
+      client.invoke.mockResolvedValueOnce(make(Api.messages.FavedStickers, { stickers: [sticker(5n, "image/webp", { accessHash: 3n, fileReference: "ref" })] }));
+      await api.stickers("faved");
+      client.sendFile.mockResolvedValue(make(Api.Message, { id: 9, date: 1, out: true, message: "" }));
+      await expect(api.sendSticker("-1005", "5", 4, 10)).resolves.toMatchObject({ id: 9, chatId: "-1005" });
+      const [peer, options] = client.sendFile.mock.calls[0]! as unknown as [bigint, { file: { id: unknown }; caption: string; replyTo: number; topMsgId: number }];
+      expect(peer).toBe(-1005n);
+      expect(options).toMatchObject({ caption: "", replyTo: 4, topMsgId: 10 });
+      expect(options.file).toBeInstanceOf(Api.InputMediaDocument);
+      expect(options.file.id).toBeInstanceOf(Api.InputDocument);
+      expect(options.file.id).toMatchObject({ id: 5n, accessHash: 3n, fileReference: "ref" });
+    });
+
+    it("lists a sticker afresh once when its file reference expired", async () => {
+      client.invoke.mockResolvedValueOnce(make(Api.messages.FavedStickers, { stickers: [sticker(5n, "image/webp", { fileReference: "old" })] }));
+      await api.stickers("faved");
+      client.sendFile.mockRejectedValueOnce({ errorMessage: "FILE_REFERENCE_EXPIRED" }).mockResolvedValueOnce(make(Api.Message, { id: 9, date: 1 }));
+      client.invoke.mockResolvedValueOnce(make(Api.messages.FavedStickers, { stickers: [sticker(5n, "image/webp", { fileReference: "new" })] }));
+      await expect(api.sendSticker("7", "5")).resolves.toMatchObject({ id: 9 });
+      const options = client.sendFile.mock.calls.at(-1)![1] as unknown as { file: { id: { fileReference: string } } };
+      expect(options.file.id.fileReference).toBe("new");
+      // Gone from where it was listed: the error stands.
+      client.sendFile.mockRejectedValueOnce({ errorMessage: "FILE_REFERENCE_EXPIRED" });
+      client.invoke.mockResolvedValueOnce(make(Api.messages.FavedStickers, { stickers: [] }));
+      await expect(api.sendSticker("7", "5")).rejects.toEqual({ errorMessage: "FILE_REFERENCE_EXPIRED" });
+      // Other errors are not retried.
+      client.sendFile.mockClear().mockRejectedValueOnce({ errorMessage: "CHAT_SEND_STICKERS_FORBIDDEN" });
+      await expect(api.sendSticker("7", "5")).rejects.toEqual({ errorMessage: "CHAT_SEND_STICKERS_FORBIDDEN" });
+      expect(client.sendFile).toHaveBeenCalledTimes(1);
     });
   });
 });

@@ -83,7 +83,7 @@ describe("Telegram engine", () => {
     const { bridge } = fakeBridge({ session: "stored" });
     const api = fakeApi(true);
     vi.mocked(api.dialogs).mockResolvedValue([{ chatId: "1", kind: "user", title: "Ana", bot: false, unreadCount: 0, unreadMentions: 0, date: 1 }]);
-    Object.assign(api, { history: vi.fn(async () => []), reactionList: vi.fn(async () => []), markRead: vi.fn(async () => {}) });
+    Object.assign(api, { history: vi.fn(async () => []), reactionList: vi.fn(async () => []), stickerSets: vi.fn(async () => []), stickers: vi.fn(async () => []), markRead: vi.fn(async () => {}) });
     const adapter = await startTelegramEngine(bridge, { builtIn: CREDENTIALS, appVersion: "1.0.0", createApi: () => api });
     await adapter.openConversation("1");
     await adapter.handleAction({ type: "attach" });

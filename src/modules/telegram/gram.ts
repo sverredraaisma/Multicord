@@ -13,8 +13,10 @@ import { generateRandomBytes, readBigIntFromBuffer, returnBigInt } from "telegra
 import { computeCheck } from "telegram/Password";
 import { StringSession } from "telegram/sessions/StringSession";
 import {
+  FAVED_STICKERS,
   GENERAL_TOPIC,
   isChannelPeer,
+  RECENT_STICKERS,
   reactionEmoji,
   telegramError,
   type TelegramApi,
@@ -30,6 +32,9 @@ import {
   type TgProfile,
   type TgReaction,
   type TgSignIn,
+  type TgSticker,
+  type TgStickerFormat,
+  type TgStickerSet,
   type TgText,
   type TgTopic,
   type TgUpdate,
@@ -97,7 +102,7 @@ export function mediaFile(media: Api.TypeMessageMedia | undefined): TgFile | und
   if (sticker) {
     const name = `${sticker.alt || "🙂"} Sticker`;
     // Animated vector stickers (.tgs) cannot be drawn here: their still thumbnail is.
-    if (mime === "application/x-tgsticker") return { kind: "sticker", name, mime: "image/webp", thumbnailOnly: true, ...dims };
+    if (mime === "application/x-tgsticker") return { kind: "sticker", name, mime, thumbnailOnly: true, ...dims };
     return { kind: "sticker", name, mime, size, ...dims };
   }
   const audio = find(Api.DocumentAttributeAudio);
@@ -155,12 +160,18 @@ export function describeChat(entity: unknown): { kind: TgDialog["kind"]; title: 
   return undefined;
 }
 
-/** Whether the user may write in a group but not send media there: its rules or their own restrictions, which admins are free of. */
-export function mediaBanned(entity: unknown): boolean {
+/** Whether a group's rules or the user's own restrictions there, which admins are free of, bar what `barred` says. */
+function restricted(entity: unknown, barred: (rights: Api.TypeChatBannedRights) => boolean): boolean {
   if (!(entity instanceof Api.Chat || entity instanceof Api.Channel) || entity.creator === true || entity.adminRights !== undefined) return false;
   const rights = [entity.defaultBannedRights, entity instanceof Api.Channel ? entity.bannedRights : undefined];
-  return rights.some((r) => r?.sendMedia === true);
+  return rights.some((r) => r !== undefined && barred(r));
 }
+
+/** Whether the user may write in a group but not send media there. */
+export const mediaBanned = (entity: unknown): boolean => restricted(entity, (r) => r.sendMedia === true);
+
+/** Whether the user may write in a group but not send stickers there: barred from them, or from all media. */
+export const stickersBanned = (entity: unknown): boolean => restricted(entity, (r) => r.sendMedia === true || r.sendStickers === true);
 
 /** Whether a dialog's entity is a forum group, and whether only its admins start topics there. */
 export function forumOf(entity: unknown): { forum: boolean; noTopics: boolean } {
@@ -380,6 +391,47 @@ export function fileName(name: string): string {
   return clean || "file";
 }
 
+/**
+ * Which of a document's thumbnails is its largest, as GramJS counts them
+ * (it leaves out vector outlines); undefined when it has none to download.
+ */
+export function thumbIndex(thumbs: readonly unknown[] | undefined): number | undefined {
+  const usable = (thumbs ?? []).filter((t) => !(t instanceof Api.PhotoPathSize)).length;
+  return usable > 0 ? usable - 1 : undefined;
+}
+
+/** Sticker files by MIME type: the formats the picker offers. */
+const STICKER_FORMATS = new Map<string, TgStickerFormat>([
+  ["image/webp", "webp"],
+  ["application/x-tgsticker", "lottie"],
+  ["video/webm", "webm"],
+]);
+
+/** A sticker document as the picker offers it; undefined for anything else, or a format it does not know. */
+export function stickerOf(document: unknown): TgSticker | undefined {
+  if (!(document instanceof Api.Document)) return undefined;
+  const attribute = document.attributes.find((a): a is Api.DocumentAttributeSticker => a instanceof Api.DocumentAttributeSticker);
+  const format = STICKER_FORMATS.get(document.mimeType);
+  const id = String(document.id);
+  if (!attribute || !format || !/^-?\d{1,20}$/.test(id)) return undefined;
+  const sticker: TgSticker = { id, emoji: attribute.alt && attribute.alt.length <= 32 ? attribute.alt : "", format };
+  const size = count(document.size);
+  if (size) sticker.size = size;
+  // Premium stickers come with a full-screen effect: a video thumbnail of type "f".
+  if ((document.videoThumbs ?? []).some((v) => v instanceof Api.VideoSize && v.type === "f")) sticker.premium = true;
+  return sticker;
+}
+
+/** The installed sticker sets the picker offers: regular ones, not archived, masks or custom emoji. */
+export function stickerSetsOf(sets: readonly unknown[]): { set: TgStickerSet; input: Api.InputStickerSetID }[] {
+  return sets.flatMap((s) => {
+    if (!(s instanceof Api.StickerSet) || s.archived || s.masks || s.emojis) return [];
+    const id = String(s.id);
+    if (!/^-?\d{1,20}$/.test(id)) return [];
+    return [{ set: { id, title: (s.title || "Stickers").slice(0, 100) }, input: new Api.InputStickerSetID({ id: s.id, accessHash: s.accessHash }) }];
+  });
+}
+
 export function toMessage(message: Api.Message, chatId: string): TgMessage {
   const out: TgMessage = {
     id: message.id,
@@ -415,6 +467,9 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
   return out;
 }
 
+/** Downloaded bytes, or undefined for none (or a path, which is not asked for). */
+const bytesOf = (data: unknown): Uint8Array | undefined => (data instanceof Uint8Array && data.length > 0 ? new Uint8Array(data) : undefined);
+
 export interface GramOptions {
   os: string;
   appVersion: string;
@@ -433,6 +488,55 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
   client.setLogLevel(LogLevel.ERROR);
   const peer = (chatId: string) => returnBigInt(chatId);
   const api = { apiId: credentials.apiId, apiHash: credentials.apiHash };
+
+  /** The installed sticker sets as last listed, with Telegram's hash of them; and how to ask for each. */
+  let installed: { hash: Api.long; sets: TgStickerSet[] } | undefined;
+  const stickerSetInputs = new Map<string, Api.InputStickerSetID>();
+  /** Stickers listed this session, by id: their document (to send or download it) and where it was listed, to refresh it from. */
+  const stickerDocuments = new Map<string, { document: Api.Document; source: string }>();
+
+  /** A set's sticker documents, or the user's recent or favourite ones. */
+  const fetchStickers = async (source: string): Promise<readonly unknown[]> => {
+    if (source === RECENT_STICKERS) {
+      const found = await client.invoke(new Api.messages.GetRecentStickers({ hash: returnBigInt(0) }));
+      return found instanceof Api.messages.RecentStickers ? found.stickers : [];
+    }
+    if (source === FAVED_STICKERS) {
+      const found = await client.invoke(new Api.messages.GetFavedStickers({ hash: returnBigInt(0) }));
+      return found instanceof Api.messages.FavedStickers ? found.stickers : [];
+    }
+    const input = stickerSetInputs.get(source);
+    if (!input) throw new Error("Telegram did not list this sticker set");
+    const found = await client.invoke(new Api.messages.GetStickerSet({ stickerset: input, hash: 0 }));
+    return found instanceof Api.messages.StickerSet ? found.documents : [];
+  };
+
+  const listStickers = async (source: string): Promise<TgSticker[]> => {
+    const stickers: TgSticker[] = [];
+    for (const document of await fetchStickers(source)) {
+      const sticker = stickerOf(document);
+      if (!sticker) continue;
+      stickerDocuments.set(sticker.id, { document: document as Api.Document, source });
+      stickers.push(sticker);
+    }
+    return stickers;
+  };
+
+  /** Uses a listed sticker's document; where Telegram says its file reference expired, once more after listing it afresh. */
+  const withSticker = async <T>(id: string, use: (document: Api.Document) => Promise<T>): Promise<T> => {
+    const known = stickerDocuments.get(id);
+    if (!known) throw new Error("Telegram did not list this sticker");
+    try {
+      return await use(known.document);
+    } catch (error) {
+      if (!telegramError(error).startsWith("FILE_REFERENCE_")) throw error;
+      await listStickers(known.source);
+      const fresh = stickerDocuments.get(id)!;
+      // No longer listed there: nothing to refresh it with.
+      if (fresh === known) throw error;
+      return use(fresh.document);
+    }
+  };
 
   return {
     connect: async () => void (await client.connect()),
@@ -471,6 +575,7 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         if (chat.members) dialog.members = true;
         if (chat.left) dialog.left = true;
         if (mediaBanned(d.entity)) dialog.noMedia = true;
+        if (stickersBanned(d.entity)) dialog.noStickers = true;
         const forum = forumOf(d.entity);
         if (forum.forum) dialog.forum = true;
         if (forum.noTopics) dialog.noTopics = true;
@@ -594,11 +699,33 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       const [message] = await client.getMessages(peer(chatId), { ids: [messageId] });
       if (!(message instanceof Api.Message) || !message.media) return undefined;
       const document = message.media instanceof Api.MessageMediaDocument && message.media.document instanceof Api.Document ? message.media.document : undefined;
-      // The largest thumbnail, for media that can only be shown as one.
-      const thumb = thumbnail ? Math.max(0, (document?.thumbs?.length ?? 1) - 1) : undefined;
-      const data = await client.downloadMedia(message, thumb === undefined ? {} : { thumb });
-      return data instanceof Uint8Array && data.length > 0 ? new Uint8Array(data) : undefined;
+      // The largest thumbnail, for media that can only be shown as one; never the file in its place.
+      const thumb = thumbnail ? (document ? thumbIndex(document.thumbs) : 0) : undefined;
+      if (thumbnail && thumb === undefined) return undefined;
+      return bytesOf(await client.downloadMedia(message, thumb === undefined ? {} : { thumb }));
     },
+    stickerSets: async () => {
+      const found = await client.invoke(new Api.messages.GetAllStickers({ hash: installed?.hash ?? returnBigInt(0) }));
+      // Unchanged since last asked: the sets known.
+      if (found instanceof Api.messages.AllStickers) {
+        const sets = stickerSetsOf(found.sets);
+        for (const { set, input } of sets) stickerSetInputs.set(set.id, input);
+        installed = { hash: found.hash, sets: sets.map((s) => s.set) };
+      }
+      return installed?.sets ?? [];
+    },
+    stickers: (setId) => listStickers(setId),
+    stickerFile: (id, thumbnail) =>
+      withSticker(id, async (document) => {
+        const thumb = thumbnail ? thumbIndex(document.thumbs) : undefined;
+        if (thumbnail && thumb === undefined) return undefined;
+        return bytesOf(await client.downloadMedia(new Api.MessageMediaDocument({ document }), thumb === undefined ? {} : { thumb }));
+      }),
+    sendSticker: (chatId, id, replyTo, topicId) =>
+      withSticker(id, async (document) => {
+        const media = new Api.InputMediaDocument({ id: new Api.InputDocument({ id: document.id, accessHash: document.accessHash, fileReference: document.fileReference }) });
+        return toMessage(await client.sendFile(peer(chatId), { file: media, caption: "", ...topicReply(replyTo, topicId) }), chatId);
+      }),
     onUpdate: (cb: (update: TgUpdate) => void) => {
       client.addEventHandler((event: NewMessageEvent) => {
         const chatId = chatIdOf(event.message.peerId);
