@@ -98,7 +98,7 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
   - in encrypted rooms, audio and video are end-to-end encrypted with per-device keys exchanged over Olm, as Element Call does, and Multicord never joins an encrypted room's call unencrypted;
   - the engine's host lock includes the call service. The call's media server is learned on the first call and allowed after one restart.
 
-  Calls haven't been tested against real Element Call clients yet, and access-token sessions can't make calls.
+  Encryption, recovery, emoji verification and the call formats are tested against matrix-js-sdk, Element's own library: its client and Multicord's run against the same test homeserver, both ways. Actual call media, and the newest MatrixRTC formats (MSC4195 call services, MSC4354 sticky memberships), are not; access-token sessions can't make calls.
 
   Telegram gives API credentials per app (my.telegram.org, "API development tools"). Builds can include them via the `MULTICORD_TELEGRAM_API_ID` and `MULTICORD_TELEGRAM_API_HASH` environment variables; otherwise Multicord asks for an API ID and hash on first sign-in and stores them encrypted.
 - **Component gallery:** `npm run gallery` opens `dist/gallery.html`, which shows every component with sample data. Use it to check designs without signing in anywhere.

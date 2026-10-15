@@ -29,7 +29,7 @@ export class FakeHomeserver {
   /** Makes the next matching call fail. */
   failNext: { path: string; error: Error } | undefined;
 
-  private device(user: string, device: string): DeviceState {
+  protected device(user: string, device: string): DeviceState {
     let devices = this.devices.get(user);
     if (!devices) this.devices.set(user, (devices = new Map()));
     let state = devices.get(device);
@@ -37,7 +37,7 @@ export class FakeHomeserver {
     return state;
   }
 
-  private changed(user: string): void {
+  protected changed(user: string): void {
     this.versions.set(user, (this.versions.get(user) ?? 0) + 1);
   }
 
@@ -92,7 +92,7 @@ export class FakeHomeserver {
     };
   }
 
-  private handle(user: string, device: string, method: string, path: string, body: Json, query: Record<string, string>): Json {
+  protected handle(user: string, device: string, method: string, path: string, body: Json, query: Record<string, string>): Json {
     const key = `${method} ${path}`;
     if (key === "POST /v3/keys/upload") return this.upload(user, device, body);
     if (key === "POST /v3/keys/query") return this.query(user, body);
