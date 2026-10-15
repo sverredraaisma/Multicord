@@ -129,3 +129,10 @@ describe("Stoat ids in actions", () => {
     expect(isNativeAction({ type: "select", channelId: "01HZ000000000000000000011I" })).toBe(false);
   });
 });
+
+describe("media requests", () => {
+  it("accepts plain media keys only", () => {
+    expect(isNativeAction({ type: "loadMedia", key: "tg:123:456" })).toBe(true);
+    for (const key of ["", "a b", "<x>", "k".repeat(201), 5]) expect(isNativeAction({ type: "loadMedia", key })).toBe(false);
+  });
+});

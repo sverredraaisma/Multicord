@@ -67,6 +67,25 @@ export interface FluxerAttachment {
   filename: string;
   contentType?: string;
   url?: string;
+  width?: number;
+  height?: number;
+  size?: number;
+}
+
+/** A sticker sent with a message; format 1 PNG, 2 APNG, 3 Lottie, 4 GIF (as Discord numbers them). */
+export interface FluxerSticker {
+  id: string;
+  name: string;
+  format: number;
+}
+
+/** A link preview that is itself a picture, a GIF or a video. */
+export interface FluxerMediaEmbed {
+  kind: "image" | "gifv" | "video";
+  url: string;
+  previewUrl?: string;
+  width?: number;
+  height?: number;
 }
 
 export interface FluxerMessage {
@@ -79,6 +98,8 @@ export interface FluxerMessage {
   mentionIds: string[];
   mentionEveryone: boolean;
   attachments: FluxerAttachment[];
+  stickers: FluxerSticker[];
+  embeds: FluxerMediaEmbed[];
   /** 0 DEFAULT, 19 REPLY; only these can be edited. */
   type?: number;
   /** The message this one replies to; null when it no longer exists. */
@@ -205,9 +226,16 @@ export function parseMessage(value: unknown): FluxerMessage | undefined {
     mentionEveryone: value.mention_everyone === true,
     attachments: list(value.attachments).flatMap((a) =>
       isRecord(a) && isId(a.id) && typeof a.filename === "string"
-        ? [{ id: a.id, filename: a.filename, contentType: str(a.content_type), url: str(a.proxy_url) ?? str(a.url) }]
+        ? [{ id: a.id, filename: a.filename, contentType: str(a.content_type), url: str(a.proxy_url) ?? str(a.url), width: dimension(a.width), height: dimension(a.height), size: dimension(a.size) }]
         : [],
     ),
+    stickers: list(value.sticker_items ?? value.stickers).flatMap((s) =>
+      isRecord(s) && isId(s.id) && typeof s.name === "string" ? [{ id: s.id, name: s.name.slice(0, 100), format: typeof s.format_type === "number" ? s.format_type : 1 }] : [],
+    ),
+    embeds: list(value.embeds).flatMap((e) => {
+      const embed = isRecord(e) ? parseMediaEmbed(e) : undefined;
+      return embed ? [embed] : [];
+    }),
     type: typeof value.type === "number" ? value.type : undefined,
     replyTo: parseReplyTo(value),
     reactions: list(value.reactions).flatMap((r) => {
@@ -216,6 +244,30 @@ export function parseMessage(value: unknown): FluxerMessage | undefined {
       return emoji && count ? [{ emoji, count, me: (r as Record<string, unknown>).me === true }] : [];
     }),
   };
+}
+
+/** A positive whole number (pixels, bytes), else undefined. */
+function dimension(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/** Embeds that are media themselves (an image link, a GIF, a video); article previews are left out. */
+function parseMediaEmbed(e: Record<string, unknown>): FluxerMediaEmbed | undefined {
+  const media = (key: string): Record<string, unknown> | undefined => (isRecord(e[key]) ? (e[key] as Record<string, unknown>) : undefined);
+  const source = (m: Record<string, unknown> | undefined): string | undefined => (m ? (str(m.proxy_url) ?? str(m.url)) : undefined);
+  const https = (url: string | undefined): string | undefined => (url?.startsWith("https://") ? url : undefined);
+  const video = media("video");
+  const image = media("image") ?? media("thumbnail");
+  if (e.type === "gifv" || e.type === "video") {
+    const url = https(source(video));
+    if (!url) return undefined;
+    return { kind: e.type, url, previewUrl: https(source(media("thumbnail"))), width: dimension(video?.width), height: dimension(video?.height) };
+  }
+  if (e.type === "image") {
+    const url = https(source(image));
+    return url ? { kind: "image", url, width: dimension(image?.width), height: dimension(image?.height) } : undefined;
+  }
+  return undefined;
 }
 
 /** referenced_message: absent for non-replies, null when the original is gone (per the docs). */

@@ -102,9 +102,11 @@ describe("Fluxer parsers", () => {
       mentionIds: ["1"],
       mentionEveryone: true,
       attachments: [
-        { id: "7", filename: "a.png", contentType: "image/png", url: "https://p" },
-        { id: "8", filename: "b.txt", contentType: undefined, url: "https://b" },
+        { id: "7", filename: "a.png", contentType: "image/png", url: "https://p", width: undefined, height: undefined, size: undefined },
+        { id: "8", filename: "b.txt", contentType: undefined, url: "https://b", width: undefined, height: undefined, size: undefined },
       ],
+      stickers: [],
+      embeds: [],
       type: undefined,
       replyTo: undefined,
       reactions: [],
@@ -184,5 +186,36 @@ describe("replies and reactions", () => {
     expect(emojiKey({ name: "👍" })).toBe("👍");
     expect(emojiKey({ id: "55", name: "party" })).toBe("party:55");
     expect(parseEmoji(null)).toBeUndefined();
+  });
+});
+
+describe("Fluxer media", () => {
+  it("reads attachment details, stickers and media embeds", async () => {
+    const { parseMessage } = await import("../../../src/modules/fluxer/types");
+    const author = { id: "1", username: "ana" };
+    const message = parseMessage({
+      id: "100",
+      channel_id: "10",
+      author,
+      attachments: [{ id: "7", filename: "a.png", content_type: "image/png", url: "https://p", width: 640, height: 480, size: 1000 }],
+      sticker_items: [{ id: "5", name: "Wave", format_type: 1 }, { id: "6", name: "x".repeat(150) }, { name: "no id" }],
+      embeds: [
+        { type: "gifv", video: { proxy_url: "https://media/g.mp4", width: 320, height: 240 }, thumbnail: { url: "https://media/g.png" } },
+        { type: "video", video: { url: "http://insecure/v.mp4" } },
+        { type: "image", image: { url: "https://media/i.png", width: 10, height: 0 } },
+        { type: "image", thumbnail: { url: "https://media/t.png" } },
+        { type: "image" },
+        { type: "article", image: { url: "https://media/a.png" } },
+        null,
+      ],
+    })!;
+    expect(message.attachments[0]).toMatchObject({ width: 640, height: 480, size: 1000 });
+    expect(message.stickers).toEqual([{ id: "5", name: "Wave", format: 1 }, { id: "6", name: "x".repeat(100), format: 1 }]);
+    expect(message.embeds).toEqual([
+      { kind: "gifv", url: "https://media/g.mp4", previewUrl: "https://media/g.png", width: 320, height: 240 },
+      { kind: "image", url: "https://media/i.png", width: 10, height: undefined },
+      { kind: "image", url: "https://media/t.png", width: undefined, height: undefined },
+    ]);
+    expect(parseMessage({ id: "1", channel_id: "2", author, stickers: [{ id: "9", name: "Old", format_type: 4 }] })!.stickers).toEqual([{ id: "9", name: "Old", format: 4 }]);
   });
 });

@@ -323,7 +323,15 @@ export class NativeView {
     if (this.lastState) this.updateChat(this.lastState);
   }
 
+  /** Media already asked of the engine: the view re-renders often, the engine needs asking once. */
+  private readonly mediaAsked = new Set<string>();
+
   private readonly messageHandlers: MessageHandlers = {
+    onLoadMedia: (key) => {
+      if (this.mediaAsked.has(key)) return;
+      this.mediaAsked.add(key);
+      this.api.act({ type: "loadMedia", key });
+    },
     onReply: (message) => this.setReply({ id: message.id, author: message.author }),
     onToggleReactionPicker: (message) => {
       this.pickerFor = this.pickerFor === message.id ? undefined : message.id;

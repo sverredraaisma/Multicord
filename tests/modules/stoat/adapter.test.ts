@@ -464,8 +464,8 @@ describe("StoatAdapter messages", () => {
         { key: ulid(79), label: ":emoji:", imageUrl: `https://cdn.test/emojis/${ulid(79)}`, count: 1, me: true },
       ],
       attachments: [
-        { name: "cat.png", url: "https://cdn.test/attachments/f1", image: true },
-        { name: "doc.pdf", url: "https://cdn.test/attachments/f2", image: false },
+        expect.objectContaining({ name: "cat.png", kind: "image", url: "https://cdn.test/attachments/f1" }),
+        expect.objectContaining({ name: "doc.pdf", kind: "file", url: "https://cdn.test/attachments/f2" }),
       ],
     });
     // Our own Ready user can disappear (e.g. a wiped account); names fall back.

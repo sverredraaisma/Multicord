@@ -32,7 +32,11 @@ export interface StoatFile {
   tag: string;
   filename: string;
   contentType?: string;
-  image: boolean;
+  /** What Autumn found the file to be. */
+  kind: "image" | "video" | "audio" | "file";
+  width?: number;
+  height?: number;
+  size?: number;
 }
 
 export interface StoatUser {
@@ -155,13 +159,18 @@ export function parseFile(value: unknown): StoatFile | undefined {
   if (!isRecord(value) || typeof value._id !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(value._id)) return undefined;
   if (typeof value.tag !== "string" || !FILE_TAGS.has(value.tag)) return undefined;
   const contentType = str(value.content_type);
-  const metadata = isRecord(value.metadata) ? value.metadata.type : undefined;
+  const metadata = isRecord(value.metadata) ? value.metadata : {};
+  const type = metadata.type ?? (contentType?.startsWith("image/") ? "Image" : contentType?.startsWith("video/") ? "Video" : contentType?.startsWith("audio/") ? "Audio" : "File");
+  const pixels = (n: unknown): number | undefined => (typeof n === "number" && Number.isInteger(n) && n > 0 && n < 100_000 ? n : undefined);
   return {
     id: value._id,
     tag: value.tag,
     filename: str(value.filename, 255) ?? "file",
     contentType,
-    image: metadata === "Image" || (metadata === undefined && contentType?.startsWith("image/") === true),
+    kind: type === "Image" ? "image" : type === "Video" ? "video" : type === "Audio" ? "audio" : "file",
+    width: pixels(metadata.width),
+    height: pixels(metadata.height),
+    size: typeof value.size === "number" && Number.isInteger(value.size) && value.size >= 0 ? value.size : undefined,
   };
 }
 

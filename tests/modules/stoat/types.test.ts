@@ -38,10 +38,14 @@ describe("Stoat ids", () => {
 
 describe("Stoat parsers", () => {
   it("parses files from known buckets and tells images apart", () => {
-    expect(parseFile(image)).toEqual({ id: "f1", tag: "attachments", filename: "cat.png", contentType: "image/png", image: true });
-    expect(parseFile({ ...image, metadata: { type: "File" } })).toMatchObject({ image: false });
-    expect(parseFile({ ...image, metadata: undefined })).toMatchObject({ image: true });
-    expect(parseFile({ ...image, metadata: undefined, content_type: undefined, filename: "" })).toEqual({ id: "f1", tag: "attachments", filename: "file", contentType: undefined, image: false });
+    expect(parseFile(image)).toMatchObject({ id: "f1", tag: "attachments", filename: "cat.png", contentType: "image/png", kind: "image" });
+    expect(parseFile({ ...image, metadata: { type: "File" } })).toMatchObject({ kind: "file" });
+    expect(parseFile({ ...image, metadata: { type: "Video", width: 640, height: 360 }, size: 1234 })).toMatchObject({ kind: "video", width: 640, height: 360, size: 1234 });
+    expect(parseFile({ ...image, metadata: { type: "Audio", width: -1, height: 1.5 }, size: -3 })).toMatchObject({ kind: "audio", width: undefined, height: undefined, size: undefined });
+    expect(parseFile({ ...image, metadata: undefined })).toMatchObject({ kind: "image" });
+    expect(parseFile({ ...image, metadata: undefined, content_type: "video/mp4" })).toMatchObject({ kind: "video" });
+    expect(parseFile({ ...image, metadata: undefined, content_type: "audio/ogg" })).toMatchObject({ kind: "audio" });
+    expect(parseFile({ ...image, metadata: undefined, content_type: undefined, filename: "" })).toMatchObject({ id: "f1", tag: "attachments", filename: "file", contentType: undefined, kind: "file" });
     expect(parseFile({ ...image, tag: "secret" })).toBeUndefined();
     expect(parseFile({ ...image, tag: 5 })).toBeUndefined();
     expect(parseFile({ ...image, _id: "../x" })).toBeUndefined();

@@ -61,10 +61,32 @@ export interface NativeMediaKey {
   key: string;
 }
 
+/** What an attachment is, which decides how the view shows it. */
+export type NativeMediaKind = "image" | "video" | "audio" | "sticker" | "file";
+
 export interface NativeAttachment {
   name: string;
+  kind: NativeMediaKind;
+  /**
+   * Where to show, play or open it: an https URL, or a data: URL the engine
+   * made. Absent while it still has to be loaded (see mediaKey) or when the
+   * link expired.
+   */
   url?: string;
-  image: boolean;
+  /** A still picture to show before a video plays, or while media loads. */
+  previewUrl?: string;
+  width?: number;
+  height?: number;
+  /** Bytes, when known. */
+  size?: number;
+  /** MIME type, when known; a sticker of type "video/webm" plays as a looping video. */
+  mime?: string;
+  /** Set when the engine fetches the media on request (a loadMedia action with this key). */
+  mediaKey?: string;
+  /** A video that plays silently on a loop, as GIFs do (many services send GIFs as video). */
+  loop?: boolean;
+  /** Why it cannot be shown here (e.g. too large), in place of "link expired". */
+  unavailable?: string;
 }
 
 export interface NativeReaction {
@@ -187,6 +209,8 @@ export type NativeAction =
   | { type: "voiceState"; mute: boolean; deaf: boolean; video: boolean; stream: boolean }
   | { type: "voiceError"; message: string }
   | { type: "removeAttachment"; index: number }
+  /** Fetch an attachment the engine holds back until asked (NativeAttachment.mediaKey). */
+  | { type: "loadMedia"; key: string }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -238,6 +262,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return [v.mute, v.deaf, v.video, v.stream].every((flag) => typeof flag === "boolean");
     case "voiceError":
       return text(v.message, 1, 500);
+    case "loadMedia":
+      return typeof v.key === "string" && /^[A-Za-z0-9:._-]{1,200}$/.test(v.key);
     case "createPost":
       return text(v.name, 1, 100) && (v.name as string).trim() !== "" && content(v.content);
     case "removeAttachment":

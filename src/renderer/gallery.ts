@@ -123,9 +123,9 @@ export const SAMPLE_MESSAGES: NativeMessage[] = [
     canDelete: true,
     content: "Attachments: an image, a file and an expired link",
     attachments: [
-      { name: "screenshot.png", url: placeholderImage("#34495e", "▣"), image: true },
-      { name: "notes.txt", url: "https://example.com/notes.txt", image: false },
-      { name: "old.zip", image: false },
+      { name: "screenshot.png", url: placeholderImage("#34495e", "▣"), kind: "image" },
+      { name: "notes.txt", url: "https://example.com/notes.txt", kind: "file" },
+      { name: "old.zip", kind: "file" },
     ],
   },
   { ...base, id: "5", author: "Ana", content: "😂🎉👍" },

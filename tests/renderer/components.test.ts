@@ -163,3 +163,56 @@ describe("emoji picker", () => {
     expect([...picker.querySelectorAll(".emoji-grid .emoji-option")].map((b) => b.textContent)).toContain("🍕");
   });
 });
+
+describe("attachments", () => {
+  const show = async (file: import("../../src/shared/native").NativeAttachment, onLoad?: (key: string) => void) => {
+    const { attachment } = await import("../../src/renderer/components/message");
+    return attachment(document, file, onLoad);
+  };
+
+  it("shows each kind of media as it should", async () => {
+    const image = (await show({ name: "cat.png", kind: "image", url: "https://cdn/cat.png", width: 640, height: 480 })) as HTMLImageElement;
+    expect(image.tagName).toBe("IMG");
+    expect([image.width, image.height, image.loading]).toEqual([640, 480, "lazy"]);
+
+    const video = (await show({ name: "clip.mp4", kind: "video", url: "https://cdn/clip.mp4", previewUrl: "https://cdn/poster.jpg" })) as HTMLVideoElement;
+    expect([video.tagName, video.controls, video.poster]).toEqual(["VIDEO", true, "https://cdn/poster.jpg"]);
+
+    const gif = (await show({ name: "GIF", kind: "video", url: "https://cdn/g.mp4", loop: true })) as HTMLVideoElement;
+    expect([gif.loop, gif.muted, gif.autoplay, gif.controls]).toEqual([true, true, true, false]);
+
+    const audio = await show({ name: "voice.ogg", kind: "audio", url: "https://cdn/v.ogg" });
+    expect(audio.querySelector("audio")!.controls).toBe(true);
+    expect(audio.textContent).toBe("voice.ogg");
+
+    const sticker = (await show({ name: "Wave", kind: "sticker", url: "https://cdn/s.webp" })) as HTMLImageElement;
+    expect([sticker.className, sticker.title]).toEqual(["attachment-sticker", "Wave"]);
+    const moving = (await show({ name: "Dance", kind: "sticker", url: "data:video/webm;base64,AA", mime: "video/webm" })) as HTMLVideoElement;
+    expect([moving.tagName, moving.loop, moving.muted]).toEqual(["VIDEO", true, true]);
+    expect((await show({ name: "Lottie", kind: "sticker" })).textContent).toBe("Lottie (sticker)");
+
+    const web = (await show({ name: "notes.txt", kind: "file", url: "https://cdn/notes.txt", size: 2048 })) as HTMLAnchorElement;
+    expect([web.textContent, web.target, web.download]).toEqual(["📎 notes.txt (2.0 KB)", "_blank", ""]);
+    const own = (await show({ name: "doc.pdf", kind: "file", url: "data:application/pdf;base64,AA" })) as HTMLAnchorElement;
+    expect([own.download, own.target]).toEqual(["doc.pdf", ""]);
+    expect((await show({ name: "old.zip", kind: "file" })).textContent).toBe("old.zip (link expired)");
+  });
+
+  it("asks for held-back pictures at once, and for sound and video on a click", async () => {
+    const onLoad = vi.fn();
+    const picture = (await show({ name: "photo.jpg", kind: "image", mediaKey: "m:1", previewUrl: "data:image/jpeg;base64,AA", width: 10, height: 5 }, onLoad)) as HTMLImageElement;
+    expect(onLoad).toHaveBeenCalledWith("m:1");
+    expect(picture.className).toBe("attachment-image loading");
+    expect((await show({ name: "s", kind: "sticker", mediaKey: "m:2" }, onLoad)).textContent).toBe("Loading s…");
+
+    const button = (await show({ name: "clip.mp4", kind: "video", mediaKey: "m:3", size: 5 * 1024 * 1024 }, onLoad)) as HTMLButtonElement;
+    expect(button.textContent).toBe("▶ clip.mp4 (5.0 MB)");
+    expect(onLoad).not.toHaveBeenCalledWith("m:3");
+    button.click();
+    expect(onLoad).toHaveBeenCalledWith("m:3");
+    expect([button.disabled, button.textContent]).toEqual([true, "Loading clip.mp4…"]);
+    expect((await show({ name: "a.bin", kind: "file", mediaKey: "m:4" }, onLoad)).textContent).toBe("⬇ a.bin");
+    // Without a way to ask, a held-back file reads as gone.
+    expect((await show({ name: "x", kind: "video", mediaKey: "m:5" })).textContent).toBe("x (link expired)");
+  });
+});

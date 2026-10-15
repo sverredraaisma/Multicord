@@ -1,29 +1,111 @@
 import type { NativeAttachment, NativeMessage } from "../../shared/native";
 import { avatar } from "./avatar";
 import { el } from "./dom";
-import { formatTime } from "./format";
+import { formatSize, formatTime } from "./format";
 import { renderMarkdown, type MarkdownOptions } from "./markdown";
 import { quickReactions, reactionChip } from "./reactions";
 
-/** Images inline; other files as links that open in the browser; expired links greyed out. */
-export function attachment(doc: Document, file: NativeAttachment): HTMLElement {
-  if (file.image && file.url) {
-    const img = el(doc, "img", "attachment-image");
-    img.src = file.url;
-    img.alt = file.name;
-    return img;
+const KIND_LABEL = { image: "image", video: "video", audio: "audio", sticker: "sticker", file: "file" } as const;
+
+/** Gives media its real proportions before it loads, so the conversation does not jump. */
+function sized<T extends HTMLImageElement | HTMLVideoElement>(media: T, file: NativeAttachment): T {
+  if (file.width && file.height) {
+    media.width = file.width;
+    media.height = file.height;
   }
-  if (file.url) {
-    const link = el(doc, "a", "attachment", file.name);
-    link.href = file.url;
-    link.target = "_blank";
-    link.rel = "noreferrer";
-    return link;
+  return media;
+}
+
+/**
+ * An attachment as its kind asks: pictures and stickers inline, videos and
+ * sound with players, other files as links (opened in the browser, or saved
+ * when the engine made them). Media the engine fetches on request: pictures
+ * are asked for at once, sound and video only when the user wants them, as
+ * they can be large. Expired links are greyed out.
+ */
+export function attachment(doc: Document, file: NativeAttachment, onLoad?: (key: string) => void): HTMLElement {
+  if (!file.url) {
+    // Animated vector stickers (Lottie) have no picture to show: their name stands in.
+    if (file.kind === "sticker" && !file.mediaKey) return el(doc, "span", "attachment sticker-name", `${file.name} (sticker)`);
+    if (!file.mediaKey || !onLoad) return el(doc, "span", "attachment expired", `${file.name} (${file.unavailable ?? "link expired"})`);
+    const key = file.mediaKey;
+    if (file.kind === "image" || file.kind === "sticker") {
+      onLoad(key);
+      if (file.previewUrl) {
+        const preview = sized(el(doc, "img", `attachment-${file.kind} loading`), file);
+        preview.src = file.previewUrl;
+        preview.alt = file.name;
+        return preview;
+      }
+      return el(doc, "span", "attachment loading", `Loading ${file.name}…`);
+    }
+    const load = el(doc, "button", "attachment load", `${file.kind === "file" ? "⬇" : "▶"} ${file.name}${file.size ? ` (${formatSize(file.size)})` : ""}`);
+    load.type = "button";
+    load.title = `Load this ${KIND_LABEL[file.kind]}`;
+    load.addEventListener("click", () => {
+      load.disabled = true;
+      load.textContent = `Loading ${file.name}…`;
+      onLoad(key);
+    });
+    return load;
   }
-  return el(doc, "span", "attachment expired", `${file.name} (link expired)`);
+  switch (file.kind) {
+    case "image": {
+      const img = sized(el(doc, "img", "attachment-image"), file);
+      img.src = file.url;
+      img.alt = file.name;
+      img.loading = "lazy";
+      return img;
+    }
+    case "sticker": {
+      // Video stickers loop silently, as in the apps they come from.
+      if (file.mime?.startsWith("video/")) {
+        const clip = sized(el(doc, "video", "attachment-sticker"), file);
+        Object.assign(clip, { src: file.url, autoplay: true, loop: true, muted: true, playsInline: true });
+        clip.title = file.name;
+        return clip;
+      }
+      const img = sized(el(doc, "img", "attachment-sticker"), file);
+      img.src = file.url;
+      img.alt = file.name;
+      img.title = file.name;
+      return img;
+    }
+    case "video": {
+      const video = sized(el(doc, "video", "attachment-video"), file);
+      if (file.loop) {
+        Object.assign(video, { src: file.url, autoplay: true, loop: true, muted: true, playsInline: true });
+        video.title = file.name;
+        return video;
+      }
+      Object.assign(video, { src: file.url, controls: true, preload: "metadata" });
+      if (file.previewUrl) video.poster = file.previewUrl;
+      return video;
+    }
+    case "audio": {
+      const box = el(doc, "div", "attachment-audio");
+      const audio = el(doc, "audio");
+      Object.assign(audio, { src: file.url, controls: true, preload: "metadata" });
+      box.append(el(doc, "span", "attachment-name", file.name), audio);
+      return box;
+    }
+    case "file": {
+      const link = el(doc, "a", "attachment", `📎 ${file.name}${file.size ? ` (${formatSize(file.size)})` : ""}`);
+      link.href = file.url;
+      // The engine's own copies are saved; web links open in the browser.
+      if (file.url.startsWith("data:")) link.download = file.name;
+      else {
+        link.target = "_blank";
+        link.rel = "noreferrer";
+      }
+      return link;
+    }
+  }
 }
 
 export interface MessageHandlers {
+  /** Asks the engine for media it holds back (NativeAttachment.mediaKey). */
+  onLoadMedia?(key: string): void;
   onReply(message: NativeMessage): void;
   onToggleReactionPicker(message: NativeMessage): void;
   onReact(message: NativeMessage, key: string, add: boolean): void;
@@ -84,7 +166,7 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
     content.classList.add("content");
     body.append(content);
   }
-  for (const file of message.attachments) body.append(attachment(doc, file));
+  for (const file of message.attachments) body.append(attachment(doc, file, handlers.onLoadMedia));
 
   if (message.reactions.length > 0 || options.reacting) {
     const row = el(doc, "div", "reactions");

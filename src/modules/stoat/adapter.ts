@@ -622,7 +622,15 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
           me: this.state.meId !== undefined && r.userIds.includes(this.state.meId),
         };
       }),
-      attachments: message.attachments.map((a) => ({ name: a.filename, url: this.fileUrl(a), image: a.image && this.fileUrl(a) !== undefined })),
+      attachments: message.attachments.map((a) => ({
+        name: a.filename,
+        kind: a.kind,
+        url: this.fileUrl(a),
+        width: a.width,
+        height: a.height,
+        size: a.size,
+        mime: a.contentType,
+      })),
     };
   }
 

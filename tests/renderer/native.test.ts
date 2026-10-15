@@ -149,9 +149,9 @@ describe("chat screen", () => {
               edited: true,
               avatarUrl: "https://media/a.png",
               attachments: [
-                { name: "cat.png", url: "https://media/cat.png", image: true },
-                { name: "notes.txt", url: "https://media/notes.txt", image: false },
-                { name: "old.png", image: false },
+                { name: "cat.png", url: "https://media/cat.png", kind: "image" },
+                { name: "notes.txt", url: "https://media/notes.txt", kind: "file" },
+                { name: "old.png", kind: "file" },
               ],
             }),
             msg("11", { mine: true, content: "" }),
@@ -822,5 +822,13 @@ describe("voice shortcuts without a call", () => {
     expect(act).not.toHaveBeenCalled();
     view.voiceCommand("talkStop");
     expect(act).toHaveBeenLastCalledWith({ type: "voiceState", mute: true, deaf: false, video: false, stream: false });
+  });
+});
+
+describe("media requests from the view", () => {
+  it("asks the engine for held-back media once", () => {
+    view.update(chat({ channel: { ...chat().channel!, messages: [{ ...chat().channel!.messages[0]!, attachments: [{ name: "p.jpg", kind: "image", mediaKey: "m:1" }] }] } }));
+    view.update(chat({ channel: { ...chat().channel!, messages: [{ ...chat().channel!.messages[0]!, attachments: [{ name: "p.jpg", kind: "image", mediaKey: "m:1" }] }] } }));
+    expect(act.mock.calls.filter(([a]) => a.type === "loadMedia")).toEqual([[{ type: "loadMedia", key: "m:1" }]]);
   });
 });

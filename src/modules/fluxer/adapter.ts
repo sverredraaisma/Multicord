@@ -2,6 +2,7 @@ import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from 
 import {
   MAX_ATTACHMENTS,
   type NativeAction,
+  type NativeAttachment,
   type NativeMessage,
   type NativeSidebarItem,
   type NativeViewState,
@@ -87,6 +88,14 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
  * and renders in Multicord's own chat view. Login (with Fluxer's proof-of-work
  * captcha and TOTP), the gateway session and the token all stay here.
  */
+/** What a file is by its MIME type. */
+export function mediaKind(contentType: string | undefined): NativeAttachment["kind"] {
+  if (contentType?.startsWith("image/")) return "image";
+  if (contentType?.startsWith("video/")) return "video";
+  if (contentType?.startsWith("audio/")) return "audio";
+  return "file";
+}
+
 export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   override readonly mode = "native" as const;
   readonly capabilities = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
@@ -791,12 +800,42 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         count: r.count,
         me: r.me,
       })),
-      attachments: message.attachments.map((a) => ({
-        name: a.filename,
-        url: a.url,
-        image: Boolean(a.url && a.contentType?.startsWith("image/")),
-      })),
+      attachments: this.media(message),
     };
+  }
+
+  /** A message's files, stickers and media link previews, as the view shows them. */
+  private media(message: FluxerMessage): NativeAttachment[] {
+    const files: NativeAttachment[] = message.attachments.map((a) => ({
+      name: a.filename,
+      kind: mediaKind(a.contentType),
+      url: a.url,
+      width: a.width,
+      height: a.height,
+      size: a.size,
+      mime: a.contentType,
+    }));
+    for (const sticker of message.stickers) {
+      // Lottie stickers (format 3) cannot be drawn here; their name stands in.
+      const lottie = sticker.format === 3;
+      files.push({
+        name: sticker.name,
+        kind: "sticker",
+        url: lottie || !this.instance ? undefined : `${this.instance.media}/stickers/${sticker.id}.${sticker.format === 4 ? "gif" : "webp"}?size=160`,
+      });
+    }
+    for (const embed of message.embeds) {
+      files.push({
+        name: embed.kind === "image" ? "Image" : embed.kind === "gifv" ? "GIF" : "Video",
+        kind: embed.kind === "image" ? "image" : "video",
+        url: embed.url,
+        previewUrl: embed.previewUrl,
+        width: embed.width,
+        height: embed.height,
+        loop: embed.kind === "gifv" || undefined,
+      });
+    }
+    return files;
   }
 
   private sidebar(): NativeSidebarItem[] {
