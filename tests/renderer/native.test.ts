@@ -1433,6 +1433,82 @@ describe("pinned messages panel", () => {
   });
 });
 
+describe("searching a conversation", () => {
+  const WITH_SEARCH = { ...ALL, search: true, pins: true };
+  const found = (id: string) => ({ id, author: "Ana", content: `found ${id}`, timestamp: "2026-10-14T12:00:00Z" });
+  const state = (can: unknown, search?: unknown, extra: Partial<NonNullable<Chat["channel"]>> = {}) =>
+    chat({ channel: { ...chat().channel!, can: can as typeof ALL, ...(search === undefined ? {} : { search: search as never }), ...extra } });
+  const toggle = () => root.querySelector<HTMLButtonElement>(".search-toggle")!;
+  const panel = () => root.querySelector<HTMLElement>("#message-panel")!;
+  let field: HTMLInputElement;
+  const input = () => (field = root.querySelector<HTMLInputElement>(".search-input") ?? field);
+  const submit = (query: string) => {
+    input().value = query;
+    root.querySelector("form.search-form")!.dispatchEvent(new Event("submit", { cancelable: true }));
+  };
+
+  it("is offered only where the conversation can be searched", () => {
+    view.update(state(ALL));
+    expect(toggle().hidden).toBe(true);
+    view.update(state(WITH_SEARCH));
+    expect(toggle().hidden).toBe(false);
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    view.update(chat({ channel: null }));
+    expect(toggle().hidden).toBe(true);
+  });
+
+  it("opens a field, sends the query, lists results and ends the search on closing", () => {
+    view.update(state(WITH_SEARCH));
+    toggle().click();
+    expect(panel().hidden).toBe(false);
+    expect(panel().getAttribute("aria-label")).toBe("Search");
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    expect(document.activeElement).toBe(input());
+    expect(input().maxLength).toBe(200);
+    submit("   ");
+    expect(act).not.toHaveBeenCalledWith(expect.objectContaining({ type: "search" }));
+    submit(" hello ");
+    expect(act).toHaveBeenLastCalledWith({ type: "search", query: "hello" });
+    // Typing survives updates, and focus stays in the field.
+    input().value = "hello wor";
+    input().focus();
+    view.update(state(WITH_SEARCH, { query: "hello", messages: [found("10")], loading: false, note: "Only unencrypted rooms" }));
+    expect(input().value).toBe("hello wor");
+    expect(document.activeElement).toBe(input());
+    expect(panel().querySelector(".panel-note")!.textContent).toBe("Only unencrypted rooms");
+    panel().querySelector<HTMLButtonElement>(".listed-message")!.click();
+    expect(root.querySelector('li.message[data-id="10"]')!.classList.contains("jump-target")).toBe(true);
+    view.update(state(WITH_SEARCH, { query: "nothing", messages: [], loading: false }));
+    expect(panel().textContent).toContain("No messages found for “nothing”.");
+    toggle().click();
+    expect(act).toHaveBeenLastCalledWith({ type: "search", query: "" });
+    expect(panel().hidden).toBe(true);
+    expect(input().value).toBe("");
+    // Closed without having searched: nothing to end.
+    act.mockClear();
+    toggle().click();
+    panel().querySelector<HTMLButtonElement>(".profile-close")!.click();
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  it("takes the place of the pins, and ends when another conversation opens", () => {
+    view.update(state(WITH_SEARCH, undefined, { pins: { messages: [found("10")], loading: false } }));
+    expect(panel().getAttribute("aria-label")).toBe("Pinned messages");
+    toggle().click();
+    expect(panel().getAttribute("aria-label")).toBe("Search");
+    expect(root.querySelector<HTMLButtonElement>(".pins-toggle")!.getAttribute("aria-pressed")).toBe("false");
+    submit("x");
+    // Opening the pins ends the search.
+    root.querySelector<HTMLButtonElement>(".pins-toggle")!.click();
+    expect(act.mock.calls.slice(-2)).toEqual([[{ type: "search", query: "" }], [{ type: "pins", open: true }]]);
+    toggle().click();
+    submit("y");
+    view.update(chat({ channel: { ...state(WITH_SEARCH).channel!, id: "3" } }));
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    expect(input().value).toBe("");
+  });
+});
+
 describe("profile cards", () => {
   const card = () => root.querySelector<HTMLElement>(".profile-card")!;
   const withAuthor = (extra: Partial<Chat> = {}) => chat({ channel: { ...chat().channel!, messages: [msg("10", { authorId: "7", avatarUrl: "https://x/a.png" })] }, ...extra });

@@ -222,6 +222,21 @@ export interface NativeMessageList {
   note?: string;
 }
 
+/** The results of a search in the open conversation, for the query they answer. */
+export interface NativeSearchResults extends NativeMessageList {
+  query: string;
+}
+
+export const MAX_SEARCH_QUERY = 200;
+
+/** Search results as the view trusts them: a list as messageList() reads it, for a query cut to MAX_SEARCH_QUERY; undefined without any. */
+export function searchResults(value: unknown): NativeSearchResults | undefined {
+  const list = messageList(value);
+  if (!list) return undefined;
+  const query = (value as Record<string, unknown>).query;
+  return { ...list, query: typeof query === "string" ? query.slice(0, MAX_SEARCH_QUERY) : "" };
+}
+
 export const MAX_LISTED_MESSAGES = 100;
 const MAX_LISTED_TEXT = 300;
 
@@ -373,6 +388,12 @@ export interface NativeChannelView {
    * on. Read by the view through messageList().
    */
   pins?: NativeMessageList;
+  /**
+   * The results of the last `search` action in this conversation, newest
+   * first, until the search ends (an empty query) or another conversation
+   * opens. Read by the view through searchResults().
+   */
+  search?: NativeSearchResults;
 }
 
 export interface NativeUnread {
@@ -475,9 +496,11 @@ export interface NativeChannelCan {
   gifs?: boolean;
   /** List the pinned messages (the pins panel: `pins` actions, NativeChannelView.pins); pinning itself is per message (canPin). */
   pins?: boolean;
+  /** Search the conversation's messages (`search` actions, NativeChannelView.search). */
+  search?: boolean;
 }
 
-export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins"] as const satisfies readonly (keyof NativeChannelCan)[];
+export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins", "search"] as const satisfies readonly (keyof NativeChannelCan)[];
 
 /** A conversation's flags as the view trusts them: each on only when it is exactly `true`. */
 export function channelCan(value: unknown): Required<NativeChannelCan> {
@@ -834,6 +857,8 @@ export type NativeAction =
   | { type: "pins"; open: boolean }
   /** Pins or unpins a message in the open conversation, where it says it may (canPin). */
   | { type: "pin"; messageId: string; pin: boolean }
+  /** Searches the open conversation's messages (can.search); an empty query ends the search. */
+  | { type: "search"; query: string }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -885,6 +910,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return id(v.channelId) && typeof v.mute === "boolean";
     case "pins":
       return typeof v.open === "boolean";
+    case "search":
+      return text(v.query, 0, MAX_SEARCH_QUERY);
     case "pin":
       return id(v.messageId) && typeof v.pin === "boolean";
     case "voiceState":

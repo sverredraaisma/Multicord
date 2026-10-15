@@ -466,7 +466,7 @@ a.embed-title:hover { text-decoration: underline; }
 /* Member list */
 .conversation-area { position: relative; display: flex; min-width: 0; min-height: 0; }
 .conversation-area > .conversation { flex: 1; }
-.members-toggle, .pins-toggle {
+.members-toggle, .pins-toggle, .search-toggle {
   display: flex;
   flex: none;
   align-items: center;
@@ -480,9 +480,9 @@ a.embed-title:hover { text-decoration: underline; }
   color: var(--muted);
   cursor: pointer;
 }
-.members-toggle[hidden], .pins-toggle[hidden] { display: none; }
-.members-toggle:hover, .members-toggle[aria-pressed="true"], .pins-toggle:hover, .pins-toggle[aria-pressed="true"] { color: var(--text); }
-.members-toggle[aria-pressed="true"], .pins-toggle[aria-pressed="true"] { background: var(--border); }
+.members-toggle[hidden], .pins-toggle[hidden], .search-toggle[hidden] { display: none; }
+.members-toggle:hover, .members-toggle[aria-pressed="true"], .pins-toggle:hover, .pins-toggle[aria-pressed="true"], .search-toggle:hover, .search-toggle[aria-pressed="true"] { color: var(--text); }
+.members-toggle[aria-pressed="true"], .pins-toggle[aria-pressed="true"], .search-toggle[aria-pressed="true"] { background: var(--border); }
 .members-icon { width: 22px; height: 22px; fill: currentColor; }
 .member-panel { flex: none; width: 240px; padding: 8px; overflow-y: auto; background: var(--panel); }
 .member-panel[hidden] { display: none; }
@@ -521,6 +521,8 @@ button.member:hover, button.member:focus-visible { background: var(--surface); c
 .listed-author { color: var(--text); font-size: 13px; }
 .listed-content { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; font-size: 13px; overflow-wrap: anywhere; }
 .panel-note { margin: 8px; color: var(--muted); font-size: 12px; font-style: italic; }
+.search-form { margin: 8px; }
+.search-input { box-sizing: border-box; width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); font: inherit; }
 .pin-marker { font-size: 12px; }
 .message.jump-target { border-radius: 4px; background: color-mix(in srgb, var(--accent) 15%, transparent); }
 .member-more { margin: 4px 8px; padding: 6px 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--text); font: inherit; cursor: pointer; }

@@ -3,7 +3,7 @@ import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_MESSAGE_LENGTH, memberList, memberProfile, messageEmbeds, messageList, stickerPacks, unreadMarker, type NativeUnread } from "../shared/native";
+import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
@@ -94,6 +94,10 @@ export class NativeView {
   private jumpedId: string | undefined;
   /** Why the last jump did not arrive, shown in the side panel. */
   private jumpNote: string | undefined;
+  /** The search panel is open in this conversation. */
+  private searchOpen = false;
+  /** A search was sent since it opened, so the module has results to drop when it closes. */
+  private searched = false;
   /** The mention being typed in the composer, while it has suggestions: where its "@" is, who fits, and the highlighted one. */
   private mention: { start: number; options: MentionCandidate[]; active: number } | undefined;
 
@@ -270,8 +274,37 @@ export class NativeView {
     pinsToggle.setAttribute("aria-label", "Pinned messages");
     pinsToggle.setAttribute("aria-controls", "message-panel");
     pinsToggle.append(icon(doc, "members-icon", ICONS.pin));
-    pinsToggle.addEventListener("click", () => this.api.act({ type: "pins", open: pinsToggle.getAttribute("aria-pressed") !== "true" }));
-    header.append(heading, pinsToggle, membersToggle);
+    pinsToggle.addEventListener("click", () => {
+      const open = pinsToggle.getAttribute("aria-pressed") !== "true";
+      if (this.searchOpen) this.closeSearch();
+      this.api.act({ type: "pins", open });
+    });
+    // Searches the conversation, where the module can.
+    const searchToggle = el(doc, "button", "search-toggle");
+    searchToggle.type = "button";
+    searchToggle.title = "Search";
+    searchToggle.setAttribute("aria-label", "Search this conversation");
+    searchToggle.setAttribute("aria-controls", "message-panel");
+    searchToggle.append(icon(doc, "members-icon", ICONS.search));
+    searchToggle.addEventListener("click", () => this.toggleSearch());
+    header.append(heading, searchToggle, pinsToggle, membersToggle);
+    // The search field, kept across updates so typing is never lost; shown in the side panel.
+    const searchForm = el(doc, "form", "search-form");
+    searchForm.setAttribute("role", "search");
+    const searchInput = el(doc, "input", "search-input");
+    searchInput.type = "search";
+    searchInput.maxLength = MAX_SEARCH_QUERY;
+    searchInput.placeholder = "Search this conversation";
+    searchInput.setAttribute("aria-label", "Search this conversation");
+    searchForm.append(searchInput);
+    searchForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const query = searchInput.value.trim();
+      if (query === "") return;
+      this.searched = true;
+      this.jumpNote = undefined;
+      this.api.act({ type: "search", query });
+    });
     const banner = el(doc, "div", "banner");
     // Where the news starts, while it is out of sight: a bar above the messages.
     const unreadBar = el(doc, "div", "unread-bar");
@@ -408,6 +441,9 @@ export class NativeView {
       membersToggle,
       members,
       pinsToggle,
+      searchToggle,
+      searchForm,
+      searchInput,
       messagePanel,
       profile,
       banner,
@@ -877,33 +913,60 @@ export class NativeView {
     [...panel.querySelectorAll<HTMLButtonElement>("button")].find((b) => (b.dataset.id ?? b.className) === focusKey && !b.disabled)?.focus();
   }
 
-  /** The side panel of messages: the pinned ones, while the module lists them, where it can. */
+  /** Opens the search panel with its field in focus, or ends the search. */
+  private toggleSearch(): void {
+    if (this.searchOpen) return this.closeSearch();
+    this.searchOpen = true;
+    this.updateMessagePanel();
+    this.parts.searchInput!.focus();
+  }
+
+  /** Ends the search: the module drops its results, if it was asked for any. */
+  private closeSearch(): void {
+    this.searchOpen = false;
+    (this.parts.searchInput as HTMLInputElement).value = "";
+    if (this.searched) this.api.act({ type: "search", query: "" });
+    this.searched = false;
+    this.updateMessagePanel();
+  }
+
+  /**
+   * The side panel of messages: the search (its field and results) while it
+   * is open, else the pinned messages while the module lists them, each
+   * where the conversation offers it.
+   */
   private updateMessagePanel(): void {
     const doc = this.doc;
-    const toggle = this.parts.pinsToggle as HTMLButtonElement;
+    const pinsToggle = this.parts.pinsToggle as HTMLButtonElement;
+    const searchToggle = this.parts.searchToggle as HTMLButtonElement;
     const panel = this.parts.messagePanel!;
     const channel = this.lastState?.channel;
-    const pins = channel && this.can.pins ? messageList(channel.pins) : undefined;
-    toggle.hidden = !channel || !this.can.pins;
-    toggle.setAttribute("aria-pressed", String(Boolean(pins)));
-    panel.hidden = !pins;
-    if (!pins) return panel.replaceChildren();
+    const searching = Boolean(channel) && this.can.search && this.searchOpen;
+    const pins = channel && this.can.pins && !searching ? messageList(channel.pins) : undefined;
+    pinsToggle.hidden = !channel || !this.can.pins;
+    pinsToggle.setAttribute("aria-pressed", String(Boolean(pins)));
+    searchToggle.hidden = !channel || !this.can.search;
+    searchToggle.setAttribute("aria-pressed", String(searching));
+    panel.hidden = !pins && !searching;
+    if (panel.hidden) return panel.replaceChildren();
     // Rebuilt on every update: give focus back to the control that had it.
     const focused = doc.activeElement;
     const focusKey = focused instanceof HTMLElement && panel.contains(focused) ? (focused.dataset.id ?? focused.className) : undefined;
     const close = el(doc, "button", "profile-close", "×");
     close.type = "button";
     close.setAttribute("aria-label", "Close");
-    close.addEventListener("click", () => this.api.act({ type: "pins", open: false }));
-    panel.setAttribute("aria-label", "Pinned messages");
-    panel.replaceChildren(
-      close,
-      el(doc, "h3", "member-section", "Pinned messages"),
-      ...(this.jumpNote ? [el(doc, "p", "member-error", this.jumpNote)] : []),
-      ...listedMessages(doc, pins, (message) => this.jumpTo(message), "No pinned messages."),
-    );
+    close.addEventListener("click", () => (searching ? this.closeSearch() : this.api.act({ type: "pins", open: false })));
+    const title = searching ? "Search" : "Pinned messages";
+    panel.setAttribute("aria-label", title);
+    const parts: HTMLElement[] = [close, el(doc, "h3", "member-section", title)];
+    if (searching) parts.push(this.parts.searchForm!);
+    if (this.jumpNote) parts.push(el(doc, "p", "member-error", this.jumpNote));
+    if (pins) parts.push(...listedMessages(doc, pins, (message) => this.jumpTo(message), "No pinned messages."));
+    const results = searching && this.searched ? searchResults(channel!.search) : undefined;
+    if (results) parts.push(...listedMessages(doc, results, (message) => this.jumpTo(message), `No messages found for “${results.query}”.`));
+    panel.replaceChildren(...parts);
     if (focusKey === undefined) return;
-    [...panel.querySelectorAll<HTMLButtonElement>("button")].find((b) => (b.dataset.id ?? b.className) === focusKey)?.focus();
+    [...panel.querySelectorAll<HTMLElement>("button, input")].find((b) => (b.dataset.id ?? b.className) === focusKey)?.focus();
   }
 
   /** Opens someone's card at once with what the view knows, and asks the module for the rest. */
@@ -948,6 +1011,10 @@ export class NativeView {
       this.closeMention();
       this.jumpedId = undefined;
       this.jumpNote = undefined;
+      // The module drops a search when another conversation opens.
+      this.searchOpen = false;
+      this.searched = false;
+      (this.parts.searchInput as HTMLInputElement).value = "";
     }
     title!.textContent = state.title;
     me!.textContent = state.me;
