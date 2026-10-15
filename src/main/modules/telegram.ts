@@ -2,7 +2,7 @@ import { TELEGRAM } from "../platforms";
 import type { PlatformModule } from "./types";
 
 /**
- * Native Telegram client for direct messages. Its logic (GramJS over
+ * Native Telegram client for direct messages, groups and channels. Its logic (GramJS over
  * MTProto WebSockets) runs in the sandboxed "telegram" engine, which may
  * reach only Telegram's web endpoints.
  */

@@ -4,9 +4,10 @@ import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeMarkdown } from "../../shared/markdown";
 import type { NativeAction, NativeAttachment, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
-import { telegramError, type TelegramApi, type TelegramCredentials, type TgDialog, type TgFile, type TgMessage, type TgUpdate, type TgUser } from "./api";
+import { isChannelPeer, telegramError, type TelegramApi, type TelegramCredentials, type TgChatKind, type TgDialog, type TgFile, type TgMessage, type TgUpdate, type TgUser } from "./api";
 
-export const DIALOG_LIMIT = 100;
+/** Chats listed: one-to-one chats, groups and channels together, most recent first. */
+export const DIALOG_LIMIT = 200;
 export const PAGE_SIZE = 50;
 /** Profile pictures fetched per refresh; the rest show initials. */
 export const AVATAR_LIMIT = 40;
@@ -69,14 +70,41 @@ export function messageText(message: TgMessage): string {
   return [message.text, message.media].filter(Boolean).join("\n");
 }
 
+/**
+ * The view takes only digits as conversation ids (the shell checks them), but
+ * groups' and channels' chat ids are negative. They show as this base plus
+ * their magnitude, above any user id; dialog ids have at most 18 digits, so
+ * the result has at most 20.
+ */
+const GROUP_VIEW_BASE = 10n ** 19n;
+
+/** A chat's id in the view. */
+export function viewId(chatId: string): string {
+  return chatId.startsWith("-") ? String(GROUP_VIEW_BASE + BigInt(chatId.slice(1))) : chatId;
+}
+
+/** The chat a view id names; the view's ids are checked digits. */
+export function chatIdOfView(id: string): string {
+  const value = BigInt(id);
+  return value >= GROUP_VIEW_BASE ? `-${value - GROUP_VIEW_BASE}` : id;
+}
+
+/** The view's sections, in order. */
+const SECTIONS: [TgChatKind, string][] = [
+  ["user", "Direct messages"],
+  ["group", "Groups"],
+  ["channel", "Channels"],
+];
+
 /** What the module offers the shell; its manifest must declare the same (tested). */
 export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
 
 /**
  * Native Telegram adapter: signs in with phone number, code and two-step
  * password, lists one-to-one chats as direct messages (in the rail and the
- * unified Messages page) and renders them in Multicord's chat view. Runs in
- * its sandboxed engine; the session is kept in the instance's own secrets.
+ * unified Messages page), groups and channels under its home entry, and
+ * renders them in Multicord's chat view. Runs in its sandboxed engine; the
+ * session is kept in the instance's own secrets.
  */
 export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   override readonly mode = "native" as const;
@@ -198,8 +226,17 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     return this.directs();
   }
 
+  /**
+   * Groups and channels, which live under home: unread where they would
+   * notify, and every unread mention (Telegram counts those in muted chats
+   * too). One-to-one chats are DM bubbles with their own badges.
+   */
   homeBadge(): HomeBadge {
-    return { unread: false, mentions: 0 }; // DM bubbles carry their own badges.
+    const rooms = this.dialogs.filter((d) => d.kind !== "user");
+    return {
+      unread: rooms.some((d) => d.unreadCount > 0 && !this.muted(d)),
+      mentions: rooms.reduce((sum, d) => sum + d.unreadMentions, 0),
+    };
   }
 
   async openHome(): Promise<void> {
@@ -258,7 +295,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         }
         return;
       case "select":
-        return this.select(action.channelId);
+        return this.select(chatIdOfView(action.channelId));
       case "send":
         return this.send(action.content, action.replyTo);
       case "edit":
@@ -416,6 +453,22 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     return this.dialogs.find((d) => d.chatId === chatId);
   }
 
+  /** The user muted the chat's notifications in Telegram, for now. */
+  private muted(dialog: TgDialog): boolean {
+    return (dialog.mutedUntil ?? 0) > Date.now() / 1000;
+  }
+
+  /**
+   * A chat's badge. In a one-to-one chat every unread message counts, as
+   * Telegram notifies each one, unless the chat is muted; in groups only
+   * mentions and answers count, muted or not, as in Telegram's apps.
+   */
+  private badge(dialog: TgDialog): { unread: boolean; mentions: number } {
+    const unread = dialog.unreadCount > 0;
+    if (dialog.kind === "user") return { unread, mentions: this.muted(dialog) ? 0 : dialog.unreadCount };
+    return { unread, mentions: dialog.unreadMentions };
+  }
+
   private async select(chatId: string): Promise<void> {
     if (!this.dialog(chatId)) return;
     this.selected = chatId;
@@ -451,8 +504,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private async markRead(chatId: string): Promise<void> {
     const dialog = this.dialog(chatId);
     const last = this.messages.get(chatId)?.at(-1) ?? dialog?.lastMessage;
-    if (!dialog || !last || dialog.unreadCount === 0) return;
+    if (!dialog || !last || (dialog.unreadCount === 0 && dialog.unreadMentions === 0)) return;
     dialog.unreadCount = 0;
+    dialog.unreadMentions = 0;
     this.publish();
     await this.api?.markRead(chatId, last.id).catch(() => undefined);
   }
@@ -468,7 +522,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
 
   private async send(content: string, replyTo?: string): Promise<void> {
     const chatId = this.selected;
-    if (!chatId || content.trim() === "" || !this.api) return;
+    if (!chatId || content.trim() === "" || !this.api || this.dialog(chatId)?.readOnly) return;
     await this.attempt("Message not sent", async () => {
       const sent = await this.api!.send(chatId, content, replyTo ? Number(replyTo) : undefined);
       this.onUpdate({ type: "message", message: sent });
@@ -498,7 +552,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       case "message": {
         const { message } = update;
         const dialog = this.dialog(message.chatId);
-        // A chat we do not list yet (someone new, or a group): refresh the list.
+        // A chat we do not list yet (someone new, a group we were added to): refresh the list.
         if (!dialog) return this.refreshSoon();
         const cached = this.messages.get(message.chatId);
         if (cached && !cached.some((m) => m.id === message.id)) cached.push(message);
@@ -510,14 +564,22 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         if (!message.out) {
           // In view: read at once, on the server too (there is no unread count to clear here).
           if (inView) void this.api?.markRead(message.chatId, message.id).catch(() => undefined);
-          else dialog.unreadCount++;
-          this.notifications.emit({
-            title: dialog.title,
-            body: messageText(message).slice(0, 200),
-            target: message.chatId,
-            railKey: `dm:${message.chatId}`,
-            inView,
-          });
+          else {
+            dialog.unreadCount++;
+            if (message.mentioned && dialog.kind !== "user") dialog.unreadMentions++;
+          }
+          // A muted chat stays quiet, except for a group message that mentions or answers the user, as in Telegram.
+          if (!this.muted(dialog) || (message.mentioned && dialog.kind === "group")) {
+            const text = messageText(message);
+            this.notifications.emit({
+              title: dialog.title,
+              body: (dialog.kind === "group" && message.sender ? `${message.sender}: ${text}` : text).slice(0, 200),
+              target: message.chatId,
+              // Groups and channels live under the home entry; one-to-one chats have bubbles.
+              railKey: dialog.kind === "user" ? `dm:${message.chatId}` : "home",
+              inView,
+            });
+          }
         }
         this.dialogs.sort((a, b) => b.date - a.date);
         return this.publish();
@@ -532,13 +594,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.publish();
       }
       case "delete": {
-        // Private-chat deletions carry no chat id: message ids are unique per account there.
+        // Deletions in private chats and basic groups carry no chat id: message ids are unique per account
+        // there. Supergroups and channels number their own messages, and name the chat.
         const ids = new Set(update.ids);
-        for (const [chatId, cached] of this.messages) {
-          if (update.chatId && update.chatId !== chatId) continue;
-          this.messages.set(chatId, cached.filter((m) => !ids.has(m.id)));
-        }
-        for (const dialog of this.dialogs) if (dialog.lastMessage && ids.has(dialog.lastMessage.id)) dialog.lastMessage = undefined;
+        const hit = (chatId: string) => (update.chatId ? update.chatId === chatId : !isChannelPeer(chatId));
+        for (const [chatId, cached] of this.messages) if (hit(chatId)) this.messages.set(chatId, cached.filter((m) => !ids.has(m.id)));
+        for (const dialog of this.dialogs) if (hit(dialog.chatId) && dialog.lastMessage && ids.has(dialog.lastMessage.id)) dialog.lastMessage = undefined;
         return this.publish();
       }
     }
@@ -547,14 +608,14 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   // --- Output -------------------------------------------------------------------
 
   directs(): DirectConversation[] {
-    return this.dialogs.map((d) => {
+    // Only one-to-one chats: groups and channels are rooms, under home, as Matrix rooms are.
+    return this.dialogs.filter((d) => d.kind === "user").map((d) => {
       const direct: DirectConversation = {
         key: d.chatId,
         account: this.account,
         title: d.title,
         lastActivity: d.date * 1000,
-        unread: d.unreadCount > 0,
-        mentions: d.unreadCount,
+        ...this.badge(d),
       };
       const avatar = this.avatars.get(d.chatId);
       if (avatar) direct.avatarUrl = avatar;
@@ -635,22 +696,30 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const platform = this.deps.def.name;
     if (this.step === "connecting") return { screen: "connecting", platform, status: this.status ?? "Connecting…" };
     if (this.step !== "chat") return { screen: "prompt", platform, prompt: this.prompt(), busy: this.busy, status: this.status, error: this.error };
-    const sidebar: NativeSidebarItem[] = this.dialogs.map((d) => {
-      const item: NativeSidebarItem = { id: d.chatId, name: d.title, kind: "dm", unread: d.unreadCount > 0, mentions: d.unreadCount, active: d.chatId === this.selected };
-      const avatar = this.avatars.get(d.chatId);
-      if (avatar) item.iconUrl = avatar;
-      return item;
-    });
+    const sidebar: NativeSidebarItem[] = [];
+    for (const [kind, heading] of SECTIONS) {
+      const dialogs = this.dialogs.filter((d) => d.kind === kind);
+      if (dialogs.length === 0) continue;
+      sidebar.push({ id: `section-${kind}`, name: heading, kind: "category", unread: false, mentions: 0, active: false });
+      for (const d of dialogs) {
+        // Every chat shows its picture, so all are "dm" rows.
+        const item: NativeSidebarItem = { id: viewId(d.chatId), name: d.title, kind: "dm", ...this.badge(d), active: d.chatId === this.selected };
+        const avatar = this.avatars.get(d.chatId);
+        if (avatar) item.iconUrl = avatar;
+        sidebar.push(item);
+      }
+    }
     const dialog = this.selected ? this.dialog(this.selected) : undefined;
+    const locked = dialog?.readOnly ? (dialog.kind === "channel" ? "Only the channel's admins post here." : "You cannot send messages in this group.") : undefined;
     return {
       screen: "chat",
       platform,
-      title: "Direct messages",
+      title: "Chats",
       me: this.me?.name ?? "",
       sidebar,
       channel: dialog
         ? {
-            id: dialog.chatId,
+            id: viewId(dialog.chatId),
             name: dialog.title,
             messages: (this.messages.get(dialog.chatId) ?? []).map((m) => this.toNative(m, dialog)),
             loading: this.loading.has(dialog.chatId),
@@ -658,8 +727,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
             typing: [],
             pending: [],
             uploading: false,
+            ...(locked ? { locked } : {}),
             // Reactions, files and typing notices are not offered here yet.
-            can: { reply: true, react: false, attach: false, typing: false },
+            can: { reply: !locked, react: false, attach: false, typing: false },
           }
         : null,
       voice: null,

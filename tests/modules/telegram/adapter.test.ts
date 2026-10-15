@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
 import type { TelegramApi, TelegramCredentials, TgDialog, TgMessage, TgSignIn, TgUpdate } from "../../../src/modules/telegram/api";
-import { AVATAR_LIMIT, FORGET_API_ID, PAGE_SIZE, TelegramAdapter, messageText, parseCredentials } from "../../../src/modules/telegram/adapter";
+import { AVATAR_LIMIT, DIALOG_LIMIT, FORGET_API_ID, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import type { NativeAction, NativeViewState } from "../../../src/shared/native";
 
@@ -15,7 +15,7 @@ const flush = async () => {
 };
 
 const msg = (chatId: string, id: number, extra: Partial<TgMessage> = {}): TgMessage => ({ id, chatId, out: false, text: `m${id}`, date: 100 + id, edited: false, ...extra });
-const dlg = (chatId: string, extra: Partial<TgDialog> = {}): TgDialog => ({ chatId, title: `User ${chatId}`, bot: false, unreadCount: 0, date: 0, ...extra });
+const dlg = (chatId: string, extra: Partial<TgDialog> = {}): TgDialog => ({ chatId, kind: "user", title: `User ${chatId}`, bot: false, unreadCount: 0, unreadMentions: 0, date: 0, ...extra });
 const defaultDialogs = () => [dlg("3", { date: 10 }), dlg("1", { date: 30, unreadCount: 2, lastMessage: msg("1", 2) }), dlg("2", { date: 20 })];
 
 class FakeTelegramApi implements TelegramApi {
@@ -92,7 +92,9 @@ function setup(options: Options = {}) {
     return state;
   };
   const messageIds = () => chat().channel!.messages.map((m) => m.id);
-  return { adapter, api, secrets, renders, directs, notifications, createApi, act, answer, last, prompt, chat, messageIds };
+  /** The chats in the sidebar, without section headings. */
+  const rows = () => chat().sidebar.filter((i) => i.kind !== "category");
+  return { adapter, api, secrets, renders, directs, notifications, createApi, act, answer, last, prompt, chat, messageIds, rows };
 }
 
 /** An adapter that resumed a stored session and shows the chat. */
@@ -154,7 +156,7 @@ describe("starting", () => {
     const ctx = await signedIn();
     expect(ctx.createApi).toHaveBeenCalledWith(CREDS, "old");
     expect(ctx.secrets.get("session")).toBe("sess");
-    expect(ctx.chat()).toMatchObject({ title: "Direct messages", me: "Me", channel: null });
+    expect(ctx.chat()).toMatchObject({ title: "Chats", me: "Me", channel: null });
     expect(ctx.adapter.accountStatus()).toEqual({ state: "signed-in", name: "Me" });
   });
 
@@ -357,8 +359,8 @@ describe("code step", () => {
     await ctx.answer("code", { code: "12 345" });
     expect(ctx.api.signIn).toHaveBeenCalledWith("+31612345678", "H", "12345");
     expect(ctx.secrets.get("session")).toBe("sess");
-    expect(ctx.api.dialogs).toHaveBeenCalledWith(100);
-    expect(ctx.chat().sidebar.map((i) => i.id)).toEqual(["1", "2", "3"]);
+    expect(ctx.api.dialogs).toHaveBeenCalledWith(DIALOG_LIMIT);
+    expect(ctx.rows().map((i) => i.id)).toEqual(["1", "2", "3"]);
     expect(ctx.adapter.accountStatus()).toEqual({ state: "signed-in", name: "Me" });
   });
 
@@ -413,7 +415,7 @@ describe("code step", () => {
     await ctx.answer("code", { code: "1" });
     await flush();
     expect(ctx.api.avatar).toHaveBeenCalledTimes(AVATAR_LIMIT);
-    const items = ctx.chat().sidebar;
+    const items = ctx.rows();
     expect(items.find((i) => i.id === "2")?.iconUrl).toBe("data:image/jpeg;base64,AA");
     expect(items.find((i) => i.id === "1")).not.toHaveProperty("iconUrl");
     expect(items.find((i) => i.id === "3")).not.toHaveProperty("iconUrl");
@@ -525,6 +527,7 @@ describe("chat view", () => {
     ctx.api.avatar.mockResolvedValue(undefined);
     await ctx.adapter.openConversation("2");
     expect(ctx.chat().sidebar).toEqual([
+      { id: "section-user", name: "Direct messages", kind: "category", unread: false, mentions: 0, active: false },
       { id: "1", name: "User 1", kind: "dm", unread: true, mentions: 2, active: false },
       { id: "2", name: "User 2", kind: "dm", unread: false, mentions: 0, active: true },
       { id: "3", name: "User 3", kind: "dm", unread: false, mentions: 0, active: false },
@@ -568,7 +571,7 @@ describe("chat view", () => {
     ctx.adapter.setVisible(true);
     await flush();
     expect(ctx.api.markRead).toHaveBeenCalledWith("1", 2);
-    expect(ctx.chat().sidebar[0]).toMatchObject({ unread: false, mentions: 0 });
+    expect(ctx.rows()[0]).toMatchObject({ unread: false, mentions: 0 });
 
     await ctx.adapter.openConversation("2");
     expect(ctx.api.markRead).toHaveBeenCalledTimes(1);
@@ -784,7 +787,7 @@ describe("updates", () => {
     expect(ctx.api.dialogs).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1000);
     expect(ctx.api.dialogs).toHaveBeenCalledTimes(1);
-    expect(ctx.chat().sidebar[0]!.id).toBe("9");
+    expect(ctx.rows()[0]!.id).toBe("9");
 
     ctx.api.emit({ type: "message", message: msg("8", 1) });
     await vi.advanceTimersByTimeAsync(1000);
@@ -797,7 +800,7 @@ describe("updates", () => {
     ctx.api.dialogs.mockRejectedValue(new Error("down"));
     ctx.api.emit({ type: "message", message: msg("9", 1) });
     await vi.advanceTimersByTimeAsync(1000);
-    expect(ctx.chat().sidebar).toHaveLength(3);
+    expect(ctx.rows()).toHaveLength(3);
   });
 
   it("counts an incoming message as unread, notifies and appends it to a loaded chat", async () => {
@@ -807,7 +810,7 @@ describe("updates", () => {
     expect(ctx.notifications).toEqual([
       { title: "User 1", body: messageText(msg("1", 3, { text: "y".repeat(300), media: "📷 Photo" })).slice(0, 200), target: "1", railKey: "dm:1", inView: false },
     ]);
-    expect(ctx.chat().sidebar[0]).toMatchObject({ unread: true, mentions: 3 });
+    expect(ctx.rows()[0]).toMatchObject({ unread: true, mentions: 3 });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
     expect(ctx.directs.at(-1)![0]).toMatchObject({ key: "1", lastActivity: 103_000, mentions: 3 });
   });
@@ -824,7 +827,7 @@ describe("updates", () => {
   it("moves the dialog of a new message to the top", async () => {
     const ctx = await signedIn();
     ctx.api.emit({ type: "message", message: msg("3", 1, { date: 500 }) });
-    expect(ctx.chat().sidebar.map((i) => i.id)).toEqual(["3", "1", "2"]);
+    expect(ctx.rows().map((i) => i.id)).toEqual(["3", "1", "2"]);
   });
 
   it("marks an incoming message read instead when its chat is on screen", async () => {
@@ -835,7 +838,7 @@ describe("updates", () => {
     ctx.api.emit({ type: "message", message: msg("1", 3) });
     await flush();
     expect(ctx.notifications[0]).toMatchObject({ inView: true });
-    expect(ctx.chat().sidebar[0]).toMatchObject({ unread: false, mentions: 0 });
+    expect(ctx.rows()[0]).toMatchObject({ unread: false, mentions: 0 });
     // Read on the server too, though there was no unread count to clear.
     expect(ctx.api.markRead).toHaveBeenCalledWith("1", 3);
     ctx.api.markRead.mockRejectedValueOnce(new Error("offline"));
@@ -1077,5 +1080,131 @@ describe("media", () => {
     const { toBase64 } = await import("../../../src/modules/telegram/adapter");
     const bytes = new Uint8Array(100_000).map((_, i) => i % 256);
     expect(toBase64(bytes)).toBe(Buffer.from(bytes).toString("base64"));
+  });
+});
+
+describe("groups and channels", () => {
+  const GROUP = "-123";
+  const SUPER = "-1001234567890";
+  const NEWS = "-1009876543210";
+  const FOREVER = 2147483647;
+  const rooms = () => [
+    dlg("1", { date: 50, unreadCount: 2, lastMessage: msg("1", 2) }),
+    dlg(GROUP, { kind: "group", title: "Family", date: 40, unreadCount: 5, unreadMentions: 1 }),
+    dlg(SUPER, { kind: "group", title: "Club", date: 30, unreadCount: 3, unreadMentions: 2, mutedUntil: FOREVER }),
+    dlg(NEWS, { kind: "channel", title: "News", date: 20, unreadCount: 7, readOnly: true }),
+    dlg("2", { title: "Quiet", date: 10, unreadCount: 4, mutedUntil: FOREVER }),
+  ];
+
+  it("gives groups and channels digit-only view ids above every user id, and reads them back", () => {
+    expect(viewId("42")).toBe("42");
+    expect(viewId(GROUP)).toBe("10000000000000000123");
+    expect(viewId(SUPER)).toBe("10000001001234567890");
+    expect(viewId("-999999999999999999")).toMatch(/^\d{20}$/);
+    for (const id of ["42", GROUP, SUPER, NEWS]) expect(chatIdOfView(viewId(id))).toBe(id);
+  });
+
+  it("lists chats in sections, keeps only one-to-one chats as direct messages and badges home with the rest", async () => {
+    const ctx = await signedIn({ dialogs: rooms() });
+    expect(ctx.chat().sidebar.filter((i) => i.kind === "category").map((i) => i.name)).toEqual(["Direct messages", "Groups", "Channels"]);
+    expect(ctx.rows().map((i) => [i.name, i.unread, i.mentions])).toEqual([
+      ["User 1", true, 2],
+      ["Quiet", true, 0], // muted: unread, but no count
+      ["Family", true, 1],
+      ["Club", true, 2], // muted, but mentions still count
+      ["News", true, 0],
+    ]);
+    expect(ctx.rows().map((i) => i.id)).toEqual(["1", "2", viewId(GROUP), viewId(SUPER), viewId(NEWS)]);
+    expect((await ctx.adapter.listDirectConversations()).map((d) => [d.key, d.mentions])).toEqual([
+      ["1", 2],
+      ["2", 0],
+    ]);
+    expect(ctx.adapter.homeBadge()).toEqual({ unread: true, mentions: 3 });
+  });
+
+  it("leaves home unread only for chats that would notify", async () => {
+    const ctx = await signedIn({ dialogs: [dlg(SUPER, { kind: "group", unreadCount: 3, mutedUntil: FOREVER }), dlg(NEWS, { kind: "channel", unreadCount: 0 })] });
+    expect(ctx.adapter.homeBadge()).toEqual({ unread: false, mentions: 0 });
+    // A mute that ran out no longer counts.
+    const later = await signedIn({ dialogs: [dlg(SUPER, { kind: "group", unreadCount: 3, mutedUntil: 1000 })] });
+    expect(later.adapter.homeBadge()).toEqual({ unread: true, mentions: 0 });
+  });
+
+  it("opens a group from the view and from the shell, by its chat id", async () => {
+    const ctx = await signedIn({ dialogs: rooms() });
+    await ctx.act({ type: "select", channelId: viewId(GROUP) });
+    expect(ctx.api.history).toHaveBeenCalledWith(GROUP, undefined, PAGE_SIZE);
+    expect(ctx.chat().channel).toMatchObject({ id: viewId(GROUP), name: "Family", can: { reply: true } });
+    expect(ctx.chat().channel).not.toHaveProperty("locked");
+    await ctx.adapter.openConversation(SUPER);
+    expect(ctx.chat().channel!.id).toBe(viewId(SUPER));
+  });
+
+  it("names each group message's sender, falling back to the group", async () => {
+    const ctx = await signedIn({ dialogs: rooms() });
+    ctx.api.history.mockResolvedValueOnce([msg(GROUP, 1, { sender: "Ana" }), msg(GROUP, 2, { replyToId: 1 })]);
+    await ctx.adapter.openConversation(GROUP);
+    const [first, second] = ctx.chat().channel!.messages;
+    expect(first!.author).toBe("Ana");
+    expect(second).toMatchObject({ author: "Family", reply: { author: "Ana", content: "m1" } });
+  });
+
+  it("locks channels only admins post in, and groups the user may not write in", async () => {
+    const ctx = await signedIn({ dialogs: [...rooms(), dlg("-77", { kind: "group", title: "Muted me", readOnly: true })] });
+    await ctx.adapter.openConversation(NEWS);
+    expect(ctx.chat().channel).toMatchObject({ locked: "Only the channel's admins post here.", can: { reply: false } });
+    await ctx.act({ type: "send", content: "hi" });
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    await ctx.adapter.openConversation("-77");
+    expect(ctx.chat().channel!.locked).toBe("You cannot send messages in this group.");
+  });
+
+  it("counts mentions in groups, notifies under home with the sender, and keeps muted chats quiet", async () => {
+    const ctx = await signedIn({ dialogs: rooms() });
+    ctx.api.emit({ type: "message", message: msg(GROUP, 10, { sender: "Ana", text: "hi @me", mentioned: true }) });
+    expect(ctx.notifications.at(-1)).toEqual({ title: "Family", body: "Ana: hi @me", target: GROUP, railKey: "home", inView: false });
+    expect(ctx.rows().find((i) => i.name === "Family")).toMatchObject({ mentions: 2 });
+    ctx.api.emit({ type: "message", message: msg(GROUP, 11) });
+    expect(ctx.notifications.at(-1)).toMatchObject({ body: "m11" });
+    expect(ctx.rows().find((i) => i.name === "Family")).toMatchObject({ mentions: 2 });
+    ctx.api.emit({ type: "message", message: msg(NEWS, 5, { sender: "News" }) });
+    expect(ctx.notifications.at(-1)).toMatchObject({ title: "News", body: "m5", railKey: "home" });
+
+    const before = ctx.notifications.length;
+    ctx.api.emit({ type: "message", message: msg(SUPER, 20) });
+    ctx.api.emit({ type: "message", message: msg("2", 20, { mentioned: true }) });
+    expect(ctx.notifications).toHaveLength(before);
+    // A muted group still notifies about a mention or an answer, as Telegram does.
+    ctx.api.emit({ type: "message", message: msg(SUPER, 21, { mentioned: true }) });
+    expect(ctx.notifications.at(-1)).toMatchObject({ title: "Club", target: SUPER });
+    expect(ctx.adapter.homeBadge().mentions).toBe(5);
+  });
+
+  it("clears a group's mentions once read", async () => {
+    const ctx = await signedIn({ dialogs: rooms() });
+    ctx.adapter.setVisible(true);
+    ctx.api.history.mockResolvedValueOnce([msg(GROUP, 1)]);
+    await ctx.adapter.openConversation(GROUP);
+    expect(ctx.api.markRead).toHaveBeenCalledWith(GROUP, 1);
+    expect(ctx.rows().find((i) => i.name === "Family")).toMatchObject({ unread: false, mentions: 0 });
+    // Only mentions left still get read.
+    const other = await signedIn({ dialogs: [dlg(SUPER, { kind: "group", unreadCount: 0, unreadMentions: 1, lastMessage: msg(SUPER, 4) })] });
+    other.adapter.setVisible(true);
+    other.api.history.mockResolvedValueOnce([]);
+    await other.adapter.openConversation(SUPER);
+    expect(other.api.markRead).toHaveBeenCalledWith(SUPER, 4);
+  });
+
+  it("applies deletions without a chat to private chats and basic groups, not to supergroups or channels", async () => {
+    const ctx = await signedIn({ dialogs: [dlg("1"), dlg(GROUP, { kind: "group", lastMessage: msg(GROUP, 2) }), dlg(SUPER, { kind: "group", lastMessage: msg(SUPER, 2) })] });
+    for (const id of [SUPER, GROUP, "1"]) await ctx.adapter.openConversation(id);
+    ctx.api.emit({ type: "delete", ids: [2] });
+    expect(ctx.messageIds()).toEqual(["1"]);
+    await ctx.adapter.openConversation(GROUP);
+    expect(ctx.messageIds()).toEqual(["1"]);
+    await ctx.adapter.openConversation(SUPER);
+    expect(ctx.messageIds()).toEqual(["1", "2"]);
+    ctx.api.emit({ type: "delete", chatId: SUPER, ids: [2] });
+    expect(ctx.messageIds()).toEqual(["1"]);
   });
 });

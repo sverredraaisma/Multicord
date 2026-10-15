@@ -10,12 +10,13 @@ const h = vi.hoisted(() => {
     "MessageMediaEmpty", "MessageMediaWebPage", "MessageMediaPhoto", "MessageMediaDocument", "Document",
     "DocumentAttributeSticker", "DocumentAttributeAudio", "DocumentAttributeVideo", "DocumentAttributeFilename",
     "MessageMediaGeo", "MessageMediaGeoLive", "MessageMediaVenue", "MessageMediaContact", "MessageMediaPoll",
-    "PeerUser", "PeerChat", "Message", "MessageReplyHeader", "User",
+    "PeerUser", "PeerChat", "PeerChannel", "Message", "MessageReplyHeader", "User", "Chat", "Channel", "ChatForbidden", "PeerNotifySettings",
     "Photo", "PhotoSize", "PhotoSizeProgressive", "DocumentAttributeImageSize", "DocumentAttributeAnimated",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
     account: { GetPassword: class extends Base {} },
+    messages: { ReadMentions: class extends Base {} },
   };
   for (const name of names) Api[name] = class extends Base {};
 
@@ -32,6 +33,7 @@ const h = vi.hoisted(() => {
     editMessage = vi.fn();
     deleteMessages = vi.fn(async () => []);
     markAsRead = vi.fn(async () => true);
+    getInputEntity = vi.fn(async (peer: unknown) => ({ input: peer }));
     downloadProfilePhoto = vi.fn();
     downloadMedia = vi.fn();
     addEventHandler = vi.fn();
@@ -66,7 +68,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { createGramApi, mediaFile, mediaLabel, toMessage, userChatId } from "../../../src/modules/telegram/gram";
+import { chatIdOf, createGramApi, describeChat, mediaFile, mediaLabel, SAVED_MESSAGES, toMessage } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -111,11 +113,56 @@ describe("mediaLabel", () => {
   });
 });
 
-describe("userChatId", () => {
-  it("names the user of a private chat only", () => {
-    expect(userChatId(make(Api.PeerUser, { userId: 42n }))).toBe("42");
-    expect(userChatId(make(Api.PeerChat, { chatId: 7n }))).toBeUndefined();
-    expect(userChatId(undefined)).toBeUndefined();
+describe("chatIdOf", () => {
+  it("marks ids as GramJS does: users plain, basic groups negative, supergroups and channels with -100", () => {
+    expect(chatIdOf(make(Api.PeerUser, { userId: 42n }))).toBe("42");
+    expect(chatIdOf(make(Api.PeerChat, { chatId: 7n }))).toBe("-7");
+    expect(chatIdOf(make(Api.PeerChannel, { channelId: 1234567890n }))).toBe("-1001234567890");
+    expect(chatIdOf(undefined)).toBeUndefined();
+    expect(chatIdOf({} as never)).toBeUndefined();
+  });
+});
+
+describe("describeChat", () => {
+  const rights = (props: Record<string, unknown>) => props;
+
+  it("describes users, bots and the chat with yourself", () => {
+    expect(describeChat(make(Api.User, { firstName: "Ana", bot: true }))).toEqual({ kind: "user", title: "Ana", bot: true, readOnly: false });
+    expect(describeChat(make(Api.User, { firstName: "Me", self: true }))).toEqual({ kind: "user", title: SAVED_MESSAGES, bot: false, readOnly: false });
+  });
+
+  it("describes basic groups, read-only when left or when members may not write", () => {
+    expect(describeChat(make(Api.Chat, { title: "Family" }))).toEqual({ kind: "group", title: "Family", bot: false, readOnly: false });
+    expect(describeChat(make(Api.Chat, { title: "" }))).toMatchObject({ title: "Group" });
+    expect(describeChat(make(Api.Chat, { title: "Old", left: true }))).toMatchObject({ readOnly: true });
+    expect(describeChat(make(Api.Chat, { title: "Quiet", defaultBannedRights: rights({ sendMessages: true }) }))).toMatchObject({ readOnly: true });
+    expect(describeChat(make(Api.Chat, { title: "Quiet", defaultBannedRights: rights({ sendPlain: true }), adminRights: {} }))).toMatchObject({ readOnly: false });
+    expect(describeChat(make(Api.Chat, { title: "Quiet", defaultBannedRights: rights({ sendMessages: true }), creator: true }))).toMatchObject({ readOnly: false });
+  });
+
+  it("leaves out groups that moved into a supergroup, and chats the user can no longer open", () => {
+    expect(describeChat(make(Api.Chat, { title: "Moved", deactivated: true }))).toBeUndefined();
+    expect(describeChat(make(Api.Chat, { title: "Moved", migratedTo: {} }))).toBeUndefined();
+    expect(describeChat(make(Api.ChatForbidden, { title: "Gone" }))).toBeUndefined();
+    expect(describeChat(undefined)).toBeUndefined();
+  });
+
+  it("describes broadcast channels, open only to their posting admins", () => {
+    expect(describeChat(make(Api.Channel, { title: "News", broadcast: true }))).toEqual({ kind: "channel", title: "News", bot: false, readOnly: true });
+    expect(describeChat(make(Api.Channel, { title: "", broadcast: true, creator: true }))).toEqual({ kind: "channel", title: "Channel", bot: false, readOnly: false });
+    expect(describeChat(make(Api.Channel, { title: "News", adminRights: { postMessages: true } }))).toMatchObject({ readOnly: false });
+    expect(describeChat(make(Api.Channel, { title: "News", adminRights: { editMessages: true } }))).toMatchObject({ readOnly: true });
+  });
+
+  it("describes supergroups as groups, read-only when left, banned, silenced or a broadcast group", () => {
+    const group = (props: Record<string, unknown>) => describeChat(make(Api.Channel, { title: "Club", megagroup: true, ...props }));
+    expect(group({})).toEqual({ kind: "group", title: "Club", bot: false, readOnly: false });
+    expect(group({ left: true })).toMatchObject({ readOnly: true });
+    expect(group({ bannedRights: rights({ sendMessages: true }) })).toMatchObject({ readOnly: true });
+    expect(group({ defaultBannedRights: rights({ sendPlain: true }) })).toMatchObject({ readOnly: true });
+    expect(group({ gigagroup: true })).toMatchObject({ readOnly: true });
+    expect(group({ gigagroup: true, adminRights: {} })).toMatchObject({ readOnly: false });
+    expect(group({ defaultBannedRights: rights({ sendMessages: true }), creator: true })).toMatchObject({ readOnly: false });
   });
 });
 
@@ -138,6 +185,18 @@ describe("toMessage", () => {
   it("adds a media label and a reply id", () => {
     const message = make(Api.Message, { ...base, media: make(Api.MessageMediaPhoto), replyTo: make(Api.MessageReplyHeader, { replyToMsgId: 3 }) });
     expect(toMessage(message, "9")).toMatchObject({ media: "📷 Photo", replyToId: 3 });
+  });
+
+  it("names the sender of group and channel messages, and says when the user is mentioned", () => {
+    const inGroup = (props: Record<string, unknown>) => toMessage(make(Api.Message, { ...base, peerId: make(Api.PeerChannel, { channelId: 1n }), ...props }), "-1001");
+    expect(inGroup({ sender: make(Api.User, { firstName: "Ana" }), mentioned: true })).toMatchObject({ sender: "Ana", mentioned: true });
+    expect(inGroup({ sender: make(Api.Channel, { title: "News" }) })).toMatchObject({ sender: "News" });
+    expect(inGroup({ sender: make(Api.Chat, { title: "" }), postAuthor: "Bo" })).toMatchObject({ sender: "Bo" });
+    expect(inGroup({ sender: {} })).not.toHaveProperty("sender");
+    // In a private chat the chat names the sender.
+    const direct = toMessage(make(Api.Message, { ...base, peerId: make(Api.PeerUser, { userId: 9n }), sender: make(Api.User, { firstName: "Ana" }) }), "9");
+    expect(direct).not.toHaveProperty("sender");
+    expect(direct).not.toHaveProperty("mentioned");
   });
 
   it("ignores reply headers of other kinds and missing ids", () => {
@@ -236,19 +295,25 @@ describe("createGramApi", () => {
     await expect(api.me()).resolves.toMatchObject({ name: "Telegram user" });
   });
 
-  it("lists user dialogs only, with titles, bots and last messages", async () => {
+  it("lists one-to-one chats, groups and channels, with titles, counts, mutes and last messages", async () => {
     const last = make(Api.Message, { id: 9, date: 50, message: "yo" });
+    const settings = (props: Record<string, unknown>) => ({ dialog: { notifySettings: make(Api.PeerNotifySettings, props) } });
+    const none = { dialog: {} };
     client.getDialogs.mockResolvedValue([
-      { isUser: true, id: 1n, title: "Ana", unreadCount: 2, date: 100, message: last, entity: make(Api.User, { bot: true }) },
-      { isUser: true, id: 2n, title: "", unreadCount: 0, date: 90, entity: make(Api.User, { username: "bo" }) },
-      { isUser: true, id: 3n, title: "", unreadCount: 0, date: 80, entity: {} },
-      { isUser: false, id: 4n, title: "Group", unreadCount: 0, date: 70 },
-      { isUser: true, id: undefined, title: "Ghost", unreadCount: 0, date: 60 },
+      { ...none, id: 1n, unreadCount: 2, unreadMentionsCount: 0, date: 100, message: last, entity: make(Api.User, { firstName: "Ana", bot: true }) },
+      { ...settings({ muteUntil: 2147483647 }), id: 2n, unreadCount: 0, unreadMentionsCount: 0, date: 90, entity: make(Api.User, { username: "bo" }) },
+      { ...settings({ muteUntil: 0 }), id: -7n, unreadCount: 3, unreadMentionsCount: 1, date: 85, entity: make(Api.Chat, { title: "Family" }) },
+      { ...none, id: -1001234567890n, unreadCount: 2_000_000, unreadMentionsCount: -1, date: 80, entity: make(Api.Channel, { title: "News", broadcast: true }) },
+      { ...none, id: 3n, unreadCount: 0, unreadMentionsCount: 0, date: 75, entity: {} },
+      { ...none, id: 4n, unreadCount: 0, unreadMentionsCount: 0, date: 70, entity: make(Api.ChatForbidden) },
+      { ...none, id: undefined, unreadCount: 0, unreadMentionsCount: 0, date: 60, entity: make(Api.User) },
+      { ...none, id: 10n ** 19n, unreadCount: 0, unreadMentionsCount: 0, date: 50, entity: make(Api.User) },
     ]);
     await expect(api.dialogs(20)).resolves.toEqual([
-      { chatId: "1", title: "Ana", bot: true, unreadCount: 2, date: 100, lastMessage: toMessage(last, "1") },
-      { chatId: "2", title: "@bo", bot: false, unreadCount: 0, date: 90 },
-      { chatId: "3", title: "Telegram user", bot: false, unreadCount: 0, date: 80 },
+      { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, lastMessage: toMessage(last, "1") },
+      { chatId: "2", kind: "user", title: "@bo", bot: false, unreadCount: 0, unreadMentions: 0, date: 90, mutedUntil: 2147483647 },
+      { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85 },
+      { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true },
     ]);
     expect(client.getDialogs).toHaveBeenCalledWith({ limit: 20 });
   });
@@ -278,6 +343,13 @@ describe("createGramApi", () => {
     expect(client.deleteMessages).toHaveBeenCalledWith(7n, [1, 2], { revoke: true });
     await expect(api.markRead("7", 5)).resolves.toBeUndefined();
     expect(client.markAsRead).toHaveBeenCalledWith(7n, 5);
+    expect(client.invoke).not.toHaveBeenCalled();
+    // A group's mentions are read with it.
+    await api.markRead("-1001234567890", 6);
+    expect(client.markAsRead).toHaveBeenLastCalledWith(-1001234567890n, 6);
+    const request = client.invoke.mock.calls[0]![0] as { peer: unknown };
+    expect(request).toBeInstanceOf(Api.messages.ReadMentions);
+    expect(request.peer).toEqual({ input: -1001234567890n });
   });
 
   describe("avatar", () => {
@@ -311,24 +383,28 @@ describe("createGramApi", () => {
       expect(client.addEventHandler).toHaveBeenCalledTimes(3);
     });
 
-    it("forwards messages and edits of private chats only", () => {
+    it("forwards messages and edits of private chats, groups and channels", () => {
       const { cb, newH, editH } = setup();
       const user = make(Api.PeerUser, { userId: 8n });
       newH(event(user));
       editH(event(user));
       newH(event(make(Api.PeerChat, { chatId: 1n })));
+      editH(event(make(Api.PeerChannel, { channelId: 1234567890n })));
+      newH(event(undefined));
       editH(event(undefined));
-      expect(cb).toHaveBeenCalledTimes(2);
+      expect(cb).toHaveBeenCalledTimes(4);
       expect(cb).toHaveBeenNthCalledWith(1, { type: "message", message: expect.objectContaining({ id: 4, chatId: "8" }) });
       expect(cb).toHaveBeenNthCalledWith(2, { type: "edit", message: expect.objectContaining({ chatId: "8" }) });
+      expect(cb).toHaveBeenNthCalledWith(3, { type: "message", message: expect.objectContaining({ chatId: "-1" }) });
+      expect(cb).toHaveBeenNthCalledWith(4, { type: "edit", message: expect.objectContaining({ chatId: "-1001234567890" }) });
     });
 
-    it("forwards deletions without a channel only", () => {
+    it("forwards deletions, naming the supergroup or channel they happened in", () => {
       const { cb, delH } = setup();
       delH({ deletedIds: [1, 2] });
-      delH({ peer: {}, deletedIds: [3] });
-      expect(cb).toHaveBeenCalledTimes(1);
-      expect(cb).toHaveBeenCalledWith({ type: "delete", ids: [1, 2] });
+      delH({ peer: make(Api.PeerChannel, { channelId: 1234567890n }), deletedIds: [3] });
+      delH({ peer: {}, deletedIds: [4] });
+      expect(cb.mock.calls).toEqual([[{ type: "delete", ids: [1, 2] }], [{ type: "delete", chatId: "-1001234567890", ids: [3] }]]);
     });
   });
 

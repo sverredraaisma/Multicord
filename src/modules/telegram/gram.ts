@@ -83,10 +83,52 @@ export function mediaFile(media: Api.TypeMessageMedia | undefined): TgFile | und
   return { kind: "file", name: filename ?? "File", mime, size };
 }
 
-/** The other user of a one-to-one chat, or undefined for groups and channels. */
-export function userChatId(peer: Api.TypePeer | undefined): string | undefined {
-  return peer instanceof Api.PeerUser ? peer.userId.toString() : undefined;
+/** Chat ids as GramJS marks them (Utils.getPeerId): a user's id, -id for a basic group, -100id for a supergroup or channel. */
+export function chatIdOf(peer: Api.TypePeer | undefined): string | undefined {
+  if (peer instanceof Api.PeerUser) return peer.userId.toString();
+  if (peer instanceof Api.PeerChat) return `-${peer.chatId.toString()}`;
+  if (peer instanceof Api.PeerChannel) return `-100${peer.channelId.toString()}`;
+  return undefined;
 }
+
+/** The title of Telegram's chat with yourself. */
+export const SAVED_MESSAGES = "Saved Messages";
+
+/** Whose name a message shows: a user's, or a group's or channel's posting as itself. */
+function entityName(entity: unknown): string | undefined {
+  if (entity instanceof Api.User) return userName(entity);
+  if (entity instanceof Api.Chat || entity instanceof Api.Channel) return entity.title || undefined;
+  return undefined;
+}
+
+const banned = (rights: Api.TypeChatBannedRights | undefined): boolean => rights?.sendMessages === true || rights?.sendPlain === true;
+
+/**
+ * What a dialog's entity is to the view: a one-to-one chat, a group (basic,
+ * super or broadcast group) or a broadcast channel, and whether the user may
+ * write there. Undefined for chats the user can no longer open (forbidden)
+ * and basic groups that moved into a supergroup (listed as that).
+ */
+export function describeChat(entity: unknown): { kind: TgDialog["kind"]; title: string; bot: boolean; readOnly: boolean } | undefined {
+  if (entity instanceof Api.User) return { kind: "user", title: entity.self ? SAVED_MESSAGES : userName(entity), bot: entity.bot === true, readOnly: false };
+  if (entity instanceof Api.Chat) {
+    if (entity.deactivated || entity.migratedTo) return undefined;
+    const admin = entity.creator === true || entity.adminRights !== undefined;
+    return { kind: "group", title: entity.title || "Group", bot: false, readOnly: entity.left === true || (!admin && banned(entity.defaultBannedRights)) };
+  }
+  if (entity instanceof Api.Channel) {
+    const title = entity.title || "Channel";
+    // Only admins with the right post in a broadcast channel, and in a broadcast group (gigagroup).
+    if (!entity.megagroup) return { kind: "channel", title, bot: false, readOnly: !(entity.creator === true || entity.adminRights?.postMessages === true) };
+    const admin = entity.creator === true || entity.adminRights !== undefined;
+    const silenced = entity.gigagroup === true || banned(entity.bannedRights) || banned(entity.defaultBannedRights);
+    return { kind: "group", title, bot: false, readOnly: entity.left === true || (!admin && silenced) };
+  }
+  return undefined;
+}
+
+/** A count from Telegram, kept sane: a whole number from 0 to a million. */
+const tally = (value: unknown): number => (typeof value === "number" && Number.isInteger(value) && value > 0 ? Math.min(value, 1_000_000) : 0);
 
 export function toMessage(message: Api.Message, chatId: string): TgMessage {
   const out: TgMessage = {
@@ -97,6 +139,12 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
     date: message.date,
     edited: message.editDate !== undefined && message.editHide !== true,
   };
+  // In groups and channels each message says who wrote it; in a private chat the chat does.
+  if (!(message.peerId instanceof Api.PeerUser)) {
+    const sender = entityName(message.sender) ?? (message.postAuthor || undefined);
+    if (sender) out.sender = sender;
+  }
+  if (message.mentioned === true) out.mentioned = true;
   const media = mediaLabel(message.media);
   if (media) out.media = media;
   const file = mediaFile(message.media);
@@ -152,15 +200,20 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
     },
     dialogs: async (limit) => {
       const dialogs = await client.getDialogs({ limit });
-      return dialogs
-        .filter((d) => d.isUser && d.id !== undefined)
-        .map((d): TgDialog => {
-          const chatId = d.id!.toString();
-          const user = d.entity instanceof Api.User ? d.entity : undefined;
-          const dialog: TgDialog = { chatId, title: d.title || userName(user), bot: user?.bot === true, unreadCount: d.unreadCount, date: d.date };
-          if (d.message) dialog.lastMessage = toMessage(d.message, chatId);
-          return dialog;
-        });
+      return dialogs.flatMap((d): TgDialog[] => {
+        const chat = describeChat(d.entity);
+        const chatId = d.id?.toString() ?? "";
+        // Ids beyond 18 digits are not Telegram's; the view could not tell them apart.
+        if (!chat || !/^-?\d{1,18}$/.test(chatId)) return [];
+        const dialog: TgDialog = { chatId, kind: chat.kind, title: chat.title, bot: chat.bot, unreadCount: tally(d.unreadCount), unreadMentions: tally(d.unreadMentionsCount), date: d.date };
+        if (chat.readOnly) dialog.readOnly = true;
+        const settings = d.dialog.notifySettings;
+        // A Unix time; "muted for ever" is the largest 32-bit one.
+        const mutedUntil = settings instanceof Api.PeerNotifySettings ? settings.muteUntil : undefined;
+        if (Number.isInteger(mutedUntil) && mutedUntil! > 0) dialog.mutedUntil = mutedUntil;
+        if (d.message) dialog.lastMessage = toMessage(d.message, chatId);
+        return [dialog];
+      });
     },
     history: async (chatId, beforeId, limit) => {
       const page = await client.getMessages(peer(chatId), { limit, offsetId: beforeId ?? 0 });
@@ -169,7 +222,11 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
     send: async (chatId, text, replyTo) => toMessage(await client.sendMessage(peer(chatId), { message: text, replyTo, parseMode: false }), chatId),
     edit: async (chatId, id, text) => toMessage(await client.editMessage(peer(chatId), { message: id, text, parseMode: false }), chatId),
     remove: async (chatId, ids) => void (await client.deleteMessages(peer(chatId), ids, { revoke: true })),
-    markRead: async (chatId, maxId) => void (await client.markAsRead(peer(chatId), maxId)),
+    markRead: async (chatId, maxId) => {
+      await client.markAsRead(peer(chatId), maxId);
+      // Reading a group also reads the mentions in it, as Telegram's apps do once they are seen.
+      if (chatId.startsWith("-")) await client.invoke(new Api.messages.ReadMentions({ peer: await client.getInputEntity(peer(chatId)) }));
+    },
     avatar: async (chatId) => {
       const photo = await client.downloadProfilePhoto(peer(chatId), { isBig: false });
       if (!photo || typeof photo === "string" || photo.length === 0 || photo.length > MAX_AVATAR_BYTES) return undefined;
@@ -186,16 +243,18 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
     },
     onUpdate: (cb: (update: TgUpdate) => void) => {
       client.addEventHandler((event: NewMessageEvent) => {
-        const chatId = userChatId(event.message.peerId);
+        const chatId = chatIdOf(event.message.peerId);
         if (chatId) cb({ type: "message", message: toMessage(event.message, chatId) });
       }, new NewMessage({}));
       client.addEventHandler((event: EditedMessageEvent) => {
-        const chatId = userChatId(event.message.peerId);
+        const chatId = chatIdOf(event.message.peerId);
         if (chatId) cb({ type: "edit", message: toMessage(event.message, chatId) });
       }, new EditedMessage({}));
       client.addEventHandler((event: DeletedMessageEvent) => {
-        // Channel deletions name their channel; ours (private chats) name none.
-        if (!event.peer) cb({ type: "delete", ids: event.deletedIds });
+        // Supergroup and channel deletions name their chat; private chats' and basic groups' name none.
+        const chatId = event.peer ? chatIdOf(event.peer as Api.TypePeer) : undefined;
+        if (event.peer && !chatId) return;
+        cb(chatId ? { type: "delete", chatId, ids: event.deletedIds } : { type: "delete", ids: event.deletedIds });
       }, new DeletedMessage({}));
     },
     session: () => (client.session as StringSession).save(),

@@ -1,6 +1,7 @@
 // The slice of Telegram the adapter uses, in plain data. gram.ts implements
 // it with GramJS; tests use a fake. Ids are decimal strings, dates Unix
-// seconds, as Telegram sends them.
+// seconds, as Telegram sends them. Chat ids are GramJS's marked ids: a
+// user's id, -id for a basic group, -100id for a supergroup or channel.
 
 export interface TgUser {
   id: string;
@@ -26,8 +27,10 @@ export interface TgMessage {
   id: number;
   chatId: string;
   out: boolean;
-  /** The sender's display name, where known. */
+  /** The sender's display name, where known (group and channel messages). */
   sender?: string;
+  /** It mentions the user or answers one of theirs. */
+  mentioned?: boolean;
   text: string;
   /** A short label for media, e.g. "📷 Photo". */
   media?: string;
@@ -38,12 +41,21 @@ export interface TgMessage {
   replyToId?: number;
 }
 
-/** A one-to-one chat with a user or bot; groups and channels are not listed. */
+/** A one-to-one chat (with a user, a bot or yourself), a group (basic or super) or a broadcast channel. */
+export type TgChatKind = "user" | "group" | "channel";
+
 export interface TgDialog {
   chatId: string;
+  kind: TgChatKind;
   title: string;
   bot: boolean;
   unreadCount: number;
+  /** Unread messages that mention the user or answer theirs. */
+  unreadMentions: number;
+  /** Until when (Unix seconds) the chat's notifications are muted, if they are. */
+  mutedUntil?: number;
+  /** Nothing can be sent here: a channel only its admins post in, or a group the user may not write in. */
+  readOnly?: boolean;
   lastMessage?: TgMessage;
   date: number;
 }
@@ -83,6 +95,11 @@ export interface TelegramApi {
 export interface TelegramCredentials {
   apiId: number;
   apiHash: string;
+}
+
+/** Whether a chat id is a supergroup's or channel's, whose message ids are their own (GramJS's rule: -100 and no further zero). */
+export function isChannelPeer(chatId: string): boolean {
+  return /^-100[1-9]\d*$/.test(chatId);
 }
 
 /** Telegram's error names, e.g. PHONE_CODE_INVALID, from a GramJS RPCError. */
