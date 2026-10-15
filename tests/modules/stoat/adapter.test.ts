@@ -128,7 +128,7 @@ describe("StoatAdapter sign-in", () => {
     expect(last()).toEqual({ screen: "login", platform: "Stoat", identity: "email", busy: false, status: undefined, error: undefined });
     expect(sockets).toHaveLength(0);
     expect(adapter.mode).toBe("native");
-    expect(adapter.capabilities).toEqual({ directMessages: true, messagePreviews: true, voice: false, screenShare: false });
+    expect(adapter.capabilities).toEqual({ directMessages: true, messagePreviews: true, voice: true, screenShare: true });
     expect(adapter.accountStatus()).toEqual({ state: "signed-out" });
   });
 
@@ -834,7 +834,7 @@ describe("StoatAdapter attachments", () => {
     expect(chat().error).toBe("This Stoat instance does not accept files.");
     await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "a.gif", size: 3, type: "image/gif" } });
     expect(chat().channel!.pending).toEqual([]);
-    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, pins: true, search: true, forward: true });
+    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, pins: true, search: true, forward: true, call: false });
     // Without a file server there are no avatar or icon URLs either, nor emoji pictures to pick.
     expect(chat().sidebar[0]!.iconUrl).toBeUndefined();
     expect(chat().customEmoji).toEqual([]);
@@ -1213,6 +1213,94 @@ describe("StoatAdapter role mentions", () => {
     expect(chat().channel!.messages[0]).toMatchObject({ content: `hi @Mods and <%${ulid(61)}>`, mentionsMe: true });
     await adapter.handleAction({ type: "forward", messageId: ulid(460), channelId: DM });
     expect(JSON.parse(requests(`/channels/${DM}/messages`).at(-1)!.init.body as string).content).toBe("Forwarded from Ana:\n> hi @Mods and @a role");
+  });
+});
+
+describe("StoatAdapter voice", () => {
+  const LIVEKIT = { ...CONFIG, features: { ...CONFIG.features, livekit: { enabled: true, nodes: [{ name: "hel1", public_url: "wss://lk.test" }] } } };
+  const withVoice = () => readyPayload({ channels: readyPayload().channels.map((c) => (c._id === LOBBY ? { ...c, voice: { max_users: 10 } } : c)) });
+  async function online(config: unknown = LIVEKIT, grant: () => Reply = () => ({ status: 200, body: { token: "lk", url: "wss://lk.test" } })) {
+    const ctx = setup({
+      token: "saved",
+      routes: [(url) => (url === "https://stoat.test/api/" ? { status: 200, body: config } : undefined), (url) => (url.endsWith("/join_call") ? grant() : undefined)],
+    });
+    await ctx.adapter.start();
+    await ctx.goOnline(withVoice());
+    return ctx;
+  }
+
+  it("offers a call in channels that are also voice channels, and joins it through the instance's voice server", async () => {
+    const { adapter, chat, requests } = await online();
+    await adapter.openConversation(GENERAL);
+    expect(chat().channel!.can.call).toBe(false);
+    await adapter.openConversation(LOBBY);
+    expect(chat().channel!.can.call).toBe(true);
+    await adapter.handleAction({ type: "joinVoice", channelId: LOBBY });
+    expect(JSON.parse(requests("/join_call")[0]!.init.body as string)).toEqual({ node: "hel1" });
+    expect(chat().voice).toEqual({ channelId: LOBBY, channelName: "lobby", guildName: "Alpha", url: "wss://lk.test", token: "lk", mute: false, deaf: false, video: false, stream: false });
+    // Already there: nothing more is asked.
+    await adapter.handleAction({ type: "joinVoice", channelId: LOBBY });
+    expect(requests("/join_call")).toHaveLength(1);
+    await adapter.handleAction({ type: "voiceState", mute: true, deaf: false, video: true, stream: false });
+    expect(chat().voice).toMatchObject({ mute: true, video: true });
+    await adapter.handleAction({ type: "voiceNotice", message: "The camera could not start", off: "video" });
+    expect(chat()).toMatchObject({ voice: { video: false }, error: "The camera could not start" });
+    await adapter.handleAction({ type: "voiceNotice", message: "Speakers gone" });
+    expect(chat()).toMatchObject({ voice: { channelId: LOBBY }, error: "Speakers gone" });
+    await adapter.handleAction({ type: "voiceError", message: "ICE failed" });
+    expect(chat()).toMatchObject({ voice: null, error: "Voice failed: ICE failed" });
+    await adapter.handleAction({ type: "voiceNotice", message: "late" });
+    await adapter.handleAction({ type: "voiceState", mute: true, deaf: true, video: false, stream: false });
+    expect(chat().error).toBe("Voice failed: ICE failed");
+    // Joined again, then left.
+    await adapter.handleAction({ type: "joinVoice", channelId: LOBBY });
+    await adapter.handleAction({ type: "leaveVoice" });
+    expect(chat().voice).toBeNull();
+    // Channels that are not voice channels, unknown ones: nothing.
+    await adapter.handleAction({ type: "joinVoice", channelId: GENERAL });
+    await adapter.handleAction({ type: "joinVoice", channelId: ulid(999) });
+    expect(requests("/join_call")).toHaveLength(2);
+    // Signing out leaves the call.
+    await adapter.handleAction({ type: "joinVoice", channelId: LOBBY });
+    await adapter.handleAction({ type: "logout" });
+    await adapter.start();
+    expect(adapter.viewState()).toMatchObject({ screen: "login" });
+  });
+
+  it("refuses grants for servers the instance does not name, and says when Stoat refuses", async () => {
+    let answer: Reply = { status: 200, body: { token: "lk", url: "wss://elsewhere.test" } };
+    const { adapter, chat } = await online(LIVEKIT, () => answer);
+    await adapter.handleAction({ type: "joinVoice", channelId: LOBBY });
+    expect(chat()).toMatchObject({ voice: null, error: "Could not join voice: the voice server is not one this instance names" });
+    answer = { status: 403, body: { type: "MissingPermission" } };
+    await adapter.handleAction({ type: "joinVoice", channelId: LOBBY });
+    expect(chat()).toMatchObject({ voice: null, error: "Could not join voice: You do not have permission to do that." });
+  });
+
+  it("drops a grant for a join given up meanwhile", async () => {
+    let leave: (() => Promise<void>) | undefined;
+    const { adapter, chat } = await online(LIVEKIT, () => {
+      void leave?.();
+      return { status: 200, body: { token: "lk", url: "wss://lk.test" } };
+    });
+    leave = () => adapter.handleAction({ type: "leaveVoice" });
+    await adapter.handleAction({ type: "joinVoice", channelId: LOBBY });
+    expect(chat().voice).toBeNull();
+    // A failure for a join given up is not shown either.
+    const failing = await online(LIVEKIT, () => {
+      void failing.adapter.handleAction({ type: "leaveVoice" });
+      return { status: 500 };
+    });
+    await failing.adapter.handleAction({ type: "joinVoice", channelId: LOBBY });
+    expect(failing.chat()).toMatchObject({ voice: null, error: undefined });
+  });
+
+  it("says when the instance runs no voice", async () => {
+    const { adapter, chat } = await online(CONFIG);
+    await adapter.openConversation(LOBBY);
+    expect(chat().channel!.can.call).toBe(false);
+    await adapter.handleAction({ type: "joinVoice", channelId: LOBBY });
+    expect(chat()).toMatchObject({ voice: null, error: "This Stoat instance runs no voice." });
   });
 });
 

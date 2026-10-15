@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { discoverInstance, StoatApiError, StoatRest, type StoatInstance } from "../../../src/modules/stoat/rest";
+import { discoverInstance, instanceHosts, StoatApiError, StoatRest, type StoatInstance } from "../../../src/modules/stoat/rest";
 import type { FileSource } from "../../../src/engine/runtime";
 import { ANA, ME_ID, message, ulid } from "./fixtures";
 
@@ -56,6 +56,17 @@ describe("discoverInstance", () => {
     expect((await discoverInstance("https://chat.example", on.fetch)).january).toBe("https://proxy.example");
     const off = fakeFetch({ status: 200, body: { ws: "wss://chat.example/ws", features: { january: { enabled: false, url: "https://proxy.example" } } } });
     expect((await discoverInstance("https://chat.example", off.fetch)).january).toBeUndefined();
+  });
+
+  it("reads the voice servers where the instance runs voice, and counts their hosts as its own", async () => {
+    const livekit = (value: unknown) => fakeFetch({ status: 200, body: { ws: "wss://chat.example/ws", features: { livekit: value } } }).fetch;
+    const nodes = [{ name: "hel1", lat: 60, lon: 24, public_url: "wss://livekit.hel1.example/" }, { name: "bad name", public_url: "wss://x.example" }, { name: "plain", public_url: "https://x.example" }, "nope"];
+    const instance = await discoverInstance("https://chat.example", livekit({ enabled: true, nodes }));
+    expect(instance.voiceNodes).toEqual([{ name: "hel1", url: "wss://livekit.hel1.example" }]);
+    expect(instanceHosts(instance)).toEqual(["chat.example", "livekit.hel1.example"]);
+    for (const off of [{ enabled: false, nodes }, { enabled: true }, { enabled: true, nodes: [] }, "on"]) {
+      expect(await discoverInstance("https://chat.example", livekit(off))).not.toHaveProperty("voiceNodes");
+    }
   });
 
   it("rejects what is not a Stoat instance", async () => {
@@ -146,6 +157,20 @@ describe("StoatRest sign-in", () => {
     client.token = "tok";
     await client.logout();
     expect(calls[0]).toMatchObject({ url: "https://stoat.test/api/auth/session/logout", init: { method: "POST", headers: { "X-Session-Token": "tok" } } });
+  });
+});
+
+describe("StoatRest voice", () => {
+  it("asks for a grant on a voice server, and takes only a usable one", async () => {
+    const { client, calls } = rest(
+      { status: 200, body: { token: "lk", url: "wss://livekit.example/" } },
+      { status: 200, body: { token: "lk", url: "https://livekit.example" } },
+      { status: 200, body: { token: "", url: "wss://livekit.example" } },
+      { status: 200 },
+    );
+    expect(await client.joinCall(ulid(5), "hel1")).toEqual({ token: "lk", url: "wss://livekit.example" });
+    expect(calls[0]).toMatchObject({ url: `https://stoat.test/api/channels/${ulid(5)}/join_call`, init: { method: "POST", body: '{"node":"hel1"}' } });
+    for (let i = 0; i < 3; i++) await expect(client.joinCall(ulid(5), "hel1")).rejects.toThrow("The voice server gave no usable address.");
   });
 });
 

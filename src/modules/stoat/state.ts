@@ -300,7 +300,8 @@ export class StoatState {
   /**
    * A server's text channels in sidebar order: uncategorised first, then
    * each category with its channels. Voice-only channels of older instances
-   * are left out, as Multicord does not join Stoat calls.
+   * are left out: Multicord joins the calls of text channels that are also
+   * voice channels, as newer instances have them.
    */
   serverEntries(serverId: string): ServerEntry[] {
     const server = this.servers.get(serverId);

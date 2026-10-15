@@ -89,7 +89,7 @@ describe("settings state", () => {
       ["mumble", false],
       ["web", false],
     ]);
-    expect(state.modules.filter((m) => m.calls).map((m) => m.id)).toEqual(["fluxer", "matrix-native"]);
+    expect(state.modules.filter((m) => m.calls).map((m) => m.id)).toEqual(["fluxer", "matrix-native", "stoat-native"]);
     expect(state).toMatchObject({ settings: DEFAULT_SETTINGS, restartNeeded: false, secretsPersistent: true, launchAtLoginSupported: true, version: "1.2.3" });
     expect(state).not.toHaveProperty("error");
   });

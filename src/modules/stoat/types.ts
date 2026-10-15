@@ -103,6 +103,8 @@ export interface StoatChannel {
   icon?: StoatFile;
   /** DMs: closed ones are hidden, as Stoat's own client does. */
   active: boolean;
+  /** A server text channel that is also a voice channel (it has voice information). */
+  voice?: boolean;
 }
 
 export interface StoatReaction {
@@ -316,6 +318,7 @@ export function parseChannel(value: unknown): StoatChannel | undefined {
     lastMessageId: isId(value.last_message_id) ? value.last_message_id : undefined,
     icon: parseFile(value.icon),
     active: type !== ChannelType.DirectMessage || value.active !== false,
+    ...(type === ChannelType.TextChannel && isRecord(value.voice) ? { voice: true } : {}),
   };
 }
 

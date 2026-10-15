@@ -1,5 +1,5 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
-import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeListedMessage, type NativeMember, type NativeMemberList, type NativeMemberSection, type NativePresence, type NativeProfile, MEMBER_ROWS_SHOWN, type NativeMessage, type NativeMessageList, type NativeSearchResults, type NativeSidebarItem, type NativeUnread, type NativeViewState } from "../../shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeListedMessage, type NativeMember, type NativeMemberList, type NativeMemberSection, type NativePresence, type NativeProfile, MEMBER_ROWS_SHOWN, type NativeMessage, type NativeMessageList, type NativeSearchResults, type NativeSidebarItem, type NativeUnread, type NativeViewState, type NativeVoiceSession, type VoiceNoticeFlag } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
 import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
@@ -56,7 +56,7 @@ type Selection = { kind: "home" } | { kind: "server"; serverId: string };
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
 /** What the module offers the shell; its manifest must declare the same (tested). */
-export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: true, screenShare: true };
 
 /**
  * Native Stoat adapter: talks to a Stoat (Revolt) instance from its sandboxed
@@ -112,6 +112,10 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   /** Originals of replies that are not loaded, by id: fetched, or null where Stoat has none (deleted). */
   private readonly originals = new Map<string, StoatMessage | null>();
   private readonly fetchingOriginals = new Set<string>();
+  /** The user's call: the channel, its grant once the voice server gave one, and the user's own flags. */
+  private voice: { channelId: string; serverId: string; url?: string; token?: string; mute: boolean; deaf: boolean; video: boolean; stream: boolean } | undefined;
+  /** Counts joins and leaves, so a grant for a join since given up is dropped. */
+  private voiceJoins = 0;
 
   constructor(private readonly deps: StoatAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -192,10 +196,23 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         return this.setMembersOpen(action.open);
       case "profile":
         return this.showProfile(action.id);
+      case "joinVoice":
+        return this.joinVoice(action.channelId);
+      case "leaveVoice":
+        return this.leaveVoice(undefined);
+      case "voiceState": {
+        const { mute, deaf, video, stream } = action;
+        if (this.voice) Object.assign(this.voice, { mute, deaf, video, stream });
+        return this.render();
+      }
+      case "voiceError":
+        return this.leaveVoice(`Voice failed: ${action.message}`);
+      case "voiceNotice":
+        return this.voiceNotice(action.message, action.off);
       case "logout":
         return this.logout();
       default:
-        return; // Forums, voice and prompts do not exist here.
+        return; // Forums and prompts do not exist here.
     }
   }
 
@@ -376,6 +393,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     this.fetchingOriginals.clear();
     this.membersOpen = false;
     this.profile = undefined;
+    this.voice = undefined;
+    this.voiceJoins++;
     this.selection = { kind: "home" };
     this.selectedChannelId = undefined;
     this.lastChannel.clear();
@@ -780,6 +799,65 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       railKey: server ? server.id : `dm:${channel.id}`,
       inView: this.visible && this.selectedChannelId === channel.id,
     });
+  }
+
+  // --- Voice -----------------------------------------------------------------
+
+  /**
+   * Joins the call of a server channel that is also a voice channel: Stoat
+   * gives a grant for one of the instance's voice servers (LiveKit) through
+   * its documented join_call, and the view carries the audio and video.
+   * Who else is in a call is not shown, as Stoat does not document the
+   * events that would say.
+   */
+  private async joinVoice(channelId: string): Promise<void> {
+    const channel = this.state.channels.get(channelId);
+    const nodes = this.instance?.voiceNodes ?? [];
+    if (!channel?.voice || !channel.serverId || !this.rest || this.voice?.channelId === channelId) return;
+    if (nodes.length === 0) {
+      this.error = `This ${this.deps.def.name} instance runs no voice.`;
+      return this.render();
+    }
+    const join = ++this.voiceJoins;
+    this.voice = { channelId, serverId: channel.serverId, mute: false, deaf: false, video: false, stream: false };
+    this.error = undefined;
+    this.render();
+    try {
+      const grant = await this.rest.joinCall(channelId, nodes[0]!.name);
+      // Only the instance's own voice servers, which the engine's host lock allows.
+      if (!nodes.some((n) => new URL(n.url).hostname === new URL(grant.url).hostname)) throw new Error("the voice server is not one this instance names");
+      if (join !== this.voiceJoins) return;
+      Object.assign(this.voice, grant);
+    } catch (error) {
+      if (join !== this.voiceJoins) return;
+      this.voice = undefined;
+      this.error = `Could not join voice: ${messageOf(error)}`;
+    }
+    this.render();
+  }
+
+  /** Leaves the call: the view disconnects from the voice server, which tells Stoat. */
+  private leaveVoice(error: string | undefined): void {
+    this.voiceJoins++;
+    this.voice = undefined;
+    if (error) this.error = error;
+    this.render();
+  }
+
+  /** A problem the call survives: shown, with the camera or screen share that failed turned off. */
+  private voiceNotice(message: string, off: VoiceNoticeFlag | undefined): void {
+    if (!this.voice) return;
+    this.error = message;
+    if (off) this.voice[off] = false;
+    this.render();
+  }
+
+  private voiceSession(): NativeVoiceSession | null {
+    const voice = this.voice;
+    if (!voice) return null;
+    const { serverId: _server, ...flags } = voice;
+    const channel = this.state.channels.get(voice.channelId);
+    return { ...flags, channelName: channel ? this.channelTitle(channel) : "Voice", guildName: this.state.servers.get(voice.serverId)?.name ?? "" };
   }
 
   // --- Members and profiles --------------------------------------------------
@@ -1188,13 +1266,13 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(members ? { members } : {}),
                 // Files need the instance's file server (Autumn).
                 // Saved Notes has nobody else in it: no one to type to or list.
-                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: others, members: others, pins: true, search: true, forward: true },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: others, members: others, pins: true, search: true, forward: true, call: Boolean(channel.voice && this.instance?.voiceNodes) },
               }
             : null,
           customEmoji: channel ? this.customEmoji(channel) : [],
           // Pictures of the custom emoji in the messages above; only emoji with a picture were noted.
           emojiUrls: Object.fromEntries([...shown].map((id) => [id, this.emojiUrl(id)!])),
-          voice: null,
+          voice: this.voiceSession(),
           ...(this.profile ? { profile: this.profile } : {}),
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };

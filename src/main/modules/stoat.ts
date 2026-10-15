@@ -19,6 +19,9 @@ export const stoatNativeModule: PlatformModule = {
     preload: "preload-native.js",
     engine: "stoat",
     home: true,
-    capabilities: { directMessages: true, messagePreviews: true, voice: false, screenShare: false },
+    // Calls in channels that are also voice channels, through the instance's LiveKit servers.
+    usesVoiceSettings: true,
+    screenShare: true,
+    capabilities: { directMessages: true, messagePreviews: true, voice: true, screenShare: true },
   },
 };

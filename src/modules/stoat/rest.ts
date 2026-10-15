@@ -25,6 +25,8 @@ export interface StoatInstance {
   autumn?: string;
   /** January, the instance's proxy for pictures in link previews; absent when the instance has none. */
   january?: string;
+  /** Its voice servers (LiveKit nodes), by name; absent when the instance runs no voice. */
+  voiceNodes?: { name: string; url: string }[];
 }
 
 export type LoginResult =
@@ -86,12 +88,17 @@ export async function discoverInstance(origin: string, fetchFn: typeof fetch): P
   const features = isRecord(config.features) ? config.features : {};
   const autumn = isRecord(features.autumn) && features.autumn.enabled !== false ? https(features.autumn.url, "https:") : undefined;
   const january = isRecord(features.january) && features.january.enabled !== false ? https(features.january.url, "https:") : undefined;
-  return { api, ws, autumn, january };
+  const livekit = isRecord(features.livekit) && features.livekit.enabled === true && Array.isArray(features.livekit.nodes) ? features.livekit.nodes.slice(0, 8) : [];
+  const voiceNodes = livekit.flatMap((node) => {
+    const url = isRecord(node) ? https(node.public_url, "wss:") : undefined;
+    return url && typeof node.name === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(node.name) ? [{ name: node.name, url }] : [];
+  });
+  return { api, ws, autumn, january, ...(voiceNodes.length > 0 ? { voiceNodes } : {}) };
 }
 
-/** The hosts an instance uses: its API, events WebSocket, file server and picture proxy. */
+/** The hosts an instance uses: its API, events WebSocket, file server, picture proxy and voice servers. */
 export function instanceHosts(instance: StoatInstance): string[] {
-  const urls = [instance.api, instance.ws, ...(instance.autumn ? [instance.autumn] : []), ...(instance.january ? [instance.january] : [])];
+  const urls = [instance.api, instance.ws, ...(instance.autumn ? [instance.autumn] : []), ...(instance.january ? [instance.january] : []), ...(instance.voiceNodes ?? []).map((n) => n.url)];
   return [...new Set(urls.map((url) => new URL(url).hostname.toLowerCase()))];
 }
 
@@ -199,6 +206,18 @@ export class StoatRest {
   /** One member of a server: their nickname and roles there. */
   async member(serverId: string, userId: string): Promise<StoatMember | undefined> {
     return parseMember(await this.request("GET", `/servers/${serverId}/members/${userId}`));
+  }
+
+  /**
+   * A grant to join a channel's call on one of the instance's voice servers
+   * (POST /channels/{id}/join_call): the LiveKit server and its token.
+   */
+  async joinCall(channelId: string, node: string): Promise<{ url: string; token: string }> {
+    const data = await this.request("POST", `/channels/${channelId}/join_call`, { node });
+    const record = isRecord(data) ? data : {};
+    const url = https(record.url, "wss:");
+    if (!url || typeof record.token !== "string" || record.token === "") throw new StoatApiError(200, "UnexpectedResponse", "The voice server gave no usable address.");
+    return { url, token: record.token };
   }
 
   /** One message, e.g. the original of a reply that is not loaded. */
