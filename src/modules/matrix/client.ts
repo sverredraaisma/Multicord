@@ -35,19 +35,23 @@ const TIMELINE_TYPES = [
   "m.room.history_visibility",
   "m.room.member",
 ];
+/** Space structure: whether a room is a space, and which rooms it lists. */
+const SPACE_TYPES = ["m.room.create", "m.space.child"];
 /**
  * What /sync returns: members only as needed (lazy loading), no presence or
  * receipts but typing notices, and of the account data only the DM list. To-device
  * messages and device lists come unfiltered, for encryption. The timeline
  * also carries call memberships of both kinds as they change; sticky ones
- * also come in their own section, which no filter narrows.
+ * also come in their own section, which no filter narrows. Space changes
+ * come in the timeline too: the state section is not narrowed by type, but
+ * a state change filtered out of the timeline would otherwise be missed.
  */
 export const SYNC_FILTER = JSON.stringify({
   presence: { not_types: ["*"] },
   account_data: { types: ["m.direct"] },
   room: {
     state: { lazy_load_members: true },
-    timeline: { limit: TIMELINE_LIMIT, types: [...TIMELINE_TYPES, CALL_MEMBER_TYPE, RTC_MEMBER_TYPE], lazy_load_members: true },
+    timeline: { limit: TIMELINE_LIMIT, types: [...TIMELINE_TYPES, ...SPACE_TYPES, CALL_MEMBER_TYPE, RTC_MEMBER_TYPE], lazy_load_members: true },
     ephemeral: { types: ["m.typing"] },
     account_data: { not_types: ["*"] },
   },

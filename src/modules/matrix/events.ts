@@ -17,6 +17,7 @@ import type {
   MxRoomState,
   MxRoomUpdate,
   MxRtcTransport,
+  MxSpaceChild,
   MxSync,
 } from "./api";
 import { sha256 } from "./sha256";
@@ -285,6 +286,23 @@ export function parseEncryption(content: Record<string, unknown>): MxEncryption 
   return encryption;
 }
 
+/** Rooms kept per space; a space listing more shows the first ones. */
+export const MAX_SPACE_CHILDREN = 500;
+const SPACE_ORDER = /^[\x20-\x7e]{1,50}$/;
+
+/**
+ * An m.space.child content: the child is there while `via` names a server
+ * to join it through, else it was removed (null). An order that breaks the
+ * spec's rules is ignored, as the spec says.
+ */
+export function spaceChild(content: Record<string, unknown>, ts: unknown): MxSpaceChild | null {
+  const via = content.via;
+  if (!Array.isArray(via) || !via.some((server) => typeof server === "string" && server !== "")) return null;
+  const child: MxSpaceChild = { suggested: content.suggested === true, ts: typeof ts === "number" && Number.isSafeInteger(ts) && ts >= 0 ? ts : 0 };
+  if (typeof content.order === "string" && SPACE_ORDER.test(content.order)) child.order = content.order;
+  return child;
+}
+
 /**
  * Applies a state event to `state`. A cleared name, alias or avatar becomes
  * "". Any m.room.encryption event marks the room encrypted, even a
@@ -311,6 +329,17 @@ export function applyState(state: MxRoomState, raw: unknown): void {
     case "m.room.avatar":
       if (global) state.avatar = parseMxc(content.url) ? (content.url as string) : "";
       return;
+    case "m.room.create":
+      if (global && content.type === "m.space") state.space = true;
+      return;
+    case "m.space.child": {
+      const child = roomId(raw.state_key);
+      if (!child) return;
+      const children = (state.children ??= new Map());
+      if (!children.has(child) && children.size >= MAX_SPACE_CHILDREN) return;
+      children.set(child, spaceChild(content, raw.origin_server_ts));
+      return;
+    }
     case "m.room.member": {
       const user = userId(raw.state_key);
       if (!user) return;

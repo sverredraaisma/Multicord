@@ -76,6 +76,19 @@ export interface MxRoomState {
   /** m.room.history_visibility, e.g. "shared". */
   history?: string;
   members: Record<string, MxMember>;
+  /** Set when m.room.create says the room is a space (type m.space). */
+  space?: boolean;
+  /** m.space.child events seen, by child room id; null for a child that was removed (no via). */
+  children?: Map<string, MxSpaceChild | null>;
+}
+
+/** One room a space lists (m.space.child), as the space orders it. */
+export interface MxSpaceChild {
+  /** The space's own order for it, when valid (printable ASCII, at most 50 characters). */
+  order?: string;
+  suggested: boolean;
+  /** When the child was added (the event's origin_server_ts), the order's tie-break. */
+  ts: number;
 }
 
 interface MxEventBase {

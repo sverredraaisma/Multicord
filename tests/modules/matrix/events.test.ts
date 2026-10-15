@@ -19,6 +19,7 @@ import {
   MAX_EVENT_JSON,
   MAX_NAME,
   MAX_ROOM_ID,
+  MAX_SPACE_CHILDREN,
   mimeType,
   parseContent,
   parseEncryptedFile,
@@ -229,6 +230,68 @@ describe("room state", () => {
     const other = emptyState();
     applyState(other, { type: "m.room.encryption", state_key: "", content: { algorithm: "m.megolm.v1.aes-sha2" } });
     expect(other.encrypted).toBe(true);
+  });
+});
+
+describe("spaces", () => {
+  it("marks a room a space only from its create event's type", () => {
+    const space = emptyState();
+    applyState(space, st("m.room.create", { type: "m.space", creator: "@ana:x.org" }));
+    expect(space.space).toBe(true);
+    const room = emptyState();
+    applyState(room, st("m.room.create", { creator: "@ana:x.org" }));
+    applyState(room, st("m.room.create", { type: "m.space" }, "x"));
+    applyState(room, st("m.room.create", "junk"));
+    expect(room).toEqual({ members: {} });
+  });
+
+  it("reads children: present while via names a server, with a valid order", () => {
+    const state = emptyState();
+    applyState(state, { ...st("m.space.child", { via: ["x.org"], order: "a1", suggested: true }, "!a:x.org"), origin_server_ts: 1_700_000_000_000 });
+    applyState(state, st("m.space.child", { via: ["", 4, "y.org"], order: "x".repeat(51) }, "!b:x.org"));
+    applyState(state, st("m.space.child", { via: ["x.org"], order: "café", suggested: "yes" }, "!c:x.org"));
+    applyState(state, { ...st("m.space.child", { via: ["x.org"], order: 5 }, "!d:x.org"), origin_server_ts: -5 });
+    applyState(state, st("m.space.child", { via: [] }, "!e:x.org"));
+    applyState(state, st("m.space.child", { via: [""] }, "!f:x.org"));
+    applyState(state, st("m.space.child", {}, "!g:x.org"));
+    applyState(state, st("m.space.child", { via: ["x.org"] }, "not-a-room"));
+    applyState(state, st("m.space.child", { via: ["x.org"] }, ""));
+    expect([...state.children!]).toEqual([
+      ["!a:x.org", { order: "a1", suggested: true, ts: 1_700_000_000_000 }],
+      ["!b:x.org", { suggested: false, ts: 1 }],
+      ["!c:x.org", { suggested: false, ts: 1 }],
+      ["!d:x.org", { suggested: false, ts: 0 }],
+      ["!e:x.org", null],
+      ["!f:x.org", null],
+      ["!g:x.org", null],
+    ]);
+  });
+
+  it("keeps at most MAX_SPACE_CHILDREN children, but still takes changes to those it has", () => {
+    const state = emptyState();
+    for (let i = 0; i <= MAX_SPACE_CHILDREN; i++) applyState(state, st("m.space.child", { via: ["x.org"] }, `!r${i}:x.org`));
+    expect(state.children!.size).toBe(MAX_SPACE_CHILDREN);
+    expect(state.children!.has(`!r${MAX_SPACE_CHILDREN}:x.org`)).toBe(false);
+    applyState(state, st("m.space.child", {}, "!r0:x.org"));
+    expect(state.children!.get("!r0:x.org")).toBeNull();
+  });
+
+  it("reads space structure from a sync's state and timeline alike", () => {
+    const sync = parseSync({
+      next_batch: "s1",
+      rooms: {
+        join: {
+          "!sp:x.org": {
+            state: { events: [st("m.room.create", { type: "m.space" }), st("m.space.child", { via: ["x.org"] }, "!a:x.org")] },
+            timeline: { events: [{ ...st("m.space.child", { via: ["x.org"] }, "!b:x.org"), event_id: "$c" }] },
+          },
+        },
+      },
+    });
+    const [space] = sync.joined;
+    expect(space!.state.space).toBe(true);
+    expect([...space!.state.children!.keys()]).toEqual(["!a:x.org", "!b:x.org"]);
+    expect(space!.timeline).toEqual([]);
   });
 });
 

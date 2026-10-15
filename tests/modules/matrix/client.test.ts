@@ -523,6 +523,12 @@ describe("refreshing before expiry", () => {
 describe("calls", () => {
   const TOKEN = { access_token: "oid", token_type: "Bearer", matrix_server_name: "x.org", expires_in: 3600 };
 
+  it("asks for space changes in the sync timeline, and every state type in the state section", () => {
+    const { room } = JSON.parse(SYNC_FILTER);
+    expect(room.timeline.types).toEqual(expect.arrayContaining(["m.room.create", "m.space.child"]));
+    expect(room.state).toEqual({ lazy_load_members: true });
+  });
+
   it("asks for call memberships of both kinds in the sync timeline", () => {
     expect(JSON.parse(SYNC_FILTER).room.timeline.types).toEqual(expect.arrayContaining(["org.matrix.msc3401.call.member", "org.matrix.msc4143.rtc.member"]));
   });
