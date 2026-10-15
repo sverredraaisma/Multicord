@@ -10,6 +10,7 @@ import {
   type NativeMemberList,
   type NativeMessage,
   type NativeMessageList,
+  type NativeSearchResults,
   type NativePresence,
   type NativeProfile,
   type NativeSidebarItem,
@@ -21,7 +22,7 @@ import { TYPING_SETTING, type AccountStatus, type ServiceSettingValues } from ".
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { emojiMarkup, toMarkdown, toPlainLine, type MarkupNames } from "./markup";
-import { NerimityApiError, NerimityRest, PAGE_SIZE, PIN_PAGE, type ReactionTarget, type RestOptions } from "./rest";
+import { MAX_SEARCH, NerimityApiError, NerimityRest, PAGE_SIZE, PIN_PAGE, type ReactionTarget, type RestOptions } from "./rest";
 import { NerimitySocket, type SocketFactory, type SocketStatus } from "./socket";
 import { NerimityState, TYPING_MS } from "./state";
 import {
@@ -172,6 +173,9 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
   private healthTimer: ReturnType<typeof setInterval> | undefined;
   /** The open channel's pinned messages, while its pins panel is open. */
   private pins: { channelId: string; list: NativeMessageList } | undefined;
+  /** The open channel's search results, until the search ends; and a count that drops answers to earlier searches. */
+  private search: { channelId: string; results: NativeSearchResults } | undefined;
+  private searchCount = 0;
 
   constructor(private readonly deps: NerimityAdapterDeps) {
     const url = new URL(deps.def.url);
@@ -251,6 +255,8 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
         return this.showPins(action.open);
       case "pin":
         return this.pin(action.messageId, action.pin);
+      case "search":
+        return this.searchMessages(action.query);
       case "logout":
         return this.logout();
       default:
@@ -446,6 +452,7 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     this.membersOpen = false;
     this.profile = undefined;
     this.pins = undefined;
+    this.search = undefined;
     this.pending.clear();
     this.cdnTokens.clear();
     this.selection = { kind: "home" };
@@ -468,6 +475,7 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
       this.unreadAt = this.state.isUnread(channel) ? { channelId, after: this.state.lastSeen.get(channelId) ?? 0 } : undefined;
       this.profile = undefined;
       this.pins = undefined;
+      this.search = undefined;
     }
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.serverId ?? "home", channelId);
@@ -649,6 +657,27 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     }
     if (this.pins?.channelId !== channelId) return;
     this.pins = { channelId, list };
+    this.render();
+  }
+
+  /** Searches the open channel or DM on the server, or ends the search with an empty query. The server takes up to MAX_SEARCH characters. */
+  private async searchMessages(query: string): Promise<void> {
+    const channelId = this.selectedChannelId;
+    const count = ++this.searchCount;
+    const trimmed = query.trim();
+    this.search = channelId && trimmed !== "" ? { channelId, results: { query: trimmed, messages: [], loading: true } } : undefined;
+    this.render();
+    if (!this.search || !channelId) return;
+    let results: NativeSearchResults;
+    try {
+      const found = await this.rest.search(channelId, trimmed.slice(0, MAX_SEARCH));
+      results = { query: trimmed, messages: found.map((m) => this.listedMessage(m)), loading: false };
+      if (trimmed.length > MAX_SEARCH) results.note = `Nerimity searched for the first ${MAX_SEARCH} characters only.`;
+    } catch (error) {
+      results = { query: trimmed, messages: [], loading: false, error: `Search failed: ${messageOf(error)}` };
+    }
+    if (count !== this.searchCount || this.search?.channelId !== channelId) return;
+    this.search = { channelId, results };
     this.render();
   }
 
@@ -1043,7 +1072,8 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt.after) } : {}),
                 ...(members ? { members } : {}),
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
-                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true },
+                ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
+                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true, search: true },
               }
             : null,
           voice: null,

@@ -665,6 +665,45 @@ describe("NerimityAdapter messages", () => {
     await ctx.adapter.handleAction({ type: "pins", open: false });
   });
 
+  it("searches the open channel or DM on the server, newest first, dropping answers to earlier searches", async () => {
+    let answer: Reply = { status: 200, body: [message("440", "900"), message("460", "900", { content: "hi there" }), { bad: true }] };
+    const ctx = await opened({ routes: [(url) => (url.startsWith(`${API}/channels/900/messages/search?`) ? answer : undefined)] }, "900");
+    expect(ctx.channel().can.search).toBe(true);
+    await ctx.adapter.handleAction({ type: "search", query: "  hi there " });
+    expect(ctx.calls.at(-1)!.url).toBe(`${API}/channels/900/messages/search?query=hi+there&limit=25`);
+    expect(ctx.channel().search).toEqual({
+      query: "hi there",
+      messages: [
+        { id: "460", author: "ana", avatarUrl: `${CDN}/avatars/2/9.webp`, content: "hi there", timestamp: new Date(at(460)).toISOString() },
+        { id: "440", author: "ana", avatarUrl: `${CDN}/avatars/2/9.webp`, content: "m440", timestamp: new Date(at(440)).toISOString() },
+      ],
+      loading: false,
+    });
+    // The server takes 50 characters; longer searches say so.
+    const long = "a".repeat(60);
+    await ctx.adapter.handleAction({ type: "search", query: long });
+    expect(new URL(ctx.calls.at(-1)!.url).searchParams.get("query")).toBe("a".repeat(50));
+    expect(ctx.channel().search).toMatchObject({ query: long, note: "Nerimity searched for the first 50 characters only." });
+    answer = { status: 400, body: { message: "query must be between 1 and 50 characters long." } };
+    await ctx.adapter.handleAction({ type: "search", query: "x" });
+    expect(ctx.channel().search).toEqual({ query: "x", messages: [], loading: false, error: "Search failed: query must be between 1 and 50 characters long." });
+    answer = { status: 200, body: { odd: true } };
+    await ctx.adapter.handleAction({ type: "search", query: "y" });
+    expect(ctx.channel().search).toEqual({ query: "y", messages: [], loading: false });
+    // An earlier search answering late, or an ended one, changes nothing; another channel ends it.
+    const early = ctx.adapter.handleAction({ type: "search", query: "a" });
+    await ctx.adapter.handleAction({ type: "search", query: "b" });
+    await early;
+    expect(ctx.channel().search!.query).toBe("b");
+    const ended = ctx.adapter.handleAction({ type: "search", query: "c" });
+    await ctx.adapter.handleAction({ type: "search", query: "" });
+    await ended;
+    expect(ctx.channel()).not.toHaveProperty("search");
+    await ctx.adapter.handleAction({ type: "search", query: "z" });
+    await ctx.adapter.openConversation("111");
+    expect(ctx.channel()).not.toHaveProperty("search");
+  });
+
   it("pins and unpins where the user may, and shows the server's refusal", async () => {
     const ctx = await opened({}, "900");
     await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
@@ -744,6 +783,7 @@ describe("NerimityAdapter messages", () => {
       { type: "joinVoice", channelId: "1" },
       { type: "pins", open: true },
       { type: "pin", messageId: "1", pin: true },
+      { type: "search", query: "x" },
     ] as const)
       await adapter.handleAction(action as never);
     expect(calls.length).toBe(before);

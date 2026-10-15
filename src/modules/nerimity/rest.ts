@@ -31,6 +31,10 @@ const MAX_RETRIES = 2;
 export const PAGE_SIZE = 50;
 /** Pins per page, as the server gives them. */
 export const PIN_PAGE = 10;
+/** Search results asked for at once. */
+export const SEARCH_PAGE = 25;
+/** The longest search text the server takes. */
+export const MAX_SEARCH = 50;
 /** The CDN takes files up to 50 MB. */
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const READ_CHUNK = 1 << 20;
@@ -153,6 +157,15 @@ export class NerimityRest {
     const query = after ? `?${new URLSearchParams({ afterId: after })}` : "";
     const data = await this.request("GET", `/channels/${channelId}/messages/pins${query}`);
     return list(isRecord(data) ? data.messages : undefined).flatMap((m) => parseMessage(m) ?? []);
+  }
+
+  /** Searches a channel's messages for text (the newest SEARCH_PAGE that match), newest first. */
+  async search(channelId: string, query: string): Promise<NerimityMessage[]> {
+    const params = new URLSearchParams({ query, limit: String(SEARCH_PAGE) });
+    // The server picks the newest matches and answers them oldest first.
+    return list(await this.request("GET", `/channels/${channelId}/messages/search?${params}`))
+      .flatMap((m) => parseMessage(m) ?? [])
+      .reverse();
   }
 
   /** Pins or unpins a message (POST or DELETE /channels/{id}/messages/pins/{message}). */
