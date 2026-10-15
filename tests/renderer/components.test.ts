@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { avatar } from "../../src/renderer/components/avatar";
-import { channelItem, channelList } from "../../src/renderer/components/channels";
+import { channelItem, channelList, folderTabs } from "../../src/renderer/components/channels";
 import { countBadge, icon, initials, setColor } from "../../src/renderer/components/dom";
 import { emojiPicker } from "../../src/renderer/components/emojiPicker";
 import { memberPanel, memberRow, presenceAvatar, profileCard } from "../../src/renderer/components/members";
@@ -122,6 +122,20 @@ describe("channel items", () => {
     // Not offered without the module saying it can, or without a handler.
     expect(channelItem(document, { ...base, canMute: "yes" as unknown as boolean }, handlers).querySelector(".mute-toggle")).toBeNull();
     expect(channelItem(document, { ...base, canMute: true }, { onSelect: vi.fn(), onJoinVoice: vi.fn() }).querySelector(".mute-toggle")).toBeNull();
+  });
+
+  it("shows folder tabs with their unread state and mentions, the shown one pressed", () => {
+    const onPick = vi.fn();
+    const [all, work] = folderTabs(document, [{ id: "all", name: "All chats", active: true, unread: false, mentions: 0 }, { id: "f2", name: "Work", active: false, unread: true, mentions: 5 }], onPick);
+    expect(all!.getAttribute("aria-pressed")).toBe("true");
+    expect(all!.classList.contains("unread")).toBe(false);
+    expect(all!.querySelector(".badge")).toBeNull();
+    expect(work!.dataset.id).toBe("f2");
+    expect(work!.getAttribute("aria-pressed")).toBe("false");
+    expect(work!.classList.contains("unread")).toBe(true);
+    expect(work!.textContent).toBe("Work5");
+    work!.click();
+    expect(onPick).toHaveBeenCalledWith("f2");
   });
 
   it("offers an archive button where the module can archive a conversation", () => {

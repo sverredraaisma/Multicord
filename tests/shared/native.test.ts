@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, incomingCall, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_THREAD_MESSAGES, threadSummary, threadView, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
+import { channelCan, chatFolders, incomingCall, MAX_FOLDERS, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_THREAD_MESSAGES, threadSummary, threadView, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -188,6 +188,23 @@ describe("conversation capability flags", () => {
     expect(channelCan(all)).toEqual(all);
     expect(channelCan({ reply: true, react: "yes", attach: 1, members: "true", stickers: "yes", extra: true })).toEqual({ ...none, reply: true });
     for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual(none);
+  });
+});
+
+describe("folders", () => {
+  it("reads folders with usable ids and names, each id once, at most MAX_FOLDERS", () => {
+    expect(chatFolders([{ id: "all", name: "All chats", active: true, unread: true, mentions: 3, extra: 1 }, { id: "f_2", name: "Work", active: "yes", unread: 1, mentions: -2 }])).toEqual([
+      { id: "all", name: "All chats", active: true, unread: true, mentions: 3 },
+      { id: "f_2", name: "Work", active: false, unread: false, mentions: 0 },
+    ]);
+    for (const value of [undefined, "all", [null], [{ id: "a b", name: "x" }], [{ id: 5, name: "x" }], [{ id: "a", name: " " }]]) expect(chatFolders(value)).toEqual([]);
+    expect(chatFolders([{ id: "a", name: "One" }, { id: "a", name: "Two" }]).map((f) => f.name)).toEqual(["One"]);
+    expect(chatFolders(Array.from({ length: MAX_FOLDERS + 5 }, (_, i) => ({ id: `f${i}`, name: "F" })))).toHaveLength(MAX_FOLDERS);
+  });
+
+  it("validates picking one", () => {
+    expect(isNativeAction({ type: "folder", id: "f_2-x" })).toBe(true);
+    for (const id of ["", "a b", "a".repeat(33), 5, undefined]) expect(isNativeAction({ type: "folder", id })).toBe(false);
   });
 });
 

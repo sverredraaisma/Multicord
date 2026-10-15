@@ -172,6 +172,17 @@ describe("chat screen", () => {
     expect(act).not.toHaveBeenCalled();
   });
 
+  it("shows the module's folders as tabs above the sidebar, only where it has some", () => {
+    view.update(chat());
+    const tabs = root.querySelector<HTMLElement>(".folder-tabs")!;
+    expect(tabs.hidden).toBe(true);
+    view.update(chat({ folders: [{ id: "all", name: "All chats", active: true, unread: false, mentions: 0 }, { id: "f2", name: "Work", active: false, unread: true, mentions: 1 }, { id: "bad id", name: "X", active: false, unread: false, mentions: 0 }] }));
+    expect(tabs.hidden).toBe(false);
+    expect([...tabs.querySelectorAll(".folder-tab .name")].map((n) => n.textContent)).toEqual(["All chats", "Work"]);
+    tabs.querySelector<HTMLButtonElement>('[data-id="f2"]')!.click();
+    expect(act).toHaveBeenCalledWith({ type: "folder", id: "f2" });
+  });
+
   it("renders messages as text only, with attachments and edits", () => {
     view.update(
       chat({

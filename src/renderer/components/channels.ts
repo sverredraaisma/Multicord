@@ -1,4 +1,4 @@
-import type { NativeSidebarItem, NativeVoiceMember } from "../../shared/native";
+import type { NativeFolder, NativeSidebarItem, NativeVoiceMember } from "../../shared/native";
 import { avatar } from "./avatar";
 import { countBadge, el, icon, ICONS } from "./dom";
 
@@ -150,6 +150,22 @@ export function channelItem(doc: Document, item: NativeSidebarItem, handlers: Ch
   }
   if (item.members?.length) li.append(voiceMembers(doc, item.members));
   return li;
+}
+
+/** Tabs for the user's folders above the sidebar, each with its unread state and mentions; the one shown is pressed. */
+export function folderTabs(doc: Document, folders: NativeFolder[], onPick: (id: string) => void): HTMLElement[] {
+  return folders.map((folder) => {
+    const tab = el(doc, "button", "folder-tab");
+    tab.type = "button";
+    tab.dataset.id = folder.id;
+    tab.setAttribute("aria-pressed", String(folder.active));
+    tab.classList.toggle("unread", folder.unread);
+    tab.append(el(doc, "span", "name", folder.name));
+    const badge = countBadge(doc, folder.mentions);
+    if (badge) tab.append(badge);
+    tab.addEventListener("click", () => onPick(folder.id));
+    return tab;
+  });
 }
 
 /** A whole channel list; a folded category hides the rows under it, except the open conversation. */

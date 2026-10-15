@@ -70,6 +70,12 @@
 .chat { display: grid; grid-template-columns: 240px 1fr; height: 100%; }
 .sidebar { display: flex; flex-direction: column; min-height: 0; background: var(--panel); }
 .sidebar-title { margin: 0; padding: 14px 16px; border-bottom: 1px solid var(--bg); font-size: 15px; }
+/* Folder tabs above the sidebar's list: they wrap rather than scroll, so every folder stays in sight. */
+.folder-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 8px 0; }
+.folder-tab { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 12px; background: none; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; }
+.folder-tab:hover, .folder-tab.unread { color: var(--text); }
+.folder-tab[aria-pressed="true"] { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 25%, transparent); color: var(--text); }
+.folder-tab .badge { position: static; border: 0; }
 .channels { flex: 1; margin: 0; padding: 8px; overflow-y: auto; list-style: none; }
 .category { padding: 16px 8px 4px; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
 .category-toggle { display: flex; align-items: center; gap: 4px; width: 100%; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-transform: inherit; text-align: left; cursor: pointer; }

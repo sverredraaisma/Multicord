@@ -974,6 +974,8 @@ export type NativeViewState =
        * field's example (e.g. "#room:example.org"). It sends `joinAddress`.
        */
       joinAddress?: string;
+      /** The user's folders, as tabs above the sidebar; picking one sends `folder`. Read through chatFolders(). */
+      folders?: NativeFolder[];
       error?: string;
     };
 
@@ -992,6 +994,36 @@ export function incomingCall(value: unknown): NativeIncomingCall | undefined {
   const from = shortText(v?.from);
   if (!v || !id(v.channelId) || !from) return undefined;
   return { channelId: v.channelId as string, from, ...(v.video === true ? { video: true } : {}) };
+}
+
+/**
+ * A folder of conversations the user keeps on the platform (Telegram's chat
+ * folders, say): the sidebar shows one at a time, picked from tabs above it.
+ */
+export interface NativeFolder {
+  /** Letters, digits, "-" and "_", at most 32. */
+  id: string;
+  name: string;
+  /** The sidebar shows this folder now. */
+  active: boolean;
+  unread: boolean;
+  mentions: number;
+}
+
+/** Most folder tabs the view shows. */
+export const MAX_FOLDERS = 30;
+const FOLDER_ID = /^[A-Za-z0-9_-]{1,32}$/;
+
+/** Folders as the view trusts them: usable ids and names, at most MAX_FOLDERS, each id once. */
+export function chatFolders(value: unknown): NativeFolder[] {
+  const folders: NativeFolder[] = [];
+  for (const raw of Array.isArray(value) ? value.slice(0, MAX_FOLDERS) : []) {
+    const f = record(raw);
+    const name = shortText(f?.name);
+    if (!f || typeof f.id !== "string" || !FOLDER_ID.test(f.id) || !name || folders.some((o) => o.id === f.id)) continue;
+    folders.push({ id: f.id, name, active: f.active === true, unread: f.unread === true, mentions: count(f.mentions) });
+  }
+  return folders;
 }
 
 /** A call feature that may fail to start on its own. */
@@ -1051,6 +1083,8 @@ export type NativeAction =
   | { type: "mute"; channelId: string; mute: boolean }
   /** Moves a conversation into the platform's archive or out again, where its sidebar row says it can (canArchive). */
   | { type: "archive"; channelId: string; archive: boolean }
+  /** Shows one of the chat state's folders in the sidebar. */
+  | { type: "folder"; id: string }
   /** The pins panel opened or closed: the module lists the open conversation's pinned messages (NativeChannelView.pins) only while it is open. */
   | { type: "pins"; open: boolean }
   /** Pins or unpins a message in the open conversation, where it says it may (canPin). */
@@ -1128,6 +1162,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return id(v.channelId) && typeof v.mute === "boolean";
     case "archive":
       return id(v.channelId) && typeof v.archive === "boolean";
+    case "folder":
+      return typeof v.id === "string" && FOLDER_ID.test(v.id);
     case "pins":
       return typeof v.open === "boolean";
     case "vote":

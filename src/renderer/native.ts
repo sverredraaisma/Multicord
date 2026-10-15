@@ -3,10 +3,10 @@ import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, customEmojiList, emojiUrls, gifResults, incomingCall, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
+import { channelCan, chatFolders, customEmojiList, emojiUrls, gifResults, incomingCall, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
-import { channelList } from "./components/channels";
+import { channelList, folderTabs } from "./components/channels";
 import { el, icon, ICONS } from "./components/dom";
 import { emojiPicker, type SourceBadge } from "./components/emojiPicker";
 import { MediaPicker, type MediaPickerData, type MediaPickerHandlers, type RecentMedia } from "./components/mediaPicker";
@@ -276,7 +276,12 @@ export class NativeView {
       this.api.act({ type: "joinAddress", address });
       joinInput.value = "";
     });
-    sidebar.append(title, list, joinForm, voice, footer);
+    // The user's folders, where the module has them: tabs that pick which the sidebar shows.
+    const folders = el(doc, "div", "folder-tabs");
+    folders.setAttribute("role", "group");
+    folders.setAttribute("aria-label", "Folders");
+    folders.hidden = true;
+    sidebar.append(title, folders, list, joinForm, voice, footer);
 
     const main = el(doc, "main", "conversation");
     const header = el(doc, "header", "conversation-title");
@@ -507,6 +512,7 @@ export class NativeView {
     Object.assign(this.parts, {
       title,
       list,
+      folders,
       joinForm,
       joinInput,
       me,
@@ -1248,6 +1254,9 @@ export class NativeView {
     title!.textContent = state.title;
     me!.textContent = state.me;
     this.renderSidebar(list!, state);
+    const folders = chatFolders(state.folders);
+    this.parts.folders!.hidden = folders.length === 0;
+    this.parts.folders!.replaceChildren(...folderTabs(this.doc, folders, (id) => this.api.act({ type: "folder", id })));
     const joinable = typeof state.joinAddress === "string" && state.joinAddress.trim() !== "";
     this.parts.joinForm!.hidden = !joinable;
     (this.parts.joinInput as HTMLInputElement).placeholder = joinable ? state.joinAddress!.slice(0, 100) : "";
