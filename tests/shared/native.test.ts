@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
+import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -533,6 +533,18 @@ describe("forwarding", () => {
     expect(isNativeAction({ type: "forward", messageId: "5", channelId: "6" })).toBe(true);
     expect(isNativeAction({ type: "forward", messageId: "5", channelId: "!room:x.org" })).toBe(false);
     expect(isNativeAction({ type: "forward", messageId: "$e", channelId: "6" })).toBe(false);
+  });
+});
+
+describe("joining", () => {
+  it("takes invitations to answer and addresses to join by, one word each", () => {
+    expect(isNativeAction({ type: "join", channelId: "5" })).toBe(true);
+    expect(isNativeAction({ type: "decline", channelId: "5" })).toBe(true);
+    expect(isNativeAction({ type: "join", channelId: "!room:x.org" })).toBe(false);
+    expect(isNativeAction({ type: "decline" })).toBe(false);
+    expect(isNativeAction({ type: "joinAddress", address: "#room:x.org" })).toBe(true);
+    expect(isNativeAction({ type: "joinAddress", address: "x".repeat(MAX_JOIN_ADDRESS) })).toBe(true);
+    for (const address of ["", "a b", "a\nb", `a${String.fromCharCode(0x202e)}b`, "x".repeat(MAX_JOIN_ADDRESS + 1), 5]) expect(isNativeAction({ type: "joinAddress", address })).toBe(false);
   });
 });
 

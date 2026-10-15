@@ -29,15 +29,49 @@ export interface ChannelHandlers {
   onJoinVoice(channelId: string): void;
   /** Mutes or unmutes a conversation; without it, rows offer no mute button. */
   onMute?(channelId: string, mute: boolean): void;
+  /** Accepts an invitation or joins a joinable conversation; without it, such rows offer no button for it. */
+  onJoin?(channelId: string): void;
+  /** Declines an invitation; without it, invitations offer no Decline. */
+  onDecline?(channelId: string): void;
+}
+
+/**
+ * A conversation the user is not in yet: an invitation (who sent it, with
+ * Accept and Decline) or one open to join (with Join). Its name is no
+ * button, as there is nothing to open before joining.
+ */
+function offerItem(doc: Document, item: NativeSidebarItem, handlers: ChannelHandlers): HTMLElement {
+  const li = el(doc, "li", "offer");
+  const invite = typeof item.invite === "object" && item.invite !== null ? item.invite : undefined;
+  const text = el(doc, "div", "offer-text");
+  text.append(el(doc, "span", "name", `${CHANNEL_PREFIX[item.kind]}${item.name}`));
+  if (invite) text.append(el(doc, "span", "offer-from", typeof invite.from === "string" && invite.from.trim() !== "" ? `Invited by ${invite.from.slice(0, 100)}` : "Invitation"));
+  const row = el(doc, "div", "offer-row");
+  if (item.kind === "dm") row.append(avatar(doc, item.iconUrl, item.name));
+  row.append(text);
+  const actions = el(doc, "div", "offer-actions");
+  const action = (label: string, className: string, run: (channelId: string) => void) => {
+    const button = el(doc, "button", className, label);
+    button.type = "button";
+    button.setAttribute("aria-label", `${label} ${item.name}`);
+    button.addEventListener("click", () => run(item.id));
+    actions.append(button);
+  };
+  if (handlers.onJoin) action(invite ? "Accept" : "Join", "offer-accept", handlers.onJoin);
+  if (invite && handlers.onDecline) action("Decline", "offer-decline", handlers.onDecline);
+  li.append(row, actions);
+  return li;
 }
 
 /**
  * One sidebar row: a category heading, or a text, thread, forum, voice or DM
  * channel with its unread state, mention badge, whether it is muted and (for
- * voice) members. Where the module can mute it, a bell beside it does.
+ * voice) members. Where the module can mute it, a bell beside it does. An
+ * invitation or a conversation open to join gets buttons instead.
  */
 export function channelItem(doc: Document, item: NativeSidebarItem, handlers: ChannelHandlers): HTMLElement {
   if (item.kind === "category") return el(doc, "li", "category", item.name);
+  if (item.invite || item.joinable === true) return offerItem(doc, item, handlers);
   const li = el(doc, "li");
   const button = el(doc, "button", "channel");
   button.dataset.id = item.id;

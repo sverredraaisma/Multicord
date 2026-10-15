@@ -3,7 +3,7 @@ import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, unreadMarker, type NativeUnread } from "../shared/native";
+import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
@@ -256,7 +256,23 @@ export class NativeView {
     footer.append(me, logout);
     const voice = el(doc, "section", "voice-panel");
     voice.hidden = true;
-    sidebar.append(title, list, voice, footer);
+    // Joining a conversation by its address, where the module offers it; kept across updates so typing is never lost.
+    const joinForm = el(doc, "form", "join-form");
+    joinForm.hidden = true;
+    const joinInput = el(doc, "input", "join-input");
+    joinInput.maxLength = MAX_JOIN_ADDRESS;
+    joinInput.setAttribute("aria-label", "Join a conversation by its address");
+    const joinSubmit = el(doc, "button", "join-submit", "Join");
+    joinSubmit.type = "submit";
+    joinForm.append(joinInput, joinSubmit);
+    joinForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const address = joinInput.value.trim();
+      if (address === "" || /\s/.test(address)) return;
+      this.api.act({ type: "joinAddress", address });
+      joinInput.value = "";
+    });
+    sidebar.append(title, list, joinForm, voice, footer);
 
     const main = el(doc, "main", "conversation");
     const header = el(doc, "header", "conversation-title");
@@ -446,6 +462,8 @@ export class NativeView {
     Object.assign(this.parts, {
       title,
       list,
+      joinForm,
+      joinInput,
       me,
       heading,
       membersToggle,
@@ -1092,8 +1110,13 @@ export class NativeView {
         onSelect: (channelId) => this.api.act({ type: "select", channelId }),
         onJoinVoice: (channelId) => this.api.act({ type: "joinVoice", channelId }),
         onMute: (channelId, mute) => this.api.act({ type: "mute", channelId, mute }),
+        onJoin: (channelId) => this.api.act({ type: "join", channelId }),
+        onDecline: (channelId) => this.api.act({ type: "decline", channelId }),
       }),
     );
+    const joinable = typeof state.joinAddress === "string" && state.joinAddress.trim() !== "";
+    this.parts.joinForm!.hidden = !joinable;
+    (this.parts.joinInput as HTMLInputElement).placeholder = joinable ? state.joinAddress!.slice(0, 100) : "";
 
     const channel = state.channel;
     heading!.textContent = channel ? channel.name : "Select a conversation";

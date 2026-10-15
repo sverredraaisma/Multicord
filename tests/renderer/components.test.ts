@@ -91,6 +91,33 @@ describe("channel items", () => {
     expect(channelItem(document, { ...base, canMute: "yes" as unknown as boolean }, handlers).querySelector(".mute-toggle")).toBeNull();
     expect(channelItem(document, { ...base, canMute: true }, { onSelect: vi.fn(), onJoinVoice: vi.fn() }).querySelector(".mute-toggle")).toBeNull();
   });
+
+  it("offers to accept or decline invitations, and to join conversations open to the user", () => {
+    const onJoin = vi.fn();
+    const onDecline = vi.fn();
+    const handlers = { onSelect: vi.fn(), onJoinVoice: vi.fn(), onJoin, onDecline };
+    const base = { id: "7", name: "Book club", kind: "text" as const, unread: false, mentions: 0, active: false };
+    const invite = channelItem(document, { ...base, invite: { from: "Ana" } }, handlers);
+    expect(invite.classList.contains("offer")).toBe(true);
+    expect(invite.querySelector(".channel")).toBeNull();
+    expect(invite.querySelector(".offer-text")!.textContent).toBe("# Book clubInvited by Ana");
+    invite.querySelector<HTMLButtonElement>('[aria-label="Accept Book club"]')!.click();
+    invite.querySelector<HTMLButtonElement>('[aria-label="Decline Book club"]')!.click();
+    expect(onJoin).toHaveBeenCalledWith("7");
+    expect(onDecline).toHaveBeenCalledWith("7");
+    // Without a name for who sent it, a DM invitation with the other person's picture.
+    const dm = channelItem(document, { ...base, kind: "dm", name: "Bo", invite: { from: " " } }, handlers);
+    expect(dm.querySelector(".offer-from")!.textContent).toBe("Invitation");
+    expect(dm.querySelector(".avatar")).not.toBeNull();
+    expect(channelItem(document, { ...base, invite: "x" as unknown as { from?: string } }, handlers).querySelector(".offer-from")).toBeNull();
+    const open = channelItem(document, { ...base, joinable: true }, handlers);
+    expect(open.querySelector(".offer-from")).toBeNull();
+    expect([...open.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Join"]);
+    open.querySelector("button")!.click();
+    expect(onJoin).toHaveBeenLastCalledWith("7");
+    // Without handlers, no buttons.
+    expect(channelItem(document, { ...base, invite: {} }, { onSelect: vi.fn(), onJoinVoice: vi.fn() }).querySelectorAll("button")).toHaveLength(0);
+  });
 });
 
 describe("reactions", () => {

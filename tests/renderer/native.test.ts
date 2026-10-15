@@ -637,6 +637,49 @@ describe("muting conversations", () => {
   });
 });
 
+describe("joining conversations", () => {
+  it("answers invitations, joins listed conversations, and joins by address where the module offers it", () => {
+    const base = chat();
+    const offers = [
+      { id: "8", name: "Book club", kind: "text" as const, unread: false, mentions: 0, active: false, invite: { from: "Ana" } },
+      { id: "9", name: "Garden", kind: "text" as const, unread: false, mentions: 0, active: false, joinable: true },
+    ];
+    view.update(chat({ sidebar: [...base.sidebar, ...offers] }));
+    const form = root.querySelector<HTMLFormElement>(".join-form")!;
+    expect(form.hidden).toBe(true);
+    root.querySelector<HTMLButtonElement>('[aria-label="Accept Book club"]')!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "join", channelId: "8" });
+    root.querySelector<HTMLButtonElement>('[aria-label="Decline Book club"]')!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "decline", channelId: "8" });
+    root.querySelector<HTMLButtonElement>('[aria-label="Join Garden"]')!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "join", channelId: "9" });
+
+    view.update(chat({ joinAddress: "#room:example.org" }));
+    const input = root.querySelector<HTMLInputElement>(".join-input")!;
+    expect(form.hidden).toBe(false);
+    expect(input.placeholder).toBe("#room:example.org");
+    const submit = () => form.dispatchEvent(new Event("submit", { cancelable: true }));
+    const calls = act.mock.calls.length;
+    for (const typed of ["   ", "two words"]) {
+      input.value = typed;
+      submit();
+    }
+    expect(act).toHaveBeenCalledTimes(calls);
+    input.value = " #garden:example.org ";
+    submit();
+    expect(act).toHaveBeenLastCalledWith({ type: "joinAddress", address: "#garden:example.org" });
+    expect(input.value).toBe("");
+    // Typing survives updates; the field goes when the module stops offering it.
+    input.value = "#half";
+    view.update(chat({ joinAddress: "#room:example.org" }));
+    expect(root.querySelector(".join-input")).toBe(input);
+    expect(input.value).toBe("#half");
+    view.update(chat({ joinAddress: " " }));
+    expect(form.hidden).toBe(true);
+    expect(input.placeholder).toBe("");
+  });
+});
+
 describe("mentions", () => {
   const people = [msg("10", { author: "Ana", authorId: "a", authorMention: "<@a>" }), msg("11", { author: "Bo", authorId: "b" }), msg("12", { author: "Me", authorId: "m", mine: true })];
   const withPeople = (extra: Partial<NonNullable<Chat["channel"]>> = {}) =>

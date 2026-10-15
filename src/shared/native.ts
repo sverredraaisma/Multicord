@@ -22,7 +22,20 @@ export interface NativeSidebarItem {
   muted?: boolean;
   /** The module can mute and unmute it from here (a `mute` action). */
   canMute?: boolean;
+  /** An invitation the user has not answered: the row offers Accept (a `join` action) and Decline (`decline`). */
+  invite?: NativeInvite;
+  /** Not joined, but open to the user (e.g. a room its space lists): the row offers Join (a `join` action). */
+  joinable?: boolean;
 }
+
+/** An invitation to a conversation, as far as the platform says who sent it. */
+export interface NativeInvite {
+  /** Who invited the user, by name. */
+  from?: string;
+}
+
+/** Longest address the user may type to join a conversation by. */
+export const MAX_JOIN_ADDRESS = 255;
 
 export interface NativeVoiceMember {
   name: string;
@@ -855,6 +868,11 @@ export type NativeViewState =
       gifs?: NativeGifResults;
       /** The profile last asked for (a `profile` action), read by the view through memberProfile(). */
       profile?: NativeProfile;
+      /**
+       * The sidebar offers to join a conversation by its address: this is the
+       * field's example (e.g. "#room:example.org"). It sends `joinAddress`.
+       */
+      joinAddress?: string;
       error?: string;
     };
 
@@ -926,6 +944,12 @@ export type NativeAction =
   | { type: "forward"; messageId: string; channelId: string }
   /** Votes in a poll of the open conversation (NativePoll.canVote): the options chosen, replacing earlier ones; none takes the vote back. */
   | { type: "vote"; messageId: string; options: string[] }
+  /** Accepts an invitation, or joins a conversation the sidebar lists as joinable. */
+  | { type: "join"; channelId: string }
+  /** Declines an invitation. */
+  | { type: "decline"; channelId: string }
+  /** Joins a conversation by an address the user typed (the chat state's joinAddress); the module checks its form. */
+  | { type: "joinAddress"; address: string }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -981,6 +1005,12 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return id(v.messageId) && Array.isArray(v.options) && v.options.length <= MAX_POLL_OPTIONS && v.options.every(isPollOptionId) && new Set(v.options).size === v.options.length;
     case "forward":
       return id(v.messageId) && id(v.channelId);
+    case "join":
+    case "decline":
+      return id(v.channelId);
+    case "joinAddress":
+      // One word of printable characters: the module reads it as an address of its own kind.
+      return typeof v.address === "string" && v.address.length <= MAX_JOIN_ADDRESS && /^[^\s\p{Cc}\p{Cf}]+$/u.test(v.address);
     case "search":
       return text(v.query, 0, MAX_SEARCH_QUERY);
     case "pin":

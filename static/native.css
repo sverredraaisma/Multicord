@@ -111,6 +111,18 @@
 }
 .mute-toggle:hover { background: var(--border); color: var(--text); }
 li.mutable:hover > .mute-toggle, li.mutable:focus-within > .mute-toggle { display: inline-flex; }
+/* Invitations and conversations open to join: the name, who invited, and their buttons. */
+.channels li.offer { display: flex; flex-direction: column; gap: 6px; margin: 2px 0; padding: 6px 8px; border-radius: 4px; background: var(--surface); }
+.offer-row { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.offer-text { display: flex; flex-direction: column; min-width: 0; }
+.offer-text .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.offer-from { color: var(--muted); font-size: 12px; }
+.offer-actions { display: flex; gap: 6px; }
+.offer-actions button, .join-submit { padding: 3px 10px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--text); font: inherit; font-size: 12px; cursor: pointer; }
+.offer-actions .offer-accept, .join-submit { border-color: var(--accent); background: var(--accent); color: #fff; }
+.join-form { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--bg); }
+.join-form[hidden] { display: none; }
+.join-input { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
 .account { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: #232428; }
 .me { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 
