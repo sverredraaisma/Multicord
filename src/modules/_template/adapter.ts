@@ -52,10 +52,13 @@ class HttpError extends Error {
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+/** What the module offers the shell; its manifest must declare the same (tested). */
+export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+
 export class TemplateAdapter extends BaseAdapter implements PlatformAdapter {
   override readonly mode = "native" as const;
   /** Must match the manifest's capabilities (the shell reads those). */
-  readonly capabilities = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+  readonly capabilities = CAPABILITIES;
 
   private token: string | undefined;
   private me: string | undefined;

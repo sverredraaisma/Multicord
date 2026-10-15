@@ -45,6 +45,9 @@ type Selection = { kind: "home" } | { kind: "server"; serverId: string };
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+/** What the module offers the shell; its manifest must declare the same (tested). */
+export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+
 /**
  * Native Stoat adapter: talks to a Stoat (Revolt) instance from its sandboxed
  * engine and renders in Multicord's own chat view. Sign-in (with
@@ -53,7 +56,7 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
  */
 export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   override readonly mode = "native" as const;
-  readonly capabilities = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+  readonly capabilities = CAPABILITIES;
 
   readonly state = new StoatState();
   private instance: StoatInstance | undefined;

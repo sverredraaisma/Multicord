@@ -380,6 +380,9 @@ function randomSecret(): string {
 const defaultDelay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
+/** What the module offers the shell; its manifest must declare the same (tested). */
+export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: true, screenShare: true };
+
 /**
  * Native Matrix adapter: signs in through the homeserver's account page
  * (OAuth 2.0), with a password or with an access token; lists direct chats
@@ -394,7 +397,7 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
  */
 export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   override readonly mode = "native" as const;
-  readonly capabilities = { directMessages: true, messagePreviews: true, voice: true, screenShare: true };
+  readonly capabilities = CAPABILITIES;
 
   private step: Step = "connecting";
   private status: string | undefined;

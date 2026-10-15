@@ -97,9 +97,12 @@ export function mediaKind(contentType: string | undefined): NativeAttachment["ki
   return "file";
 }
 
+/** What the module offers the shell; its manifest must declare the same (tested). */
+export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: true, screenShare: true };
+
 export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   override readonly mode = "native" as const;
-  readonly capabilities = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+  readonly capabilities = CAPABILITIES;
 
   readonly state = new FluxerState();
   private instance: FluxerInstance | undefined;

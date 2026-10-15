@@ -43,6 +43,18 @@ describe("module registry", () => {
     }
   });
 
+  it("declares the same capabilities in each native module's manifest as its adapter has", async () => {
+    // The shell reads the manifest's, the engine's adapter reports its own: they must agree.
+    const { templateModule } = await import("../../src/main/modules/_template");
+    const native = [...MODULES, templateModule].filter((m) => m.manifest.engine);
+    expect(native.map((m) => m.manifest.engine)).toEqual(["fluxer", "telegram", "matrix", "stoat", "template"]);
+    for (const { manifest } of native) {
+      const dir = manifest.engine === "template" ? "_template" : manifest.engine!;
+      const { CAPABILITIES } = (await import(`../../src/modules/${dir}/adapter.ts`)) as { CAPABILITIES: unknown };
+      expect(manifest.capabilities, manifest.id).toEqual(CAPABILITIES);
+    }
+  });
+
   it("declares well-formed settings, with the keys its code handles", async () => {
     const { isServiceSettingFields } = await import("../../src/shared/settings");
     for (const { manifest } of MODULES) expect(manifest.settings === undefined || isServiceSettingFields(manifest.settings), manifest.id).toBe(true);

@@ -69,6 +69,9 @@ export function messageText(message: TgMessage): string {
   return [message.text, message.media].filter(Boolean).join("\n");
 }
 
+/** What the module offers the shell; its manifest must declare the same (tested). */
+export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+
 /**
  * Native Telegram adapter: signs in with phone number, code and two-step
  * password, lists one-to-one chats as direct messages (in the rail and the
@@ -77,7 +80,7 @@ export function messageText(message: TgMessage): string {
  */
 export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   override readonly mode = "native" as const;
-  readonly capabilities = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+  readonly capabilities = CAPABILITIES;
 
   private api: TelegramApi | undefined;
   private credentials: TelegramCredentials | undefined;

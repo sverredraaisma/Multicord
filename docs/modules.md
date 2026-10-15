@@ -89,7 +89,7 @@ Native engine fields:
 | `hosts` | When set, the only hosts the engine may reach: `"example.org"` or `"*.example.org"`. Leave it out for self-hostable platforms, whose hosts you can't know in advance, and lock at runtime instead (below). |
 | `storage` | Keep the engine's web storage (IndexedDB) on disk, e.g. for end-to-end encryption keys (Matrix). Otherwise it is in memory and gone on restart. Either way it is the instance's own partition (`persist:engine_<instance id>` or `engine_<instance id>`), cleared when the instance is removed. |
 | `home` | The module has a home (DM) entry in the rail. The adapter needs `openHome()` and `homeBadge()`. |
-| `capabilities` | `{ directMessages, messagePreviews, voice, screenShare }`. The shell reads the manifest's, not the adapter's, so keep them equal (the template's test checks its own). |
+| `capabilities` | `{ directMessages, messagePreviews, voice, screenShare }`. The shell reads the manifest's, not the adapter's, so keep them equal: export the adapter's as `CAPABILITIES` from `adapter.ts`, and a test in `tests/main/modules.test.ts` compares them for every native module. |
 | `screenShare` | Route `getDisplayMedia` in the module's view through the shell's screen picker. Set it exactly when `capabilities.screenShare` is set (tested for modules with `voice`). |
 
 #### Service settings
