@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgNewPoll, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgFolder, TgMember, TgQrLogin, TgMemberPage, TgMessage, TgNotifyDefaults, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
-import { MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
+import type { TelegramApi, TelegramCredentials, TgCustomEmoji, TgNewPoll, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgFolder, TgMember, TgQrLogin, TgMemberPage, TgMessage, TgNotifyDefaults, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import { EMOJI_LIMIT, MAX_EMOJI_BYTES, MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
 import { QR_REFRESH_MAX_MS, QR_REFRESH_MIN_MS } from "../../../src/modules/telegram/adapter";
 import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, DIALOG_PAGE, DIALOG_PAGE_MS, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, MUTE_FOREVER, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
@@ -69,6 +69,8 @@ class FakeTelegramApi implements TelegramApi {
   stickers = vi.fn(async (_setId: string): Promise<TgSticker[]> => []);
   stickerFile = vi.fn(async (_id: string, _thumbnail: boolean): Promise<Uint8Array | undefined> => new Uint8Array([104, 105]));
   sendSticker = vi.fn(async (chatId: string, _id: string, _replyTo?: number, _topicId?: number) => msg(chatId, 400, { out: true, text: "", media: "😀 Sticker" }));
+  customEmoji = vi.fn(async (ids: string[]): Promise<TgCustomEmoji[]> => ids.map((id) => ({ id, emoji: "😀", format: "webp" as const })));
+  customEmojiFile = vi.fn(async (_id: string, _thumbnail: boolean): Promise<Uint8Array | undefined> => new Uint8Array([104, 105]));
   onUpdate = vi.fn((cb: (update: TgUpdate) => void) => void (this.listener = cb));
   session = vi.fn(() => "sess");
   logOut = vi.fn(async () => {});
@@ -82,6 +84,7 @@ class FakeTelegramApi implements TelegramApi {
 interface Options {
   mediaBudget?: number;
   stickerBudget?: number;
+  emojiBudget?: number;
   secrets?: Record<string, string>;
   builtIn?: TelegramCredentials;
   dialogs?: TgDialog[];
@@ -119,6 +122,7 @@ function setup(options: Options = {}) {
     createApi,
     mediaBudget: options.mediaBudget,
     stickerBudget: options.stickerBudget,
+    emojiBudget: options.emojiBudget,
     files: options.noFiles ? undefined : picker,
     settings: options.settings,
   });
@@ -3517,5 +3521,231 @@ describe("polls", () => {
     await ctx.act({ type: "endPoll", messageId: "1" });
     expect(ctx.api.vote).not.toHaveBeenCalled();
     expect(ctx.api.closePoll).not.toHaveBeenCalled();
+  });
+});
+
+describe("custom emoji in messages", () => {
+  const ce = (offset: number, documentId: string) => ({ type: "customEmoji" as const, offset, length: 2, documentId });
+  /** A message "a😀" whose emoji is a custom one. */
+  const withEmoji = (id: number, documentId = "77", extra: Partial<TgMessage> = {}) => msg("1", id, { text: "a😀", entities: [ce(1, documentId)], ...extra });
+  const settle = async () => {
+    await flush();
+    await vi.advanceTimersByTimeAsync(STICKER_RENDER_MS);
+    await flush();
+  };
+
+  interface EmojiOptions extends Options {
+    premium?: boolean;
+    /** What Telegram describes; by default every emoji asked about, as a WebP. */
+    described?: TgCustomEmoji[];
+  }
+
+  /** Signed in, with a chat open showing these messages and their emoji settled. */
+  async function emojiChat(messages: TgMessage[], options: EmojiOptions = {}, chatId = "1") {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true, ...options });
+    if (options.premium) ctx.api.me.mockResolvedValue({ id: "9", name: "Me", bot: false, premium: true });
+    if (options.described) ctx.api.customEmoji.mockImplementation(async (ids: string[]) => options.described!.filter((e) => ids.includes(e.id)));
+    ctx.api.history.mockResolvedValue(messages);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.act({ type: "select", channelId: viewId(chatId) });
+    await settle();
+    return ctx;
+  }
+  type Ctx = Awaited<ReturnType<typeof emojiChat>>;
+  const contents = (ctx: Ctx) => ctx.chat().channel!.messages.map((m) => m.content);
+
+  it("shows custom emoji as their pictures once loaded, as their emoji until then", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    ctx.api.history.mockResolvedValue([withEmoji(1), withEmoji(2, "78")]);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.openConversation("1");
+    expect(ctx.chat().channel!.messages[0]!.content).toBe("a😀");
+    expect(ctx.chat().emojiUrls).toBeUndefined();
+    await settle();
+    expect(contents(ctx)).toEqual(["a<:😀:77>", "a<:😀:78>"]);
+    expect(ctx.chat().emojiUrls).toEqual({ "77": "data:image/webp;base64,aGk=", "78": "data:image/webp;base64,aGk=" });
+    // Asked about once, newest first, in one request; the WebP itself loaded.
+    expect(ctx.api.customEmoji).toHaveBeenCalledTimes(1);
+    expect(ctx.api.customEmoji).toHaveBeenCalledWith(["78", "77"]);
+    expect(ctx.api.customEmojiFile).toHaveBeenCalledWith("77", false);
+    ctx.api.emit({ type: "message", message: withEmoji(3) });
+    await settle();
+    expect(contents(ctx).at(-1)).toBe("a<:😀:77>");
+    expect(ctx.api.customEmoji).toHaveBeenCalledTimes(1);
+    expect(ctx.api.customEmojiFile).toHaveBeenCalledTimes(2);
+  });
+
+  it("loads the still of animated and video emoji, and of static ones too large", async () => {
+    const described: TgCustomEmoji[] = [
+      { id: "1", emoji: "😀", format: "lottie" },
+      { id: "2", emoji: "😀", format: "webm" },
+      { id: "3", emoji: "😀", format: "webp", size: MAX_EMOJI_BYTES + 1 },
+      { id: "4", emoji: "😀", format: "webp", size: 10 },
+    ];
+    const ctx = await emojiChat([withEmoji(1, "1"), withEmoji(2, "2"), withEmoji(3, "3"), withEmoji(4, "4")], { described });
+    expect(Object.fromEntries(ctx.api.customEmojiFile.mock.calls)).toEqual({ "1": true, "2": true, "3": true, "4": false });
+    expect(contents(ctx)).toEqual(["a<:😀:1>", "a<:😀:2>", "a<:😀:3>", "a<:😀:4>"]);
+  });
+
+  it("shows as their emoji those not described, without a picture, too large or past the budget, and asks once", async () => {
+    const described: TgCustomEmoji[] = ["2", "3", "4", "5"].map((id) => ({ id, emoji: "😀", format: "webp" }));
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true, emojiBudget: 30 });
+    ctx.api.customEmoji.mockImplementation(async (ids: string[]) => described.filter((e) => ids.includes(e.id)));
+    ctx.api.customEmojiFile.mockImplementation(async (id: string) => (id === "2" ? undefined : id === "3" ? new Uint8Array(MAX_EMOJI_BYTES + 1) : new Uint8Array([104, 105])));
+    ctx.api.history.mockResolvedValue(["1", "2", "3", "4", "5"].map((id, i) => withEmoji(i + 1, id)));
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.openConversation("1");
+    await settle();
+    // Newest first: the fifth's picture fits the budget, the fourth's no longer does.
+    expect(contents(ctx)).toEqual(["a😀", "a😀", "a😀", "a😀", "a<:😀:5>"]);
+    expect(ctx.chat().emojiUrls).toEqual({ "5": "data:image/webp;base64,aGk=" });
+    ctx.api.emit({ type: "message", message: withEmoji(6, "4") });
+    await settle();
+    expect(ctx.api.customEmoji).toHaveBeenCalledTimes(1);
+    expect(ctx.api.customEmojiFile).toHaveBeenCalledTimes(4);
+  });
+
+  it("shows emoji as their emoji for the session when Telegram cannot be asked", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    ctx.api.customEmoji.mockRejectedValue(new Error("offline"));
+    ctx.api.history.mockResolvedValue([withEmoji(1)]);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.openConversation("1");
+    await settle();
+    expect(contents(ctx)).toEqual(["a😀"]);
+    ctx.api.emit({ type: "message", message: withEmoji(2) });
+    await settle();
+    expect(ctx.api.customEmoji).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows an emoji whose picture fails to load as its emoji", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    ctx.api.customEmojiFile.mockRejectedValue(new Error("offline"));
+    ctx.api.history.mockResolvedValue([withEmoji(1)]);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.openConversation("1");
+    await settle();
+    expect(contents(ctx)).toEqual(["a😀"]);
+    expect(ctx.api.customEmojiFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks about at most EMOJI_LIMIT emoji a session, a batch at a time", async () => {
+    // Five messages of 450 emoji each: more than the view takes.
+    const many = Array.from({ length: 5 }, (_, m) => msg("1", m + 1, { text: "😀".repeat(450), entities: Array.from({ length: 450 }, (_, i) => ce(i * 2, String(m * 1000 + i + 1))) }));
+    const ctx = await emojiChat(many);
+    const asked = ctx.api.customEmoji.mock.calls.map((c) => c[0]);
+    expect(asked.every((ids) => ids.length <= 200)).toBe(true);
+    expect(new Set(asked.flat()).size).toBe(EMOJI_LIMIT);
+    // The limit reached, a new emoji is not asked about.
+    ctx.api.emit({ type: "message", message: withEmoji(9, "99999") });
+    await settle();
+    expect(ctx.api.customEmoji.mock.calls.flatMap((c) => c[0])).not.toContain("99999");
+  });
+
+  it("asks about emoji that show while a request is under way, after it", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    let answer: (found: TgCustomEmoji[]) => void = () => {};
+    ctx.api.customEmoji.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    ctx.api.history.mockResolvedValue([withEmoji(1)]);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.openConversation("1");
+    await flush();
+    ctx.api.emit({ type: "message", message: withEmoji(2, "78") });
+    await flush();
+    expect(ctx.api.customEmoji).toHaveBeenCalledTimes(1);
+    answer([{ id: "77", emoji: "😀", format: "webp" }]);
+    await settle();
+    expect(ctx.api.customEmoji).toHaveBeenLastCalledWith(["78"]);
+    expect(contents(ctx)).toEqual(["a<:😀:77>", "a<:😀:78>"]);
+  });
+
+  it("drops what arrives for a session that ended", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    let answer: (found: TgCustomEmoji[]) => void = () => {};
+    ctx.api.customEmoji.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    ctx.api.history.mockResolvedValue([withEmoji(1)]);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.openConversation("1");
+    await flush();
+    await ctx.adapter.signOut();
+    answer([{ id: "77", emoji: "😀", format: "webp" }]);
+    await settle();
+    expect(ctx.api.customEmojiFile).not.toHaveBeenCalled();
+
+    let picture: (bytes: Uint8Array) => void = () => {};
+    const other = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    other.api.customEmojiFile.mockImplementationOnce(() => new Promise((resolve) => (picture = resolve)));
+    other.api.history.mockResolvedValue([withEmoji(1)]);
+    await other.adapter.start();
+    await flush();
+    await other.adapter.openConversation("1");
+    await flush();
+    expect(other.api.customEmojiFile).toHaveBeenCalledTimes(1);
+    await other.adapter.signOut();
+    await settle();
+    const renders = other.renders.length;
+    picture(new Uint8Array([1]));
+    await settle();
+    expect(other.renders.length).toBe(renders);
+  });
+
+  it("shows custom emoji reactions as their pictures, named by their emoji", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    ctx.api.history.mockResolvedValue([msg("1", 5, { reactions: [{ emoji: "custom:77", count: 2, chosen: true }, { emoji: "👍", count: 1, chosen: false }] })]);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.openConversation("1");
+    expect(ctx.chat().channel!.messages[0]!.reactions[0]).toEqual({ key: "custom:77", label: "Custom emoji", count: 2, me: true });
+    await settle();
+    expect(ctx.chat().channel!.messages[0]!.reactions).toEqual([
+      { key: "custom:77", label: "😀", count: 2, me: true, imageUrl: "data:image/webp;base64,aGk=" },
+      { key: "👍", label: "👍", count: 1, me: false },
+    ]);
+    expect(ctx.chat().emojiUrls).toEqual({ "77": "data:image/webp;base64,aGk=" });
+  });
+
+  it("takes back a custom emoji reaction, and gives one only with Premium where the chat takes it", async () => {
+    const reacted = () => [msg("1", 5, { reactions: [{ emoji: "custom:77", count: 1, chosen: true }] })];
+    const free = await emojiChat(reacted());
+    await free.act({ type: "react", messageId: "5", emoji: "custom:78", add: true });
+    expect(free.chat().error).toBe("Reacting with custom emoji takes Telegram Premium.");
+    await free.act({ type: "react", messageId: "5", emoji: "custom:77", add: false });
+    expect(free.api.react).toHaveBeenCalledWith("1", 5, []);
+
+    const premium = await emojiChat(reacted(), { premium: true });
+    await premium.act({ type: "react", messageId: "5", emoji: "custom:78", add: true });
+    expect(premium.api.react).toHaveBeenCalledWith("1", 5, ["custom:77", "custom:78"]);
+
+    const groups = [dlg("-5", { kind: "group", title: "G" }), dlg("-6", { kind: "group", title: "H" })];
+    const group = await emojiChat([], { premium: true, dialogs: groups }, "-6");
+    group.api.history.mockResolvedValue([msg("-5", 5)]);
+    group.api.allowedReactions.mockResolvedValue({ kind: "some", emoji: ["custom:78"] });
+    await group.act({ type: "select", channelId: viewId("-5") });
+    await settle();
+    await group.act({ type: "react", messageId: "5", emoji: "custom:79", add: true });
+    expect(group.chat().error).toBe("This chat does not take this custom emoji as a reaction.");
+    await group.act({ type: "react", messageId: "5", emoji: "custom:78", add: true });
+    expect(group.api.react).toHaveBeenCalledWith("-5", 5, ["custom:78"]);
+    // A group that takes every emoji but no custom ones.
+    group.api.history.mockResolvedValue([msg("-6", 5)]);
+    await group.act({ type: "select", channelId: viewId("-6") });
+    await settle();
+    await group.act({ type: "react", messageId: "5", emoji: "custom:78", add: true });
+    expect(group.chat().error).toBe("This chat does not take this custom emoji as a reaction.");
   });
 });

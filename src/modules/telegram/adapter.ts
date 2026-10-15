@@ -1,12 +1,12 @@
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
-import { escapeText, fromMarkdown, toMarkdown } from "./format";
+import { customEmojiIds, escapeText, fromMarkdown, toMarkdown } from "./format";
 import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeFolder, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativePoll, NativePollOption, NativeSearchResults, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
-import { MAX_ATTACHMENTS, MAX_FOLDERS } from "../../shared/native";
+import { MAX_ATTACHMENTS, MAX_CUSTOM_EMOJI, MAX_FOLDERS } from "../../shared/native";
 import { TYPING_SETTING, type AccountStatus, type ServiceSettingStatus, type ServiceSettingValues } from "../../shared/settings";
-import { ALL_CHATS, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgNotifyDefaults, type TgPoll, type TgPreview, type TgProfile, type TgQrLogin, type TgReaction, type TgSticker, type TgText, type TgTopic, type TgUpdate, type TgUser } from "./api";
+import { ALL_CHATS, CUSTOM_EMOJI_BATCH, customReaction, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgCustomEmoji, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgNotifyDefaults, type TgPoll, type TgPreview, type TgProfile, type TgQrLogin, type TgReaction, type TgSticker, type TgText, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /**
  * Chats listed: one-to-one chats, groups and channels together, most recent
@@ -74,6 +74,16 @@ const STICKER_ID = "tg:";
 const STICKER_KEY = "tgsticker:";
 /** What a sticker's file is, as a data: URL; thumbnails are WebP. */
 const STICKER_MIME = { webp: "image/webp", webm: "video/webm", lottie: "image/webp" } as const;
+/**
+ * Custom emoji described per session, as many as the view takes; their
+ * pictures kept, all together, and the largest one. Emoji past these show
+ * as the emoji they stand for.
+ */
+export const EMOJI_LIMIT = MAX_CUSTOM_EMOJI;
+export const EMOJI_CACHE_BYTES = 8 * 1024 * 1024;
+export const MAX_EMOJI_BYTES = 128 * 1024;
+/** Custom emoji pictures downloaded at once. */
+const EMOJI_DOWNLOADS = 4;
 const SESSION_KEY = "session";
 const CREDENTIALS_KEY = "api";
 /** The Settings action (manifest `settings`) that forgets the API ID the user entered. */
@@ -105,6 +115,8 @@ export interface TelegramAdapterDeps {
   mediaBudget?: number;
   /** Bytes of stickers' pictures kept for the picker (default STICKER_CACHE_BYTES). */
   stickerBudget?: number;
+  /** Bytes of custom emoji pictures kept (default EMOJI_CACHE_BYTES). */
+  emojiBudget?: number;
   /** This instance's settings values (TYPING_SETTING); changes come through applySettings(). */
   settings?: ServiceSettingValues;
 }
@@ -243,7 +255,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly mediaFailed = new Map<string, string>();
   private readonly mediaLoading = new Set<string>();
   /** Messages' text as markdown; a message edited is a new object, so it is worked out again. */
-  private readonly markdownOf = new WeakMap<TgMessage, string>();
+  private readonly markdownOf = new WeakMap<TgMessage, { markdown: string; pictures: number }>();
   private selected: string | undefined;
   /** In a selected forum, the open topic; none shows the forum's topic list. */
   private topic: number | undefined;
@@ -299,6 +311,17 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly stickerQueued = new Set<string>();
   private stickerDownloads = 0;
   private stickerRenderTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Custom emoji as Telegram described them this session, by document id (null where it did not); and those to ask about next, and whether that is under way. */
+  private readonly emojiInfo = new Map<string, TgCustomEmoji | null>();
+  private readonly emojiWanted = new Set<string>();
+  private emojiDescribing = false;
+  /** Custom emoji pictures as data: URLs, by document id; those that could not be loaded or kept; those waiting or loading; and how many arrived, so messages show them. */
+  private readonly emojiPictures = new Map<string, string>();
+  private emojiBytes = 0;
+  private readonly emojiFailed = new Set<string>();
+  private readonly emojiQueue: TgCustomEmoji[] = [];
+  private readonly emojiQueued = new Set<string>();
+  private emojiDownloads = 0;
   /** The profile card the view asked for last. */
   private profile: NativeProfile | undefined;
   /** The user's chat folders as last fetched, and the one the sidebar shows. */
@@ -489,6 +512,14 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.stickerQueued.clear();
     clearTimeout(this.stickerRenderTimer);
     this.stickerRenderTimer = undefined;
+    this.emojiInfo.clear();
+    this.emojiWanted.clear();
+    this.emojiDescribing = false;
+    this.emojiPictures.clear();
+    this.emojiBytes = 0;
+    this.emojiFailed.clear();
+    this.emojiQueue.length = 0;
+    this.emojiQueued.clear();
     this.session++;
     this.selected = undefined;
     this.topic = undefined;
@@ -1461,9 +1492,14 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     }
   }
 
-  /** Why a chat does not take this reaction, if it does not. */
+  /** Why a chat does not take this reaction, if it does not. Custom emoji take Premium; until a chat's rules are known, Telegram decides. */
   private refused(chatId: string, emoji: string): string | undefined {
-    const allowed = this.allowed.get(chatId) ?? { kind: "all" };
+    const allowed = this.allowed.get(chatId) ?? { kind: "all", custom: true };
+    if (customReaction(emoji)) {
+      if (this.me?.premium !== true) return "Reacting with custom emoji takes Telegram Premium.";
+      const takes = allowed.kind === "some" ? allowed.emoji.includes(emoji) : allowed.kind === "all" && allowed.custom === true;
+      return takes ? undefined : "This chat does not take this custom emoji as a reaction.";
+    }
     if (allowed.kind === "some" && !allowed.emoji.includes(emoji)) return `This chat does not take ${viewEmoji(emoji)} as a reaction.`;
     if (allowed.kind === "all" && this.reactionList && !this.reactionList.includes(emoji)) return `Telegram does not offer ${viewEmoji(emoji)} as a reaction.`;
     return undefined;
@@ -1704,6 +1740,114 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     }, STICKER_RENDER_MS);
   }
 
+  // --- Custom emoji -------------------------------------------------------------
+
+  /**
+   * Pictures of the custom emoji in these messages (in their text and
+   * reactions, the newest messages' first), by document id, for the view's
+   * emojiUrls. Those not yet asked about are, within the session's limit.
+   */
+  private shownEmoji(messages: readonly TgMessage[]): Record<string, string> {
+    const ids = new Set<string>();
+    for (const message of [...messages].reverse()) {
+      for (const id of customEmojiIds(message.entities)) ids.add(id);
+      for (const r of message.reactions ?? []) ids.add(customReaction(r.emoji) ?? "");
+    }
+    ids.delete("");
+    const shown = [...ids].slice(0, MAX_CUSTOM_EMOJI);
+    this.wantEmoji(shown);
+    return Object.fromEntries(shown.flatMap((id) => (this.emojiPictures.has(id) ? [[id, this.emojiPictures.get(id)!]] : [])));
+  }
+
+  /** Notes emoji to ask Telegram about, each once a session and at most EMOJI_LIMIT, and asks. */
+  private wantEmoji(ids: readonly string[]): void {
+    for (const id of ids) {
+      if (this.emojiInfo.has(id) || this.emojiWanted.has(id)) continue;
+      if (this.emojiInfo.size + this.emojiWanted.size >= EMOJI_LIMIT) break;
+      this.emojiWanted.add(id);
+    }
+    if (this.emojiWanted.size > 0) void this.describeEmoji();
+  }
+
+  /**
+   * Asks Telegram about the wanted emoji, a batch at a time, and loads their
+   * pictures. Those it does not describe (or a request that fails) show as
+   * their emoji for the rest of the session, so no update asks again.
+   */
+  private async describeEmoji(): Promise<void> {
+    if (this.emojiDescribing) return;
+    this.emojiDescribing = true;
+    // Emoji are wanted only while a chat shows, so while signed in.
+    const api = this.api!;
+    const session = this.session;
+    while (this.emojiWanted.size > 0) {
+      const ids = [...this.emojiWanted].slice(0, CUSTOM_EMOJI_BATCH);
+      const found = await api.customEmoji(ids).catch((): TgCustomEmoji[] => []);
+      if (session !== this.session) return;
+      for (const id of ids) {
+        this.emojiWanted.delete(id);
+        this.emojiInfo.set(id, found.find((e) => e.id === id) ?? null);
+      }
+      for (const id of ids) {
+        const emoji = this.emojiInfo.get(id);
+        if (emoji) this.loadEmoji(emoji);
+      }
+    }
+    this.emojiDescribing = false;
+  }
+
+  /** Queues a described emoji's picture, once. */
+  private loadEmoji(emoji: TgCustomEmoji): void {
+    if (this.emojiPictures.has(emoji.id) || this.emojiFailed.has(emoji.id) || this.emojiQueued.has(emoji.id)) return;
+    this.emojiQueued.add(emoji.id);
+    this.emojiQueue.push(emoji);
+    this.pumpEmoji();
+  }
+
+  /** Starts queued emoji downloads, a few at once. */
+  private pumpEmoji(): void {
+    while (this.emojiDownloads < EMOJI_DOWNLOADS && this.emojiQueue.length > 0) {
+      const emoji = this.emojiQueue.shift()!;
+      this.emojiDownloads++;
+      void this.downloadEmoji(emoji).finally(() => {
+        this.emojiDownloads--;
+        this.pumpEmoji();
+      });
+    }
+  }
+
+  /**
+   * A custom emoji's picture as a data: URL: the WebP itself for static
+   * ones, the still thumbnail for animated (TGS) and video (WebM) ones, never
+   * those files. Without a picture, or past the budget, it shows as its
+   * emoji. Pictures are never evicted, so the view's pictures stay put.
+   */
+  private async downloadEmoji(emoji: TgCustomEmoji): Promise<void> {
+    const session = this.session;
+    const still = emoji.format !== "webp" || (emoji.size ?? 0) > MAX_EMOJI_BYTES;
+    const bytes = await this.api!.customEmojiFile(emoji.id, still).catch(() => undefined);
+    if (session !== this.session) return;
+    this.emojiQueued.delete(emoji.id);
+    const url = bytes && bytes.length <= MAX_EMOJI_BYTES ? `data:image/webp;base64,${toBase64(bytes)}` : undefined;
+    if (url && this.emojiBytes + url.length <= (this.deps.emojiBudget ?? EMOJI_CACHE_BYTES)) {
+      this.emojiPictures.set(emoji.id, url);
+      this.emojiBytes += url.length;
+      this.renderSoon();
+    } else {
+      this.emojiFailed.add(emoji.id);
+    }
+  }
+
+  /** A reaction as the view shows it: an emoji, or a custom emoji's picture (its emoji until the picture loads). */
+  private nativeReaction(r: TgReaction): NativeReaction {
+    const id = customReaction(r.emoji);
+    if (!id) return { key: viewEmoji(r.emoji), label: viewEmoji(r.emoji), count: r.count, me: r.chosen };
+    const reaction: NativeReaction = { key: r.emoji, label: this.emojiInfo.get(id)?.emoji || "Custom emoji", count: r.count, me: r.chosen };
+    const url = this.emojiPictures.get(id);
+    if (url) reaction.imageUrl = url;
+    return reaction;
+  }
+
   // --- Members and profiles -----------------------------------------------------
 
   /** Telegram lets the user see who is in this chat, as far as is known. */
@@ -1898,7 +2042,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       mine: message.out,
       canEdit: message.out && message.text !== "",
       canDelete: message.out,
-      reactions: (message.reactions ?? []).map((r): NativeReaction => ({ key: viewEmoji(r.emoji), label: viewEmoji(r.emoji), count: r.count, me: r.chosen })),
+      reactions: (message.reactions ?? []).map((r) => this.nativeReaction(r)),
       attachments: message.file ? [this.attachment(message, message.file)] : [],
     };
     // Edited as the markdown it shows, so formatting survives the edit.
@@ -1995,13 +2139,17 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     }
   }
 
-  /** A message's text as markdown for the view, worked out once per message. */
+  /**
+   * A message's text as markdown for the view, worked out once per message,
+   * and again for one with custom emoji as their pictures arrive: those
+   * loaded show as pictures, the rest as their emoji.
+   */
   private markdown(message: TgMessage): string {
-    let markdown = this.markdownOf.get(message);
-    if (markdown === undefined) {
-      markdown = toMarkdown(message.text, message.entities);
-      this.markdownOf.set(message, markdown);
-    }
+    const cached = this.markdownOf.get(message);
+    const pictures = this.emojiPictures.size;
+    if (cached && (cached.pictures === pictures || !message.entities?.some((e) => e.type === "customEmoji"))) return cached.markdown;
+    const markdown = toMarkdown(message.text, message.entities, (id) => this.emojiPictures.has(id));
+    this.markdownOf.set(message, { markdown, pictures });
     return markdown;
   }
 
@@ -2192,6 +2340,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const dialog = this.selected ? this.dialog(this.selected) : undefined;
     // Stickers only while the picker is open, and only where they go as stickers: elsewhere the shell would send them as files, round a chat's rules.
     const stickers = this.pickerOpen && dialog && this.canSendStickers(dialog) ? this.offeredStickers() : [];
+    // Pictures of the custom emoji in the open conversation's messages, which load as they show.
+    const emojiUrls = dialog && !(dialog.forum && this.topic === undefined) ? this.shownEmoji(this.messages.get(this.current()!) ?? []) : {};
     return {
       screen: "chat",
       platform,
@@ -2201,6 +2351,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       channel: dialog ? this.channelView(dialog) : null,
       voice: null,
       ...(stickers.length > 0 ? { stickers } : {}),
+      ...(Object.keys(emojiUrls).length > 0 ? { emojiUrls } : {}),
       ...(this.profile ? { profile: this.profile } : {}),
       ...(folders ? { folders } : {}),
       error: this.error,

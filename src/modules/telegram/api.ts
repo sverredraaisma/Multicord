@@ -73,7 +73,7 @@ export interface TgMessage {
   replyToId?: number;
   /** In a forum group, the topic it was posted in (its first message's id); absent for the General topic. */
   topicId?: number;
-  /** Reactions with emoji, and how many gave each; others (custom emoji, paid) are left out. */
+  /** Reactions with emoji and custom emoji, and how many gave each; paid ones are left out. */
   reactions?: TgReaction[];
   /** The link preview Telegram made for its link. */
   preview?: TgPreview;
@@ -125,15 +125,40 @@ export interface TgPreview {
 
 /** An emoji reaction on a message. */
 export interface TgReaction {
-  /** As Telegram writes it, without variation selectors (e.g. "❤"). */
+  /** As Telegram writes it, without variation selectors (e.g. "❤"); a custom emoji as "custom:<document id>" (CUSTOM_REACTION). */
   emoji: string;
   count: number;
   /** The user gave it. */
   chosen: boolean;
 }
 
-/** The reactions a chat takes: any of Telegram's, only some, or none. */
-export type TgAllowedReactions = { kind: "all" } | { kind: "some"; emoji: string[] } | { kind: "none" };
+/** Custom emoji reactions are written as this and their document id, where an emoji would go. */
+export const CUSTOM_REACTION = "custom:";
+
+/** The custom emoji a reaction is, by document id; undefined for an emoji. */
+export function customReaction(reaction: string): string | undefined {
+  const id = reaction.startsWith(CUSTOM_REACTION) ? reaction.slice(CUSTOM_REACTION.length) : "";
+  return DOCUMENT_ID.test(id) ? id : undefined;
+}
+
+/** The reactions a chat takes: any of Telegram's (and custom emoji, with `custom`), only some (custom ones written as in TgReaction), or none. */
+export type TgAllowedReactions = { kind: "all"; custom?: boolean } | { kind: "some"; emoji: string[] } | { kind: "none" };
+
+/** A custom emoji's document, as far as the view needs it. */
+export interface TgCustomEmoji {
+  /** Its document's id. */
+  id: string;
+  /** The emoji it stands for. */
+  emoji: string;
+  format: TgStickerFormat;
+  /** Bytes, when known. */
+  size?: number;
+  /** Users without Premium may send it too. */
+  free?: boolean;
+}
+
+/** Custom emoji Telegram describes at once (messages.getCustomEmojiDocuments). */
+export const CUSTOM_EMOJI_BATCH = 200;
 
 /** A one-to-one chat (with a user, a bot or yourself), a group (basic or super) or a broadcast channel. */
 export type TgChatKind = "user" | "group" | "channel";
@@ -399,7 +424,7 @@ export interface TelegramApi {
   members(chatId: string, offset: number, limit: number): Promise<TgMemberPage>;
   /** What a user shows others: name, username, bio and how recently they were online. */
   profile(userId: string): Promise<TgProfile>;
-  /** Sets the user's reactions on a message: these emoji, replacing those they gave; none removes them. */
+  /** Sets the user's reactions on a message: these emoji (or custom emoji, as TgReaction writes them), replacing those they gave; none removes them. */
   react(chatId: string, messageId: number, emoji: string[]): Promise<void>;
   /** Which reactions a group or channel takes. */
   allowedReactions(chatId: string): Promise<TgAllowedReactions>;
@@ -419,6 +444,10 @@ export interface TelegramApi {
   stickerFile(id: string, thumbnail: boolean): Promise<Uint8Array | undefined>;
   /** Sends a listed sticker, in a forum into a topic. */
   sendSticker(chatId: string, id: string, replyTo?: number, topicId?: number): Promise<TgMessage>;
+  /** The custom emoji of these document ids (at most CUSTOM_EMOJI_BATCH) that Telegram describes. */
+  customEmoji(ids: string[]): Promise<TgCustomEmoji[]>;
+  /** A described custom emoji's file, or its still thumbnail; undefined when there is none. */
+  customEmojiFile(id: string, thumbnail: boolean): Promise<Uint8Array | undefined>;
   onUpdate(cb: (update: TgUpdate) => void): void;
   /** The session to store, so the next start skips signing in. */
   session(): string;

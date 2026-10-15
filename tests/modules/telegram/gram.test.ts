@@ -16,7 +16,7 @@ const h = vi.hoisted(() => {
     "ChatParticipantCreator", "ChannelFull", "ChannelParticipant", "ChannelParticipantAdmin", "ChannelParticipantCreator", "ChannelParticipantsRecent", "ChannelParticipantsAdmins",
     "MessageEntityBold", "MessageEntityItalic", "MessageEntityUnderline", "MessageEntityStrike", "MessageEntitySpoiler", "MessageEntityCode", "MessageEntityPre",
     "MessageEntityTextUrl", "MessageEntityBlockquote", "MessageEntityMention", "MessageEntityCustomEmoji", "DocumentAttributeCustomEmoji",
-    "ReactionEmoji", "ReactionCustomEmoji", "ReactionCount", "MessageReactions", "ChatReactionsNone", "ChatReactionsSome", "ChatReactionsAll", "UpdateMessageReactions",
+    "ReactionEmoji", "ReactionCustomEmoji", "ReactionPaid", "ReactionCount", "MessageReactions", "ChatReactionsNone", "ChatReactionsSome", "ChatReactionsAll", "UpdateMessageReactions",
     "UpdateUserTyping", "UpdateChatUserTyping", "UpdateChannelUserTyping", "SendMessageTypingAction", "SendMessageCancelAction", "SendMessageUploadPhotoAction",
     "SendMessageRecordVideoAction", "SendMessageUploadVideoAction", "SendMessageRecordAudioAction", "SendMessageUploadAudioAction", "SendMessageUploadDocumentAction",
     "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
@@ -49,6 +49,7 @@ const h = vi.hoisted(() => {
       GetAllStickers: class extends Base {},
       AllStickers: class extends Base {},
       GetStickerSet: class extends Base {},
+      GetCustomEmojiDocuments: class extends Base {},
       StickerSet: class extends Base {},
       GetRecentStickers: class extends Base {},
       RecentStickers: class extends Base {},
@@ -131,7 +132,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { allowedOf, apiEntities, foldersOf, foundMessages, MAX_FOLDER_PEERS, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, pollsBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview, pollOf, pollResultsOf } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, customEmojiOf, foldersOf, foundMessages, MAX_FOLDER_PEERS, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, pollsBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview, pollOf, pollResultsOf } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -1076,13 +1077,16 @@ describe("reactions", () => {
   const emoji = (emoticon: unknown) => make(Api.ReactionEmoji, { emoticon });
   const counted = (reaction: unknown, count: unknown, chosenOrder?: number) => make(Api.ReactionCount, { reaction, count, chosenOrder });
 
-  it("reads emoji reactions with their counts and the user's own, without variation selectors", () => {
+  it("reads emoji and custom emoji reactions with their counts and the user's own, without variation selectors", () => {
     const heart = "❤" + String.fromCharCode(0xfe0f);
     const results = [
       counted(emoji(heart), 3, 0),
       counted(emoji("👍"), 1),
-      // Custom emoji, malformed or empty reactions, and repeats are left out.
-      counted(make(Api.ReactionCustomEmoji, { documentId: 1n }), 4),
+      counted(make(Api.ReactionCustomEmoji, { documentId: 1n }), 4, 1),
+      // Paid, malformed or empty reactions, custom emoji without a usable id, and repeats are left out.
+      counted(make(Api.ReactionPaid), 4),
+      counted(make(Api.ReactionCustomEmoji, { documentId: "x" }), 4),
+      counted(make(Api.ReactionCustomEmoji), 4),
       counted(emoji("<b>"), 1),
       counted(emoji(""), 1),
       counted(emoji("x".repeat(33)), 1),
@@ -1091,7 +1095,7 @@ describe("reactions", () => {
       counted(emoji("👍"), 9),
       {},
     ];
-    expect(reactionsOf(make(Api.MessageReactions, { results }))).toEqual({ reactions: [{ emoji: "❤", count: 3, chosen: true }, { emoji: "👍", count: 1, chosen: false }], own: true });
+    expect(reactionsOf(make(Api.MessageReactions, { results }))).toEqual({ reactions: [{ emoji: "❤", count: 3, chosen: true }, { emoji: "👍", count: 1, chosen: false }, { emoji: "custom:1", count: 4, chosen: true }], own: true });
     expect(reactionsOf(make(Api.MessageReactions, { min: true }))).toEqual({ reactions: [], own: false });
     expect(reactionsOf(undefined)).toEqual({ reactions: [], own: true });
     const many = Array.from({ length: 60 }, (_, i) => counted(emoji(String(i)), 1));
@@ -1107,8 +1111,9 @@ describe("reactions", () => {
   it("reads which reactions a chat takes", () => {
     expect(allowedOf(make(Api.ChatReactionsNone))).toEqual({ kind: "none" });
     expect(allowedOf(make(Api.ChatReactionsAll))).toEqual({ kind: "all" });
+    expect(allowedOf(make(Api.ChatReactionsAll, { allowCustom: true }))).toEqual({ kind: "all", custom: true });
     expect(allowedOf(undefined)).toEqual({ kind: "all" });
-    expect(allowedOf(make(Api.ChatReactionsSome, { reactions: [emoji("👍"), make(Api.ReactionCustomEmoji)] }))).toEqual({ kind: "some", emoji: ["👍"] });
+    expect(allowedOf(make(Api.ChatReactionsSome, { reactions: [emoji("👍"), make(Api.ReactionCustomEmoji), make(Api.ReactionCustomEmoji, { documentId: 8n })] }))).toEqual({ kind: "some", emoji: ["👍", "custom:8"] });
   });
 
   describe("through the client", () => {
@@ -1121,16 +1126,17 @@ describe("reactions", () => {
 
     it("sets the user's reactions on a message", async () => {
       client.invoke.mockResolvedValue({});
-      await api.react("-1001234", 5, ["👍", "❤"]);
-      const request = client.invoke.mock.calls[0]![0] as { peer: unknown; msgId: number; reaction: { emoticon: string }[] };
+      await api.react("-1001234", 5, ["👍", "❤", "custom:77"]);
+      const request = client.invoke.mock.calls[0]![0] as { peer: unknown; msgId: number; reaction: { emoticon?: string; documentId?: bigint }[] };
       expect(request).toBeInstanceOf(Api.messages.SendReaction);
       expect(request).toMatchObject({ peer: -1001234n, msgId: 5 });
-      expect(request.reaction.map((r) => r.emoticon)).toEqual(["👍", "❤"]);
+      expect(request.reaction.map((r) => r.emoticon ?? r.documentId)).toEqual(["👍", "❤", 77n]);
       expect(request.reaction[0]).toBeInstanceOf(Api.ReactionEmoji);
+      expect(request.reaction[2]).toBeInstanceOf(Api.ReactionCustomEmoji);
     });
 
     it("asks a group's or channel's full info which reactions it takes; one-to-one chats take all", async () => {
-      await expect(api.allowedReactions("7")).resolves.toEqual({ kind: "all" });
+      await expect(api.allowedReactions("7")).resolves.toEqual({ kind: "all", custom: true });
       expect(client.invoke).not.toHaveBeenCalled();
       client.invoke.mockResolvedValue({ fullChat: { availableReactions: make(Api.ChatReactionsNone) } });
       await expect(api.allowedReactions("-7")).resolves.toEqual({ kind: "none" });
@@ -1599,6 +1605,89 @@ describe("stickers", () => {
       client.sendFile.mockClear().mockRejectedValueOnce({ errorMessage: "CHAT_SEND_STICKERS_FORBIDDEN" });
       await expect(api.sendSticker("7", "5")).rejects.toEqual({ errorMessage: "CHAT_SEND_STICKERS_FORBIDDEN" });
       expect(client.sendFile).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe("custom emoji", () => {
+  const emojiDocument = (id: unknown, mimeType: string, props: Record<string, unknown> = {}, attribute: Record<string, unknown> = { alt: "😀" }) =>
+    make(Api.Document, { id, mimeType, attributes: [make(Api.DocumentAttributeCustomEmoji, attribute)], ...props });
+
+  it("reads custom emoji documents: static, animated vector and video ones, and which are free", () => {
+    expect(customEmojiOf(emojiDocument(5n, "image/webp", { size: 900 }))).toEqual({ id: "5", emoji: "😀", format: "webp", size: 900 });
+    expect(customEmojiOf(emojiDocument(-6n, "application/x-tgsticker", {}, { alt: "x".repeat(33), free: true }))).toEqual({ id: "-6", emoji: "", format: "lottie", free: true });
+    expect(customEmojiOf(emojiDocument(7n, "video/webm", {}, {}))).toEqual({ id: "7", emoji: "", format: "webm" });
+  });
+
+  it("leaves out what is not a custom emoji it can show", () => {
+    expect(customEmojiOf(undefined)).toBeUndefined();
+    expect(customEmojiOf(emojiDocument(5n, "image/png"))).toBeUndefined();
+    expect(customEmojiOf(make(Api.Document, { id: 5n, mimeType: "image/webp", attributes: [make(Api.DocumentAttributeSticker, { alt: "😀" })] }))).toBeUndefined();
+    expect(customEmojiOf(emojiDocument(10n ** 21n, "image/webp"))).toBeUndefined();
+  });
+
+  describe("through the client", () => {
+    let client: InstanceType<typeof h.FakeClient>;
+    let api: ReturnType<typeof createGramApi>;
+    beforeEach(() => {
+      api = createGramApi({ apiId: 1, apiHash: "h" }, "", { os: "linux", appVersion: "1" });
+      client = h.FakeClient.instances.at(-1)!;
+    });
+
+    it("asks Telegram about up to 200 emoji at once, leaving out what is not one", async () => {
+      client.invoke.mockResolvedValueOnce([emojiDocument(5n, "image/webp"), make(Api.Document, { id: 6n, mimeType: "image/webp", attributes: [] })]);
+      const ids = Array.from({ length: 250 }, (_, i) => String(i + 1));
+      await expect(api.customEmoji(ids)).resolves.toEqual([{ id: "5", emoji: "😀", format: "webp" }]);
+      const request = client.invoke.mock.calls[0]![0] as { documentId: bigint[] };
+      expect(request).toBeInstanceOf(Api.messages.GetCustomEmojiDocuments);
+      expect(request.documentId).toHaveLength(200);
+      expect(request.documentId[0]).toBe(1n);
+      client.invoke.mockResolvedValueOnce({});
+      await expect(api.customEmoji(["5"])).resolves.toEqual([]);
+    });
+
+    it("downloads a described emoji, or its largest thumbnail; never one it did not describe", async () => {
+      const document = emojiDocument(5n, "application/x-tgsticker", { thumbs: [make(Api.PhotoPathSize), {}] });
+      client.invoke.mockResolvedValueOnce([document, emojiDocument(6n, "video/webm")]);
+      await api.customEmoji(["5", "6"]);
+      client.downloadMedia.mockResolvedValue(new Uint8Array([1]));
+      await expect(api.customEmojiFile("5", true)).resolves.toEqual(new Uint8Array([1]));
+      const [media, options] = client.downloadMedia.mock.calls.at(-1)! as unknown as [{ document: unknown }, unknown];
+      expect(media).toBeInstanceOf(Api.MessageMediaDocument);
+      expect(media.document).toBe(document);
+      expect(options).toEqual({ thumb: 0 });
+      await api.customEmojiFile("5", false);
+      expect(client.downloadMedia).toHaveBeenLastCalledWith(expect.anything(), {});
+      client.downloadMedia.mockClear();
+      // A video emoji without a thumbnail: nothing, rather than the video.
+      await expect(api.customEmojiFile("6", true)).resolves.toBeUndefined();
+      expect(client.downloadMedia).not.toHaveBeenCalled();
+      await expect(api.customEmojiFile("8", false)).rejects.toThrow("Telegram did not describe this emoji");
+    });
+
+    it("describes an emoji afresh once when its file reference expired", async () => {
+      client.invoke.mockResolvedValueOnce([emojiDocument(5n, "image/webp", { fileReference: "old" })]);
+      await api.customEmoji(["5"]);
+      client.downloadMedia.mockRejectedValueOnce({ errorMessage: "FILE_REFERENCE_EXPIRED" }).mockResolvedValueOnce(new Uint8Array([2]));
+      client.invoke.mockResolvedValueOnce([emojiDocument(5n, "image/webp", { fileReference: "new" })]);
+      await expect(api.customEmojiFile("5", false)).resolves.toEqual(new Uint8Array([2]));
+      const media = client.downloadMedia.mock.calls.at(-1)![0] as unknown as { document: { fileReference: string } };
+      expect(media.document.fileReference).toBe("new");
+      // No longer described: the error stands; other errors are not retried.
+      client.downloadMedia.mockRejectedValueOnce({ errorMessage: "FILE_REFERENCE_EXPIRED" });
+      client.invoke.mockResolvedValueOnce([]);
+      await expect(api.customEmojiFile("5", false)).rejects.toEqual({ errorMessage: "FILE_REFERENCE_EXPIRED" });
+      client.downloadMedia.mockClear().mockRejectedValueOnce(new Error("offline"));
+      await expect(api.customEmojiFile("5", false)).rejects.toThrow("offline");
+      expect(client.downloadMedia).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps at most 5000 emoji documents, the oldest going first", async () => {
+      client.invoke.mockResolvedValueOnce(Array.from({ length: 5001 }, (_, i) => emojiDocument(BigInt(i + 1), "image/webp")));
+      await api.customEmoji(["1"]);
+      client.downloadMedia.mockResolvedValue(new Uint8Array([1]));
+      await expect(api.customEmojiFile("1", false)).rejects.toThrow("Telegram did not describe this emoji");
+      await expect(api.customEmojiFile("2", false)).resolves.toEqual(new Uint8Array([1]));
     });
   });
 });

@@ -15,6 +15,9 @@ import { StringSession } from "telegram/sessions/StringSession";
 import type { Dialog } from "telegram/tl/custom/dialog";
 import {
   ALL_CHATS,
+  CUSTOM_EMOJI_BATCH,
+  CUSTOM_REACTION,
+  customReaction,
   DOCUMENT_ID,
   FAVED_STICKERS,
   GENERAL_TOPIC,
@@ -25,6 +28,7 @@ import {
   type TelegramApi,
   type TelegramCredentials,
   type TgAllowedReactions,
+  type TgCustomEmoji,
   type TgDialog,
   type TgDialogPage,
   type TgEntity,
@@ -353,29 +357,41 @@ const emojiOf = (reaction: unknown): string | undefined => {
   return emoji !== "" ? emoji : undefined;
 };
 
+/** A reaction as the adapter writes it: an emoji, or a custom emoji as CUSTOM_REACTION and its document id; undefined for others (paid). */
+const reactionOf = (reaction: unknown): string | undefined => {
+  if (!(reaction instanceof Api.ReactionCustomEmoji)) return emojiOf(reaction);
+  const id = String(reaction.documentId ?? "");
+  return DOCUMENT_ID.test(id) ? CUSTOM_REACTION + id : undefined;
+};
+
 /**
- * A message's emoji reactions with their counts, and whether the user gave
- * each (`own`: Telegram says so; in "min" updates it does not). Custom
- * emoji and paid reactions are left out: showing them would mean fetching
- * their stickers.
+ * A message's emoji and custom emoji reactions with their counts, and
+ * whether the user gave each (`own`: Telegram says so; in "min" updates it
+ * does not). Paid reactions are left out.
  */
 export function reactionsOf(reactions: unknown): { reactions: TgReaction[]; own: boolean } {
   if (!(reactions instanceof Api.MessageReactions)) return { reactions: [], own: true };
   const out: TgReaction[] = [];
   for (const result of (Array.isArray(reactions.results) ? reactions.results : []).slice(0, MAX_REACTIONS)) {
-    const emoji = result instanceof Api.ReactionCount ? emojiOf(result.reaction) : undefined;
+    const emoji = result instanceof Api.ReactionCount ? reactionOf(result.reaction) : undefined;
     const count = tally((result as { count?: unknown }).count);
     if (emoji && count > 0 && !out.some((r) => r.emoji === emoji)) out.push({ emoji, count, chosen: result.chosenOrder !== undefined });
   }
   return { reactions: out, own: reactions.min !== true };
 }
 
-/** What a chat's full info says about reactions; a chat that says nothing takes all. */
+/** What a chat's full info says about reactions; a chat that says nothing takes all but custom emoji. */
 export function allowedOf(reactions: unknown): TgAllowedReactions {
   if (reactions instanceof Api.ChatReactionsNone) return { kind: "none" };
-  if (reactions instanceof Api.ChatReactionsSome) return { kind: "some", emoji: reactions.reactions.flatMap((r) => emojiOf(r) ?? []) };
-  return { kind: "all" };
+  if (reactions instanceof Api.ChatReactionsSome) return { kind: "some", emoji: reactions.reactions.flatMap((r) => reactionOf(r) ?? []) };
+  return reactions instanceof Api.ChatReactionsAll && reactions.allowCustom === true ? { kind: "all", custom: true } : { kind: "all" };
 }
+
+/** A reaction to send, as the adapter writes it. */
+const apiReaction = (reaction: string): Api.TypeReaction => {
+  const id = customReaction(reaction);
+  return id ? new Api.ReactionCustomEmoji({ documentId: returnBigInt(id) }) : new Api.ReactionEmoji({ emoticon: reaction });
+};
 
 /** What others see as "typing": typing itself, or recording or sending media. */
 const TYPING_ACTIONS = [
@@ -614,6 +630,23 @@ export function stickerOf(document: unknown): TgSticker | undefined {
   return sticker;
 }
 
+/** Most custom emoji documents kept for downloading; the oldest go first, and are described afresh when asked for. */
+const MAX_EMOJI_DOCUMENTS = 5000;
+
+/** A custom emoji document as the view uses it; undefined for anything else, or a format it does not know. */
+export function customEmojiOf(document: unknown): TgCustomEmoji | undefined {
+  if (!(document instanceof Api.Document)) return undefined;
+  const attribute = document.attributes.find((a): a is Api.DocumentAttributeCustomEmoji => a instanceof Api.DocumentAttributeCustomEmoji);
+  const format = STICKER_FORMATS.get(document.mimeType);
+  const id = String(document.id);
+  if (!attribute || !format || !DOCUMENT_ID.test(id)) return undefined;
+  const emoji: TgCustomEmoji = { id, emoji: typeof attribute.alt === "string" && attribute.alt.length <= 32 ? attribute.alt : "", format };
+  const size = count(document.size);
+  if (size) emoji.size = size;
+  if (attribute.free === true) emoji.free = true;
+  return emoji;
+}
+
 /** The installed sticker sets the picker offers: regular ones, not archived, masks or custom emoji. */
 export function stickerSetsOf(sets: readonly unknown[]): { set: TgStickerSet; input: Api.InputStickerSetID }[] {
   return sets.flatMap((s) => {
@@ -763,6 +796,28 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       stickers.push(sticker);
     }
     return stickers;
+  };
+
+  /** Custom emoji documents described this session, by id, oldest first. */
+  const emojiDocuments = new Map<string, Api.Document>();
+
+  const describeEmoji = async (ids: readonly string[]): Promise<TgCustomEmoji[]> => {
+    const found = await client.invoke(new Api.messages.GetCustomEmojiDocuments({ documentId: ids.slice(0, CUSTOM_EMOJI_BATCH).map((id) => returnBigInt(id)) }));
+    return (Array.isArray(found) ? found : []).flatMap((document) => {
+      const emoji = customEmojiOf(document);
+      if (!emoji) return [];
+      emojiDocuments.delete(emoji.id);
+      emojiDocuments.set(emoji.id, document as Api.Document);
+      if (emojiDocuments.size > MAX_EMOJI_DOCUMENTS) emojiDocuments.delete(emojiDocuments.keys().next().value!);
+      return [emoji];
+    });
+  };
+
+  /** A document's file, or its largest thumbnail (none: undefined, never the file in its place). */
+  const documentFile = async (document: Api.Document, thumbnail: boolean): Promise<Uint8Array | undefined> => {
+    const thumb = thumbnail ? thumbIndex(document.thumbs) : undefined;
+    if (thumbnail && thumb === undefined) return undefined;
+    return bytesOf(await client.downloadMedia(new Api.MessageMediaDocument({ document }), thumb === undefined ? {} : { thumb }));
   };
 
   /** Uses a listed sticker's document; where Telegram says its file reference expired, once more after listing it afresh. */
@@ -971,10 +1026,11 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       return `data:image/jpeg;base64,${photo.toString("base64")}`;
     },
     react: async (chatId, messageId, emoji) => {
-      await client.invoke(new Api.messages.SendReaction({ peer: peer(chatId), msgId: messageId, reaction: emoji.map((emoticon) => new Api.ReactionEmoji({ emoticon })) }));
+      await client.invoke(new Api.messages.SendReaction({ peer: peer(chatId), msgId: messageId, reaction: emoji.map(apiReaction) }));
     },
     allowedReactions: async (chatId) => {
-      if (!chatId.startsWith("-")) return { kind: "all" };
+      // One-to-one chats take every reaction, custom emoji too.
+      if (!chatId.startsWith("-")) return { kind: "all", custom: true };
       const full = isChannelPeer(chatId)
         ? await client.invoke(new Api.channels.GetFullChannel({ channel: peer(chatId) }))
         : await client.invoke(new Api.messages.GetFullChat({ chatId: returnBigInt(chatId.slice(1)) }));
@@ -1027,12 +1083,22 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       return installed?.sets ?? [];
     },
     stickers: (setId) => listStickers(setId),
-    stickerFile: (id, thumbnail) =>
-      withSticker(id, async (document) => {
-        const thumb = thumbnail ? thumbIndex(document.thumbs) : undefined;
-        if (thumbnail && thumb === undefined) return undefined;
-        return bytesOf(await client.downloadMedia(new Api.MessageMediaDocument({ document }), thumb === undefined ? {} : { thumb }));
-      }),
+    stickerFile: (id, thumbnail) => withSticker(id, (document) => documentFile(document, thumbnail)),
+    customEmoji: (ids) => describeEmoji(ids),
+    customEmojiFile: async (id, thumbnail) => {
+      const known = emojiDocuments.get(id);
+      if (!known) throw new Error("Telegram did not describe this emoji");
+      try {
+        return await documentFile(known, thumbnail);
+      } catch (error) {
+        // An expired file reference: described afresh, and tried once more.
+        if (!telegramError(error).startsWith("FILE_REFERENCE_")) throw error;
+        await describeEmoji([id]);
+        const fresh = emojiDocuments.get(id)!;
+        if (fresh === known) throw error;
+        return documentFile(fresh, thumbnail);
+      }
+    },
     sendSticker: (chatId, id, replyTo, topicId) =>
       withSticker(id, async (document) => {
         const media = new Api.InputMediaDocument({ id: new Api.InputDocument({ id: document.id, accessHash: document.accessHash, fileReference: document.fileReference }) });
