@@ -1,7 +1,7 @@
 import type { AsyncSecretStore } from "../../engine/runtime";
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
-import { escapeMarkdown } from "../../shared/markdown";
+import { escapeText, fromMarkdown, toMarkdown } from "./format";
 import type { NativeAction, NativeAttachment, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeSidebarItem, NativeViewState } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
 import { isChannelPeer, telegramError, type TelegramApi, type TelegramCredentials, type TgChatKind, type TgDialog, type TgFile, type TgMember, type TgMessage, type TgProfile, type TgUpdate, type TgUser } from "./api";
@@ -149,6 +149,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private mediaBytes = 0;
   private readonly mediaFailed = new Map<string, string>();
   private readonly mediaLoading = new Set<string>();
+  /** Messages' text as markdown; a message edited is a new object, so it is worked out again. */
+  private readonly markdownOf = new WeakMap<TgMessage, string>();
   private selected: string | undefined;
   /** The view's member panel is open: the selected chat's members are fetched and shown. */
   private membersOpen = false;
@@ -556,20 +558,23 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     }
   }
 
+  /** Sends the user's markdown as Telegram formatting. */
   private async send(content: string, replyTo?: string): Promise<void> {
     const chatId = this.selected;
-    if (!chatId || content.trim() === "" || !this.api || this.dialog(chatId)?.readOnly) return;
+    const text = fromMarkdown(content);
+    if (!chatId || text.text.trim() === "" || !this.api || this.dialog(chatId)?.readOnly) return;
     await this.attempt("Message not sent", async () => {
-      const sent = await this.api!.send(chatId, content, replyTo ? Number(replyTo) : undefined);
+      const sent = await this.api!.send(chatId, text, replyTo ? Number(replyTo) : undefined);
       this.onUpdate({ type: "message", message: sent });
     });
   }
 
   private async edit(messageId: string, content: string): Promise<void> {
     const chatId = this.selected;
-    if (!chatId || !this.api) return;
+    const text = fromMarkdown(content);
+    if (!chatId || !this.api || text.text.trim() === "") return;
     await this.attempt("Message not edited", async () => {
-      const edited = await this.api!.edit(chatId, Number(messageId), content);
+      const edited = await this.api!.edit(chatId, Number(messageId), text);
       this.onUpdate({ type: "edit", message: edited });
     });
   }
@@ -816,11 +821,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
 
   private toNative(message: TgMessage, dialog: TgDialog): NativeMessage {
     const replied = message.replyToId ? this.messages.get(message.chatId)?.find((m) => m.id === message.replyToId) : undefined;
+    const markdown = this.markdown(message);
     const native: NativeMessage = {
       id: String(message.id),
       author: message.out ? (this.me?.name ?? "You") : (message.sender ?? dialog.title),
       // Shown media speaks for itself; a label stays for what is not shown (locations, polls…).
-      content: escapeMarkdown(message.file ? message.text : messageText(message)),
+      content: message.file || !message.media ? markdown : [markdown, escapeText(message.media)].filter(Boolean).join("\n"),
       timestamp: new Date(message.date * 1000).toISOString(),
       edited: message.edited,
       mine: message.out,
@@ -829,11 +835,22 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       reactions: [],
       attachments: message.file ? [this.attachment(message, message.file)] : [],
     };
-    if (native.canEdit) native.source = message.text;
+    // Edited as the markdown it shows, so formatting survives the edit.
+    if (native.canEdit) native.source = markdown;
     const authorId = message.out ? this.me?.id : message.senderId;
     if (authorId) native.authorId = authorId;
     if (replied) native.reply = { author: replied.out ? (this.me?.name ?? "You") : (replied.sender ?? dialog.title), content: messageText(replied).slice(0, 100) };
     return native;
+  }
+
+  /** A message's text as markdown for the view, worked out once per message. */
+  private markdown(message: TgMessage): string {
+    let markdown = this.markdownOf.get(message);
+    if (markdown === undefined) {
+      markdown = toMarkdown(message.text, message.entities);
+      this.markdownOf.set(message, markdown);
+    }
+    return markdown;
   }
 
   private attachment(message: TgMessage, file: TgFile): NativeAttachment {

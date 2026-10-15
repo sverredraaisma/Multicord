@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgUpdate } from "../../../src/modules/telegram/api";
+import type { TelegramApi, TelegramCredentials, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgText, TgUpdate } from "../../../src/modules/telegram/api";
 import { AVATAR_LIMIT, DIALOG_LIMIT, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import type { NativeAction, NativeViewState } from "../../../src/shared/native";
@@ -31,8 +31,8 @@ class FakeTelegramApi implements TelegramApi {
   me = vi.fn(async () => ({ id: "9", name: "Me", bot: false }));
   dialogs = vi.fn(async (_limit: number) => this.dialogList.map((d) => ({ ...d })));
   history = vi.fn(async (chatId: string, _before: number | undefined, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1), msg(chatId, 2)]);
-  send = vi.fn(async (chatId: string, text: string, _replyTo?: number) => msg(chatId, 200, { out: true, text }));
-  edit = vi.fn(async (chatId: string, id: number, text: string) => msg(chatId, id, { out: true, text, edited: true }));
+  send = vi.fn(async (chatId: string, text: TgText, _replyTo?: number) => msg(chatId, 200, { out: true, ...text }));
+  edit = vi.fn(async (chatId: string, id: number, text: TgText) => msg(chatId, id, { out: true, ...text, edited: true }));
   remove = vi.fn(async (_chatId: string, _ids: number[]) => {});
   markRead = vi.fn(async (_chatId: string, _maxId: number) => {});
   avatar = vi.fn(async (_chatId: string): Promise<string | undefined> => undefined);
@@ -645,7 +645,7 @@ describe("sending", () => {
   it("sends the message and appends the result", async () => {
     const ctx = await open();
     await ctx.act({ type: "send", content: "hello" });
-    expect(ctx.api.send).toHaveBeenCalledWith("1", "hello", undefined);
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "hello", entities: [] }, undefined);
     expect(ctx.messageIds().at(-1)).toBe("200");
     expect(ctx.chat().channel!.messages.at(-1)).toMatchObject({ author: "Me", mine: true, canEdit: true, canDelete: true, source: "hello" });
     expect(ctx.notifications).toEqual([]);
@@ -654,7 +654,7 @@ describe("sending", () => {
   it("passes the reply id as a number", async () => {
     const ctx = await open();
     await ctx.act({ type: "send", content: "re", replyTo: "2" });
-    expect(ctx.api.send).toHaveBeenCalledWith("1", "re", 2);
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "re", entities: [] }, 2);
   });
 
   it("ignores empty messages and a missing selection", async () => {
@@ -670,6 +670,24 @@ describe("sending", () => {
     expect(other.api.remove).not.toHaveBeenCalled();
   });
 
+  it("sends markdown as Telegram formatting, and shows it back the same", async () => {
+    const ctx = await open();
+    await ctx.act({ type: "send", content: "**bold** and a\\*b" });
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "bold and a*b", entities: [{ type: "bold", offset: 0, length: 4 }] }, undefined);
+    expect(ctx.chat().channel!.messages.at(-1)).toMatchObject({ content: "**bold** and a\\*b", source: "**bold** and a\\*b" });
+    await ctx.act({ type: "edit", messageId: "200", content: "_now_ italic" });
+    expect(ctx.api.edit).toHaveBeenCalledWith("1", 200, { text: "now italic", entities: [{ type: "italic", offset: 0, length: 3 }] });
+    expect(ctx.chat().channel!.messages.at(-1)).toMatchObject({ content: "*now* italic" });
+  });
+
+  it("sends nothing for markdown without text", async () => {
+    const ctx = await open();
+    await ctx.act({ type: "send", content: "> " });
+    await ctx.act({ type: "edit", messageId: "2", content: "> " });
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    expect(ctx.api.edit).not.toHaveBeenCalled();
+  });
+
   it("reports a failed send", async () => {
     const ctx = await open();
     ctx.api.send.mockRejectedValue(new Error("flaky"));
@@ -680,7 +698,7 @@ describe("sending", () => {
   it("edits a message", async () => {
     const ctx = await open();
     await ctx.act({ type: "edit", messageId: "2", content: "fixed" });
-    expect(ctx.api.edit).toHaveBeenCalledWith("1", 2, "fixed");
+    expect(ctx.api.edit).toHaveBeenCalledWith("1", 2, { text: "fixed", entities: [] });
     expect(ctx.chat().channel!.messages[1]).toMatchObject({ id: "2", content: "fixed", edited: true, source: "fixed" });
   });
 
@@ -728,6 +746,14 @@ describe("message rendering", () => {
       reactions: [],
       attachments: [],
     });
+  });
+
+  it("shows Telegram's formatting as markdown, and a label after formatted text", async () => {
+    const ctx = await history([
+      msg("1", 1, { text: "hi there", entities: [{ type: "bold", offset: 0, length: 2 }], media: "📍 Location" }),
+      msg("1", 2, { text: "", media: "📊 Poll" }),
+    ]);
+    expect(ctx.chat().channel!.messages.map((m) => m.content)).toEqual(["**hi** there\n📍 Location", "📊 Poll"]);
   });
 
   it("uses the sender's name when known", async () => {

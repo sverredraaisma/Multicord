@@ -14,6 +14,8 @@ const h = vi.hoisted(() => {
     "Photo", "PhotoSize", "PhotoSizeProgressive", "DocumentAttributeImageSize", "DocumentAttributeAnimated",
     "UserStatusOnline", "UserStatusRecently", "UserStatusOffline", "ChatFull", "ChatParticipants", "ChatParticipantsForbidden", "ChatParticipant", "ChatParticipantAdmin",
     "ChatParticipantCreator", "ChannelFull", "ChannelParticipant", "ChannelParticipantAdmin", "ChannelParticipantCreator", "ChannelParticipantsRecent", "ChannelParticipantsAdmins",
+    "MessageEntityBold", "MessageEntityItalic", "MessageEntityUnderline", "MessageEntityStrike", "MessageEntitySpoiler", "MessageEntityCode", "MessageEntityPre",
+    "MessageEntityTextUrl", "MessageEntityBlockquote", "MessageEntityMention",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
@@ -72,7 +74,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { chatIdOf, createGramApi, describeChat, mediaFile, mediaLabel, membersOf, presenceOf, SAVED_MESSAGES, toMessage } from "../../../src/modules/telegram/gram";
+import { apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, mediaFile, mediaLabel, membersOf, presenceOf, SAVED_MESSAGES, toMessage } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -332,14 +334,17 @@ describe("createGramApi", () => {
     expect(client.getMessages).toHaveBeenLastCalledWith(7n, { limit: 50, offsetId: 0 });
   });
 
-  it("sends and edits as plain text", async () => {
+  it("sends and edits with their formatting as entities, never parsing the text", async () => {
     client.sendMessage.mockResolvedValue(make(Api.Message, { id: 1, date: 1, out: true, message: "a" }));
-    await expect(api.send("7", "a", 4)).resolves.toMatchObject({ id: 1, chatId: "7", out: true });
-    expect(client.sendMessage).toHaveBeenCalledWith(7n, { message: "a", replyTo: 4, parseMode: false });
+    await expect(api.send("7", { text: "a", entities: [{ type: "bold", offset: 0, length: 1 }] }, 4)).resolves.toMatchObject({ id: 1, chatId: "7", out: true });
+    const sent = client.sendMessage.mock.calls[0]! as unknown as [bigint, { message: string; replyTo: number; formattingEntities: unknown[] }];
+    expect(sent[0]).toBe(7n);
+    expect(sent[1]).toMatchObject({ message: "a", replyTo: 4 });
+    expect(sent[1].formattingEntities[0]).toBeInstanceOf(Api.MessageEntityBold);
 
     client.editMessage.mockResolvedValue(make(Api.Message, { id: 1, date: 1, message: "b" }));
-    await expect(api.edit("7", 1, "b")).resolves.toMatchObject({ text: "b" });
-    expect(client.editMessage).toHaveBeenCalledWith(7n, { message: 1, text: "b", parseMode: false });
+    await expect(api.edit("7", 1, { text: "b", entities: [] })).resolves.toMatchObject({ text: "b" });
+    expect(client.editMessage).toHaveBeenCalledWith(7n, { message: 1, text: "b", formattingEntities: [] });
   });
 
   it("deletes for everyone and marks read", async () => {
@@ -597,5 +602,71 @@ describe("members and profiles", () => {
       client.invoke.mockResolvedValue({ fullUser: {}, users: [] });
       await expect(api.profile("7")).resolves.toEqual({ id: "7", name: "Telegram user", bot: false, presence: "offline" });
     });
+  });
+});
+
+describe("entities", () => {
+  it("reads the formatting the view shows, as far as it fits the text", () => {
+    const text = "bold link code";
+    const entities = [
+      make(Api.MessageEntityBold, { offset: 0, length: 4 }),
+      make(Api.MessageEntityTextUrl, { offset: 5, length: 4, url: "https://x.org" }),
+      make(Api.MessageEntityPre, { offset: 10, length: 4, language: "js" }),
+      make(Api.MessageEntityPre, { offset: 10, length: 4, language: "" }),
+      make(Api.MessageEntityItalic, { offset: 0, length: 1 }),
+      make(Api.MessageEntityUnderline, { offset: 0, length: 1 }),
+      make(Api.MessageEntityStrike, { offset: 0, length: 1 }),
+      make(Api.MessageEntitySpoiler, { offset: 0, length: 1 }),
+      make(Api.MessageEntityCode, { offset: 0, length: 1 }),
+      make(Api.MessageEntityBlockquote, { offset: 0, length: 14 }),
+      make(Api.MessageEntityTextUrl, { offset: 0, length: 1 }),
+      // Mentions are plain text; ranges past the text, empty or malformed are dropped.
+      make(Api.MessageEntityMention, { offset: 0, length: 1 }),
+      make(Api.MessageEntityBold, { offset: 10, length: 5 }),
+      make(Api.MessageEntityBold, { offset: -1, length: 2 }),
+      make(Api.MessageEntityBold, { offset: 1, length: 0 }),
+      make(Api.MessageEntityBold, { offset: "1", length: 1 }),
+      undefined,
+    ];
+    expect(entitiesOf(entities, text)).toEqual([
+      { type: "bold", offset: 0, length: 4 },
+      { type: "textUrl", offset: 5, length: 4, url: "https://x.org" },
+      { type: "pre", offset: 10, length: 4, language: "js" },
+      { type: "pre", offset: 10, length: 4 },
+      { type: "italic", offset: 0, length: 1 },
+      { type: "underline", offset: 0, length: 1 },
+      { type: "strike", offset: 0, length: 1 },
+      { type: "spoiler", offset: 0, length: 1 },
+      { type: "code", offset: 0, length: 1 },
+      { type: "blockquote", offset: 0, length: 14 },
+      { type: "textUrl", offset: 0, length: 1 },
+    ]);
+    expect(entitiesOf(undefined, text)).toEqual([]);
+    expect(entitiesOf(Array.from({ length: 600 }, () => make(Api.MessageEntityBold, { offset: 0, length: 1 })), "x")).toHaveLength(500);
+  });
+
+  it("turns formatting into Telegram's entities", () => {
+    const out = apiEntities([
+      { type: "bold", offset: 0, length: 1 },
+      { type: "textUrl", offset: 1, length: 2, url: "https://x.org" },
+      { type: "textUrl", offset: 1, length: 2 },
+      { type: "pre", offset: 3, length: 1, language: "py" },
+      { type: "pre", offset: 3, length: 1 },
+      { type: "blockquote", offset: 0, length: 4 },
+    ]);
+    expect(out.map((entity) => entity.constructor)).toEqual([Api.MessageEntityBold, Api.MessageEntityTextUrl, Api.MessageEntityTextUrl, Api.MessageEntityPre, Api.MessageEntityPre, Api.MessageEntityBlockquote]);
+    expect(out.map((entity) => ({ ...entity }))).toEqual([
+      { offset: 0, length: 1 },
+      { offset: 1, length: 2, url: "https://x.org" },
+      { offset: 1, length: 2, url: "" },
+      { offset: 3, length: 1, language: "py" },
+      { offset: 3, length: 1, language: "" },
+      { offset: 0, length: 4 },
+    ]);
+  });
+
+  it("gives messages their formatting", () => {
+    const message = make(Api.Message, { id: 1, date: 1, message: "hi", entities: [make(Api.MessageEntityBold, { offset: 0, length: 2 })] });
+    expect(toMessage(message, "9").entities).toEqual([{ type: "bold", offset: 0, length: 2 }]);
   });
 });

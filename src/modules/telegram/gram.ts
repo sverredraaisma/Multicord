@@ -16,6 +16,7 @@ import {
   type TelegramApi,
   type TelegramCredentials,
   type TgDialog,
+  type TgEntity,
   type TgFile,
   type TgMember,
   type TgMemberPage,
@@ -23,9 +24,11 @@ import {
   type TgPresence,
   type TgProfile,
   type TgSignIn,
+  type TgText,
   type TgUpdate,
   type TgUser,
 } from "./api";
+import { MAX_ENTITIES } from "./format";
 
 /** Largest profile picture passed on (as a data: URL); bigger ones show initials. */
 const MAX_AVATAR_BYTES = 140_000;
@@ -174,6 +177,54 @@ const total = (value: unknown): number => (typeof value === "number" && Number.i
 /** A count from Telegram, kept sane: a whole number from 0 to a million. */
 const tally = (value: unknown): number => (typeof value === "number" && Number.isInteger(value) && value > 0 ? Math.min(value, 1_000_000) : 0);
 
+/** Telegram's entity classes for the formatting the view shows; mentions, hashtags and the like are plain text there. */
+const ENTITY_TYPES: [new (...args: never[]) => Api.TypeMessageEntity, TgEntity["type"]][] = [
+  [Api.MessageEntityBold, "bold"],
+  [Api.MessageEntityItalic, "italic"],
+  [Api.MessageEntityUnderline, "underline"],
+  [Api.MessageEntityStrike, "strike"],
+  [Api.MessageEntitySpoiler, "spoiler"],
+  [Api.MessageEntityCode, "code"],
+  [Api.MessageEntityPre, "pre"],
+  [Api.MessageEntityTextUrl, "textUrl"],
+  [Api.MessageEntityBlockquote, "blockquote"],
+];
+
+/** A message's formatting, as far as it fits its text (offsets and lengths are UTF-16 units). */
+export function entitiesOf(entities: readonly unknown[] | undefined, text: string): TgEntity[] {
+  const out: TgEntity[] = [];
+  for (const entity of (entities ?? []).slice(0, MAX_ENTITIES)) {
+    const type = ENTITY_TYPES.find(([cls]) => entity instanceof cls)?.[1];
+    if (!type) continue;
+    const { offset, length, url, language } = entity as { offset?: unknown; length?: unknown; url?: unknown; language?: unknown };
+    if (!Number.isInteger(offset) || !Number.isInteger(length)) continue;
+    const [start, size] = [offset as number, length as number];
+    if (start < 0 || size <= 0 || start + size > text.length) continue;
+    const found: TgEntity = { type, offset: start, length: size };
+    if (type === "textUrl" && typeof url === "string") found.url = url.slice(0, 2048);
+    if (type === "pre" && typeof language === "string" && language !== "") found.language = language.slice(0, 64);
+    out.push(found);
+  }
+  return out;
+}
+
+/** Formatting for Telegram, from what the view's markdown said. */
+export function apiEntities(entities: readonly TgEntity[]): Api.TypeMessageEntity[] {
+  return entities.map(({ type, offset, length, url, language }) => {
+    switch (type) {
+      case "textUrl":
+        return new Api.MessageEntityTextUrl({ offset, length, url: url ?? "" });
+      case "pre":
+        return new Api.MessageEntityPre({ offset, length, language: language ?? "" });
+      default:
+        return new (ENTITY_TYPES.find(([, name]) => name === type)![0] as new (args: { offset: number; length: number }) => Api.TypeMessageEntity)({ offset, length });
+    }
+  });
+}
+
+/** Text and its formatting, as GramJS sends them. */
+const outgoing = (text: TgText) => ({ formattingEntities: apiEntities(text.entities) });
+
 export function toMessage(message: Api.Message, chatId: string): TgMessage {
   const out: TgMessage = {
     id: message.id,
@@ -183,6 +234,8 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
     date: message.date,
     edited: message.editDate !== undefined && message.editHide !== true,
   };
+  const entities = entitiesOf(message.entities, out.text);
+  if (entities.length > 0) out.entities = entities;
   // In groups and channels each message says who wrote it; in a private chat the chat does.
   if (!(message.peerId instanceof Api.PeerUser)) {
     const sender = entityName(message.sender) ?? (message.postAuthor || undefined);
@@ -267,8 +320,8 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       const page = await client.getMessages(peer(chatId), { limit, offsetId: beforeId ?? 0 });
       return page.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId)).reverse();
     },
-    send: async (chatId, text, replyTo) => toMessage(await client.sendMessage(peer(chatId), { message: text, replyTo, parseMode: false }), chatId),
-    edit: async (chatId, id, text) => toMessage(await client.editMessage(peer(chatId), { message: id, text, parseMode: false }), chatId),
+    send: async (chatId, text, replyTo) => toMessage(await client.sendMessage(peer(chatId), { message: text.text, replyTo, ...outgoing(text) }), chatId),
+    edit: async (chatId, id, text) => toMessage(await client.editMessage(peer(chatId), { message: id, text: text.text, ...outgoing(text) }), chatId),
     remove: async (chatId, ids) => void (await client.deleteMessages(peer(chatId), ids, { revoke: true })),
     markRead: async (chatId, maxId) => {
       await client.markAsRead(peer(chatId), maxId);

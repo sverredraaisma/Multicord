@@ -23,6 +23,23 @@ export interface TgFile {
   thumbnailOnly?: boolean;
 }
 
+/** A range of a message's text shown a certain way, counted in UTF-16 units as Telegram counts. */
+export interface TgEntity {
+  type: "bold" | "italic" | "underline" | "strike" | "spoiler" | "code" | "pre" | "textUrl" | "blockquote";
+  offset: number;
+  length: number;
+  /** A text link's address. */
+  url?: string;
+  /** A code block's language. */
+  language?: string;
+}
+
+/** Formatted text, as Telegram sends and takes it. */
+export interface TgText {
+  text: string;
+  entities: TgEntity[];
+}
+
 export interface TgMessage {
   id: number;
   chatId: string;
@@ -34,6 +51,8 @@ export interface TgMessage {
   /** It mentions the user or answers one of theirs. */
   mentioned?: boolean;
   text: string;
+  /** How the text is formatted, where it is. */
+  entities?: TgEntity[];
   /** A short label for media, e.g. "📷 Photo". */
   media?: string;
   /** The media itself, when it is something to show or play. */
@@ -117,8 +136,8 @@ export interface TelegramApi {
   dialogs(limit: number): Promise<TgDialog[]>;
   /** Messages before `beforeId` (or the newest), oldest first. */
   history(chatId: string, beforeId: number | undefined, limit: number): Promise<TgMessage[]>;
-  send(chatId: string, text: string, replyTo?: number): Promise<TgMessage>;
-  edit(chatId: string, id: number, text: string): Promise<TgMessage>;
+  send(chatId: string, text: TgText, replyTo?: number): Promise<TgMessage>;
+  edit(chatId: string, id: number, text: TgText): Promise<TgMessage>;
   remove(chatId: string, ids: number[]): Promise<void>;
   markRead(chatId: string, maxId: number): Promise<void>;
   /** A small profile picture as a data: URL. */
