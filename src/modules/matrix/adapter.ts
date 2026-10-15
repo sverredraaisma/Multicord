@@ -59,7 +59,7 @@ import {
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseDirects, parseEmotes, parseEvent, parseFormatting, parseHierarchy, parseJoinedMembers, parseMxc, parsePowerLevels, parsePresence, parseProfile, POLL_TYPES, MAX_VIA, reactionKey, roomId as checkRoomId, serverName, serviceUrl, userId, type MxProfile } from "./events";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseDirects, parseEmotes, parseEvent, parseFormatting, parseHierarchy, parseJoinedMembers, parseMxc, parsePoll, parsePowerLevels, parsePresence, parseProfile, POLL_TYPES, UNSTABLE_TEXT, MAX_VIA, reactionKey, roomId as checkRoomId, serverName, serviceUrl, userId, type MxProfile } from "./events";
 import { AttachmentError, decryptAttachment, encryptAttachment, imageSize } from "./media";
 import { markdownHtml, richMarkdown } from "./format";
 import { emoticonHtml, emoticonMarkdown, escapeHtml, HTML_FORMAT, packImageId, stickerFormat, textMentions } from "./packs";
@@ -234,6 +234,8 @@ const MAX_STICKY_WAITING = 100;
 export const MAX_REACTIONS = 5000;
 /** Poll votes and ends kept per room; beyond this the oldest go. */
 export const MAX_POLL_EVENTS = 5000;
+/** A poll end's text, for clients that show it as a message. */
+const POLL_ENDED = "The poll has ended.";
 /** Threads kept per room, and replies per thread; beyond these the oldest go. */
 export const MAX_THREADS = 200;
 export const MAX_THREAD_REPLIES = 500;
@@ -1060,6 +1062,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.pin(action.messageId, action.pin);
       case "vote":
         return this.vote(action.messageId, action.options);
+      case "createPoll":
+        return this.createPoll(action.question, action.answers, action.multiple);
+      case "endPoll":
+        return this.endPoll(action.messageId);
       case "join":
         return this.join(action.channelId);
       case "decline":
@@ -2518,6 +2524,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     };
     if (shown) view.total = total;
     if (!closed && !locked) view.canVote = true;
+    // Only the end of whoever started it counts.
+    if (!closed && !locked && event.sender === this.session!.userId) view.canEnd = true;
     return view;
   }
 
@@ -2539,6 +2547,62 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     await this.attempt("Vote not sent", async () => {
       const id = await this.sendContent(session, room, content, POLL_TYPES.response[poll.stable ? 0 : 1]);
       this.addEvent(room, { kind: "pollResponse", id, sender: session.userId, ts: Date.now(), target, answers }, false);
+      this.render();
+    });
+  }
+
+  /**
+   * Starts a poll in the open room, encrypted where the room is: an
+   * m.poll.start with its answers numbered, disclosed (votes show as they
+   * come, as Element's polls do). Beside the stable content it carries
+   * MSC3381's unstable form and text fallbacks, which Element reads and
+   * clients without polls show.
+   */
+  private async createPoll(question: string, answers: string[], multiple: boolean): Promise<void> {
+    const room = this.selectedRoom();
+    if (!room || this.lock(room)) return;
+    const session = this.session!;
+    const ids = answers.map((_, i) => `answer-${i + 1}`);
+    const maxSelections = multiple ? answers.length : 1;
+    const fallback = [question, ...answers.map((answer, i) => `${i + 1}. ${answer}`)].join("\n");
+    const content: Record<string, unknown> = {
+      "m.poll": {
+        question: { "m.text": [{ body: question }] },
+        kind: "m.disclosed",
+        max_selections: maxSelections,
+        answers: answers.map((answer, i) => ({ "m.id": ids[i], "m.text": [{ body: answer }] })),
+      },
+      "m.text": [{ body: fallback }],
+      [POLL_TYPES.start[1]]: {
+        question: { [UNSTABLE_TEXT]: question, body: question, msgtype: "m.text" },
+        kind: "org.matrix.msc3381.poll.disclosed",
+        max_selections: maxSelections,
+        answers: answers.map((answer, i) => ({ id: ids[i], [UNSTABLE_TEXT]: answer })),
+      },
+      [UNSTABLE_TEXT]: fallback,
+      body: fallback,
+    };
+    await this.attempt("Poll not sent", async () => {
+      const id = await this.sendContent(session, room, content, POLL_TYPES.start[0]);
+      const poll = parsePoll(content, true)!;
+      this.addEvent(room, { kind: "message", id, sender: session.userId, ts: Date.now(), content: { msgtype: "m.poll", text: "", media: `📊 ${poll.question}`, poll }, mentions: [] }, false);
+      this.publish();
+    });
+  }
+
+  /** Ends a poll the user started in the open room: a poll end in the poll's own form, encrypted where the room is. */
+  private async endPoll(local: string): Promise<void> {
+    const room = this.selectedRoom();
+    const event = room ? this.findEvent(room, local) : undefined;
+    const poll = event?.kind === "message" ? event.content.poll : undefined;
+    const session = this.session!;
+    if (!room || !poll || event!.sender !== session.userId || this.lock(room) || this.pollEnd(room, event as Message) !== undefined) return;
+    const target = event!.id;
+    const relation = { rel_type: "m.reference", event_id: target };
+    const content = poll.stable ? { "m.relates_to": relation, "m.text": [{ body: POLL_ENDED }] } : { "m.relates_to": relation, [POLL_TYPES.end[1]]: {}, [UNSTABLE_TEXT]: POLL_ENDED, body: POLL_ENDED };
+    await this.attempt("Poll not ended", async () => {
+      const id = await this.sendContent(session, room, content, POLL_TYPES.end[poll.stable ? 0 : 1]);
+      this.addEvent(room, { kind: "pollEnd", id, sender: session.userId, ts: Date.now(), target }, false);
       this.render();
     });
   }
@@ -3788,7 +3852,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             ...(this.threadOpen?.roomId === room.id ? { thread: this.threadState(room, this.threadOpen, locked, reactions, emojiUrls) } : {}),
             ...(this.membersOpen && this.memberList?.roomId === room.id ? { members: this.memberView(room, this.memberList) } : {}),
             // A locked room takes nothing from here; typing notices follow the user's setting.
-            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: true, stickers: !locked, pins: true, search: true, forward: !locked, threads: true },
+            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: true, stickers: !locked, pins: true, search: true, forward: !locked, threads: true, polls: !locked },
           }
         : null,
       // After the messages, which fill it.

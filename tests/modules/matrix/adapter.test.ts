@@ -902,7 +902,7 @@ describe("conversations", () => {
     const { channel } = ctx.chat();
     expect(channel).toMatchObject({ id: ctx.item("Bo").id, name: "Bo", loading: false, hasOlder: true, typing: [], pending: [], uploading: false });
     expect(channel).not.toHaveProperty("locked");
-    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, stickers: true, pins: true, search: true, forward: true, threads: true });
+    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, stickers: true, pins: true, search: true, forward: true, threads: true, polls: true });
     expect(ctx.item("Bo").active).toBe(true);
     expect(ctx.messages()).toEqual([
       {
@@ -1063,7 +1063,7 @@ describe("conversations", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     expect(ctx.chat().channel!.locked).toBe(ENCRYPTED_NOTICE);
-    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: true, stickers: false, pins: true, search: true, forward: false, threads: true });
+    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: true, stickers: false, pins: true, search: true, forward: false, threads: true, polls: false });
     expect(ctx.messages()).toEqual([
       expect.objectContaining({ content: ENCRYPTED_TEXT.replace("—", "—"), author: ANA, canEdit: false, canDelete: false }),
       expect.objectContaining({ content: "before encryption", mine: true, canEdit: false, canDelete: true }),
@@ -4995,15 +4995,91 @@ describe("polls", () => {
     expect(ctx.messages().at(-1)!.poll!.options).toEqual([{ id: "a0", text: "Pizza" }, { id: "a1", text: "Soup" }]);
   });
 
+  it("starts a poll in the stable form with the unstable one beside it, and ends it", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Lounge");
+    expect(ctx.chat().channel!.can.polls).toBe(true);
+    await ctx.act({ type: "createPoll", question: "Lunch?", answers: ["Pizza", "Soup"], multiple: true });
+    const fallback = "Lunch?\n1. Pizza\n2. Soup";
+    expect(ctx.api.send).toHaveBeenLastCalledWith(
+      SESSION,
+      "!lounge:x.org",
+      {
+        "m.poll": {
+          question: { "m.text": [{ body: "Lunch?" }] },
+          kind: "m.disclosed",
+          max_selections: 2,
+          answers: [
+            { "m.id": "answer-1", "m.text": [{ body: "Pizza" }] },
+            { "m.id": "answer-2", "m.text": [{ body: "Soup" }] },
+          ],
+        },
+        "m.text": [{ body: fallback }],
+        "org.matrix.msc3381.poll.start": {
+          question: { "org.matrix.msc1767.text": "Lunch?", body: "Lunch?", msgtype: "m.text" },
+          kind: "org.matrix.msc3381.poll.disclosed",
+          max_selections: 2,
+          answers: [
+            { id: "answer-1", "org.matrix.msc1767.text": "Pizza" },
+            { id: "answer-2", "org.matrix.msc1767.text": "Soup" },
+          ],
+        },
+        "org.matrix.msc1767.text": fallback,
+        body: fallback,
+      },
+      "m.poll.start",
+    );
+    const shown = ctx.messages().at(-1)!;
+    expect(shown.poll).toEqual({ question: "Lunch?", options: [{ id: "a0", text: "Pizza", votes: 0 }, { id: "a1", text: "Soup", votes: 0 }], multiple: true, closed: false, total: 0, canVote: true, canEnd: true });
+    const target = await ctx.api.send.mock.results.at(-1)!.value;
+    await ctx.act({ type: "endPoll", messageId: shown.id });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", { "m.relates_to": { rel_type: "m.reference", event_id: target }, "m.text": [{ body: "The poll has ended." }] }, "m.poll.end");
+    expect(ctx.messages().at(-1)!.poll).toMatchObject({ closed: true });
+    expect(ctx.messages().at(-1)!.poll).not.toHaveProperty("canEnd");
+    // Ended already: nothing more goes.
+    const sends = ctx.api.send.mock.calls.length;
+    await ctx.act({ type: "endPoll", messageId: shown.id });
+    expect(ctx.api.send).toHaveBeenCalledTimes(sends);
+  });
+
+  it("ends the user's own polls only, in their own form, and says when that fails", async () => {
+    const ctx = await signedIn();
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { timeline: [poll("p4", ANA, 3000), poll("p5", ME, 3001)] })] }));
+    await ctx.open("Lounge");
+    const [theirs, mine] = ctx.messages().slice(-2);
+    expect(theirs!.poll).not.toHaveProperty("canEnd");
+    await ctx.act({ type: "endPoll", messageId: theirs!.id });
+    await ctx.act({ type: "endPoll", messageId: ctx.messages()[0]!.id });
+    await ctx.act({ type: "endPoll", messageId: "99999" });
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    ctx.api.send.mockRejectedValueOnce(new Error("offline"));
+    await ctx.act({ type: "endPoll", messageId: mine!.id });
+    expect(ctx.chat().error).toBe("Poll not ended: offline");
+    await ctx.act({ type: "endPoll", messageId: mine!.id });
+    const relation = { rel_type: "m.reference", event_id: "$p5" };
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", { "m.relates_to": relation, "org.matrix.msc3381.poll.end": {}, "org.matrix.msc1767.text": "The poll has ended.", body: "The poll has ended." }, "org.matrix.msc3381.poll.end");
+    expect(ctx.messages().at(-1)!.poll).toMatchObject({ closed: true });
+    ctx.api.send.mockRejectedValueOnce(new Error("offline"));
+    await ctx.act({ type: "createPoll", question: "Q", answers: ["A", "B"], multiple: false });
+    expect(ctx.chat().error).toBe("Poll not sent: offline");
+  });
+
   it("offers no vote where nothing may be sent", async () => {
     const ctx = await signedIn();
     await ctx.live(sync({ joined: [room("!sec:x.org", { timeline: [poll("p3", ANA, 3000)] })] }));
     // Nothing open yet.
     await ctx.act({ type: "vote", messageId: "1", options: [] });
+    await ctx.act({ type: "createPoll", question: "Q", answers: ["A", "B"], multiple: false });
+    await ctx.act({ type: "endPoll", messageId: "1" });
+    await ctx.live(sync({ joined: [room("!sec:x.org", { timeline: [poll("p6", ME, 3001)] })] }));
     await ctx.open("Secret");
-    const shown = ctx.messages().at(-1)!;
-    expect(shown.poll).not.toHaveProperty("canVote");
-    await ctx.act({ type: "vote", messageId: shown.id, options: ["a0"] });
+    const [shown, mine] = ctx.messages().slice(-2);
+    expect(shown!.poll).not.toHaveProperty("canVote");
+    expect(mine!.poll).not.toHaveProperty("canEnd");
+    expect(ctx.chat().channel!.can.polls).toBe(false);
+    await ctx.act({ type: "vote", messageId: shown!.id, options: ["a0"] });
+    await ctx.act({ type: "createPoll", question: "Q", answers: ["A", "B"], multiple: false });
+    await ctx.act({ type: "endPoll", messageId: mine!.id });
     expect(ctx.api.send).not.toHaveBeenCalled();
   });
 

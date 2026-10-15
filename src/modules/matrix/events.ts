@@ -116,7 +116,7 @@ export const POLL_TYPES = {
   end: ["m.poll.end", "org.matrix.msc3381.poll.end"],
 } as const;
 /** The unstable form of extensible events' text (MSC1767), as Element still sends polls. */
-const UNSTABLE_TEXT = "org.matrix.msc1767.text";
+export const UNSTABLE_TEXT = "org.matrix.msc1767.text";
 /** Answers read per poll; MSC3381 allows 20. */
 export const MAX_POLL_ANSWERS = 20;
 const MAX_POLL_TEXT = 300;
