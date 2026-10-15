@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createNativeApi } from "../../src/preload/native";
-import { channelCan, isNativeAction, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MESSAGE_LENGTH, MEMBER_ROWS_SHOWN, memberList, NATIVE_IPC } from "../../src/shared/native";
+import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, memberList, memberProfile, NATIVE_IPC } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -222,5 +222,38 @@ describe("memberList", () => {
     expect(many.sections).toHaveLength(MAX_MEMBER_SECTIONS);
     expect(many.hasMore).toBe(true);
     expect(memberList({ sections: [], more: 1e12 })!.more).toBe(100_000_000);
+  });
+});
+
+describe("profiles", () => {
+  it("asks for a profile by a plain member id", () => {
+    for (const id of ["123", "01HZ0000000000000000000111", "@ana:example.org", "a/b+c=d"]) expect(isNativeAction({ type: "profile", id })).toBe(true);
+    for (const id of ["", "a b", "<x>", "x".repeat(256), 5, undefined]) expect(isNativeAction({ type: "profile", id })).toBe(false);
+  });
+
+  it("trusts a profile only with a usable id, keeping well-formed fields", () => {
+    for (const value of [undefined, null, [], { id: "bad id" }, { name: "Ana" }]) expect(memberProfile(value)).toBeUndefined();
+    const full = { id: "5", name: "Ana", avatarUrl: "data:image/png;base64,x", presence: "idle", status: "Away", username: "@ana", about: "Hi\nthere", roles: [{ name: "Admin", color: "#00ff00" }, { name: "Mod" }], loading: true };
+    expect(memberProfile(full)).toEqual(full);
+    expect(memberProfile({ id: "5" })).toEqual({ id: "5" });
+  });
+
+  it("drops malformed fields and cuts long texts and role lists", () => {
+    const profile = memberProfile({
+      id: "5",
+      name: " ",
+      avatarUrl: 5,
+      presence: "busy",
+      status: "",
+      username: null,
+      about: "a".repeat(MAX_ABOUT_LENGTH + 50),
+      roles: [null, { name: "" }, { name: "Admin", color: "green" }, ...Array.from({ length: 30 }, (_, i) => ({ name: `R${i}` }))],
+      loading: "yes",
+    })!;
+    expect(profile.about).toHaveLength(MAX_ABOUT_LENGTH);
+    expect(profile.roles![0]).toEqual({ name: "Admin" });
+    expect(profile.roles).toHaveLength(MAX_PROFILE_ROLES - 2);
+    expect(Object.keys(profile).sort()).toEqual(["about", "id", "roles"]);
+    expect(memberProfile({ id: "5", roles: "Admin" })).toEqual({ id: "5" });
   });
 });

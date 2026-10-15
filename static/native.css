@@ -462,3 +462,37 @@ button.member:hover, button.member:focus-visible { background: var(--surface); c
 @media (max-width: 900px) {
   .member-panel { position: absolute; top: 0; right: 0; bottom: 0; z-index: 6; width: min(260px, 85%); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.4); }
 }
+
+/* Profile cards */
+.meta button.author { padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
+.meta button.author:hover, .meta button.author:focus-visible { text-decoration: underline; }
+.avatar-button { flex: none; align-self: flex-start; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
+.profile-card {
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  z-index: 7;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  width: min(300px, calc(100% - 32px));
+  max-height: calc(100% - 72px);
+  padding: 16px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+.profile-card[hidden] { display: none; }
+.profile-card .avatar { width: 72px; height: 72px; font-size: 24px; }
+.profile-card .presence { width: 14px; height: 14px; }
+.profile-close { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border: 0; border-radius: 4px; background: none; color: var(--muted); font-size: 20px; cursor: pointer; }
+.profile-close:hover, .profile-close:focus-visible { background: var(--surface); color: var(--text); }
+.profile-name { margin: 8px 0 0; color: var(--member-color, var(--text)); font-size: 18px; overflow-wrap: anywhere; }
+.profile-username, .profile-status { margin: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.profile-roles { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
+.profile-role { padding: 2px 8px; border: 1px solid var(--role-color, var(--border)); border-radius: 10px; font-size: 12px; }
+.profile-about { margin: 8px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
+.profile-card .member-note { margin: 4px 0 0; }

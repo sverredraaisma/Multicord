@@ -101,6 +101,8 @@ export interface NativeReaction {
 export interface NativeMessage {
   id: string;
   author: string;
+  /** Who wrote it, as the module names people (NativeMember.id): the author's name and picture then open their profile. */
+  authorId?: string;
   avatarUrl?: string;
   content: string;
   timestamp: string;
@@ -182,6 +184,26 @@ export interface NativeMemberList {
   loading: boolean;
   /** Why the list could not be (fully) loaded. */
   error?: string;
+}
+
+/**
+ * A person's profile, answering a `profile` action. The view opens the card
+ * at once with what it was opened from (a message's author, a member row)
+ * and adds what this says once its id matches.
+ */
+export interface NativeProfile {
+  id: string;
+  name?: string;
+  avatarUrl?: string;
+  presence?: NativePresence;
+  status?: string;
+  /** How others find them, e.g. "@ana". */
+  username?: string;
+  /** Their own description (bio), plain text. */
+  about?: string;
+  roles?: { name: string; color?: string }[];
+  /** More is being fetched. */
+  loading?: boolean;
 }
 
 /**
@@ -282,6 +304,37 @@ export function memberList(value: unknown): NativeMemberList | undefined {
   return list;
 }
 
+export const MAX_PROFILE_ROLES = 20;
+export const MAX_ABOUT_LENGTH = 1000;
+
+/** A profile as the view trusts it: undefined without a usable id; malformed fields left out and texts cut short. */
+export function memberProfile(value: unknown): NativeProfile | undefined {
+  const v = record(value);
+  if (!v || !isMemberId(v.id)) return undefined;
+  const profile: NativeProfile = { id: v.id };
+  const name = shortText(v.name);
+  if (name) profile.name = name;
+  if (typeof v.avatarUrl === "string" && v.avatarUrl !== "") profile.avatarUrl = v.avatarUrl;
+  const presence = presenceOf(v.presence);
+  if (presence) profile.presence = presence;
+  const status = shortText(v.status);
+  if (status) profile.status = status;
+  const username = shortText(v.username);
+  if (username) profile.username = username;
+  const about = shortText(v.about, MAX_ABOUT_LENGTH);
+  if (about) profile.about = about;
+  const roles = (Array.isArray(v.roles) ? v.roles.slice(0, MAX_PROFILE_ROLES) : []).flatMap((raw) => {
+    const role = record(raw);
+    const roleName = shortText(role?.name);
+    if (!roleName) return [];
+    const color = colorOf(role!.color);
+    return [color ? { name: roleName, color } : { name: roleName }];
+  });
+  if (roles.length > 0) profile.roles = roles;
+  if (v.loading === true) profile.loading = true;
+  return profile;
+}
+
 /** One input of a sign-in step. */
 export interface NativePromptField {
   name: string;
@@ -325,6 +378,8 @@ export type NativeViewState =
       emojiBase?: string;
       /** The open server's custom emoji, for the picker. */
       customEmoji?: NativeCustomEmoji[];
+      /** The profile last asked for (a `profile` action), read by the view through memberProfile(). */
+      profile?: NativeProfile;
       error?: string;
     };
 
@@ -361,6 +416,8 @@ export type NativeAction =
   | { type: "members"; open: boolean }
   /** The next page of members; `offset` is how many are listed, so a page is never asked twice. */
   | { type: "loadMembers"; offset: number }
+  /** Someone's profile card opened: the module answers with `profile` in the chat state. */
+  | { type: "profile"; id: string }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -420,6 +477,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return typeof v.open === "boolean";
     case "loadMembers":
       return typeof v.offset === "number" && Number.isInteger(v.offset) && v.offset >= 0 && v.offset <= MAX_MEMBER_OFFSET;
+    case "profile":
+      return isMemberId(v.id);
     case "createPost":
       return text(v.name, 1, 100) && (v.name as string).trim() !== "" && content(v.content);
     case "removeAttachment":

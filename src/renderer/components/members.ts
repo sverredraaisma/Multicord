@@ -1,4 +1,4 @@
-import type { NativeMember, NativeMemberList, NativePresence } from "../../shared/native";
+import type { NativeMember, NativeMemberList, NativePresence, NativeProfile } from "../../shared/native";
 import { avatar } from "./avatar";
 import { el, setColor } from "./dom";
 
@@ -74,5 +74,40 @@ export function memberPanel(doc: Document, list: NativeMemberList, handlers: Mem
     });
     parts.push(more);
   }
+  return parts;
+}
+
+/** What a profile card shows: the profile, with at least a name. */
+export type ProfileCardData = NativeProfile & { name: string; color?: string };
+
+/**
+ * A person's profile card: picture with presence, name, username, status,
+ * roles and about text, and a close button. A dialog the view places over
+ * the conversation; Escape closes it too.
+ */
+export function profileCard(doc: Document, profile: ProfileCardData, onClose: () => void): HTMLElement[] {
+  const close = el(doc, "button", "profile-close", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", "Close");
+  close.addEventListener("click", onClose);
+  const name = el(doc, "h3", "profile-name", profile.name);
+  name.id = "profile-name";
+  setColor(name, "--member-color", profile.color);
+  const parts: HTMLElement[] = [close, presenceAvatar(doc, profile.avatarUrl, profile.name, profile.presence), name];
+  if (profile.username) parts.push(el(doc, "p", "profile-username", profile.username));
+  const status = [profile.presence ? PRESENCE_LABEL[profile.presence] : undefined, profile.status].filter(Boolean).join(" · ");
+  if (status) parts.push(el(doc, "p", "profile-status", status));
+  if (profile.roles?.length) {
+    const roles = el(doc, "ul", "profile-roles");
+    roles.setAttribute("aria-label", "Roles");
+    for (const role of profile.roles) {
+      const chip = el(doc, "li", "profile-role", role.name);
+      setColor(chip, "--role-color", role.color);
+      roles.append(chip);
+    }
+    parts.push(roles);
+  }
+  if (profile.about) parts.push(el(doc, "p", "profile-about", profile.about));
+  if (profile.loading) parts.push(el(doc, "p", "member-note", "Loading…"));
   return parts;
 }

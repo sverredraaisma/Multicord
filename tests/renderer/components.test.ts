@@ -4,7 +4,7 @@ import { avatar } from "../../src/renderer/components/avatar";
 import { channelItem } from "../../src/renderer/components/channels";
 import { countBadge, icon, initials, setColor } from "../../src/renderer/components/dom";
 import { emojiPicker } from "../../src/renderer/components/emojiPicker";
-import { memberPanel, memberRow, presenceAvatar } from "../../src/renderer/components/members";
+import { memberPanel, memberRow, presenceAvatar, profileCard } from "../../src/renderer/components/members";
 import { messageItem, type MessageHandlers } from "../../src/renderer/components/message";
 import { isOwnReaction, quickReactions } from "../../src/renderer/components/reactions";
 import { moduleLabel, serverIcon, serverTooltip } from "../../src/renderer/components/serverIcon";
@@ -271,5 +271,57 @@ describe("member list", () => {
     expect(parts({ sections: [], hasMore: true, loading: true })).toEqual(["Loading members…"]);
     expect(parts({ sections: [], hasMore: false, loading: false })).toEqual(["No members to show."]);
     expect(parts({ sections: [], hasMore: false, loading: false, error: "Only admins can see the members." })).toEqual(["Only admins can see the members."]);
+  });
+});
+
+describe("authors and profile cards", () => {
+  const message: NativeMessage = { id: "5", author: "Ana", content: "hi", timestamp: "2026-10-14T12:00:00Z", edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] };
+  const handlers = (extra: Partial<MessageHandlers> = {}): MessageHandlers => ({ onReply: vi.fn(), onToggleReactionPicker: vi.fn(), onReact: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn(), ...extra });
+
+  it("makes the author's name and picture open their profile when the message names them", () => {
+    const onOpenProfile = vi.fn();
+    const item = messageItem(document, { ...message, authorId: "7" }, handlers({ onOpenProfile }));
+    const name = item.querySelector<HTMLButtonElement>("button.author")!;
+    expect(name.textContent).toBe("Ana");
+    name.click();
+    const face = item.querySelector<HTMLButtonElement>("button.avatar-button")!;
+    expect(face.tabIndex).toBe(-1);
+    expect(face.getAttribute("aria-label")).toBe("Profile of Ana");
+    expect(face.querySelector(".avatar")).not.toBeNull();
+    face.click();
+    expect(onOpenProfile).toHaveBeenCalledTimes(2);
+    expect(onOpenProfile).toHaveBeenCalledWith(expect.objectContaining({ authorId: "7" }));
+  });
+
+  it("keeps the author plain without an id or a handler", () => {
+    for (const item of [messageItem(document, message, handlers({ onOpenProfile: vi.fn() })), messageItem(document, { ...message, authorId: "7" }, handlers())]) {
+      expect(item.querySelector("strong.author")!.textContent).toBe("Ana");
+      expect(item.querySelector("button.author, .avatar-button")).toBeNull();
+    }
+  });
+
+  it("shows a profile with what it has, and closes", () => {
+    const onClose = vi.fn();
+    const box = document.createElement("div");
+    box.append(
+      ...profileCard(
+        document,
+        { id: "7", name: "Ana", color: "#123456", presence: "online", status: "last seen recently", username: "@ana", about: "Hello", roles: [{ name: "Owner", color: "#ff0000" }, { name: "Bot" }], loading: true },
+        onClose,
+      ),
+    );
+    expect(box.querySelector("#profile-name")!.textContent).toBe("Ana");
+    expect(box.querySelector<HTMLElement>(".profile-name")!.style.getPropertyValue("--member-color")).toBe("#123456");
+    expect(box.querySelector(".profile-username")!.textContent).toBe("@ana");
+    expect(box.querySelector(".profile-status")!.textContent).toBe("Online · last seen recently");
+    expect([...box.querySelectorAll(".profile-role")].map((r) => r.textContent)).toEqual(["Owner", "Bot"]);
+    expect(box.querySelector<HTMLElement>(".profile-role")!.style.getPropertyValue("--role-color")).toBe("#ff0000");
+    expect(box.querySelector(".profile-about")!.textContent).toBe("Hello");
+    expect(box.textContent).toContain("Loading…");
+    box.querySelector<HTMLButtonElement>(".profile-close")!.click();
+    expect(onClose).toHaveBeenCalled();
+    const bare = profileCard(document, { id: "7", name: "Bo", status: "Bot", roles: [] }, onClose).map((p) => p.className);
+    expect(bare).toEqual(["profile-close", "presence-avatar", "profile-name", "profile-status"]);
+    expect(profileCard(document, { id: "7", name: "Bo" }, onClose)).toHaveLength(3);
   });
 });

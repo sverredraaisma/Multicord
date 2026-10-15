@@ -2,14 +2,14 @@ import { screenAudioPatch } from "../shared/screenAudio";
 import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { NativeChannelCan, NativeMessage, NativeViewState } from "../shared/native";
-import { channelCan, MAX_MESSAGE_LENGTH, memberList } from "../shared/native";
+import { channelCan, MAX_MESSAGE_LENGTH, memberList, memberProfile } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
 import { el, icon, ICONS } from "./components/dom";
 import { emojiPicker, type CustomEmoji, type PickedEmoji } from "./components/emojiPicker";
 import { typingText } from "./components/format";
-import { memberPanel } from "./components/members";
+import { memberPanel, profileCard, type ProfileCardData } from "./components/members";
 import { messageItem, type MessageHandlers } from "./components/message";
 import { forumPosts, pendingFiles, postForm, replyBar, voicePanel } from "./components/panels";
 import { isOwnReaction } from "./components/reactions";
@@ -46,6 +46,10 @@ export class NativeView {
   private pickerFor: string | undefined;
   private fullPickerFor: string | undefined;
   private lastState: ChatState | undefined;
+  /** Whose profile card is open, as it was opened. */
+  private profileFor: ProfileCardData | undefined;
+  /** The card just opened: its close button takes focus. */
+  private focusProfile = false;
   private call: VoiceCall | undefined;
   private voiceSettings: VoiceSettings | undefined;
 
@@ -271,7 +275,15 @@ export class NativeView {
     members.hidden = true;
     // The panel sits beside the conversation, or over it where the window is narrow.
     const area = el(doc, "div", "conversation-area");
-    area.append(main, members);
+    // Someone's profile, opened from a message's author or a member row.
+    const profile = el(doc, "section", "profile-card");
+    profile.setAttribute("role", "dialog");
+    profile.setAttribute("aria-labelledby", "profile-name");
+    profile.hidden = true;
+    profile.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") this.closeProfile();
+    });
+    area.append(main, members, profile);
 
     const layout = el(doc, "div", "chat");
     layout.append(sidebar, area);
@@ -283,6 +295,7 @@ export class NativeView {
       heading,
       membersToggle,
       members,
+      profile,
       banner,
       messages,
       typing,
@@ -375,6 +388,7 @@ export class NativeView {
       const win = this.doc.defaultView;
       if (!win?.confirm || win.confirm("Delete this message?")) this.api.act({ type: "delete", messageId: message.id });
     },
+    onOpenProfile: (message) => this.openProfile({ id: message.authorId!, name: message.author, avatarUrl: message.avatarUrl }),
   };
 
   /** What the open conversation allows; nothing while none is open. */
@@ -416,9 +430,41 @@ export class NativeView {
     const focused = this.doc.activeElement;
     const focusKey = focused instanceof HTMLElement && panel.contains(focused) ? (focused.dataset.id ?? focused.className) : undefined;
     const listed = list.sections.reduce((sum, section) => sum + section.members.length, 0);
-    panel.replaceChildren(...memberPanel(this.doc, list, { onLoadMore: () => this.api.act({ type: "loadMembers", offset: listed }) }));
+    panel.replaceChildren(
+      ...memberPanel(this.doc, list, {
+        onOpen: (member) => this.openProfile(member),
+        onLoadMore: () => this.api.act({ type: "loadMembers", offset: listed }),
+      }),
+    );
     if (focusKey === undefined) return;
     [...panel.querySelectorAll<HTMLButtonElement>("button")].find((b) => (b.dataset.id ?? b.className) === focusKey && !b.disabled)?.focus();
+  }
+
+  /** Opens someone's card at once with what the view knows, and asks the module for the rest. */
+  private openProfile(seed: ProfileCardData): void {
+    this.profileFor = seed;
+    this.focusProfile = true;
+    this.api.act({ type: "profile", id: seed.id });
+    this.updateProfile();
+  }
+
+  private closeProfile(): void {
+    this.profileFor = undefined;
+    this.updateProfile();
+  }
+
+  /** The profile card: what it was opened with, plus the module's answer once it is about the same person. */
+  private updateProfile(): void {
+    const card = this.parts.profile!;
+    const seed = this.profileFor;
+    card.hidden = !seed;
+    if (!seed) return card.replaceChildren();
+    const answer = memberProfile(this.lastState?.profile);
+    const data: ProfileCardData = answer?.id === seed.id ? { ...seed, ...answer, name: answer.name ?? seed.name } : seed;
+    const focus = this.focusProfile || card.contains(this.doc.activeElement);
+    this.focusProfile = false;
+    card.replaceChildren(...profileCard(this.doc, data, () => this.closeProfile()));
+    if (focus) card.querySelector<HTMLButtonElement>(".profile-close")!.focus();
   }
 
   private updateChat(state: ChatState): void {
@@ -431,6 +477,7 @@ export class NativeView {
       this.editingId = undefined;
       this.pickerFor = undefined;
       this.fullPickerFor = undefined;
+      this.profileFor = undefined;
     }
     title!.textContent = state.title;
     me!.textContent = state.me;
@@ -446,6 +493,7 @@ export class NativeView {
     const channel = state.channel;
     heading!.textContent = channel ? channel.name : "Select a conversation";
     this.updateMembers();
+    this.updateProfile();
     this.parts.typing!.textContent = typingText(channel?.typing ?? []);
 
     const uploading = channel?.uploading ?? false;

@@ -947,3 +947,60 @@ describe("member panel", () => {
     expect(panel().querySelector(".member-more")).toBeNull();
   });
 });
+
+describe("profile cards", () => {
+  const card = () => root.querySelector<HTMLElement>(".profile-card")!;
+  const withAuthor = (extra: Partial<Chat> = {}) => chat({ channel: { ...chat().channel!, messages: [msg("10", { authorId: "7", avatarUrl: "https://x/a.png" })] }, ...extra });
+
+  it("opens from a message's author with what the view knows, then adds the module's answer", () => {
+    view.update(withAuthor());
+    expect(card().hidden).toBe(true);
+    root.querySelector<HTMLButtonElement>("button.author")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "profile", id: "7" });
+    expect(card().hidden).toBe(false);
+    expect(card().getAttribute("role")).toBe("dialog");
+    expect(card().querySelector(".profile-name")!.textContent).toBe("Ana");
+    expect(card().querySelector("img.avatar")!.getAttribute("src")).toBe("https://x/a.png");
+    expect(document.activeElement).toBe(card().querySelector(".profile-close"));
+    // An answer about someone else is not shown; one about them is, over what the view had.
+    view.update(withAuthor({ profile: { id: "8", name: "Bo", about: "Not Ana" } }));
+    expect(card().textContent).not.toContain("Not Ana");
+    view.update(withAuthor({ profile: { id: "7", about: "Hi there", username: "@ana", loading: true } }));
+    expect(card().querySelector(".profile-name")!.textContent).toBe("Ana");
+    expect(card().querySelector(".profile-about")!.textContent).toBe("Hi there");
+    expect(document.activeElement).toBe(card().querySelector(".profile-close"));
+    view.update(withAuthor({ profile: { id: "7", name: "Ana Bo", about: "Hi there" } }));
+    expect(card().querySelector(".profile-name")!.textContent).toBe("Ana Bo");
+    expect(card().textContent).not.toContain("Loading…");
+  });
+
+  it("closes with its button, with Escape, and when the conversation changes", () => {
+    view.update(withAuthor());
+    root.querySelector<HTMLButtonElement>(".avatar-button")!.click();
+    card().querySelector<HTMLButtonElement>(".profile-close")!.click();
+    expect(card().hidden).toBe(true);
+    expect(card().children).toHaveLength(0);
+    root.querySelector<HTMLButtonElement>("button.author")!.click();
+    card().dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    expect(card().hidden).toBe(false);
+    card().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(card().hidden).toBe(true);
+    root.querySelector<HTMLButtonElement>("button.author")!.click();
+    view.update(chat({ channel: { ...chat().channel!, id: "3" } }));
+    expect(card().hidden).toBe(true);
+  });
+
+  it("opens from a member row with the row's presence and status", () => {
+    const list = { sections: [{ name: "Members", members: [{ id: "9", name: "Cy", presence: "idle", status: "Bot" }] }], hasMore: false, loading: false };
+    view.update(chat({ channel: { ...chat().channel!, can: { ...ALL, members: true }, members: list as never } }));
+    root.querySelector<HTMLButtonElement>("button.member")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "profile", id: "9" });
+    expect(card().querySelector(".profile-status")!.textContent).toBe("Idle · Bot");
+    // A member row keeps focus across updates by its id.
+    const row = root.querySelector<HTMLButtonElement>("button.member")!;
+    row.focus();
+    view.update(chat({ channel: { ...chat().channel!, can: { ...ALL, members: true }, members: list as never } }));
+    expect(document.activeElement).toBe(root.querySelector("button.member"));
+    expect(document.activeElement).not.toBe(row);
+  });
+});

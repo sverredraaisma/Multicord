@@ -113,6 +113,8 @@ export interface MessageHandlers {
   onMoreReactions?(message: NativeMessage): void;
   onEdit(message: NativeMessage): void;
   onDelete(message: NativeMessage): void;
+  /** Opens the author's profile (messages with an authorId); without it the author is plain text. */
+  onOpenProfile?(message: NativeMessage): void;
 }
 
 export interface MessageOptions extends MarkdownOptions {
@@ -156,8 +158,25 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
         : el(doc, "div", "reply missing", "↪ Original message was deleted"),
     );
   }
+  // With an author id, the name and picture open the author's profile.
+  const openProfile = message.authorId && handlers.onOpenProfile ? () => handlers.onOpenProfile!(message) : undefined;
+  let author: HTMLElement = el(doc, "strong", "author", message.author);
+  let picture: HTMLElement = avatar(doc, message.avatarUrl, message.author);
+  if (openProfile) {
+    const name = el(doc, "button", "author", message.author);
+    name.type = "button";
+    name.addEventListener("click", openProfile);
+    // The name is the keyboard's way in; the picture is a second target for the mouse.
+    const face = el(doc, "button", "avatar-button");
+    face.type = "button";
+    face.tabIndex = -1;
+    face.setAttribute("aria-label", `Profile of ${message.author}`);
+    face.append(picture);
+    face.addEventListener("click", openProfile);
+    [author, picture] = [name, face];
+  }
   const meta = el(doc, "div", "meta");
-  meta.append(el(doc, "strong", "author", message.author), el(doc, "time", undefined, formatTime(message.timestamp)));
+  meta.append(author, el(doc, "time", undefined, formatTime(message.timestamp)));
   if (message.edited) meta.append(el(doc, "span", "edited", "(edited)"));
   body.append(meta);
 
@@ -185,6 +204,6 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
   }
   if (options.reactionPicker && canReact) body.append(options.reactionPicker);
 
-  li.append(avatar(doc, message.avatarUrl, message.author), body, messageActions(doc, message, handlers, options.can));
+  li.append(picture, body, messageActions(doc, message, handlers, options.can));
   return li;
 }
