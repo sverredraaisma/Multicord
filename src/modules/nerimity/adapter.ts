@@ -116,6 +116,16 @@ export function presenceOf(status: number | undefined): NativePresence {
   }
 }
 
+/** Nevula's mentions and quotes ([@:id], [@:e], [r:id], [q:id]), which notify whom they name. */
+const PINGS = /\[(@|r|q):([^\]\n]{1,300})\]/g;
+
+/** Markdown quote: each line after "> ". */
+const quote = (text: string): string =>
+  text
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+
 /** System messages, which Nerimity writes from their type rather than text. */
 const SYSTEM_TEXT: Record<number, string> = {
   [MessageType.JoinServer]: "joined the server.",
@@ -260,6 +270,8 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
         return this.searchMessages(action.query);
       case "mute":
         return this.mute(action.channelId, action.mute);
+      case "forward":
+        return this.forward(action.messageId, action.channelId);
       case "logout":
         return this.logout();
       default:
@@ -552,6 +564,47 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     });
     this.uploading.delete(channelId);
     this.render();
+  }
+
+  /** Forwards a loaded message of the open channel into another channel or DM the user may see, as a quoted copy (Nerimity has no forward of its own). */
+  private async forward(messageId: string, target: string): Promise<void> {
+    const from = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
+    const message = from && this.state.findMessage(from.id, messageId);
+    const to = this.state.channels.get(target);
+    if (!from || !message || !to || !TEXT_CHANNEL_TYPES.has(to.type) || !this.state.canSee(to)) return;
+    await this.attempt("Message not forwarded", async () => {
+      const sent = await this.rest.sendMessage(to.id, this.forwardText(message, from));
+      // Only into history already loaded; otherwise it comes with the rest when the channel opens.
+      if (this.state.messages.has(to.id)) this.addSent(to.id, sent);
+    });
+  }
+
+  /**
+   * A message as a new message elsewhere: who wrote it and where, then its
+   * text and file links quoted, cut to what Nerimity takes. Mentions and
+   * quotes become plain text, so a forward notifies no one.
+   */
+  private forwardText(message: NerimityMessage, from: NerimityChannel): string {
+    const server = from.serverId ? this.state.servers.get(from.serverId) : undefined;
+    const where = server ? `#${this.channelTitle(from)} (${server.name})` : "a DM";
+    const author = message.author ? this.authorName(message.author, from.serverId) : "Deleted user";
+    const system = SYSTEM_TEXT[message.type];
+    const files = message.attachments.flatMap((a) => (a.path && a.provider === "local" ? [`📎 ${this.attachmentView(a).name}: ${this.cdn}/${a.path}`] : []));
+    const text = [system ? `*${system}*` : message.content, ...files].filter(Boolean).join("\n");
+    // A name put in place of a mention loses its brackets, so it cannot make a mention of its own.
+    const plain = (name: string): string => `@${name.replace(/[[\]]/g, "")}`;
+    const full = `*Forwarded from ${author} in ${where}:*\n${quote(text)}`.replace(PINGS, (_match, type: string, value: string) => {
+      if (type === "q") return "";
+      if (type === "r") return plain([...this.state.roles.values()].flat().find((r) => r.id === value)?.name ?? "unknown role");
+      if (value === "e") return "@everyone";
+      if (value === "s") return "@someone";
+      const user = this.state.users.get(value);
+      return plain(user ? this.authorName(user, from.serverId) : "unknown user");
+    });
+    if (full.length <= MAX_CONTENT) return full;
+    // Cut short, without splitting a character made of two code units.
+    const high = full.charCodeAt(MAX_CONTENT - 2);
+    return `${full.slice(0, high >= 0xd800 && high <= 0xdbff ? MAX_CONTENT - 2 : MAX_CONTENT - 1)}…`;
   }
 
   private addSent(channelId: string, sent: NerimityMessage | undefined): void {
@@ -1102,7 +1155,7 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(members ? { members } : {}),
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
                 ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
-                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true, search: true },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true, search: true, forward: true },
               }
             : null,
           voice: null,

@@ -760,6 +760,57 @@ describe("NerimityAdapter messages", () => {
     expect(ctx.channel()).not.toHaveProperty("search");
   });
 
+  it("forwards a message as a quoted copy that mentions and quotes no one", async () => {
+    const history = [
+      message("450", "111", {
+        content: "hi [@:1] [@:404] [r:120] [r:9] [@:e] [@:s] [q:3] [#:113] [ce:130:party] [@:3]\nline2",
+        attachments: [
+          { id: "8", path: "attachments/111/8/a%20b.png", provider: "local" },
+          { id: "9", provider: "google_drive" },
+        ],
+      }),
+      message("455", "111", { type: 7, content: "" }),
+      message("460", "111", { content: `${"x".repeat(1953)}${"😀".repeat(30)}` }),
+      message("470", "111", { content: "y".repeat(2100) }),
+    ];
+    const ctx = await opened({ routes: [(url) => (url === `${API}/channels/111/messages?limit=50` ? { status: 200, body: history } : undefined)] });
+    // A nickname that looks like a mention stays plain text.
+    await ctx.dispatch("server:member_updated", { serverId: "100", userId: "3", updated: { nickname: "[@:e]" } });
+    expect(ctx.channel().can.forward).toBe(true);
+    const sent = () => body(ctx.calls.at(-1)!.init);
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "900" });
+    expect(ctx.calls.at(-1)!.url).toBe(`${API}/channels/900/messages`);
+    expect(sent()).toEqual({
+      content: `*Forwarded from Anna in #general (Alpha):*\n> hi @me @unknown user @Admins @unknown role @everyone @someone  [#:113] [ce:130:party] @@:e\n> line2\n> 📎 a b.png: ${CDN}/attachments/111/8/a%20b.png`,
+    });
+    await ctx.adapter.handleAction({ type: "forward", messageId: "455", channelId: "900" });
+    expect(sent().content).toBe("*Forwarded from Anna in #general (Alpha):*\n> *pinned a message.*");
+    // Long messages are cut to what Nerimity takes, never inside a character.
+    await ctx.adapter.handleAction({ type: "forward", messageId: "460", channelId: "900" });
+    expect(sent().content).toHaveLength(1999);
+    expect(String(sent().content).endsWith("x…")).toBe(true);
+    await ctx.adapter.handleAction({ type: "forward", messageId: "470", channelId: "900" });
+    expect(sent().content).toHaveLength(2000);
+    // Into a loaded channel, the copy shows there at once.
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "111" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.channel().messages.at(-1)!.id).toBe("990");
+    // Unknown messages and targets, categories and channels the user may not see: nothing is sent.
+    const calls = ctx.calls.length;
+    for (const [messageId, channelId] of [["999", "900"], ["450", "404"], ["450", "110"], ["450", "112"]] as const) await ctx.adapter.handleAction({ type: "forward", messageId, channelId });
+    expect(ctx.calls.length).toBe(calls);
+    // From a DM, the header says so; a deleted author is named so.
+    await ctx.adapter.openConversation("900");
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "111" });
+    expect(sent().content).toBe("*Forwarded from ana in a DM:*\n> m450");
+    ctx.adapter.state.messages.get("900")![0]!.author = undefined;
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "111" });
+    expect(sent().content).toBe("*Forwarded from Deleted user in a DM:*\n> m450");
+    ctx.routes.unshift((url, init) => (init.method === "POST" && url.endsWith("/messages") ? { status: 400, body: { message: "You must confirm your email to send messages." } } : undefined));
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "111" });
+    expect(ctx.last()).toMatchObject({ error: "Message not forwarded: You must confirm your email to send messages." });
+  });
+
   it("pins and unpins where the user may, and shows the server's refusal", async () => {
     const ctx = await opened({}, "900");
     await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
@@ -840,6 +891,7 @@ describe("NerimityAdapter messages", () => {
       { type: "pins", open: true },
       { type: "pin", messageId: "1", pin: true },
       { type: "search", query: "x" },
+      { type: "forward", messageId: "450", channelId: "900" },
     ] as const)
       await adapter.handleAction(action as never);
     expect(calls.length).toBe(before);
