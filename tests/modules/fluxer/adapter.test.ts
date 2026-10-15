@@ -297,7 +297,7 @@ describe("FluxerAdapter chat", () => {
     ]);
     expect(state.sidebar[3]).toMatchObject({ unread: true, mentions: 2 });
     expect(state.channel).toMatchObject({ id: "113", name: "lobby", loading: false, hasOlder: false });
-    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, gifs: false, pins: true, search: true });
+    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, gifs: false, pins: true, search: true, forward: true });
     expect(state.channel!.messages[0]).toMatchObject({ id: "450", author: "Ana", content: "m450", mine: false });
     expect(calls.some((c) => c.url.includes("/channels/113/messages?limit=50"))).toBe(true);
 
@@ -1564,5 +1564,54 @@ describe("FluxerAdapter search", () => {
     const before = ctx.calls.length;
     await ctx.adapter.handleAction({ type: "search", query: "nowhere" });
     expect(ctx.calls.length).toBe(before);
+  });
+});
+
+describe("FluxerAdapter forwarding", () => {
+  async function opened(routes: Handler[] = []) {
+    const ctx = setup({ token: "flx_saved", routes });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openServer("100");
+    return ctx;
+  }
+
+  it("forwards as a FORWARD reference into another channel or DM, and shows a refusal", async () => {
+    let refuse = false;
+    const forwarded = message("990", "111", { author: ME, content: "", message_snapshots: [{ message: { content: "m450\nline two", attachments: [{ id: "7", filename: "a.png", url: "https://media.fx/a.png" }] } }] });
+    const ctx = await opened([(url, init) => (init.method === "POST" && url.endsWith("/messages") ? (refuse ? { status: 403, body: { code: "NO", message: "Cannot send" } } : { status: 200, body: forwarded }) : undefined)]);
+    expect(ctx.chat().channel!.can.forward).toBe(true);
+    // Into a loaded channel: it shows there at once, quoted under "Forwarded".
+    await ctx.adapter.handleAction({ type: "select", channelId: "111" });
+    await ctx.adapter.handleAction({ type: "select", channelId: "113" });
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "111" });
+    const post = ctx.calls.at(-1)!;
+    expect(post.url).toBe("https://api.fx/v1/channels/111/messages");
+    expect(JSON.parse(post.init.body as string)).toEqual({ message_reference: { type: 1, message_id: "450", channel_id: "113", guild_id: "100" }, nonce: expect.any(String) });
+    await ctx.adapter.handleAction({ type: "select", channelId: "111" });
+    const shown = ctx.chat().channel!.messages.at(-1)!;
+    expect(shown.content).toBe("*Forwarded*\n> m450\n> line two");
+    expect(shown.attachments).toEqual([expect.objectContaining({ name: "a.png", url: "https://media.fx/a.png" })]);
+    // From a DM, into a DM not loaded: no guild, nothing added.
+    await ctx.adapter.openHome();
+    await ctx.adapter.handleAction({ type: "select", channelId: "900" });
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "901" });
+    expect(JSON.parse(ctx.calls.at(-1)!.init.body as string).message_reference).toEqual({ type: 1, message_id: "450", channel_id: "900" });
+    // No such target, or not a text one: nothing sent.
+    const before = ctx.calls.length;
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "999" });
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "112" });
+    expect(ctx.calls.length).toBe(before);
+    refuse = true;
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "901" });
+    expect(ctx.chat().error).toBe("Message not forwarded: Cannot send");
+  });
+
+  it("shows a forward with words of its own, and one without the original's text", async () => {
+    const { parseMessage: parse } = await import("../../../src/modules/fluxer/types");
+    expect(parse(message("1", "113", { message_snapshots: [{ message: { content: 5 } }] }))!.forwarded).toEqual({ content: "", attachments: [] });
+    expect(parse(message("1", "113", { message_snapshots: ["junk"] }))!.forwarded).toBeUndefined();
+    const ctx = await opened([(url) => (url.includes("/messages?") ? { status: 200, body: [message("451", "113", { content: "look", message_snapshots: [{ message: {} }] })] } : undefined)]);
+    expect(ctx.chat().channel!.messages[0]!.content).toBe("look\n*Forwarded*");
   });
 });

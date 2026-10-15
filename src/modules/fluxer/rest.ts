@@ -140,6 +140,13 @@ export class FluxerRest {
     return parseMessage(await this.request("POST", `/channels/${channelId}/messages`, body));
   }
 
+  /** Forwards a message (a FORWARD message reference, type 1): Fluxer copies it as a snapshot into `channelId`. */
+  async forward(channelId: string, source: { channelId: string; messageId: string; guildId?: string }, nonce: string): Promise<FluxerMessage | undefined> {
+    const reference: Record<string, unknown> = { type: 1, message_id: source.messageId, channel_id: source.channelId };
+    if (source.guildId) reference.guild_id = source.guildId;
+    return parseMessage(await this.request("POST", `/channels/${channelId}/messages`, { message_reference: reference, nonce }));
+  }
+
   /** Searches the instance's GIF provider; an empty query asks for its trending GIFs. */
   async gifs(query: string): Promise<FluxerGif[]> {
     const path = query === "" ? "/gifs/trending" : `/gifs/search?${new URLSearchParams({ q: query })}`;

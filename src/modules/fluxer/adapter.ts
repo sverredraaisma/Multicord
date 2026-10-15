@@ -235,6 +235,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.render();
       case "pins":
         return this.showPins(action.open);
+      case "forward":
+        return this.forward(action.messageId, action.channelId);
       case "search":
         return this.searchMessages(action.query);
       case "pin":
@@ -827,6 +829,17 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     this.render();
   }
 
+  /** Forwards a message of the open channel into another text channel or DM, as Fluxer forwards (a FORWARD message reference). */
+  private async forward(messageId: string, target: string): Promise<void> {
+    const source = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
+    const to = this.state.channels.get(target);
+    if (!source || !to || !TEXT_CHANNEL_TYPES.has(to.type) || !this.rest) return;
+    await this.attempt("Message not forwarded", async () => {
+      const sent = await this.rest!.forward(to.id, { channelId: source.id, messageId, guildId: source.guildId }, newNonce());
+      if (sent && this.state.messages.has(to.id)) this.state.addHistory(to.id, [sent], false);
+    });
+  }
+
   /** Searches the open channel on the instance (POST /search/messages), or ends the search with an empty query. */
   private async searchMessages(query: string): Promise<void> {
     const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
@@ -1011,6 +1024,15 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       });
   }
 
+  /** A message's text for the view; a forward's copy of the original follows, quoted under "Forwarded". */
+  private messageContent(message: FluxerMessage): string {
+    const own = this.renderContent(message.content);
+    const forwarded = message.forwarded;
+    if (!forwarded) return own;
+    const quoted = forwarded.content === "" ? "" : this.renderContent(forwarded.content).split("\n").map((line) => `> ${line}`).join("\n");
+    return [own, "*Forwarded*", quoted].filter(Boolean).join("\n");
+  }
+
   /** A message as the pins list shows it: its text, or what it carries when it has none. */
   private listedMessage(message: FluxerMessage): NativeListedMessage {
     const carried = message.attachments.length > 0 ? `📎 ${message.attachments[0]!.filename}` : message.stickers.length > 0 ? `${message.stickers[0]!.name} (sticker)` : "";
@@ -1018,7 +1040,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       id: message.id,
       author: displayName(this.state.users.get(message.author.id) ?? message.author),
       avatarUrl: this.iconUrl("avatars", message.author.id, message.author.avatar, 64),
-      content: this.renderContent(message.content) || carried,
+      content: this.messageContent(message) || carried,
       timestamp: message.timestamp,
     };
   }
@@ -1031,7 +1053,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       id: message.id,
       author: displayName(this.state.users.get(message.author.id) ?? message.author),
       avatarUrl: this.iconUrl("avatars", message.author.id, message.author.avatar, 64),
-      content: this.renderContent(message.content),
+      content: this.messageContent(message),
       timestamp: message.timestamp,
       edited: message.edited,
       mine,
@@ -1063,7 +1085,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
 
   /** A message's files, stickers and media link previews, as the view shows them. */
   private media(message: FluxerMessage): NativeAttachment[] {
-    const files: NativeAttachment[] = message.attachments.map((a) => ({
+    const files: NativeAttachment[] = [...message.attachments, ...(message.forwarded?.attachments ?? [])].map((a) => ({
       name: a.filename,
       kind: mediaKind(a.contentType),
       url: a.url,
@@ -1185,6 +1207,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                 can: {
                   pins: !FORUM_TYPES.has(channel.type),
                   search: !FORUM_TYPES.has(channel.type),
+                  forward: !FORUM_TYPES.has(channel.type),
                   reply: true,
                   react: true,
                   attach: this.deps.files !== undefined,

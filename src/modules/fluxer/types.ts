@@ -182,6 +182,8 @@ export interface FluxerMessage {
   replyTo?: FluxerReplyPreview | null;
   reactions?: FluxerReaction[];
   pinned?: boolean;
+  /** A forwarded message's copy of the original (message_snapshots): its text and files; who wrote it is not said. */
+  forwarded?: { content: string; attachments: FluxerAttachment[] };
 }
 
 export interface FluxerReplyPreview {
@@ -309,11 +311,7 @@ export function parseMessage(value: unknown): FluxerMessage | undefined {
     edited: typeof value.edited_timestamp === "string",
     mentionIds: list(value.mentions).flatMap((m) => (isRecord(m) && isId(m.id) ? [m.id] : [])),
     mentionEveryone: value.mention_everyone === true,
-    attachments: list(value.attachments).flatMap((a) =>
-      isRecord(a) && isId(a.id) && typeof a.filename === "string"
-        ? [{ id: a.id, filename: a.filename, contentType: str(a.content_type), url: str(a.proxy_url) ?? str(a.url), width: dimension(a.width), height: dimension(a.height), size: dimension(a.size) }]
-        : [],
-    ),
+    attachments: parseAttachments(value.attachments),
     stickers: list(value.sticker_items ?? value.stickers).flatMap((s) =>
       isRecord(s) && isId(s.id) && typeof s.name === "string" ? [{ id: s.id, name: s.name.slice(0, 100), format: typeof s.format_type === "number" ? s.format_type : 1, animated: s.animated === true }] : [],
     ),
@@ -333,7 +331,24 @@ export function parseMessage(value: unknown): FluxerMessage | undefined {
       return emoji && count ? [{ emoji, count, me: (r as Record<string, unknown>).me === true }] : [];
     }),
     ...(value.pinned === true ? { pinned: true } : {}),
+    ...parseForwarded(value.message_snapshots),
   };
+}
+
+function parseAttachments(value: unknown): FluxerAttachment[] {
+  return list(value).flatMap((a) =>
+    isRecord(a) && isId(a.id) && typeof a.filename === "string"
+      ? [{ id: a.id, filename: a.filename, contentType: str(a.content_type), url: str(a.proxy_url) ?? str(a.url), width: dimension(a.width), height: dimension(a.height), size: dimension(a.size) }]
+      : [],
+  );
+}
+
+/** A forward's copy of the original message: the first snapshot's text and files. */
+function parseForwarded(value: unknown): Pick<FluxerMessage, "forwarded"> {
+  const snapshot = list(value)[0];
+  const message = isRecord(snapshot) && isRecord(snapshot.message) ? snapshot.message : undefined;
+  if (!message) return {};
+  return { forwarded: { content: typeof message.content === "string" ? message.content : "", attachments: parseAttachments(message.attachments) } };
 }
 
 /** A positive whole number (pixels, bytes), else undefined. */
