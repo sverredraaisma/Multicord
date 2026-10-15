@@ -393,10 +393,26 @@ describe("OAuth token refresh", () => {
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 
-  it("does not refresh a hard logout, a session without refresh token, or without a refresher", async () => {
-    const hard = refreshing(() => json({ errcode: "M_UNKNOWN_TOKEN", error: "gone" }, 401));
-    await expect(hard.client.check(oauthSession())).rejects.toMatchObject({ errcode: "M_UNKNOWN_TOKEN", softLogout: false });
-    expect(hard.refresh).not.toHaveBeenCalled();
+  it("refreshes a token refused without soft_logout, as Synapse behind MAS refuses expired ones", async () => {
+    const mas = () => json({ errcode: "M_UNKNOWN_TOKEN", error: "Token is not active", soft_logout: false }, 401);
+    const { client, refresh, fetchFn } = refreshing((_url, init) => (tokenOf(init) === "Bearer old" ? mas() : json({ user_id: "@me:x.org" })));
+    await client.check(oauthSession());
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(tokenOf(fetchFn.mock.calls[1]![1]!)).toBe("Bearer new1");
+    // An ended session: the account server refuses the refresh, and that error is what the caller sees.
+    const ended = refreshing(() => mas());
+    ended.refresh.mockRejectedValueOnce(new MatrixError(401, "M_UNKNOWN_TOKEN", "Your Matrix session has ended"));
+    await expect(ended.client.check(oauthSession())).rejects.toMatchObject({ errcode: "M_UNKNOWN_TOKEN", message: "Your Matrix session has ended" });
+    // Refreshed but still refused: no second refresh.
+    const still = refreshing(() => mas());
+    await expect(still.client.check(oauthSession())).rejects.toMatchObject({ errcode: "M_UNKNOWN_TOKEN" });
+    expect(still.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not refresh other errors, a session without refresh token, or without a refresher", async () => {
+    const forbidden = refreshing(() => json({ errcode: "M_FORBIDDEN", error: "no" }, 403));
+    await expect(forbidden.client.check(oauthSession())).rejects.toMatchObject({ errcode: "M_FORBIDDEN" });
+    expect(forbidden.refresh).not.toHaveBeenCalled();
     const soft = refreshing(() => expired());
     await expect(soft.client.check(oauthSession({ refreshToken: undefined }))).rejects.toMatchObject({ softLogout: true });
     await expect(soft.client.check(SESSION)).rejects.toMatchObject({ status: 401 });

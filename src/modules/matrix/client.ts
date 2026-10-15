@@ -83,7 +83,9 @@ export interface MatrixClientOptions {
   /**
    * Gets a new access token for an OAuth session, updating the session in
    * place. Called shortly before the token expires, and once when the server
-   * says it expired (M_UNKNOWN_TOKEN with soft_logout).
+   * refuses it (M_UNKNOWN_TOKEN): Synapse behind the Matrix Authentication
+   * Service sends soft_logout false for an expired token too, so a refused
+   * refresh is what tells an ended session from an expired token.
    */
   refresh?(session: MxSession): Promise<void>;
   now?(): number;
@@ -138,7 +140,7 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
     return json;
   }
 
-  /** A call as the session's user: an OAuth token is refreshed when due, and once more if the server says it expired. */
+  /** A call as the session's user: an OAuth token is refreshed when due, and once more if the server refuses it. */
   async function authed(
     session: MxSession,
     path: string,
@@ -149,7 +151,7 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
     try {
       return await call(session.baseUrl, path, { ...options, token });
     } catch (error) {
-      const expired = error instanceof MatrixError && error.status === 401 && error.errcode === "M_UNKNOWN_TOKEN" && error.softLogout;
+      const expired = error instanceof MatrixError && error.status === 401 && error.errcode === "M_UNKNOWN_TOKEN";
       if (!expired || !config.refresh || !session.oauth?.refreshToken) throw error;
       // Another call may have refreshed meanwhile.
       if (session.accessToken === token) await refresh(session);
