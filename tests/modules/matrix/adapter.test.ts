@@ -826,7 +826,7 @@ describe("conversations", () => {
     const { channel } = ctx.chat();
     expect(channel).toMatchObject({ id: ctx.item("Bo").id, name: "Bo", loading: false, hasOlder: true, typing: [], pending: [], uploading: false });
     expect(channel).not.toHaveProperty("locked");
-    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, pins: true, search: true });
+    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, pins: true, search: true, forward: true });
     expect(ctx.item("Bo").active).toBe(true);
     expect(ctx.messages()).toEqual([
       {
@@ -987,7 +987,7 @@ describe("conversations", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     expect(ctx.chat().channel!.locked).toBe(ENCRYPTED_NOTICE);
-    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: false, stickers: false, pins: true, search: true });
+    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: false, stickers: false, pins: true, search: true, forward: false });
     expect(ctx.messages()).toEqual([
       expect.objectContaining({ content: ENCRYPTED_TEXT.replace("—", "—"), author: ANA, canEdit: false, canDelete: false }),
       expect.objectContaining({ content: "before encryption", mine: true, canEdit: false, canDelete: true }),
@@ -4776,5 +4776,41 @@ describe("search", () => {
     await ctx.act({ type: "search", query: "" });
     await ending;
     expect(ctx.chat().channel!.search).toBeUndefined();
+  });
+});
+
+describe("forwarding", () => {
+  it("sends a plain copy naming the author, quoting the text and naming its files, pinging nobody", async () => {
+    const first = initialSync();
+    first.joined[1]!.timeline.push(
+      msg("l2", ANA, "", 600, { content: { msgtype: "m.image", text: "", attachment: { kind: "image", name: "cat.png", url: "mxc://x.org/cat" } } as never }),
+      msg("l3", ANA, "two\nlines", 700),
+    );
+    const ctx = await signedIn(first);
+    const target = ctx.item("Bo").id;
+    await ctx.act({ type: "forward", messageId: "1", channelId: target });
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    await ctx.open("Lounge");
+    const [welcome, image, lines] = ctx.messages();
+    await ctx.act({ type: "forward", messageId: welcome!.id, channelId: target });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", { msgtype: "m.text", body: "Forwarded from Ana:\n> welcome", "m.mentions": {} });
+    await ctx.act({ type: "forward", messageId: image!.id, channelId: target });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", { msgtype: "m.text", body: "Forwarded from Ana:\n> 📎 cat.png", "m.mentions": {} });
+    await ctx.act({ type: "forward", messageId: lines!.id, channelId: target });
+    expect(ctx.api.send.mock.lastCall![2]).toMatchObject({ body: "Forwarded from Ana:\n> two\n> lines" });
+    // Unknown targets send nothing; an encrypted room without encryption here refuses.
+    const sent = ctx.api.send.mock.calls.length;
+    await ctx.act({ type: "forward", messageId: welcome!.id, channelId: "999999" });
+    expect(ctx.api.send.mock.calls.length).toBe(sent);
+    await ctx.act({ type: "forward", messageId: welcome!.id, channelId: ctx.item("Secret").id });
+    expect(ctx.chat().error).toMatch(/^Message not forwarded: /);
+  });
+
+  it("does not forward what it cannot read", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Secret");
+    expect(ctx.chat().channel!.can.forward).toBe(false);
+    await ctx.act({ type: "forward", messageId: ctx.messages()[0]!.id, channelId: ctx.item("Bo").id });
+    expect(ctx.api.send).not.toHaveBeenCalled();
   });
 });

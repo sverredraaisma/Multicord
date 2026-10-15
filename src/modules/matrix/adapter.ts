@@ -955,6 +955,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.sendSticker(action.stickerId, action.replyTo);
       case "pins":
         return this.showPins(action.open);
+      case "forward":
+        return this.forward(action.messageId, action.channelId);
       case "search":
         return this.searchMessages(action.query);
       case "pin":
@@ -2021,6 +2023,26 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (count !== this.searchCount || this.search?.roomId !== room.id) return;
     this.search = { roomId: room.id, results };
     this.render();
+  }
+
+  /**
+   * Forwards a message of the open room into another room listed in the
+   * sidebar, as plain text: who wrote it, the text quoted, and the names of
+   * its files (not the files: an encrypted file's key must not reach a room
+   * it was not meant for). Empty m.mentions, so the copy pings nobody; into
+   * an encrypted room it goes encrypted, as any message.
+   */
+  private async forward(local: string, target: string): Promise<void> {
+    const room = this.selectedRoom();
+    const event = room ? this.findEvent(room, local) : undefined;
+    const to = this.rooms.get(this.byLocal.get(target) ?? "");
+    if (!room || event?.kind !== "message" || !to) return;
+    const { content } = this.shownContent(room, event);
+    const lines = [...(content.text === "" ? [] : content.text.split("\n")), ...(content.attachment ? [`📎 ${content.attachment.name}`] : [])];
+    const body = [`Forwarded from ${this.memberName(room, event.sender)}:`, ...lines.map((line) => `> ${line}`)].join("\n");
+    await this.attempt("Message not forwarded", async () => {
+      await this.sendContent(this.session!, to, { msgtype: "m.text", body, "m.mentions": {} });
+    });
   }
 
   /** Pins or unpins a message in the open room's m.room.pinned_events; the homeserver decides whether the user may. */
@@ -3184,7 +3206,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             ...(this.pins?.roomId === room.id ? { pins: this.pins.list } : {}),
             ...(this.search?.roomId === room.id ? { search: this.search.results } : {}),
             // A locked room takes nothing from here; typing notices follow the user's setting.
-            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false, stickers: !locked, pins: true, search: true },
+            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false, stickers: !locked, pins: true, search: true, forward: !locked },
           }
         : null,
       // After the messages, which fill it.
