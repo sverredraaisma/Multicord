@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { PlatformAdapter } from "../shared/adapter";
+import type { FavouritesSummary } from "../shared/favourites";
 import {
   diagnosticsReport,
   fitsServiceFields,
@@ -49,6 +50,8 @@ export interface SettingsDeps {
   copyText?(text: string): void;
   /** The OS, for the diagnostics report, e.g. "win32 10.0.26200". */
   os?: string;
+  /** The shell's favourites, for their section. */
+  favourites?: { summary(): FavouritesSummary; clearCache(): void };
 }
 
 /**
@@ -161,6 +164,7 @@ export class SettingsController {
     if (this.deps.streaming?.()) state.streaming = true;
     if (this.deps.linkSchemes?.length) state.linkSchemes = this.deps.linkSchemes;
     if (this.deps.updates) state.update = this.deps.updates.status;
+    if (this.deps.favourites) state.favourites = this.deps.favourites.summary();
     const shortcutErrors = this.deps.shortcutErrors?.() ?? [];
     if (shortcutErrors.length > 0) state.shortcutErrors = shortcutErrors;
     const pushToTalkError = this.deps.pushToTalkError?.();
@@ -248,6 +252,9 @@ export class SettingsController {
         return this.deps.updates?.check();
       case "installUpdate":
         this.deps.updates?.install();
+        return;
+      case "clearFavouriteCache":
+        this.deps.favourites?.clearCache();
         return;
     }
   }

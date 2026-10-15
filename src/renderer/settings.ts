@@ -1,13 +1,16 @@
 import type { SettingsApi } from "../preload/settings";
 import { keyNameForCode } from "../shared/keys";
 import { isAccelerator, serviceSettings, serviceSettingValues, ZOOM_LEVELS, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
+import type { FavouritesSummary } from "../shared/favourites";
 import { el, initials, setColor } from "./components/dom";
+import { formatSize } from "./components/format";
 import { browserMediaEnv, playTestTone, startMeter, stopStream, type DeviceInfo, type MediaEnv, type Stop } from "./media";
 
 export const TABS = [
   { id: "services", title: "Services & accounts" },
   { id: "voice", title: "Voice & video" },
   { id: "general", title: "General" },
+  { id: "favourites", title: "Favourites" },
   { id: "diagnostics", title: "Diagnostics" },
   { id: "about", title: "About" },
 ] as const;
@@ -212,6 +215,8 @@ export class SettingsPage {
     checkUpdates: HTMLButtonElement;
     installUpdate: HTMLButtonElement;
     diagnostics: HTMLElement;
+    favouritesSummary: HTMLElement;
+    favouriteCategories: HTMLElement;
     launchHint: HTMLElement;
     secretsNote: HTMLElement;
     /** Where the text names the services whose calls use these settings. */
@@ -462,6 +467,19 @@ export class SettingsPage {
     secretsNote.hidden = true;
     general.append(launchHint, secretsNote);
 
+    // Favourites
+    const favouritesSummary = el(doc, "p", "favourites-summary");
+    const favouriteCategories = el(doc, "ul", "favourite-categories");
+    favouriteCategories.setAttribute("aria-label", "Categories");
+    const clearCache = confirmButton(doc, "Clear cache", "Click again to clear the cache", () => this.api.act({ type: "clearFavouriteCache" }), "secondary");
+    sections.get("favourites")!.append(
+      el(doc, "p", "section-intro", "GIFs, stickers and pictures you star in a native chat view. Multicord keeps them, and a copy of each file, in its own folder, so they show at once; no service can read them. Categories are made and changed in the picker's Favourites tab."),
+      favouritesSummary,
+      favouriteCategories,
+      clearCache,
+      el(doc, "p", "hint", "Clearing the cache keeps your favourites: their files are downloaded again the next time they are shown or sent. Files saved from media a service loaded itself cannot be downloaded again, so they stay."),
+    );
+
     // Diagnostics
     const diagnostics = el(doc, "div", "diagnostics");
     const copyReport = el(doc, "button", "secondary", "Copy report");
@@ -524,6 +542,8 @@ export class SettingsPage {
       checkUpdates,
       installUpdate,
       diagnostics,
+      favouritesSummary,
+      favouriteCategories,
       launchHint,
       secretsNote,
       callServices,
@@ -568,6 +588,7 @@ export class SettingsPage {
     parts.error.textContent = state.error ?? "";
     this.renderServices(state.services);
     this.renderDiagnostics(state.services);
+    this.renderFavourites(state.favourites);
     this.renderModules(state.modules);
 
     const { general, voice } = state.settings;
@@ -719,6 +740,23 @@ export class SettingsPage {
     checkUpdates.hidden = status.state === "unavailable" || status.state === "ready";
     checkUpdates.disabled = status.state === "checking" || status.state === "downloading";
     installUpdate.hidden = status.state !== "ready";
+  }
+
+  /** How many favourites there are, in which categories, and what their cache takes. */
+  private renderFavourites(summary: FavouritesSummary | undefined): void {
+    const doc = this.root.ownerDocument;
+    const { favouritesSummary, favouriteCategories } = this.parts;
+    if (!summary) {
+      favouritesSummary.textContent = "Favourites are not available.";
+      return favouriteCategories.replaceChildren();
+    }
+    const kept = summary.pinned > 0 ? ` ${summary.pinned} of them cannot be downloaded again, so clearing keeps their files.` : "";
+    favouritesSummary.textContent = `${summary.items} favourite${summary.items === 1 ? "" : "s"}; cached files take ${formatSize(summary.cacheBytes)}.${kept}`;
+    favouriteCategories.replaceChildren(
+      ...(summary.categories.length > 0
+        ? summary.categories.map((c) => el(doc, "li", "favourite-category", `${c.name} (${c.count})`))
+        : [el(doc, "li", "hint", "No categories yet.")]),
+    );
   }
 
   private renderDiagnostics(services: ServiceInfo[]): void {

@@ -113,6 +113,18 @@ describe("settings state", () => {
     await bare.handle({ type: "installUpdate" });
   });
 
+  it("shows the favourites and clears their cache on request", async () => {
+    const summary = { categories: [{ id: "0123456789abcdef", name: "Cats", count: 2 }], items: 3, cacheBytes: 2048, pinned: 1 };
+    const favourites = { summary: vi.fn(() => summary), clearCache: vi.fn() };
+    const { settings } = controller({}, { favourites });
+    expect(settings.state().favourites).toEqual(summary);
+    await settings.handle({ type: "clearFavouriteCache" });
+    expect(favourites.clearCache).toHaveBeenCalled();
+    const bare = controller().settings;
+    expect(bare.state()).not.toHaveProperty("favourites");
+    await bare.handle({ type: "clearFavouriteCache" });
+  });
+
   it("copies the diagnostics report", async () => {
     const copyText = vi.fn();
     const { settings } = controller({ discord: { health: () => [{ name: "Bridge", ok: false }] } }, { copyText, os: "linux 6.8" });

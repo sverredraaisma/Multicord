@@ -1,3 +1,5 @@
+import type { FavouritesSummary } from "./favourites";
+
 // App settings, the services list shown in the settings page, and the
 // settings page's actions. Everything the page sends is validated here
 // before the main process uses it.
@@ -467,6 +469,8 @@ export interface SettingsViewState {
   /** Why the background push-to-talk key is not working, if it is not. */
   pushToTalkError?: string;
   update?: UpdateStatus;
+  /** The favourites the native views keep: their categories and the cache on disk. */
+  favourites?: FavouritesSummary;
   /** The last action that could not be done, e.g. turning off the only service. */
   error?: string;
 }
@@ -504,7 +508,9 @@ export type SettingsAction =
   | { type: "restart" }
   | { type: "checkUpdates" }
   | { type: "installUpdate" }
-  | { type: "copyReport" };
+  | { type: "copyReport" }
+  /** Drops cached favourite files that can be downloaded again; the favourites stay. */
+  | { type: "clearFavouriteCache" };
 
 const SERVICE_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 export const isServiceId = (value: unknown): value is string => typeof value === "string" && SERVICE_ID.test(value);
@@ -531,6 +537,7 @@ export function isSettingsAction(value: unknown): value is SettingsAction {
     case "copyReport":
     case "checkUpdates":
     case "installUpdate":
+    case "clearFavouriteCache":
       return true;
     default:
       return false;

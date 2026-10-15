@@ -494,6 +494,26 @@ describe("native Fluxer platform", () => {
     expect(engine.webContents.send).toHaveBeenCalledWith(ENGINE_IPC.action, { type: "sendFile", file: { handle: expect.any(String), name: "Cat.png", size: png.length, type: "image/png" }, replyTo: "7" });
   });
 
+  it("shows the favourites in Settings, kept current while it is open", async () => {
+    const { handle, railView } = await shellWith();
+    const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    ipcMain.emit(IPC.railSettings, senderEvent(railView), true);
+    const settingsView = handle.settingsView()! as unknown as InstanceType<typeof WebContentsView>;
+    const lastSettings = () => settingsView.webContents.send.mock.calls.filter(([c]) => c === SETTINGS_IPC.state).at(-1)![1] as { favourites: { categories: unknown[] } };
+    expect(lastSettings().favourites).toEqual({ categories: [], items: 0, cacheBytes: 0, pinned: 0 });
+    ipcMain.emit(FAVOURITES_IPC.action, senderEvent(view), { type: "createCategory", name: "Cats" });
+    await flush();
+    expect(lastSettings().favourites.categories).toEqual([{ id: expect.any(String), name: "Cats", count: 0 }]);
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(settingsView), { type: "clearFavouriteCache" });
+    await flush();
+    // Not while Settings is closed.
+    ipcMain.emit(IPC.railSettings, senderEvent(railView), false);
+    const sent = settingsView.webContents.send.mock.calls.length;
+    ipcMain.emit(FAVOURITES_IPC.action, senderEvent(view), { type: "createCategory", name: "Dogs" });
+    await flush();
+    expect(settingsView.webContents.send.mock.calls.length).toBe(sent);
+  });
+
   it("downloads favourites only over https from public addresses", async () => {
     const { handle } = await shellWith();
     const view = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;

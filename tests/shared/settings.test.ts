@@ -90,6 +90,7 @@ describe("settings actions", () => {
       { type: "checkUpdates" },
       { type: "copyReport" },
       { type: "installUpdate" },
+      { type: "clearFavouriteCache" },
     ]) {
       expect(isSettingsAction(action)).toBe(true);
     }

@@ -544,6 +544,10 @@ export async function createShell(
       app.quit();
     },
     publish: (state: SettingsViewState) => settingsView?.webContents.send(SETTINGS_IPC.state, state),
+    favourites,
+  });
+  favourites.changed.on(() => {
+    if (mode === "settings") settings.refresh();
   });
 
   // App links: only when the user opts in, as an installed app may own the scheme.

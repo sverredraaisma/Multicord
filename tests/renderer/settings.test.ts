@@ -571,13 +571,35 @@ describe("tabs", () => {
     const tabButtons = [...root.querySelectorAll<HTMLElement>(".settings-tab")];
     expect(tabButtons.map((b) => b.textContent)).toEqual(TABS.map((t) => t.title));
     const hiddenSections = () => [...root.querySelectorAll<HTMLElement>("section")].map((s) => s.hidden);
-    expect(hiddenSections()).toEqual([false, true, true, true, true]);
+    expect(hiddenSections()).toEqual([false, true, true, true, true, true]);
     tabButtons[2]!.click();
     expect(page.activeTab).toBe("general");
-    expect(hiddenSections()).toEqual([true, true, false, true, true]);
+    expect(hiddenSections()).toEqual([true, true, false, true, true, true]);
     expect(tabButtons[2]!.getAttribute("aria-current")).toBe("page");
     expect(tabButtons[0]!.hasAttribute("aria-current")).toBe(false);
     expect(tabButtons[2]!.classList.contains("active")).toBe(true);
+  });
+});
+
+describe("favourites tab", () => {
+  it("lists categories and the cache size, and clears the cache on a second click", () => {
+    mount(viewState({ favourites: { categories: [{ id: "0123456789abcdef", name: "Cats", count: 2 }, { id: "fedcba9876543210", name: "Memes", count: 0 }], items: 3, cacheBytes: 2.5 * 1024 * 1024, pinned: 1 } }));
+    expect(q(".favourites-summary").textContent).toBe("3 favourites; cached files take 2.5 MB. 1 of them cannot be downloaded again, so clearing keeps their files.");
+    expect([...root.querySelectorAll(".favourite-category")].map((li) => li.textContent)).toEqual(["Cats (2)", "Memes (0)"]);
+    const clear = [...root.querySelectorAll("button")].find((b) => b.textContent === "Clear cache")!;
+    clear.click();
+    expect(act).not.toHaveBeenCalledWith({ type: "clearFavouriteCache" });
+    clear.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "clearFavouriteCache" });
+  });
+
+  it("says when there is nothing to list", () => {
+    const page = mount(viewState({ favourites: { categories: [], items: 1, cacheBytes: 10, pinned: 0 } }));
+    expect(q(".favourites-summary").textContent).toBe("1 favourite; cached files take 10 B.");
+    expect(q(".favourite-categories").textContent).toBe("No categories yet.");
+    page.render(viewState());
+    expect(q(".favourites-summary").textContent).toBe("Favourites are not available.");
+    expect(q(".favourite-categories").children).toHaveLength(0);
   });
 });
 
