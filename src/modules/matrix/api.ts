@@ -187,6 +187,15 @@ export interface MxContent {
   media?: string;
   /** The media itself, for messages that carry a file. */
   attachment?: MxMedia;
+  /** Custom emoji its formatted_body shows as pictures (data-mx-emoticon), which its text names as ":shortcode:". */
+  emotes?: MxEmote[];
+}
+
+/** A custom emoji in a message: its shortcode (without colons) and picture. */
+export interface MxEmote {
+  shortcode: string;
+  /** mxc:// URI of the picture. */
+  url: string;
 }
 
 /** Downloaded media: its bytes, and the type the server gave. */

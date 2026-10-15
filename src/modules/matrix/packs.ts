@@ -5,6 +5,7 @@
 // address, which stays unencrypted in encrypted rooms too, as in Element.
 
 import type { MxPackImage } from "./api";
+import { escapeMarkdown } from "../../shared/markdown";
 import type { NativeStickerFormat } from "../../shared/native";
 
 /** What formatted_body is written in. */
@@ -29,29 +30,50 @@ export function emoticonTag(image: MxPackImage): string {
  * its picture; undefined when the text has none, and goes as plain text only.
  */
 export function emoticonHtml(text: string, emoticon: (shortcode: string) => MxPackImage | undefined): string | undefined {
+  const { out, found } = replaceShortcodes(text, (code) => {
+    const image = emoticon(code);
+    return image && emoticonTag(image);
+  }, escapeHtml);
+  return found ? out : undefined;
+}
+
+/**
+ * Message text as the view's markdown: escaped, each ":shortcode:" `id`
+ * names as <:shortcode:id>, which the view draws with its picture (emojiUrls).
+ */
+export function emoticonMarkdown(text: string, id: (shortcode: string) => string | undefined): string {
+  return replaceShortcodes(text, (code) => {
+    const found = id(code);
+    return found && `<:${code}:${found}>`;
+  }, escapeMarkdown).out;
+}
+
+/** Text with the ":shortcode:"s `replace` knows replaced, the rest escaped; and whether any was. */
+function replaceShortcodes(text: string, replace: (shortcode: string) => string | undefined, escape: (text: string) => string): { out: string; found: boolean } {
   const pattern = new RegExp(IN_TEXT.source, "g");
-  let html = "";
+  let out = "";
   let done = 0;
   for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
-    const image = emoticon(match[1]!);
-    if (!image) {
+    const replaced = replace(match[1]!);
+    if (!replaced) {
       // Its closing colon may open the next one (":not:known:").
       pattern.lastIndex = match.index + 1;
       continue;
     }
-    html += escapeHtml(text.slice(done, match.index)) + emoticonTag(image);
+    out += escape(text.slice(done, match.index)) + replaced;
     done = pattern.lastIndex;
   }
-  return done === 0 ? undefined : html + escapeHtml(text.slice(done));
+  return { out: out + escape(text.slice(done)), found: done > 0 };
 }
 
 /**
- * A pack picture's id for the view (emoji and sticker ids): its mxc://
- * address without the scheme, when it is plain enough to pass back.
+ * A pack picture's id for the view (emoji and sticker ids, and emoji in
+ * message text): its mxc:// address without the scheme, a port's colon as
+ * "+", when it is plain enough to pass back.
  */
 export function packImageId(url: string): string | undefined {
-  const id = url.slice("mxc://".length);
-  return /^[A-Za-z0-9:._/-]{1,200}$/.test(id) ? id : undefined;
+  const id = url.slice("mxc://".length).replace(/:/g, "+");
+  return /^[A-Za-z0-9._+/-]{1,200}$/.test(id) ? id : undefined;
 }
 
 /** How the picker shows a pack's sticker, by its type: PNG unless it says GIF or WebP. */

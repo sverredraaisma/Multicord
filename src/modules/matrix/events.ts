@@ -7,6 +7,7 @@ import type {
   MxContent,
   MxCryptoSync,
   MxEncryptedFile,
+  MxEmote,
   MxEncryption,
   MxEvent,
   MxMedia,
@@ -200,9 +201,13 @@ export function parseContent(content: Record<string, unknown>, sticker = false):
       return { msgtype, text: caption, media: `📎 ${(filename ?? body) || "File"}`, attachment: parseMedia(content, "file") };
     case "m.location":
       return { msgtype, text: "", media: "📍 Location" };
-    default:
+    default: {
       // m.text, m.notice, m.emote, and unknown types, which fall back to their body.
-      return { msgtype, text: body };
+      const parsed: MxContent = { msgtype, text: body };
+      const emotes = parseEmotes(content);
+      if (emotes) parsed.emotes = emotes;
+      return parsed;
+    }
   }
 }
 
@@ -389,6 +394,33 @@ export function shortcode(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const code = value.replace(/^:(.*):$/, "$1");
   return SHORTCODE.test(code) && cleanName(code, 64) === code ? code : undefined;
+}
+
+/** Custom emoji read per message. */
+export const MAX_EMOTES = 50;
+const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', "#39": "'", "#x27": "'" };
+
+/** An HTML attribute's value in a tag, entities decoded; undefined when the tag has none. */
+function attribute(tag: string, name: string): string | undefined {
+  const match = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(tag);
+  return match ? (match[1] ?? match[2]!).replace(/&(amp|lt|gt|quot|#39|#x27);/g, (_m, entity: string) => ENTITIES[entity]!) : undefined;
+}
+
+/**
+ * The custom emoji in a message's formatted_body: <img data-mx-emoticon>
+ * tags with an mxc:// picture, named by their title (else alt) as
+ * ":shortcode:"; each shortcode once, at most MAX_EMOTES. Undefined without any.
+ */
+export function parseEmotes(content: Record<string, unknown>): MxEmote[] | undefined {
+  const html = content.format === "org.matrix.custom.html" && typeof content.formatted_body === "string" ? content.formatted_body.slice(0, MAX_EVENT_JSON) : "";
+  const emotes = new Map<string, string>();
+  for (const [tag] of html.matchAll(/<img\s[^>]*>/gi)) {
+    if (emotes.size >= MAX_EMOTES) break;
+    const url = attribute(tag, "src");
+    const code = shortcode(attribute(tag, "title") ?? attribute(tag, "alt"));
+    if (/\sdata-mx-emoticon[\s=/>]/i.test(tag) && parseMxc(url) && code && !emotes.has(code)) emotes.set(code, url!);
+  }
+  return emotes.size ? [...emotes].map(([code, url]) => ({ shortcode: code, url })) : undefined;
 }
 
 /** What a pack or picture is for (its usage); undefined when it does not say, which means both. */

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MxPackImage } from "../../../src/modules/matrix/api";
-import { emoticonHtml, emoticonTag, escapeHtml, packImageId, stickerFormat } from "../../../src/modules/matrix/packs";
+import { emoticonHtml, emoticonMarkdown, emoticonTag, escapeHtml, packImageId, stickerFormat } from "../../../src/modules/matrix/packs";
 
 const image = (shortcode: string, extra: Partial<MxPackImage> = {}): MxPackImage => ({ shortcode, url: `mxc://x.org/${shortcode}`, info: {}, emoticon: true, sticker: true, ...extra });
 const known = new Map([
@@ -28,6 +28,12 @@ describe("custom emoji in messages", () => {
     expect(emoticonHtml(":cat::cat:", lookup)).toBe(emoticonTag(image("cat")).repeat(2));
   });
 
+  it("writes known emoji in message text as the view's markdown, escaping the rest", () => {
+    const ids = new Map([["blob_cat", "x.org/blob"]]);
+    expect(emoticonMarkdown("*hi* :blob_cat: :dog: <b>", (code) => ids.get(code))).toBe("\\*hi\\* <:blob_cat:x.org/blob> :dog: \\<b>");
+    expect(emoticonMarkdown("no_emoji", (code) => ids.get(code))).toBe("no\\_emoji");
+  });
+
   it("has no HTML for text without known emoji", () => {
     expect(emoticonHtml("plain :dog: text", lookup)).toBeUndefined();
     expect(emoticonHtml("", lookup)).toBeUndefined();
@@ -37,6 +43,7 @@ describe("custom emoji in messages", () => {
 describe("pack pictures in the view", () => {
   it("names pictures by their mxc address, when that is plain enough", () => {
     expect(packImageId("mxc://x.org/cat")).toBe("x.org/cat");
+    expect(packImageId("mxc://x.org:8448/cat")).toBe("x.org+8448/cat");
     expect(packImageId("mxc://[::1]:8448/cat")).toBeUndefined();
     expect(packImageId(`mxc://x.org/${"a".repeat(200)}`)).toBeUndefined();
   });

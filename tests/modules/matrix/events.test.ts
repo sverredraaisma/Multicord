@@ -36,6 +36,8 @@ import {
   roomId,
   stripReplyFallback,
   userId,
+  MAX_EMOTES,
+  parseEmotes,
   MAX_PACK_IMAGES,
   MAX_PACK_ROOMS,
   MAX_ROOM_PACKS,
@@ -916,6 +918,37 @@ describe("image packs (MSC2545)", () => {
     expect(sync.packRooms).toEqual([{ roomId: "!a:x.org", stateKey: "" }]);
     expect(parseSync({ next_batch: "s", account_data: { events: [{ type: USER_PACK_TYPE, content: "x" }] } }).userPack).toEqual({ images: [] });
     expect(parseSync({ next_batch: "s" })).not.toHaveProperty("userPack");
+  });
+
+  it("reads the custom emoji a message's formatted_body shows", () => {
+    const html = (formatted_body: unknown, format: unknown = "org.matrix.custom.html") => parseEmotes({ format, formatted_body });
+    expect(
+      html(
+        'hi <img data-mx-emoticon src="mxc://x.org/cat" alt=":cat:" title=":cat:" height="32" /> ' +
+          "<IMG height=32 alt=':a&amp;b:' data-mx-emoticon='' src='mxc://x.org/ab'> " +
+          '<img data-mx-emoticon src="mxc://x.org/cat2" title=":cat:"> ' +
+          '<img src="mxc://x.org/plain" alt=":plain:"> ' +
+          '<img data-mx-emoticon src="https://x.org/web" alt=":web:"> ' +
+          '<img data-mx-emoticon src="mxc://x.org/bad" alt="a b"> ' +
+          '<img data-mx-emoticon src="mxc://x.org/none"> ' +
+          '<img data-mx-emoticonx src="mxc://x.org/other" alt=":other:">',
+      ),
+    ).toEqual([
+      { shortcode: "cat", url: "mxc://x.org/cat" },
+      { shortcode: "a&b", url: "mxc://x.org/ab" },
+    ]);
+    expect(html("<b>no emoji</b>")).toBeUndefined();
+    expect(html('<img data-mx-emoticon src="mxc://x.org/cat" alt=":cat:">', "other")).toBeUndefined();
+    expect(html(5)).toBeUndefined();
+    const many = Array.from({ length: MAX_EMOTES + 3 }, (_, i) => `<img data-mx-emoticon src="mxc://x.org/e${i}" alt=":e${i}:">`).join("");
+    expect(html(many)).toHaveLength(MAX_EMOTES);
+    // Text messages carry them; media do not.
+    expect(parseContent({ msgtype: "m.text", body: ":cat:", format: "org.matrix.custom.html", formatted_body: '<img data-mx-emoticon src="mxc://x.org/cat" alt=":cat:">' })).toEqual({
+      msgtype: "m.text",
+      text: ":cat:",
+      emotes: [{ shortcode: "cat", url: "mxc://x.org/cat" }],
+    });
+    expect(parseContent({ msgtype: "m.text", body: "hi" })).toEqual({ msgtype: "m.text", text: "hi" });
   });
 
   it("keeps the name of a custom emoji reaction", () => {

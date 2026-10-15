@@ -4278,11 +4278,17 @@ describe("custom emoji and stickers from image packs", () => {
     const sticker = (id: string) => ctx.chat().stickers!.flatMap((p) => p.stickers).find((s) => s.id === id)!;
     const waveKey = sticker("x.org/wave").mediaKey!;
     const extraKey = sticker("x.org/extra").mediaKey!;
+    await ctx.act({ type: "picker", open: true });
     ctx.api.download.mockResolvedValueOnce({ bytes: new Uint8Array([1, 2, 3]), type: "image/png" });
     await ctx.act({ type: "loadMedia", key: waveKey });
     expect(ctx.api.download).toHaveBeenCalledWith(SESSION, "mxc://x.org/wave", MAX_STICKER_BYTES);
     // The pack's type, over the server's.
     expect(sticker("x.org/wave")).toEqual({ id: "x.org/wave", name: "Waving", format: "webp", url: "data:image/webp;base64,AQID" });
+    // While the picker is closed, loaded pictures stay out of the view's updates; they come back when it opens.
+    await ctx.act({ type: "picker", open: false });
+    expect(sticker("x.org/wave")).toEqual({ id: "x.org/wave", name: "Waving", format: "webp", mediaKey: waveKey });
+    await ctx.act({ type: "picker", open: true });
+    expect(sticker("x.org/wave").url).toBe("data:image/webp;base64,AQID");
     // Too large: left out.
     const meKey = sticker("x.org/me").mediaKey!;
     await ctx.act({ type: "loadMedia", key: meKey });
@@ -4426,6 +4432,48 @@ describe("custom emoji and stickers from image packs", () => {
     expect(shown.filter((r) => r.imageUrl)).toHaveLength(MAX_PICTURES);
     // Names are learned up to a limit too.
     expect(shown.filter((r) => r.label.startsWith(":"))).toHaveLength(2000);
+  });
+
+  it("draws custom emoji in messages with their pictures, once loaded", async () => {
+    const ctx = await signedIn();
+    ctx.api.thumbnail.mockReset();
+    ctx.api.thumbnail.mockImplementation(async (_s, mxc) => (mxc.endsWith("dog") ? undefined : picture(mxc)));
+    const emotes = [
+      { shortcode: "blob_cat", url: "mxc://x.org/blob" },
+      { shortcode: "dog", url: "mxc://x.org/dog" },
+      { shortcode: "far", url: "mxc://[::1]/far" },
+    ];
+    await ctx.live(
+      sync({
+        joined: [
+          room("!lounge:x.org", {
+            timeline: [
+              msg("e1", ANA, "*hi* :blob_cat: :dog: :far: :unknown:", 6000, { content: { msgtype: "m.text", text: "*hi* :blob_cat: :dog: :far: :unknown:", emotes } }),
+              msg("e2", ANA, "before", 6100),
+              msg("e3", ANA, "* :port:", 6200, { replaces: "$e2", content: { msgtype: "m.emote", text: ":port:", emotes: [{ shortcode: "port", url: "mxc://x.org:8448/port" }] } }),
+            ],
+          }),
+        ],
+      }),
+    );
+    await ctx.open("Lounge");
+    expect(ctx.api.thumbnail.mock.calls.map(([, mxc]) => mxc)).toEqual(["mxc://x.org/blob", "mxc://x.org/dog", "mxc://[::1]/far", "mxc://x.org:8448/port"]);
+    const [, first, edited] = ctx.messages();
+    expect(first!.content).toBe("\\*hi\\* <:blob_cat:x.org/blob> :dog: :far: :unknown:");
+    expect(edited!.content).toBe("\\* <:port:x.org+8448/port>");
+    expect(ctx.chat().emojiUrls).toEqual({ "x.org/blob": picture("mxc://x.org/blob"), "x.org+8448/port": picture("mxc://x.org:8448/port") });
+    // Replies, previews and notifications keep the names.
+    expect(ctx.messages()[0]!.content).toBe("welcome");
+  });
+
+  it("draws custom emoji in its own messages too", async () => {
+    const ctx = await withPacks();
+    await ctx.open("Lounge");
+    await ctx.act({ type: "send", content: "a :cat:" });
+    expect(ctx.messages().at(-1)!.content).toBe("a <:cat:x.org/cat>");
+    expect(ctx.chat().emojiUrls).toEqual({ "x.org/cat": picture("mxc://x.org/cat") });
+    await ctx.act({ type: "edit", messageId: ctx.messages().at(-1)!.id, content: "b :cat:" });
+    expect(ctx.messages().at(-1)).toMatchObject({ content: "b <:cat:x.org/cat>", edited: true });
   });
 
   it("drops pictures that arrive after signing out", async () => {
