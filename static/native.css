@@ -246,6 +246,8 @@ button.poll-option:hover { border-color: var(--accent); }
 .mention-marker { padding: 0 5px; border-radius: 8px; background: var(--mention); color: #1e1f22; font-size: 11px; font-weight: 700; }
 .reply { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .reply.missing { font-style: italic; }
+button.reply { display: block; max-width: 100%; padding: 0; border: 0; background: none; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+button.reply:hover, button.reply:focus-visible { color: var(--text); text-decoration: underline; }
 .reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
 .quick-reactions { display: flex; gap: 4px; }
 .reaction {

@@ -172,6 +172,21 @@ describe("messages", () => {
     expect(messageItem(document, { ...message, thread: { count: 0 } }, h, { can: threads }).querySelector(".thread-summary")).toBeNull();
   });
 
+  it("makes a reply's quote lead to the original where it says where that is", () => {
+    const onJumpToReply = vi.fn();
+    const original = { author: "Bo", content: "earlier", id: "4", timestamp: "2026-10-14T11:00:00Z" };
+    const item = messageItem(document, { ...message, reply: original }, { ...handlers(), onJumpToReply });
+    const quote = item.querySelector<HTMLButtonElement>("button.reply")!;
+    expect(quote.textContent).toBe("↪ Bo: earlier");
+    quote.click();
+    expect(onJumpToReply).toHaveBeenCalledWith({ id: "4", author: "Bo", content: "earlier", timestamp: "2026-10-14T11:00:00Z" });
+    // Without a usable id or time, or a handler, it stays a quote.
+    for (const reply of [{ ...original, id: "x" }, { ...original, timestamp: "soon" }, { author: "Bo", content: "earlier" }]) {
+      expect(messageItem(document, { ...message, reply }, { ...handlers(), onJumpToReply }).querySelector("button.reply")).toBeNull();
+    }
+    expect(messageItem(document, { ...message, reply: original }, handlers()).querySelector("div.reply")!.textContent).toBe("↪ Bo: earlier");
+  });
+
   it("renders markdown content with custom emoji", () => {
     const item = messageItem(document, message, handlers(), { customEmojiUrl: (id) => `https://media/${id}.webp` });
     expect(item.dataset.id).toBe("5");

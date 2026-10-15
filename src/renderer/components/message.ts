@@ -1,5 +1,5 @@
 import type { FavouriteKind } from "../../shared/favourites";
-import { isShownUrl, messageEmbeds, messagePoll, threadSummary, type NativeAttachment, type NativeChannelCan, type NativeEmbed, type NativeMessage, type NativePoll } from "../../shared/native";
+import { isShownUrl, messageEmbeds, messagePoll, replyTarget, threadSummary, type NativeAttachment, type NativeChannelCan, type NativeEmbed, type NativeListedMessage, type NativeMessage, type NativePoll } from "../../shared/native";
 import { avatar } from "./avatar";
 import { el, setColor } from "./dom";
 import { formatSize, formatTime } from "./format";
@@ -257,6 +257,8 @@ export interface MessageHandlers {
   onVote?(message: NativeMessage, options: string[]): void;
   /** Opens the message's thread, where the conversation has threads (can.threads); without it threads only show their summary. */
   onOpenThread?(message: NativeMessage): void;
+  /** Brings the original of a reply into sight (replies whose preview names it); without it the quote is plain text. */
+  onJumpToReply?(original: NativeListedMessage): void;
   /** Opens the author's profile (messages with an authorId); without it the author is plain text. */
   onOpenProfile?(message: NativeMessage): void;
   /** Stars or unstars a GIF, sticker or picture; without it media has no star. */
@@ -307,11 +309,16 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
   li.classList.toggle("jump-target", options.highlighted === true);
   const body = el(doc, "div", "body");
   if (message.reply !== undefined) {
-    body.append(
-      message.reply
-        ? el(doc, "div", "reply", `↪ ${message.reply.author}: ${message.reply.content}`)
-        : el(doc, "div", "reply missing", "↪ Original message was deleted"),
-    );
+    const quote = message.reply ? `↪ ${message.reply.author}: ${message.reply.content}` : "";
+    // A quote that says where the original is brings it into sight.
+    const target = message.reply && handlers.onJumpToReply ? replyTarget(message.reply) : undefined;
+    if (target) {
+      const button = el(doc, "button", "reply", quote);
+      button.type = "button";
+      button.title = "Go to the original message";
+      button.addEventListener("click", () => handlers.onJumpToReply!(target));
+      body.append(button);
+    } else body.append(message.reply ? el(doc, "div", "reply", quote) : el(doc, "div", "reply missing", "↪ Original message was deleted"));
   }
   // With an author id, the name and picture open the author's profile.
   const openProfile = message.authorId && handlers.onOpenProfile ? () => handlers.onOpenProfile!(message) : undefined;

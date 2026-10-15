@@ -749,6 +749,14 @@ export class NativeView {
     this.rerender();
   }
 
+  /** The module's error; else, with no side panel to say it in, why the last jump (from a reply's quote) did not arrive. */
+  private updateBanner(): void {
+    const banner = this.parts.banner!;
+    const text = this.lastState?.screen === "chat" ? (this.lastState.error ?? (this.parts.messagePanel!.hidden ? this.jumpNote : undefined)) : undefined;
+    banner.textContent = text ?? "";
+    banner.hidden = !text;
+  }
+
   private showAt(element: HTMLElement): void {
     this.seeking = undefined;
     this.parts.messages!.scrollTop = Math.max(0, element.offsetTop - 8);
@@ -771,6 +779,7 @@ export class NativeView {
       if (!target) return;
       this.jumpNote = "That message could not be loaded here.";
       this.updateMessagePanel();
+      this.updateBanner();
       return;
     }
     if (channel.loading || (seeking.pages > 0 && first?.id === seeking.from)) return;
@@ -921,6 +930,7 @@ export class NativeView {
     },
     // The shell's clipboard, not the module: copied text goes wherever the user pastes it.
     onCopy: (message) => void this.doc.defaultView!.navigator.clipboard?.writeText(message.content).catch(() => undefined),
+    onJumpToReply: (original) => this.jumpTo(original),
     onOpenProfile: (message) => this.openProfile({ id: message.authorId!, name: message.author, avatarUrl: message.avatarUrl }),
     isFavourite: (file) => this.favourites?.items.some((i) => i.origin === file.url) === true,
     onFavourite: (file, kind) => {
@@ -1153,7 +1163,7 @@ export class NativeView {
 
   private updateChat(state: ChatState): void {
     this.lastState = state;
-    const { title, list, me, heading, banner, messages, composer, attach } = this.parts as Record<string, HTMLElement>;
+    const { title, list, me, heading, messages, composer, attach } = this.parts as Record<string, HTMLElement>;
     if (state.channel?.id !== this.channelId) {
       // A reply, edit or open picker belongs to the channel it started in.
       this.replyTo = undefined;
@@ -1174,8 +1184,6 @@ export class NativeView {
     }
     title!.textContent = state.title;
     me!.textContent = state.me;
-    banner!.textContent = state.error ?? "";
-    banner!.hidden = !state.error;
     list!.replaceChildren(
       ...channelList(this.doc, state.sidebar, {
         onSelect: (channelId) => this.api.act({ type: "select", channelId }),
@@ -1193,6 +1201,7 @@ export class NativeView {
     heading!.textContent = channel ? channel.name : "Select a conversation";
     this.updateMembers();
     this.updateMessagePanel();
+    this.updateBanner();
     this.updateThread();
     this.updateForward();
     this.updateProfile();

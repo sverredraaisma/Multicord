@@ -199,7 +199,7 @@ export interface NativeMessage {
   /** Raw text for editing (mentions unresolved); set when canEdit. */
   source?: string;
   /** Reply preview; null when the original message was deleted. */
-  reply?: { author: string; content: string } | null;
+  reply?: NativeReplyPreview | null;
   reactions: NativeReaction[];
   attachments: NativeAttachment[];
   /** It mentions the user (by name, a role they have, or everyone), as the platform says; the view highlights it. */
@@ -223,6 +223,27 @@ export interface NativeThreadSummary {
   count: number;
   /** The latest reply's author, by name. */
   latest?: string;
+}
+
+/**
+ * The message a reply answers, quoted above it. With the original's `id`
+ * (as loaded messages have it) and `timestamp`, clicking the quote brings
+ * the original into sight, loading older messages as a pin's jump does.
+ */
+export interface NativeReplyPreview {
+  author: string;
+  content: string;
+  id?: string;
+  /** ISO 8601; where loading older messages may stop looking. */
+  timestamp?: string;
+}
+
+/** Where a reply's quote leads, as the view trusts it: the original as a listed message, with a usable id and time; undefined otherwise. */
+export function replyTarget(value: unknown): NativeListedMessage | undefined {
+  const v = record(value);
+  const author = shortText(v?.author);
+  if (!v || !id(v.id) || !author || typeof v.timestamp !== "string" || v.timestamp.length > 40 || Number.isNaN(Date.parse(v.timestamp))) return undefined;
+  return { id: v.id as string, author, content: typeof v.content === "string" ? v.content.slice(0, MAX_LISTED_TEXT) : "", timestamp: v.timestamp };
 }
 
 /** A thread summary as the view trusts it: a positive count (capped) and a name cut short; undefined without replies. */

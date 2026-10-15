@@ -488,6 +488,30 @@ describe("message actions", () => {
     expect(quotes[1]!.classList.contains("missing")).toBe(true);
   });
 
+  it("brings a reply's original into sight from its quote, and says when it cannot", () => {
+    const loads = () => act.mock.calls.filter(([a]) => a.type === "loadOlder").length;
+    const quote = { author: "Bo", content: "earlier", id: "5", timestamp: "2026-10-14T11:00:00Z" };
+    const withOlder = (hasOlder: boolean, ...messages: NativeMessage[]) => {
+      const state = withMessages(...messages);
+      return chat({ channel: { ...state.channel!, hasOlder } });
+    };
+    view.update(withOlder(false, msg("5"), msg("11", { reply: quote })));
+    root.querySelector<HTMLButtonElement>("button.reply")!.click();
+    expect(root.querySelector('li.message[data-id="5"]')!.classList.contains("jump-target")).toBe(true);
+    expect(loads()).toBe(0);
+    // Not loaded: older pages are asked for; with none left, the banner says so.
+    view.update(withOlder(true, msg("11", { reply: quote })));
+    root.querySelector<HTMLButtonElement>("button.reply")!.click();
+    expect(loads()).toBe(1);
+    view.update(withOlder(false, msg("8"), msg("11", { reply: quote })));
+    const banner = root.querySelector<HTMLElement>(".banner")!;
+    expect(banner.hidden).toBe(false);
+    expect(banner.textContent).toBe("That message could not be loaded here.");
+    // The module's own error comes first.
+    view.update({ ...withOlder(false, msg("11", { reply: quote })), error: "Offline" });
+    expect(banner.textContent).toBe("Offline");
+  });
+
   it("drops a pending reply or edit when the channel changes", () => {
     view.update(withMessages(ownMessage));
     button("Reply")!.click();
