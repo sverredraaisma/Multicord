@@ -367,6 +367,44 @@ describe("FluxerAdapter chat", () => {
     expect(calls.some((c) => c.url.endsWith("/read-states/ack"))).toBe(false);
   });
 
+  it("marks where a channel's news began when it was opened, from its read state", async () => {
+    const ctx = setup({
+      token: "flx",
+      routes: [
+        (url) =>
+          url.includes("/channels/111/messages?")
+            ? { status: 200, body: [message("430", "111"), message("420", "111", { author: ME }), message("410", "111"), message("390", "111")] }
+            : undefined,
+      ],
+    });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openConversation("111");
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: "410" });
+    // Read meanwhile, it keeps its marker while open; opened again, it has none.
+    ctx.adapter.setVisible(true);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: "410" });
+    await ctx.adapter.openConversation("113");
+    expect(ctx.chat().channel).not.toHaveProperty("unread");
+    await ctx.adapter.openConversation("111");
+    expect(ctx.chat().channel).not.toHaveProperty("unread");
+  });
+
+  it("says a channel's news began above the loaded messages, and gives none where the loaded ones hold nothing new", async () => {
+    const ctx = setup({
+      token: "flx",
+      routes: [(url) => (url.includes("/channels/111/messages?") ? { status: 200, body: Array.from({ length: 50 }, (_, i) => message(String(1000 - i), "111")) } : undefined)],
+    });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openConversation("111");
+    expect(ctx.chat().channel!.unread).toEqual({});
+    // The DM was read up to 700; only an older message is loaded, and nothing older is left.
+    await ctx.adapter.openConversation("900");
+    expect(ctx.chat().channel!.unread).toBeUndefined();
+  });
+
   it("sends messages and surfaces failures", async () => {
     let fail = false;
     const ctx = setup({

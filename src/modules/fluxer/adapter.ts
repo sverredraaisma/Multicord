@@ -7,6 +7,7 @@ import {
   type NativeGifResults,
   type NativeMessage,
   type NativeStickerPack,
+  type NativeUnread,
   type NativeSidebarItem,
   type NativeViewState,
   type NativeVoiceSession,
@@ -22,6 +23,7 @@ import { FluxerRest, type LoginResult, type RestOptions } from "./rest";
 import { FluxerState, TYPING_MS } from "./state";
 import {
   ChannelType,
+  compareIds,
   FORUM_TYPES,
   MessageType,
   THREAD_TYPES,
@@ -126,6 +128,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private selectedChannelId: string | undefined;
   private readonly lastChannel = new Map<string, string>();
   private readonly hasOlder = new Map<string, boolean>();
+  /** Where the open channel's news began when it was opened: the last message read then, if any. */
+  private unreadAt: { channelId: string; after?: string } | undefined;
   private readonly loading = new Set<string>();
   private readonly expanded = new Set<string>();
   private readonly ackTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -431,6 +435,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     const channel = this.state.channels.get(channelId);
     const forum = channel !== undefined && FORUM_TYPES.has(channel.type);
     if (!channel || (!forum && !TEXT_CHANNEL_TYPES.has(channel.type))) return;
+    // Noted before it is read: where its news began.
+    if (channelId !== this.selectedChannelId) this.unreadAt = !forum && this.state.isUnread(channel) ? { channelId, after: this.state.readStates.get(channelId)?.lastMessageId } : undefined;
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.guildId ?? "home", channelId);
     this.error = undefined;
@@ -438,6 +444,21 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     if (forum) return; // A forum lists its posts; it has no messages of its own.
     if (!this.state.messages.has(channelId)) await this.fetchHistory(channelId, undefined);
     this.ackSoon(channelId);
+  }
+
+  /**
+   * The open channel's unread marker: the first message from someone else
+   * after the last one read when it was opened, once the loaded messages
+   * reach back that far (or there are no older ones); none when they do and
+   * hold nothing new from others after all. Fluxer gives no count.
+   */
+  private unreadView(channelId: string, at: NonNullable<FluxerAdapter["unreadAt"]>): NativeUnread | undefined {
+    const messages = this.state.messages.get(channelId) ?? [];
+    const after = at.after ?? "0";
+    const reach = !(this.hasOlder.get(channelId) ?? false) || messages.some((m) => compareIds(m.id, after) <= 0);
+    if (!reach) return {};
+    const first = messages.find((m) => compareIds(m.id, after) > 0 && m.author.id !== this.state.me?.id);
+    return first && { firstId: first.id };
   }
 
   private async fetchHistory(channelId: string, before: string | undefined): Promise<void> {
@@ -1069,6 +1090,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                 typing: this.state.typingIn(channel.id).map((u) => displayName(u)),
                 pending: (this.pending.get(channel.id) ?? []).map((f) => ({ name: f.filename, size: f.size })),
                 uploading: this.uploading.has(channel.id),
+                ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt) } : {}),
                 can: {
                   reply: true,
                   react: true,
