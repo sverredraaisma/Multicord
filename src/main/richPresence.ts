@@ -56,8 +56,11 @@ export class FrameReader {
 
 const text = (value: unknown, max = 128): string | undefined =>
   typeof value === "string" && value.trim() !== "" ? value.slice(0, max) : undefined;
-const time = (value: unknown): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+/** A timestamp in milliseconds; seconds (as many games send) are converted, as arRPC does. */
+const time = (value: unknown): number | undefined => {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined;
+  return Math.floor(value < 1e12 ? value * 1000 : value);
+};
 /** The name of an image the app uploaded to Discord; image links would need Discord's own proxying. */
 const imageKey = (value: unknown): string | undefined => {
   const key = text(value, 128);

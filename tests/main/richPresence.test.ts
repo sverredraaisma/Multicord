@@ -224,8 +224,9 @@ describe("frames and activities", () => {
       application_id: "1",
       type: 0,
       flags: 0,
-      timestamps: { end: 5 },
+      timestamps: { end: 5000 }, // seconds, as many games send, become milliseconds
     });
+    expect(sanitizeActivity("1", { timestamps: { start: 1_700_000_000 } })!.timestamps).toEqual({ start: 1_700_000_000_000 });
   });
 
   it("looks apps up once and copes with failures", async () => {
