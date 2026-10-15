@@ -707,7 +707,7 @@ describe("conversations", () => {
     await ctx.open("Lounge");
     ctx.api.messages.mockRejectedValueOnce(new MatrixError(403, "M_FORBIDDEN", "no"));
     await ctx.act({ type: "loadOlder" });
-    expect(ctx.chat().error).toBe("Could not load messages: That username or password is not right.");
+    expect(ctx.chat().error).toBe("Could not load messages: no");
     expect(ctx.chat().channel!.hasOlder).toBe(true);
   });
 
@@ -2483,6 +2483,16 @@ describe("joining a call", () => {
     ctx.api.openIdToken.mockRejectedValueOnce(new MatrixError(429, "M_LIMIT_EXCEEDED", "slow down"));
     await ctx.join("Start a call in Lounge");
     expect(ctx.chat().error).toBe("Could not join the call: Too many attempts. Wait a while and try again.");
+    expect(ctx.voice()).toBeNull();
+  });
+
+  it("says what the server forbids, not that the password is wrong", async () => {
+    const ctx = await withCalls();
+    await ctx.open("Lounge");
+    // Synapse's answer when the room's power levels keep members from announcing a call membership.
+    ctx.api.sendState.mockRejectedValueOnce(new MatrixError(403, "M_FORBIDDEN", "You don't have permission to post that to the room."));
+    await ctx.join("Start a call in Lounge");
+    expect(ctx.chat().error).toBe("Could not join the call: You don't have permission to post that to the room.");
     expect(ctx.voice()).toBeNull();
   });
 

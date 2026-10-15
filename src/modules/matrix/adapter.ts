@@ -195,15 +195,16 @@ function parseRtc(text: string | undefined): RtcHosts {
 
 /** What the user sees for Matrix error codes. */
 const FRIENDLY: Record<string, string> = {
-  M_FORBIDDEN: "That username or password is not right.",
   M_USER_DEACTIVATED: "This account has been deactivated.",
   M_LIMIT_EXCEEDED: "Too many attempts. Wait a while and try again.",
   M_UNKNOWN_TOKEN: "That access token is not valid (anymore).",
   M_MISSING_TOKEN: "That access token is not valid (anymore).",
 };
 
-function friendly(error: unknown): string {
+function friendly(error: unknown, signingIn = false): string {
   const code = matrixErrcode(error);
+  // Signing in, M_FORBIDDEN means the credentials; elsewhere the server's own words say what is not allowed.
+  if (signingIn && code === "M_FORBIDDEN") return "That username or password is not right.";
   if (code && FRIENDLY[code]) return FRIENDLY[code];
   return error instanceof Error ? error.message : String(error);
 }
@@ -690,7 +691,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       }
       await this.deps.secrets.save(SESSION_KEY, JSON.stringify(session));
     } catch (error) {
-      this.error = friendly(error);
+      this.error = friendly(error, true);
       session = undefined;
     }
     this.busy = false;
