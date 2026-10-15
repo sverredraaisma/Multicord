@@ -368,6 +368,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private call: MatrixCall | undefined;
   /** Counts joins and leaves, so a join that finishes after the user moved on is dropped. */
   private callAttempt = 0;
+  /** Counts joins asked for, so of those asked while the previous call is being left only the last goes ahead. */
+  private joinRequests = 0;
   private callTimer: ReturnType<typeof setTimeout> | undefined;
   private callFlags = { mute: false, deaf: false, video: false, stream: false };
   /** A DM whose call is ringing, named in the banner. */
@@ -1879,7 +1881,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const room = entry.startsWith(CALL_ENTRY) ? this.rooms.get(entry.slice(CALL_ENTRY.length)) : undefined;
     const session = this.session;
     if (!room || !session || this.step !== "chat" || this.call?.roomId === room.id) return;
+    const request = ++this.joinRequests;
     await this.leaveCall(undefined);
+    // Asked again while leaving (a double click): that join runs instead, else both would join and one would never leave.
+    if (request !== this.joinRequests) return;
     const attempt = ++this.callAttempt;
     this.error = undefined;
     const ready = await this.callReady(session, room);

@@ -2614,6 +2614,32 @@ describe("joining a call", () => {
     expect(ctx.voice()).toBeNull();
   });
 
+  it("joins once when asked twice while the call before is still being left", async () => {
+    vi.useFakeTimers();
+    const ctx = await withCalls();
+    await ctx.open("Lounge");
+    await ctx.join("Start a call in Lounge");
+    // Leaving the Lounge call takes a while; meanwhile the next call is asked for twice (a double click).
+    let left!: () => void;
+    ctx.api.sendState.mockImplementationOnce(() => new Promise((resolve) => (left = () => resolve("$left"))));
+    await ctx.open("Bo");
+    const id = ctx.callItem("Start a call in Bo")!.id;
+    const first = ctx.act({ type: "joinVoice", channelId: id });
+    await flush();
+    await ctx.act({ type: "joinVoice", channelId: id });
+    await flush();
+    left();
+    await first;
+    await flush();
+    // One join each: a second call in the same room would keep its membership (and its delayed leave) alive after leaving.
+    expect(ctx.api.openIdToken).toHaveBeenCalledTimes(2);
+    expect(ctx.voice()).toMatchObject({ token: "jwt1" });
+    // And no stray join timer ends the call that joined.
+    await vi.advanceTimersByTimeAsync(CALL_JOIN_TIMEOUT_MS);
+    expect(ctx.voice()).toMatchObject({ token: "jwt1" });
+    expect(ctx.chat().error).toBeUndefined();
+  });
+
   it("leaves when the membership cannot be kept", async () => {
     vi.useFakeTimers();
     const ctx = await withCalls();
