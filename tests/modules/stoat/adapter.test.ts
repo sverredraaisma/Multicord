@@ -773,7 +773,7 @@ describe("StoatAdapter attachments", () => {
     expect(chat().error).toBe("This Stoat instance does not accept files.");
     await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "a.gif", size: 3, type: "image/gif" } });
     expect(chat().channel!.pending).toEqual([]);
-    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, pins: true, search: true, forward: true });
+    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: true, pins: true, search: true, forward: true });
     // Without a file server there are no avatar or icon URLs either, nor emoji pictures to pick.
     expect(chat().sidebar[0]!.iconUrl).toBeUndefined();
     expect(chat().customEmoji).toEqual([]);
@@ -1136,5 +1136,164 @@ describe("StoatAdapter forwarding", () => {
     routes.unshift((url, init) => (init.method === "POST" && url.endsWith("/messages") ? { status: 403, body: { type: "MissingPermission" } } : undefined));
     await adapter.handleAction({ type: "forward", messageId: ulid(460), channelId: DM });
     expect(chat().error).toBe("Message not forwarded: You do not have permission to do that.");
+  });
+});
+
+describe("StoatAdapter members and profiles", () => {
+  const MODS = ulid(60);
+  const FANCY = ulid(61);
+  const BLUE = ulid(62);
+  const ZED = { _id: ulid(70), username: "zed", online: true, status: { presence: "Busy", text: "working" }, bot: { owner: ME_ID } };
+  const roles = { [MODS]: { name: "Mods", colour: "#FF0000", hoist: true, rank: 1 }, [FANCY]: { name: "Fancy", colour: "linear-gradient(red, blue)", hoist: true, rank: 0 }, [BLUE]: { name: "Blue", colour: "#0000ff", rank: 2 } };
+  const member = (user: string, extra: Record<string, unknown> = {}) => ({ _id: { server: ALPHA, user }, ...extra });
+  const list = {
+    members: [member(ME_ID), member(ANA_ID, { nickname: "Annie", roles: [BLUE, MODS] }), member(BOB_ID, { roles: [MODS] }), member(ulid(70)), member(ulid(71)), { _id: "junk" }],
+    users: [ANA, ZED],
+  };
+  const ready = () => {
+    const payload = readyPayload();
+    (payload.servers[0] as Record<string, unknown>).roles = roles;
+    return payload;
+  };
+  async function opened(routes: Handler[]) {
+    const ctx = setup({ token: "saved", routes });
+    await ctx.adapter.start();
+    await ctx.goOnline(ready());
+    await ctx.adapter.openConversation(GENERAL);
+    return ctx;
+  }
+
+  it("fetches a server's members once the panel opens, grouped and kept current", async () => {
+    let refuse = true;
+    const ctx = await opened([(url) => (url === `https://stoat.test/api/servers/${ALPHA}/members?exclude_offline=false` ? (refuse ? { status: 403, body: { type: "MissingPermission" } } : { status: 200, body: list }) : undefined)]);
+    const { adapter, chat, event, requests } = ctx;
+    expect(chat().channel!.can.members).toBe(true);
+    expect(chat().channel!.members).toBeUndefined();
+    const pending = adapter.handleAction({ type: "members", open: true });
+    expect(chat().channel!.members).toEqual({ sections: [], hasMore: false, loading: true });
+    await pending;
+    expect(chat().channel!.members).toEqual({ sections: [], hasMore: false, loading: false, error: expect.stringMatching(/^Could not load members: /) });
+    refuse = false;
+    await adapter.handleAction({ type: "members", open: true });
+    const shown = chat().channel!.members!;
+    expect(shown.sections.map((s) => [s.name, s.members.map((m) => m.name)])).toEqual([["Mods — 1", ["Annie"]], ["Online — 2", ["me", "zed"]], ["Offline — 1", ["bob"]]]);
+    expect(shown.sections[0]!.members[0]).toEqual({ id: ANA_ID, name: "Annie", avatarUrl: "https://cdn.test/avatars/av1", presence: "online", color: "#ff0000", mention: `<@${ANA_ID}>` });
+    expect(shown.sections[1]!.members[1]).toEqual({ id: ulid(70), name: "zed", presence: "dnd", status: "working", mention: `<@${ulid(70)}>` });
+    expect(shown).toMatchObject({ hasMore: false, loading: false });
+    expect(shown.more).toBeUndefined();
+
+    // Another channel of the server needs no new fetch; member, role and user events keep the list current.
+    await adapter.openConversation(LOBBY);
+    expect(requests("/members?")).toHaveLength(2);
+    await event({ type: "ServerMemberUpdate", id: { server: ALPHA, user: ANA_ID }, data: { avatar: { _id: "av9", tag: "avatars", filename: "b.png" } }, clear: ["Nickname"] });
+    await event({ type: "ServerRoleUpdate", id: ALPHA, role_id: MODS, data: { name: "Moderators" }, clear: ["Colour"] });
+    await event({ type: "UserUpdate", id: ulid(70), data: { status: { presence: "Idle" } }, clear: ["StatusText"] });
+    await event({ type: "ServerMemberLeave", id: ALPHA, user: BOB_ID });
+    await event({ type: "ServerMemberJoin", id: ALPHA, user: BOB_ID, member: member(BOB_ID, { nickname: "Robert", roles: [MODS] }) });
+    await event({ type: "UserUpdate", id: BOB_ID, data: { online: true, status: { presence: "Invisible" } } });
+    const updated = chat().channel!.members!;
+    expect(updated.sections.map((s) => [s.name, s.members.map((m) => m.name)])).toEqual([["Moderators — 1", ["Ana"]], ["Online — 2", ["me", "zed"]], ["Offline — 1", ["Robert"]]]);
+    expect(updated.sections[0]!.members[0]).toMatchObject({ avatarUrl: "https://cdn.test/avatars/av9", color: "#0000ff" });
+    expect(updated.sections[1]!.members[1]).toMatchObject({ presence: "idle", status: "Bot" });
+
+    // A profile of a listed member needs no member fetch.
+    await adapter.handleAction({ type: "profile", id: BOB_ID });
+    expect(chat().profile).toEqual({ id: BOB_ID, name: "Robert", username: "bob#0003", presence: "offline", roles: [{ name: "Moderators" }] });
+    expect(requests(`/members/${BOB_ID}`)).toHaveLength(0);
+
+    // A new session fetches again; closing hides the list.
+    await ctx.goOnline(ready());
+    expect(requests("/members?")).toHaveLength(3);
+    await adapter.handleAction({ type: "members", open: false });
+    expect(chat().channel!.members).toBeUndefined();
+    await adapter.handleAction({ type: "logout" });
+    expect(adapter.state.members.size).toBe(0);
+  });
+
+  it("shows at most 200 members of a big server and counts the rest", async () => {
+    const users = Array.from({ length: 205 }, (_, i) => ({ _id: ulid(1000 + i), username: `u${String(i).padStart(3, "0")}`, online: true }));
+    const ctx = await opened([(url) => (url.includes("/members?") ? { status: 200, body: { members: users.map((u) => member(u._id)), users } } : undefined)]);
+    await ctx.adapter.handleAction({ type: "members", open: true });
+    const shown = ctx.chat().channel!.members!;
+    expect(shown.sections.map((s) => [s.name, s.members.length])).toEqual([["Online — 205", 200]]);
+    expect(shown).toMatchObject({ more: 5, hasMore: false });
+  });
+
+  it("lists a DM's and a group's people, fetching only users it does not know", async () => {
+    const STRANGER = ulid(80);
+    let release: () => void = () => {};
+    const ctx = await opened([(url) => (url === `https://stoat.test/api/channels/${GROUP}/members` ? (release(), { status: 200, body: [{ _id: STRANGER, username: "newbie" }, "junk"] }) : undefined)]);
+    const { adapter, chat, event, requests } = ctx;
+    await adapter.handleAction({ type: "members", open: true });
+    await adapter.openConversation(DM);
+    expect(chat().channel!.members).toEqual({
+      sections: [{ name: "Members", members: [expect.objectContaining({ id: ANA_ID, name: "Ana", presence: "online" }), expect.objectContaining({ id: ME_ID, name: "me", presence: "online" })] }],
+      hasMore: false,
+      loading: false,
+    });
+    await adapter.openConversation(GROUP);
+    expect(chat().channel!.members!.sections[0]!.members.map((m) => m.name)).toEqual(["Ana", "me", "bob"]);
+    expect(requests(`/channels/${GROUP}/members`)).toHaveLength(0);
+    await event({ type: "ChannelGroupJoin", id: GROUP, user: STRANGER });
+    // A new session meanwhile drops the answer.
+    release = () => {
+      release = () => {};
+      ctx.socket().receive(ready());
+    };
+    await adapter.handleAction({ type: "members", open: true });
+    expect(adapter.state.users.has(STRANGER)).toBe(false);
+
+    const again = setup({ token: "saved", routes: [(url) => (url === `https://stoat.test/api/channels/${GROUP}/members` ? { status: 200, body: [{ _id: STRANGER, username: "newbie" }] } : undefined)] });
+    await again.adapter.start();
+    await again.goOnline(ready());
+    // Opened before any conversation: nothing to fetch until one opens.
+    await again.adapter.handleAction({ type: "members", open: true });
+    await again.event({ type: "ChannelGroupJoin", id: GROUP, user: STRANGER });
+    await again.adapter.openConversation(GROUP);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(again.chat().channel!.members!.sections[0]!.members.map((m) => m.name)).toEqual(["Ana", "me", "bob", "newbie"]);
+  });
+
+  it("answers profile cards with the user, their roles in the open server and their about text", async () => {
+    let release: () => void = () => {};
+    const ctx = await opened([
+      (url) => (url === `https://stoat.test/api/servers/${ALPHA}/members/${ANA_ID}` ? { status: 200, body: member(ANA_ID, { nickname: "Annie", roles: [BLUE, MODS] }) } : undefined),
+      (url) => (url === `https://stoat.test/api/users/${ANA_ID}/profile` ? { status: 200, body: { content: "About me" } } : undefined),
+      (url) => (url === `https://stoat.test/api/users/${ulid(70)}` ? (release(), { status: 200, body: ZED }) : undefined),
+      (url) => (url === `https://stoat.test/api/users/${ulid(70)}/profile` ? { status: 200, body: { content: " " } } : undefined),
+      (url) => (url === `https://stoat.test/api/users/${ulid(71)}` ? { status: 404, body: { type: "NotFound" } } : undefined),
+    ]);
+    const { adapter, chat } = ctx;
+    await adapter.handleAction({ type: "profile", id: "nope" });
+    expect(chat().profile).toBeUndefined();
+    const pending = adapter.handleAction({ type: "profile", id: ANA_ID });
+    expect(chat().profile).toEqual({ id: ANA_ID, loading: true, name: "Ana", username: "ana#0002", avatarUrl: "https://cdn.test/avatars/av1", presence: "online" });
+    await pending;
+    expect(chat().profile).toEqual({
+      id: ANA_ID,
+      name: "Annie",
+      username: "ana#0002",
+      avatarUrl: "https://cdn.test/avatars/av1",
+      presence: "online",
+      about: "About me",
+      roles: [{ name: "Mods", color: "#ff0000" }, { name: "Blue", color: "#0000ff" }],
+    });
+
+    // Someone not known yet, in a DM: no roles; a card replaced meanwhile is dropped.
+    await adapter.openConversation(DM);
+    release = () => {
+      release = () => {};
+      void adapter.handleAction({ type: "profile", id: ulid(71) });
+    };
+    await adapter.handleAction({ type: "profile", id: ulid(70) });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(chat().profile).toEqual({ id: ulid(71) });
+    await adapter.handleAction({ type: "profile", id: ulid(70) });
+    expect(chat().profile).toEqual({ id: ulid(70), name: "zed", username: "@zed", presence: "dnd", status: "working" });
+    // Someone Stoat says nothing about.
+    await adapter.handleAction({ type: "profile", id: ulid(72) });
+    expect(chat().profile).toEqual({ id: ulid(72) });
+    await adapter.handleAction({ type: "logout" });
+    expect(adapter.state.users.size).toBe(0);
   });
 });

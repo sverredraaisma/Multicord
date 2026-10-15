@@ -55,7 +55,7 @@ describe("Stoat parsers", () => {
   });
 
   it("parses users, clamping names", () => {
-    expect(parseUser(ANA)).toEqual({ id: ANA_ID, username: "ana", displayName: "Ana", avatar: expect.objectContaining({ id: "av1", tag: "avatars" }), relationship: "Friend" });
+    expect(parseUser(ANA)).toEqual({ id: ANA_ID, username: "ana", displayName: "Ana", avatar: expect.objectContaining({ id: "av1", tag: "avatars" }), relationship: "Friend", discriminator: "0002", online: true });
     expect(parseUser({ _id: ANA_ID, username: "x".repeat(500), display_name: " " })).toEqual({
       id: ANA_ID,
       username: "x".repeat(100),
@@ -76,7 +76,7 @@ describe("Stoat parsers", () => {
       channels: [ulid(1), "bad", ulid(2)],
       categories: [{ id: "c1", title: "Text", channels: [ulid(2)] }, { id: "bad id!", title: "x", channels: [] }, { id: "c2" }, "nope"],
     });
-    expect(server).toEqual({ id: ulid(100), name: "Alpha", icon: undefined, channelIds: [ulid(1), ulid(2)], categories: [{ id: "c1", title: "Text", channelIds: [ulid(2)] }] });
+    expect(server).toEqual({ id: ulid(100), name: "Alpha", icon: undefined, channelIds: [ulid(1), ulid(2)], categories: [{ id: "c1", title: "Text", channelIds: [ulid(2)] }], roles: [] });
     expect(parseServer({ _id: ulid(100) })).toBeUndefined();
     expect(parseCategories("x")).toEqual([]);
   });

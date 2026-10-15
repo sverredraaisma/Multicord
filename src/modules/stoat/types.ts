@@ -46,6 +46,14 @@ export interface StoatUser {
   avatar?: StoatFile;
   /** "User" marks the signed-in user in Ready. */
   relationship?: string;
+  discriminator?: string;
+  bot?: boolean;
+  /** Whether they are connected, as far as Stoat tells this user (friends and those sharing a server or group). */
+  online?: boolean;
+  /** The presence they chose: Online, Idle, Focus, Busy or Invisible. */
+  presence?: string;
+  /** Their custom status text. */
+  statusText?: string;
 }
 
 export interface StoatCategory {
@@ -61,6 +69,27 @@ export interface StoatServer {
   /** Channel ids in the server's own order. */
   channelIds: string[];
   categories: StoatCategory[];
+  roles: StoatRole[];
+}
+
+/** A server role, for member list headings, name colours and profile cards. */
+export interface StoatRole {
+  id: string;
+  name: string;
+  /** "#rrggbb"; Stoat also allows CSS gradients, which are left out. */
+  colour?: string;
+  /** Members with it are listed under it. */
+  hoist: boolean;
+  /** Lower ranks are higher roles. */
+  rank: number;
+}
+
+/** Someone in a server, as GET /servers/{id}/members lists them. */
+export interface StoatMember {
+  userId: string;
+  nickname?: string;
+  avatar?: StoatFile;
+  roles: string[];
 }
 
 export interface StoatChannel {
@@ -203,7 +232,50 @@ export function parseUser(value: unknown): StoatUser | undefined {
     displayName: str(value.display_name),
     avatar: parseFile(value.avatar),
     relationship: str(value.relationship),
+    ...userStatus(value),
   };
+}
+
+const PRESENCES: readonly string[] = ["Online", "Idle", "Focus", "Busy", "Invisible"];
+
+/** A user's tag, bot flag and presence, where the user object carries them. */
+function userStatus(value: Json): Partial<StoatUser> {
+  const extra: Partial<StoatUser> = {};
+  if (typeof value.discriminator === "string" && /^\d{4}$/.test(value.discriminator)) extra.discriminator = value.discriminator;
+  if (isRecord(value.bot)) extra.bot = true;
+  if (typeof value.online === "boolean") extra.online = value.online;
+  Object.assign(extra, parseStatus(value.status));
+  return extra;
+}
+
+/** A user's status object: the presence they chose and their status text. */
+export function parseStatus(value: unknown): Pick<StoatUser, "presence" | "statusText"> {
+  const status = isRecord(value) ? value : {};
+  const parsed: Pick<StoatUser, "presence" | "statusText"> = {};
+  if (typeof status.presence === "string" && PRESENCES.includes(status.presence)) parsed.presence = status.presence;
+  const text = str(status.text, 128);
+  if (text) parsed.statusText = text;
+  return parsed;
+}
+
+/** A server's roles, from its object of roles by id. */
+export function parseRoles(value: unknown): StoatRole[] {
+  if (!isRecord(value)) return [];
+  return Object.entries(value).slice(0, MAX_LIST).flatMap(([id, raw]) => parseRole(id, raw) ?? []);
+}
+
+export function parseRole(id: string, value: unknown): StoatRole | undefined {
+  if (!isId(id) || !isRecord(value) || typeof value.name !== "string") return undefined;
+  const role: StoatRole = { id, name: value.name.slice(0, MAX_NAME), hoist: value.hoist === true, rank: typeof value.rank === "number" ? value.rank : 0 };
+  if (typeof value.colour === "string" && /^#[0-9a-fA-F]{6}$/.test(value.colour)) role.colour = value.colour.toLowerCase();
+  return role;
+}
+
+export function parseMember(value: unknown): StoatMember | undefined {
+  const key = isRecord(value) && isRecord(value._id) ? value._id : undefined;
+  if (!key || !isId(key.user)) return undefined;
+  const record = value as Json;
+  return { userId: key.user, nickname: str(record.nickname), avatar: parseFile(record.avatar), roles: ids(record.roles) };
 }
 
 export function parseServer(value: unknown): StoatServer | undefined {
@@ -214,6 +286,7 @@ export function parseServer(value: unknown): StoatServer | undefined {
     icon: parseFile(value.icon),
     channelIds: ids(value.channels),
     categories: parseCategories(value.categories),
+    roles: parseRoles(value.roles),
   };
 }
 

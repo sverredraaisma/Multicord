@@ -1,5 +1,8 @@
 import type { FileSource } from "../../engine/runtime";
-import { isRecord, parseMessage, parseUnread, parseUser, type StoatMessage, type StoatUnread, type StoatUser } from "./types";
+import { isRecord, parseMember, parseMessage, parseUnread, parseUser, type StoatMember, type StoatMessage, type StoatUnread, type StoatUser } from "./types";
+
+/** Most members of one server kept from its list; Stoat sends them all at once. */
+export const MAX_SERVER_MEMBERS = 5000;
 
 /** Error from the Stoat API, carrying its error type (e.g. InvalidCredentials). */
 export class StoatApiError extends Error {
@@ -177,6 +180,35 @@ export class StoatRest {
     const users = (Array.isArray(record.users) ? record.users : []).flatMap((u) => parseUser(u) ?? []);
     const messages = (Array.isArray(record.messages) ? record.messages : []).flatMap((m) => parseMessage(m) ?? []);
     return { messages, users };
+  }
+
+  /** A server's members and their users (Stoat sends the whole list), at most MAX_SERVER_MEMBERS of each. */
+  async members(serverId: string): Promise<{ members: StoatMember[]; users: StoatUser[] }> {
+    const data = await this.request("GET", `/servers/${serverId}/members?exclude_offline=false`);
+    const record = isRecord(data) ? data : {};
+    const take = (value: unknown) => (Array.isArray(value) ? value.slice(0, MAX_SERVER_MEMBERS) : []);
+    return { members: take(record.members).flatMap((m) => parseMember(m) ?? []), users: take(record.users).flatMap((u) => parseUser(u) ?? []) };
+  }
+
+  /** A group's members. */
+  async groupMembers(channelId: string): Promise<StoatUser[]> {
+    const data = await this.request("GET", `/channels/${channelId}/members`);
+    return (Array.isArray(data) ? data.slice(0, MAX_SERVER_MEMBERS) : []).flatMap((u) => parseUser(u) ?? []);
+  }
+
+  /** One member of a server: their nickname and roles there. */
+  async member(serverId: string, userId: string): Promise<StoatMember | undefined> {
+    return parseMember(await this.request("GET", `/servers/${serverId}/members/${userId}`));
+  }
+
+  async user(userId: string): Promise<StoatUser | undefined> {
+    return parseUser(await this.request("GET", `/users/${userId}`));
+  }
+
+  /** What someone wrote about themselves (their profile's content), if anything. */
+  async profile(userId: string): Promise<string | undefined> {
+    const data = await this.request("GET", `/users/${userId}/profile`);
+    return isRecord(data) && typeof data.content === "string" && data.content.trim() !== "" ? data.content : undefined;
   }
 
   async pin(channelId: string, messageId: string, pin: boolean): Promise<void> {

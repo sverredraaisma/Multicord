@@ -1,5 +1,5 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
-import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeListedMessage, type NativeMessage, type NativeMessageList, type NativeSearchResults, type NativeSidebarItem, type NativeUnread, type NativeViewState } from "../../shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeListedMessage, type NativeMember, type NativeMemberList, type NativeMemberSection, type NativePresence, type NativeProfile, MEMBER_ROWS_SHOWN, type NativeMessage, type NativeMessageList, type NativeSearchResults, type NativeSidebarItem, type NativeUnread, type NativeViewState } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
 import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
@@ -7,7 +7,7 @@ import { BaseAdapter } from "../../shared/baseAdapter";
 import { StoatEvents, type EventsStatus, type SocketFactory } from "./events";
 import { discoverInstance, instanceHosts, StoatRest, type LoginResult, type RestOptions, type StoatInstance } from "./rest";
 import { StoatState, TYPING_MS } from "./state";
-import { ChannelType, TEXT_CHANNEL_TYPES, compareIds, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatEmbed, type StoatFile, type StoatMessage, type StoatUser } from "./types";
+import { ChannelType, TEXT_CHANNEL_TYPES, compareIds, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatEmbed, type StoatFile, type StoatMember, type StoatMessage, type StoatRole, type StoatServer, type StoatUser } from "./types";
 
 const PAGE_SIZE = 50;
 /** The longest search Stoat takes. */
@@ -96,6 +96,14 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   /** Whether a session token is stored, so the account shows as signed in before it connects. */
   private hasToken = false;
   private visible = false;
+  /** The view's member panel is open: the open conversation's members are fetched and shown. */
+  private membersOpen = false;
+  /** Member fetches by server id (or group channel id): under way, done, or failed. */
+  private readonly memberFetches = new Map<string, { loading: boolean; error?: string }>();
+  /** The profile card the view asked for last. */
+  private profile: NativeProfile | undefined;
+  /** Counts sign-outs and new sessions, so answers for an earlier one are dropped. */
+  private session = 0;
 
   constructor(private readonly deps: StoatAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -169,6 +177,10 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         return this.searchMessages(action.query);
       case "pin":
         return this.pin(action.messageId, action.pin);
+      case "members":
+        return this.setMembersOpen(action.open);
+      case "profile":
+        return this.showProfile(action.id);
       case "logout":
         return this.logout();
       default:
@@ -321,6 +333,10 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   private onReady(): void {
     this.screen = "chat";
     this.hasOlder.clear();
+    // Ready dropped the member lists; the open panel fetches its list again.
+    this.session++;
+    this.memberFetches.clear();
+    if (this.membersOpen) void this.fetchMembers();
     this.render();
     if (!this.state.unreadsLoaded) {
       void this.rest!.unreads().then((unreads) => this.state.setUnreads(unreads), () => undefined);
@@ -341,6 +357,10 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     this.hasToken = false;
     void this.deps.secrets.delete(this.secretKey);
     this.state.reset();
+    this.session++;
+    this.memberFetches.clear();
+    this.membersOpen = false;
+    this.profile = undefined;
     this.selection = { kind: "home" };
     this.selectedChannelId = undefined;
     this.lastChannel.clear();
@@ -365,6 +385,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     this.lastChannel.set(channel.serverId ?? "home", channelId);
     this.error = undefined;
     this.render();
+    if (this.membersOpen) void this.fetchMembers();
     if (!this.state.messages.has(channelId)) await this.fetchHistory(channelId, undefined);
     this.ackSoon(channelId);
   }
@@ -690,6 +711,161 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
+  // --- Members and profiles --------------------------------------------------
+
+  /** The view's member panel opened (fetching the open conversation's members where needed) or closed. */
+  private async setMembersOpen(open: boolean): Promise<void> {
+    this.membersOpen = open;
+    this.render();
+    if (open) await this.fetchMembers();
+  }
+
+  /**
+   * Fetches what the open conversation's member list lacks: a server's
+   * members (Stoat sends the whole list, kept current by member events
+   * afterwards), or a group's users where some are unknown. DMs need nothing.
+   */
+  private async fetchMembers(): Promise<void> {
+    const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
+    const rest = this.rest!;
+    if (!channel) return;
+    const key = channel.serverId ?? channel.id;
+    const needed = channel.serverId ? !this.state.members.has(key) : channel.type === ChannelType.Group && channel.recipients.some((id) => !this.state.users.has(id));
+    if (!needed || this.memberFetches.get(key)?.loading) return;
+    this.memberFetches.set(key, { loading: true });
+    this.render();
+    const session = this.session;
+    let done: { loading: boolean; error?: string } = { loading: false };
+    let apply = () => {};
+    try {
+      if (channel.serverId) {
+        const found = await rest.members(key);
+        apply = () => this.state.setMembers(key, found.members, found.users);
+      } else {
+        const users = await rest.groupMembers(key);
+        apply = () => this.state.addUsers(users);
+      }
+    } catch (error) {
+      done = { loading: false, error: `Could not load members: ${messageOf(error)}` };
+    }
+    // Answers for an earlier session are dropped.
+    if (session !== this.session) return;
+    apply();
+    this.memberFetches.set(key, done);
+    this.render();
+  }
+
+  /** The member panel's list: a server's members by hoisted role, then online, then offline; a DM's or group's people, those online first. */
+  private memberView(channel: StoatChannel): NativeMemberList | undefined {
+    if (!this.membersOpen) return undefined;
+    const fetch = this.memberFetches.get(channel.serverId ?? channel.id);
+    const status = { loading: fetch?.loading ?? false, ...(fetch?.error ? { error: fetch.error } : {}) };
+    const server = channel.serverId ? this.state.servers.get(channel.serverId) : undefined;
+    if (server) {
+      const members = this.state.members.get(server.id);
+      return members ? { ...this.serverMembers(server, [...members.values()]), ...status } : { sections: [], hasMore: false, ...status };
+    }
+    // Recipients include the user.
+    const rows = channel.recipients.flatMap((id) => {
+      const user = this.state.users.get(id);
+      return user ? [this.memberRow(user, undefined, [])] : [];
+    });
+    const rank = (row: NativeMember) => (row.presence === undefined || row.presence === "offline" ? 1 : 0);
+    rows.sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    return { sections: [{ name: "Members", members: rows }], hasMore: false, ...status };
+  }
+
+  /** A server's members: online ones under their highest hoisted role, else "Online"; then "Offline". At most MEMBER_ROWS_SHOWN, the rest counted. */
+  private serverMembers(server: StoatServer, members: StoatMember[]): Omit<NativeMemberList, "loading"> {
+    const byRank = [...server.roles].sort((a, b) => a.rank - b.rank);
+    const groups = new Map<string, NativeMember[]>([...byRank.filter((r) => r.hoist).map((r): [string, NativeMember[]] => [r.id, []]), ["online", []], ["offline", []]]);
+    for (const member of members) {
+      const user = this.state.users.get(member.userId);
+      if (!user) continue;
+      const row = this.memberRow(user, member, byRank);
+      const hoisted = byRank.find((r) => r.hoist && member.roles.includes(r.id));
+      const group = row.presence === "offline" || row.presence === undefined ? "offline" : (hoisted?.id ?? "online");
+      groups.get(group)!.push(row);
+    }
+    let room = MEMBER_ROWS_SHOWN;
+    let listed = 0;
+    const sections: NativeMemberSection[] = [];
+    for (const [id, rows] of groups) {
+      if (rows.length === 0 || room === 0) continue;
+      const name = id === "online" ? "Online" : id === "offline" ? "Offline" : byRank.find((r) => r.id === id)!.name;
+      const shown = rows.sort((a, b) => a.name.localeCompare(b.name)).slice(0, room);
+      room -= shown.length;
+      listed += shown.length;
+      sections.push({ name: `${name} — ${rows.length}`, members: shown });
+    }
+    const total = [...groups.values()].reduce((sum, rows) => sum + rows.length, 0);
+    return { sections, hasMore: false, ...(total > listed ? { more: total - listed } : {}) };
+  }
+
+  /** How present someone is: offline unless Stoat says they are connected, then the presence they chose. */
+  private presenceOf(user: StoatUser): NativePresence | undefined {
+    if (user.online === undefined) return undefined;
+    if (!user.online || user.presence === "Invisible") return "offline";
+    return user.presence === "Idle" ? "idle" : user.presence === "Busy" || user.presence === "Focus" ? "dnd" : "online";
+  }
+
+  /** A member row; Stoat's syntax mentions them as <@id>. Roles are a server's, highest first, for their name's colour. */
+  private memberRow(user: StoatUser, member: StoatMember | undefined, roles: readonly StoatRole[]): NativeMember {
+    const row: NativeMember = { id: user.id, name: member?.nickname ?? displayName(user), mention: `<@${user.id}>` };
+    const avatar = this.fileUrl(member?.avatar ?? user.avatar);
+    if (avatar) row.avatarUrl = avatar;
+    const presence = this.presenceOf(user);
+    if (presence) row.presence = presence;
+    const colour = roles.find((r) => r.colour && member?.roles.includes(r.id))?.colour;
+    if (colour) row.color = colour;
+    const status = user.statusText ?? (user.bot ? "Bot" : undefined);
+    if (status) row.status = status;
+    return row;
+  }
+
+  /**
+   * Someone's profile card: what is known at once, then their user, their
+   * roles in the open server and what they wrote about themselves, from Stoat.
+   */
+  private async showProfile(id: string): Promise<void> {
+    const rest = this.rest;
+    if (!isId(id) || !rest) return;
+    const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
+    const server = channel?.serverId ? this.state.servers.get(channel.serverId) : undefined;
+    let member = server ? this.state.members.get(server.id)?.get(id) : undefined;
+    const known = this.state.users.get(id);
+    const profile: NativeProfile = { id, loading: true, ...(known ? this.profileView(known, member, server) : {}) };
+    this.profile = profile;
+    this.render();
+    const current = () => this.profile === profile;
+    try {
+      const user = known ?? (await rest.user(id));
+      if (server && !member) member = await rest.member(server.id, id).catch(() => undefined);
+      const about = await rest.profile(id);
+      if (!current()) return;
+      if (user) Object.assign(profile, this.profileView(user, member, server));
+      if (about) profile.about = about;
+    } catch {
+      // Stoat may not show this user from here: the card keeps what it has.
+    }
+    if (!current()) return;
+    delete profile.loading;
+    this.render();
+  }
+
+  private profileView(user: StoatUser, member: StoatMember | undefined, server: StoatServer | undefined): Partial<NativeProfile> {
+    const view: Partial<NativeProfile> = { name: member?.nickname ?? displayName(user), username: user.discriminator ? `${user.username}#${user.discriminator}` : `@${user.username}` };
+    const avatar = this.fileUrl(member?.avatar ?? user.avatar);
+    if (avatar) view.avatarUrl = avatar;
+    const presence = this.presenceOf(user);
+    if (presence) view.presence = presence;
+    const status = user.statusText ?? (user.bot ? "Bot" : undefined);
+    if (status) view.status = status;
+    const roles = (server?.roles ?? []).filter((r) => member?.roles.includes(r.id)).sort((a, b) => a.rank - b.rank);
+    if (roles.length > 0) view.roles = roles.map((r) => ({ name: r.name, ...(r.colour ? { color: r.colour } : {}) }));
+    return view;
+  }
+
   // --- Rail and view ---------------------------------------------------------
 
   private schedulePublish(): void {
@@ -900,6 +1076,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
         const server = this.selection.kind === "server" ? this.state.servers.get(this.selection.serverId) : undefined;
         const shown = new Set<string>();
+        const members = channel ? this.memberView(channel) : undefined;
         return {
           screen: "chat",
           platform,
@@ -919,14 +1096,16 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt) } : {}),
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
                 ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
+                ...(members ? { members } : {}),
                 // Files need the instance's file server (Autumn).
-                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: false, pins: true, search: true, forward: true },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: true, pins: true, search: true, forward: true },
               }
             : null,
           customEmoji: channel ? this.customEmoji(channel) : [],
           // Pictures of the custom emoji in the messages above; only emoji with a picture were noted.
           emojiUrls: Object.fromEntries([...shown].map((id) => [id, this.emojiUrl(id)!])),
           voice: null,
+          ...(this.profile ? { profile: this.profile } : {}),
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };
       }

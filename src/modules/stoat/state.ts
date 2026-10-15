@@ -14,6 +14,9 @@ import {
   parseNotifySettings,
   parseReactions,
   parseServer,
+  parseMember,
+  parseRole,
+  parseStatus,
   parseUnread,
   parseUser,
   MAX_CONTENT,
@@ -21,6 +24,7 @@ import {
   type NotifyLevel,
   type StoatChannel,
   type StoatEmoji,
+  type StoatMember,
   type StoatMessage,
   type StoatNotifySettings,
   type StoatServer,
@@ -51,6 +55,8 @@ export class StoatState {
   /** Who is typing where: channel id -> user id -> expiry (epoch ms). */
   readonly typing = new Map<string, Map<string, number>>();
   notifySettings: StoatNotifySettings = { servers: new Map(), channels: new Map() };
+  /** Members of servers whose member list the user opened, by server and user id; kept current by member events. */
+  readonly members = new Map<string, Map<string, StoatMember>>();
   /** Whether Ready carried unread state (older instances need /sync/unreads). */
   unreadsLoaded = false;
 
@@ -66,7 +72,7 @@ export class StoatState {
     this.meId = undefined;
     this.unreadsLoaded = false;
     this.notifySettings = { servers: new Map(), channels: new Map() };
-    for (const map of [this.users, this.servers, this.channels, this.unreads, this.messages, this.latest, this.emojis, this.typing]) map.clear();
+    for (const map of [this.users, this.servers, this.channels, this.unreads, this.messages, this.latest, this.emojis, this.typing, this.members]) map.clear();
   }
 
   apply(type: string, d: Record<string, unknown>): void {
@@ -119,6 +125,17 @@ export class StoatState {
         break;
       case "ServerMemberLeave":
         if (isId(d.id) && d.user === this.meId) this.removeServer(d.id);
+        else if (isId(d.id) && isId(d.user)) this.members.get(d.id)?.delete(d.user);
+        break;
+      case "ServerMemberJoin":
+        if (isId(d.id) && isId(d.user)) this.members.get(d.id)?.set(d.user, parseMember(d.member) ?? { userId: d.user, roles: [] });
+        break;
+      case "ServerMemberUpdate":
+        this.updateMember(d);
+        break;
+      case "ServerRoleUpdate":
+      case "ServerRoleDelete":
+        this.updateRole(type, d);
         break;
       case "ChannelCreate":
         this.addChannel(parseChannel(d));
@@ -380,6 +397,7 @@ export class StoatState {
   private removeServer(serverId: string): void {
     // Its emoji stay known, so messages with them keep their names, but are no longer offered.
     this.servers.delete(serverId);
+    this.members.delete(serverId);
     for (const channel of this.serverChannels(serverId)) this.removeChannel(channel.id);
   }
 
@@ -443,6 +461,49 @@ export class StoatState {
     if ("avatar" in data) user.avatar = parseFile(data.avatar);
     if (cleared(d, "Avatar")) user.avatar = undefined;
     if (cleared(d, "DisplayName")) user.displayName = undefined;
+    if (typeof data.online === "boolean") user.online = data.online;
+    if ("status" in data) Object.assign(user, { presence: undefined, statusText: undefined }, parseStatus(data.status));
+    if (cleared(d, "StatusText")) user.statusText = undefined;
+    if (cleared(d, "StatusPresence")) user.presence = undefined;
+  }
+
+  /** Users fetched for a group's member list. */
+  addUsers(users: StoatUser[]): void {
+    for (const u of users) this.addUser(u);
+    this.changed.emit();
+  }
+
+  /** A server's member list, fetched when the user opened it, with its users. */
+  setMembers(serverId: string, members: StoatMember[], users: StoatUser[]): void {
+    for (const u of users) this.addUser(u);
+    this.members.set(serverId, new Map(members.map((m) => [m.userId, m])));
+    this.changed.emit();
+  }
+
+  private updateMember(d: Record<string, unknown>): void {
+    const key = isRecord(d.id) ? d.id : {};
+    const member = isId(key.server) && isId(key.user) ? this.members.get(key.server)?.get(key.user) : undefined;
+    if (!member) return;
+    const data = isRecord(d.data) ? d.data : {};
+    const changed = parseMember({ ...data, _id: key });
+    if ("nickname" in data) member.nickname = changed?.nickname;
+    if ("avatar" in data) member.avatar = changed?.avatar;
+    if ("roles" in data) member.roles = changed?.roles ?? [];
+    if (cleared(d, "Nickname")) member.nickname = undefined;
+    if (cleared(d, "Avatar")) member.avatar = undefined;
+    if (cleared(d, "Roles")) member.roles = [];
+  }
+
+  private updateRole(type: string, d: Record<string, unknown>): void {
+    const server = isId(d.id) ? this.servers.get(d.id) : undefined;
+    if (!server || !isId(d.role_id)) return;
+    const old = server.roles.find((r) => r.id === d.role_id);
+    server.roles = server.roles.filter((r) => r !== old);
+    if (type === "ServerRoleDelete") return;
+    const data = isRecord(d.data) ? d.data : {};
+    const merged = { name: old?.name, hoist: old?.hoist, rank: old?.rank, colour: cleared(d, "Colour") ? undefined : old?.colour, ...data };
+    const role = parseRole(d.role_id, merged);
+    if (role) server.roles.push(role);
   }
 
   private noteLatest(message: StoatMessage): void {
