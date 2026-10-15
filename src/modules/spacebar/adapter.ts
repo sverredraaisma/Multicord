@@ -50,6 +50,8 @@ const ACK_DELAY_MS = 750;
 const TYPING_REPEAT_MS = 8_000;
 /** Members listed at most, in pages of MEMBER_PAGE: what the view shows. */
 const MAX_MEMBERS = 200;
+/** The longest message Discord's API takes, which Spacebar follows by default. */
+const MAX_CONTENT = 2_000;
 /** The sign-in step that takes a token instead of a password. */
 const TOKEN_PROMPT = "token";
 
@@ -90,6 +92,20 @@ type Selection = { kind: "home" } | { kind: "guild"; guildId: string };
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 const newNonce = (): string => String(Date.now()) + String(Math.floor(Math.random() * 1e6));
 const isPrivate = (channel: SpacebarChannel): boolean => channel.type === ChannelType.Dm || channel.type === ChannelType.GroupDm;
+/** Markdown quote: each line after "> ". */
+const quote = (text: string): string =>
+  text
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+/** A zero-width space, which keeps @everyone from being read as a mention. */
+const ZWSP = String.fromCodePoint(0x200b);
+/** Text that mentions no one: mentions the session could not name, and @everyone and @here, made plain. */
+const neutralise = (text: string): string =>
+  text
+    .replace(/<@!?\d{1,20}>/g, "@unknown user")
+    .replace(/<@&\d{1,20}>/g, "@unknown role")
+    .replace(/@(everyone|here)/g, `@${ZWSP}$1`);
 
 /** What a file is by its MIME type. */
 export function mediaKind(contentType: string | undefined): NativeAttachment["kind"] {
@@ -232,6 +248,8 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
         return this.searchMessages(action.query);
       case "mute":
         return this.mute(action.channelId, action.mute);
+      case "forward":
+        return this.forward(action.messageId, action.channelId);
       case "logout":
         return this.logout();
       default:
@@ -537,6 +555,24 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
     });
     this.uploading.delete(channelId);
     this.render();
+  }
+
+  /**
+   * Forwards a loaded message of the open channel into another text channel
+   * or DM, as a quoted copy that says where it came from. Spacebar's own
+   * forward (a message reference of type 1) is not used: instances that
+   * have it drop the reference in DMs, leaving an empty message, and older
+   * ones refuse it or take it for a reply.
+   */
+  private async forward(messageId: string, target: string): Promise<void> {
+    const from = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
+    const message = from && this.state.findMessage(from.id, messageId);
+    const to = this.state.channels.get(target);
+    if (!from || !message || !to || !TEXT_CHANNEL_TYPES.has(to.type) || !this.rest) return;
+    await this.attempt("Message not forwarded", async () => {
+      const sent = await this.rest!.sendMessage(to.id, this.forwardText(message, from), newNonce());
+      if (sent && this.state.messages.has(to.id)) this.state.addHistory(to.id, [sent], false);
+    });
   }
 
   /** Adds files from the OS picker to the open channel's next message. */
@@ -929,9 +965,32 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
       });
   }
 
-  /** A message's text for the view; the line Spacebar adds for a pin says what happened. */
+  /** A message's text for the view; the line Spacebar adds for a pin says what happened, and a forward's copy of the original follows, quoted under "Forwarded". */
   private messageText(message: SpacebarMessage): string {
-    return message.type === MessageType.PinnedMessage ? "*pinned a message.*" : this.renderContent(message.content);
+    if (message.type === MessageType.PinnedMessage) return "*pinned a message.*";
+    const own = this.renderContent(message.content);
+    const forwarded = message.forwarded;
+    if (!forwarded) return own;
+    const quoted = forwarded.content === "" ? "" : quote(this.renderContent(forwarded.content));
+    return [own, "*Forwarded*", quoted].filter(Boolean).join("\n");
+  }
+
+  /**
+   * A message of the open channel as a new message elsewhere: who wrote it
+   * and where, then its text and file links quoted. Mentions are turned
+   * into plain names and @everyone and @here are broken up, so a forward
+   * notifies no one.
+   */
+  private forwardText(message: SpacebarMessage, from: SpacebarChannel): string {
+    const guild = from.guildId ? this.state.guilds.get(from.guildId) : undefined;
+    const where = from.type === ChannelType.Dm ? "a DM" : guild ? `#${this.channelTitle(from)} (${guild.name})` : this.channelTitle(from);
+    const files = [...message.attachments, ...(message.forwarded?.attachments ?? [])].flatMap((a) => (a.url ? [`📎 ${a.filename}: <${a.url}>`] : []));
+    const text = [this.messageText(message), ...files].filter(Boolean).join("\n");
+    const full = neutralise(`*Forwarded from ${this.nameOf(message.author)} in ${where}:*\n${quote(text)}`);
+    if (full.length <= MAX_CONTENT) return full;
+    // Cut short, without splitting a character made of two code units.
+    const high = full.charCodeAt(MAX_CONTENT - 2);
+    return `${full.slice(0, high >= 0xd800 && high <= 0xdbff ? MAX_CONTENT - 2 : MAX_CONTENT - 1)}…`;
   }
 
   /** A message as the pins list shows it: its text, or its first file's name when it has none. */
@@ -972,7 +1031,15 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
         count: r.count,
         me: r.me,
       })),
-      attachments: message.attachments.map((a) => ({ name: a.filename, kind: mediaKind(a.contentType), url: a.url, width: a.width, height: a.height, size: a.size, mime: a.contentType })),
+      attachments: [...message.attachments, ...(message.forwarded?.attachments ?? [])].map((a) => ({
+        name: a.filename,
+        kind: mediaKind(a.contentType),
+        url: a.url,
+        width: a.width,
+        height: a.height,
+        size: a.size,
+        mime: a.contentType,
+      })),
     };
     const embeds = this.linkPreviews(message.links);
     if (embeds.length > 0) view.embeds = embeds;
@@ -1075,7 +1142,7 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(members ? { members } : {}),
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
                 ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
-                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true, search: channel.guildId !== undefined },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true, search: channel.guildId !== undefined, forward: true },
               }
             : null,
           voice: null,

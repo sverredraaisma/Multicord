@@ -103,6 +103,8 @@ describe("Spacebar types", () => {
     expect(bare).not.toHaveProperty("replyTo");
     expect(bare).not.toHaveProperty("pinned");
     expect(parseMessage(message("10", "5", { pinned: true }))!.pinned).toBe(true);
+    expect(parseMessage(message("10", "5", { message_snapshots: [{ message: { content: 5 } }] }))!.forwarded).toEqual({ content: "", attachments: [] });
+    expect(bare).not.toHaveProperty("forwarded");
     expect(parseMessage({ id: "10", channel_id: "5" })).toBeUndefined();
     expect(parseMessage({ id: "10" })).toBeUndefined();
   });

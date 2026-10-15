@@ -111,6 +111,8 @@ export interface SpacebarMessage {
   replyTo?: { id: string; author: SpacebarUser; content: string; timestamp: string } | null;
   reactions: SpacebarReaction[];
   pinned?: boolean;
+  /** A forwarded message's copy of the original (message_snapshots): its text and files; who wrote it is not said. */
+  forwarded?: { content: string; attachments: SpacebarAttachment[] };
 }
 
 /** 6 is the line Spacebar adds when someone pins a message. */
@@ -264,7 +266,16 @@ export function parseMessage(value: unknown): SpacebarMessage | undefined {
       return emoji && count ? [{ emoji, count, me: (r as Json).me === true }] : [];
     }),
     ...(value.pinned === true ? { pinned: true } : {}),
+    ...parseForwarded(value.message_snapshots),
   };
+}
+
+/** A forward's copy of the original message: the first snapshot's text and files. */
+function parseForwarded(value: unknown): Pick<SpacebarMessage, "forwarded"> {
+  const snapshot = list(value)[0];
+  const message = isRecord(snapshot) && isRecord(snapshot.message) ? snapshot.message : undefined;
+  if (!message) return {};
+  return { forwarded: { content: typeof message.content === "string" ? message.content : "", attachments: parseAttachments(message.attachments) } };
 }
 
 const https = (value: unknown): string | undefined => (typeof value === "string" && value.length <= 2048 && value.startsWith("https://") ? value : undefined);

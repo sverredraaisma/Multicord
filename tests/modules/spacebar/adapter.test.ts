@@ -718,6 +718,62 @@ describe("SpacebarAdapter messages", () => {
     expect(ctx.channel()).not.toHaveProperty("search");
   });
 
+  it("shows forwarded messages with their copy of the original, quoted", async () => {
+    const snapshot = (content: string, attachments: unknown[] = []) => [{ message: { content, attachments } }];
+    const history = [
+      message("470", "111", { message_snapshots: [{ message: "bad" }] }),
+      message("460", "111", { content: "look", message_snapshots: snapshot("") }),
+      message("450", "111", { content: "", message_snapshots: snapshot("orig <@1>\nmore", [{ id: "7", filename: "f.png", content_type: "image/png", url: "https://cdn.sb/f.png" }]) }),
+    ];
+    const ctx = await opened({ routes: [(url) => (url === `${API}/channels/111/messages?limit=50` ? { status: 200, body: history } : undefined)] });
+    const [m450, m460, m470] = ctx.channel().messages;
+    expect(m450).toMatchObject({ content: "*Forwarded*\n> orig @me\n> more", attachments: [{ name: "f.png", kind: "image", url: "https://cdn.sb/f.png" }] });
+    expect(m460!.content).toBe("look\n*Forwarded*");
+    expect(m470!.content).toBe("m470");
+  });
+
+  it("forwards a message as a quoted copy that mentions no one", async () => {
+    const zwsp = String.fromCodePoint(0x200b);
+    const history = [
+      message("450", "111", { content: "hi <@1> <@9> <@&120> <@&9> @everyone @here\nline2", attachments: [{ id: "5", filename: "a.png", url: "https://cdn.sb/a.png" }, { id: "6", filename: "gone.bin" }] }),
+      message("460", "111", { content: `${"x".repeat(1954)}${"😀".repeat(30)}` }),
+      message("470", "111", { content: "y".repeat(2100) }),
+    ];
+    const ctx = await opened({ routes: [(url) => (url === `${API}/channels/111/messages?limit=50` ? { status: 200, body: history } : undefined)] });
+    expect(ctx.channel().can.forward).toBe(true);
+    const sent = () => body(ctx.calls.at(-1)!.init);
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "900" });
+    expect(ctx.calls.at(-1)!.url).toBe(`${API}/channels/900/messages`);
+    expect(sent()).toEqual({
+      content: `*Forwarded from Ana in #general (Alpha):*\n> hi @me @unknown user @Admins @unknown role @${zwsp}everyone @${zwsp}here\n> line2\n> 📎 a.png: <https://cdn.sb/a.png>`,
+      nonce: expect.any(String),
+    });
+    // Long messages are cut to what Spacebar takes, never inside a character.
+    await ctx.adapter.handleAction({ type: "forward", messageId: "460", channelId: "900" });
+    expect(sent().content).toHaveLength(1999);
+    expect(String(sent().content).endsWith("x…")).toBe(true);
+    await ctx.adapter.handleAction({ type: "forward", messageId: "470", channelId: "900" });
+    expect(sent().content).toHaveLength(2000);
+    // Into a loaded channel, the copy shows there at once.
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "111" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.channel().messages.at(-1)!.id).toBe("990");
+    // From a DM or a group, the header says so.
+    await ctx.adapter.openConversation("900");
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "111" });
+    expect(String(sent().content).split("\n")[0]).toBe("*Forwarded from Ana in a DM:*");
+    await ctx.adapter.openConversation("901");
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "111" });
+    expect(String(sent().content).split("\n")[0]).toBe("*Forwarded from Ana in Group:*");
+    // Unknown messages and targets, and voice channels: nothing is sent. A refusal shows.
+    const calls = ctx.calls.length;
+    for (const [messageId, channelId] of [["999", "111"], ["450", "404"], ["450", "112"]] as const) await ctx.adapter.handleAction({ type: "forward", messageId, channelId });
+    expect(ctx.calls.length).toBe(calls);
+    ctx.routes.unshift((url, init) => (init.method === "POST" && url.endsWith("/messages") ? { status: 403, body: { message: "Missing Permissions" } } : undefined));
+    await ctx.adapter.handleAction({ type: "forward", messageId: "450", channelId: "111" });
+    expect(ctx.last()).toMatchObject({ error: "Message not forwarded: Missing Permissions" });
+  });
+
   it("shows when pinning is refused, and pins nothing without a channel", async () => {
     const ctx = setup({ token: "saved", routes: [(url) => (url.includes("/pins/") ? { status: 403, body: { message: "Missing Permissions" } } : undefined)] });
     await ctx.online();
@@ -846,6 +902,7 @@ describe("SpacebarAdapter messages", () => {
       { type: "loadOlder" },
       { type: "removeAttachment", index: 0 },
       { type: "joinVoice", channelId: "112" },
+      { type: "forward", messageId: "450", channelId: "111" },
     ] as const)
       await ctx.adapter.handleAction(action);
     expect(ctx.calls.filter((c) => c.init.method && c.init.method !== "GET")).toEqual([]);
