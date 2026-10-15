@@ -1546,6 +1546,25 @@ describe("Rich Presence", () => {
   });
 });
 
+describe("voice keys in every native call", () => {
+  it("reach Matrix and Stoat views as they reach Fluxer's, and no view without calls", async () => {
+    const { handle } = await shellWith([
+      { id: "mx", name: "Matrix", url: "https://x.org", module: "matrix-native" },
+      { id: "st", name: "Stoat", url: "https://stoat.chat", module: "stoat-native" },
+    ]);
+    const viewOf = (id: string) => handle.views.get(id) as unknown as InstanceType<typeof WebContentsView>;
+    handle.settingsStore.update({ shortcuts: { toggleDeafen: "Ctrl+Shift+D" }, voice: { pushToTalk: "Backquote", pushToTalkGlobal: true } });
+    electron.globalShortcut.callbacks.get("Ctrl+Shift+D")!();
+    keyHook.listeners.get("keydown")!({ keycode: 41 });
+    for (const id of ["fluxer", "mx", "st"]) {
+      expect(viewOf(id).webContents.send).toHaveBeenCalledWith(SETTINGS_IPC.voiceCommand, "toggleDeafen");
+      expect(viewOf(id).webContents.send).toHaveBeenCalledWith(SETTINGS_IPC.voiceCommand, "talkStart");
+    }
+    expect(viewOf("telegram").webContents.send).not.toHaveBeenCalledWith(SETTINGS_IPC.voiceCommand, expect.anything());
+    app.emit("will-quit");
+  });
+});
+
 describe("push to talk in the background", () => {
   it("talks in native calls and passes the key to Discord while unfocused", async () => {
     const { handle, window, discordView } = await shellWith();
