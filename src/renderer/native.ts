@@ -688,17 +688,29 @@ export class NativeView {
     holder.replaceChildren(this.picker.element);
     holder.hidden = false;
     this.parts.emoji!.setAttribute("aria-expanded", "true");
-    this.api.act({ type: "picker", open: true });
+    this.signalPicker();
     this.picker.show("emoji");
+  }
+
+  /** Whether the module was last told that a picker is open. */
+  private pickerSignalled = false;
+
+  /**
+   * Tells the module when a picker opens or closes: the composer's, or a
+   * message's full reaction picker, which lists the same custom emoji.
+   */
+  private signalPicker(): void {
+    const open = this.picker !== undefined || this.fullPickerFor !== undefined;
+    if (open === this.pickerSignalled) return;
+    this.pickerSignalled = open;
+    this.api.act({ type: "picker", open });
   }
 
   private closePicker(): void {
     const holder = this.parts.composerPicker;
-    if (this.picker) {
-      this.picker.close();
-      this.api.act({ type: "picker", open: false });
-    }
+    this.picker?.close();
     this.picker = undefined;
+    this.signalPicker();
     if (!holder) return;
     holder.hidden = true;
     holder.replaceChildren();
@@ -898,6 +910,7 @@ export class NativeView {
   private togglePicker(key: string): void {
     this.pickerFor = this.pickerFor === key ? undefined : key;
     this.fullPickerFor = undefined;
+    this.signalPicker();
     this.rerender();
   }
 
@@ -1012,11 +1025,13 @@ export class NativeView {
       const pickerOpen = this.pickerFor !== undefined || this.fullPickerFor !== undefined;
       this.pickerFor = undefined;
       this.fullPickerFor = undefined;
+      this.signalPicker();
       this.api.act({ type: "react", messageId: message.id, emoji: key, add });
       if (pickerOpen) this.rerender();
     },
     onMoreReactions: (message) => {
       this.fullPickerFor = message.id;
+      this.signalPicker();
       this.rerender();
     },
     onEdit: (message) => this.setEditing(message.id, message.source ?? message.content),
@@ -1073,6 +1088,7 @@ export class NativeView {
         onToggleReactionPicker: () => this.togglePicker(key),
         onMoreReactions: () => {
           this.fullPickerFor = key;
+          this.signalPicker();
           this.rerender();
         },
         onEdit: (m) => this.setEditing(key, m.source ?? m.content),

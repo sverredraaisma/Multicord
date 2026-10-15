@@ -1348,12 +1348,27 @@ describe("emoji and markdown", () => {
     view.update(withEmoji([msg("11", { reactions: [{ key: "party:55", label: ":party:", count: 1, me: true }] })]));
     [...root.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "React")!.click();
     root.querySelector<HTMLButtonElement>(".quick-reactions .more")!.click();
+    // The module is told, so it can list custom emoji it sends only to an open picker.
+    expect(act).toHaveBeenLastCalledWith({ type: "picker", open: true });
     const picker = root.querySelector(".message .emoji-picker")!;
     expect(picker).not.toBeNull();
     picker.querySelector<HTMLButtonElement>(".emoji-option.custom")!.click();
     expect(act).toHaveBeenLastCalledWith({ type: "react", messageId: "11", emoji: "party:55", add: false });
+    expect(act).toHaveBeenCalledWith({ type: "picker", open: false });
     expect(root.querySelector(".message .emoji-picker")).toBeNull();
 
+    [...root.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "React")!.click();
+    root.querySelector<HTMLButtonElement>(".quick-reactions .more")!.click();
+    // Closing the palette closes the picker in it, and the composer's picker keeps it open meanwhile.
+    root.querySelector<HTMLButtonElement>(".emoji-button")!.click();
+    [...root.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "React")!.click();
+    expect(act.mock.calls.filter(([a]) => a.type === "picker").map(([a]) => a)).toEqual([
+      { type: "picker", open: true },
+      { type: "picker", open: false },
+      { type: "picker", open: true },
+    ]);
+    root.querySelector<HTMLButtonElement>(".emoji-button")!.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "picker", open: false });
     [...root.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "React")!.click();
     root.querySelector<HTMLButtonElement>(".quick-reactions .more")!.click();
     const search = root.querySelector<HTMLInputElement>(".message .emoji-search")!;

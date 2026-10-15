@@ -137,7 +137,7 @@ Emoji, stickers and GIFs: the composer's picker shows what the module says can b
 - `stickers`: packs (a server's stickers, a sticker set) of stickers with an `id`, `name`, `format` (`png`, `apng`, `webp`, `gif`, `avif`, `webm` or `lottie`), the emoji they stand for, and a picture: `url` (for Lottie, a still of it) or a `mediaKey` the view asks for with `loadMedia` when it shows it. With `can.stickers`, picking one sends `{ type: "sendSticker", stickerId, replyTo? }` and the module sends it as a sticker. Without it, the shell sends the picture (or the WebM video) as a file through `sendFile`, where `can.attach` is on. Read through `stickerPacks()`.
 - `gifs`: with `can.gifs`, the GIF tab sends `{ type: "searchGifs", query }` (empty for trending) and shows `gifs` (`query`, `results`, `loading`, `error`); each result has the address that is sent as the message's text (`url`) and what the picker shows (`preview`, a picture or, with `video`, a looping video), https only. Read through `gifResults()`.
 
-The view sends `{ type: "picker", open }` when the picker opens and closes. Heavy picker data, such as sticker pictures as data: URLs, may stay out of the chat state while it is closed, so it does not travel with every update.
+The view sends `{ type: "picker", open }` when a picker opens and closes: the composer's, or a message's full reaction picker ("More emoji"), which lists the same custom emoji; it says `open: false` only once neither is open. Heavy picker data, such as sticker pictures as data: URLs, may stay out of the chat state while it is closed, so it does not travel with every update.
 
 Favourites belong to the shell. A module never sees them: when the user sends one, the module gets a `sendFile` action like any other file.
 
