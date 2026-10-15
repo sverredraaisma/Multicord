@@ -14,7 +14,7 @@
     "check": "npm run typecheck && npm run coverage",
     "gallery": "npm run build && node scripts/open-gallery.mjs",
     "smoke": "node scripts/smoke.mjs",
-    "live:media":"node scripts/live-media/run.mjs",
+    "live:media": "node scripts/live-media/run.mjs",
     "dist": "npm run build && electron-builder",
     "dist:flatpak": "node scripts/flatpak.mjs",
     "icons": "electron scripts/icons.cjs"
@@ -100,5 +100,10 @@
   },
   "optionalDependencies": {
     "@vencord/venmic": "7.2.3"
+  },
+  "overrides": {
+    "@vencord/venmic": {
+      "cmake-js": "^8.0.0"
+    }
   }
 }

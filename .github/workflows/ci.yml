@@ -10,6 +10,16 @@ permissions:
   contents: read
 
 jobs:
+  # Known vulnerabilities in what ships with the app (not build tools): high or worse fails.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npm audit --omit=dev --audit-level=high
+
   check:
     strategy:
       # Each system's result counts on its own.
