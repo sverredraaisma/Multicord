@@ -48,7 +48,8 @@ export class NerimitySocket {
   constructor(
     /** The site's origin, e.g. https://nerimity.com. */
     private readonly origin: string,
-    private readonly token: string,
+    /** Signs in each connection; replaced when the server hands out a new one. */
+    public token: string,
     private readonly createSocket: SocketFactory,
     private readonly handlers: SocketHandlers,
   ) {}
