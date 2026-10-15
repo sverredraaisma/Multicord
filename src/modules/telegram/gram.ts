@@ -355,6 +355,15 @@ const TYPING_ACTIONS = [
  * stops it). Undefined for other updates, for chats posting as themselves,
  * and for other actions (emoji interactions, voice chat speaking).
  */
+/** Messages pinned or unpinned somewhere, as Telegram announces it (per chat; a channel's or supergroup's by its id). */
+export function pinsOf(update: unknown): Extract<TgUpdate, { type: "pins" }> | undefined {
+  const chatId =
+    update instanceof Api.UpdatePinnedMessages ? chatIdOf(update.peer) : update instanceof Api.UpdatePinnedChannelMessages ? chatIdOf(new Api.PeerChannel({ channelId: update.channelId })) : undefined;
+  if (!chatId) return undefined;
+  const { messages, pinned } = update as Api.UpdatePinnedMessages;
+  return { type: "pins", chatId, ids: messages.filter((id) => Number.isInteger(id) && id > 0), pinned: pinned === true };
+}
+
 export function typingOf(update: unknown): Extract<TgUpdate, { type: "typing" }> | undefined {
   let chatId: string;
   let userId: string | undefined;
@@ -490,6 +499,7 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
   if (reactions.length > 0) out.reactions = reactions;
   const file = mediaFile(message.media);
   if (file) out.file = file;
+  if (message.pinned === true) out.pinned = true;
   const preview = webPreview(message.media);
   if (preview) out.preview = preview;
   const header = message.replyTo instanceof Api.MessageReplyHeader ? message.replyTo : undefined;
@@ -627,6 +637,13 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       // A topic's messages are the replies to its first one.
       const page = await client.getMessages(peer(chatId), { limit, offsetId: beforeId ?? 0, ...(topicId === undefined ? {} : { replyTo: topicId }) });
       return page.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId)).reverse();
+    },
+    pinned: async (chatId, limit) => {
+      const found = await client.getMessages(peer(chatId), { limit, filter: new Api.InputMessagesFilterPinned() });
+      return found.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId));
+    },
+    pin: async (chatId, id, pin) => {
+      await client.invoke(new Api.messages.UpdatePinnedMessage({ peer: peer(chatId), id, unpin: !pin, silent: true }));
     },
     send: async (chatId, text, replyTo, topicId) =>
       toMessage(await client.sendMessage(peer(chatId), { message: text.text, ...topicReply(replyTo, topicId), ...outgoing(text) }), chatId),
@@ -784,11 +801,13 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       client.addEventHandler((update: Api.TypeUpdate) => {
         const typing = typingOf(update);
         if (typing) return cb(typing);
+        const pins = pinsOf(update);
+        if (pins) return cb(pins);
         if (!(update instanceof Api.UpdateMessageReactions)) return;
         const chatId = chatIdOf(update.peer);
         if (!chatId || !Number.isInteger(update.msgId) || update.msgId <= 0) return;
         cb({ type: "reactions", chatId, id: update.msgId, ...reactionsOf(update.reactions) });
-      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping] }));
+      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages] }));
     },
     session: () => (client.session as StringSession).save(),
     logOut: async () => void (await client.invoke(new Api.auth.LogOut())),

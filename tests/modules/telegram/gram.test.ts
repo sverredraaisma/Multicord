@@ -7,7 +7,7 @@ const h = vi.hoisted(() => {
     }
   }
   const names = [
-    "MessageMediaEmpty", "MessageMediaWebPage", "WebPage", "MessageMediaPhoto", "MessageMediaDocument", "Document",
+    "MessageMediaEmpty", "MessageMediaWebPage", "WebPage", "UpdatePinnedMessages", "UpdatePinnedChannelMessages", "InputMessagesFilterPinned", "MessageMediaPhoto", "MessageMediaDocument", "Document",
     "DocumentAttributeSticker", "DocumentAttributeAudio", "DocumentAttributeVideo", "DocumentAttributeFilename",
     "MessageMediaGeo", "MessageMediaGeoLive", "MessageMediaVenue", "MessageMediaContact", "MessageMediaPoll",
     "PeerUser", "PeerChat", "PeerChannel", "Message", "MessageReplyHeader", "User", "Chat", "Channel", "ChatForbidden", "PeerNotifySettings",
@@ -43,6 +43,7 @@ const h = vi.hoisted(() => {
       RecentStickers: class extends Base {},
       GetFavedStickers: class extends Base {},
       FavedStickers: class extends Base {},
+      UpdatePinnedMessage: class extends Base {},
     },
     channels: {
       GetFullChannel: class extends Base {},
@@ -387,6 +388,23 @@ describe("createGramApi", () => {
     expect(client.getDialogs).toHaveBeenCalledWith({ limit: 20 });
   });
 
+  it("lists pinned messages newest first, and pins and unpins quietly", async () => {
+    client.getMessages.mockResolvedValue([make(Api.Message, { id: 3, date: 3, pinned: true }), {}, make(Api.Message, { id: 2, date: 2 })]);
+    const pinned = await api.pinned("7", 50);
+    expect(pinned.map((m) => [m.id, m.pinned])).toEqual([[3, true], [2, undefined]]);
+    const options = client.getMessages.mock.calls[0]![1] as { limit: number; filter: unknown };
+    expect(options.limit).toBe(50);
+    expect(options.filter).toBeInstanceOf(Api.InputMessagesFilterPinned);
+    client.invoke.mockResolvedValue({});
+    await api.pin("-7", 5, true);
+    await api.pin("-7", 5, false);
+    expect(client.invoke.mock.calls.map(([r]) => r)).toEqual([
+      expect.objectContaining({ peer: -7n, id: 5, unpin: false, silent: true }),
+      expect.objectContaining({ peer: -7n, id: 5, unpin: true, silent: true }),
+    ]);
+    expect(client.invoke.mock.calls[0]![0]).toBeInstanceOf(Api.messages.UpdatePinnedMessage);
+  });
+
   it("returns history oldest first, skipping service messages", async () => {
     client.getMessages.mockResolvedValue([make(Api.Message, { id: 3, date: 3 }), {}, make(Api.Message, { id: 2, date: 2 })]);
     const page = await api.history("7", 10, 50);
@@ -470,6 +488,8 @@ describe("createGramApi", () => {
         Api.UpdateUserTyping,
         Api.UpdateChatUserTyping,
         Api.UpdateChannelUserTyping,
+        Api.UpdatePinnedMessages,
+        Api.UpdatePinnedChannelMessages,
       ]);
     });
 
@@ -481,6 +501,10 @@ describe("createGramApi", () => {
       rawH(make(Api.UpdateMessageReactions, { peer: make(Api.PeerUser, { userId: 8n }), msgId: 0, reactions }));
       rawH(make(Api.UpdateMessageReactions, { peer: make(Api.PeerUser, { userId: 8n }), msgId: 1.5, reactions }));
       rawH({});
+      rawH(make(Api.UpdatePinnedMessages, { peer: make(Api.PeerChat, { chatId: 1n }), messages: [4, 0, 1.5], pinned: true }));
+      rawH(make(Api.UpdatePinnedChannelMessages, { channelId: 1234567890n, messages: [5] }));
+      rawH(make(Api.UpdatePinnedMessages, { peer: {}, messages: [4] }));
+      expect(cb.mock.calls.splice(-2)).toEqual([[{ type: "pins", chatId: "-1", ids: [4], pinned: true }], [{ type: "pins", chatId: "-1001234567890", ids: [5], pinned: false }]]);
       rawH(make(Api.UpdateUserTyping, { userId: 8n, action: make(Api.SendMessageTypingAction) }));
       expect(cb.mock.calls.at(-1)).toEqual([{ type: "typing", chatId: "8", userId: "8", active: true }]);
       cb.mock.calls.pop();

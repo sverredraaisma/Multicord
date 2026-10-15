@@ -33,6 +33,8 @@ class FakeTelegramApi implements TelegramApi {
   me = vi.fn(async (): Promise<TgUser> => ({ id: "9", name: "Me", bot: false }));
   dialogs = vi.fn(async (_limit: number) => this.dialogList.map((d) => ({ ...d })));
   history = vi.fn(async (chatId: string, _before: number | undefined, _limit: number): Promise<TgMessage[]> => [msg(chatId, 1), msg(chatId, 2)]);
+  pinned = vi.fn(async (chatId: string, _limit: number): Promise<TgMessage[]> => [msg(chatId, 2, { pinned: true })]);
+  pin = vi.fn(async (_chatId: string, _id: number, _pin: boolean) => {});
   send = vi.fn(async (chatId: string, text: TgText, _replyTo?: number) => msg(chatId, 200, { out: true, ...text }));
   sentFiles = 300;
   sendFile = vi.fn(async (chatId: string, file: FileSource, caption: TgText, _replyTo?: number) => msg(chatId, this.sentFiles++, { out: true, ...caption, media: file.filename }));
@@ -588,7 +590,7 @@ describe("chat view", () => {
     await Promise.all([first, second]);
     expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE, undefined);
     expect(ctx.chat().channel).toMatchObject({ loading: false, hasOlder: false });
-    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false, stickers: true });
+    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: true, typing: true, members: false, stickers: true, pins: true });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
 
     await ctx.adapter.openConversation("1");
@@ -796,6 +798,7 @@ describe("message rendering", () => {
       mine: false,
       canEdit: false,
       canDelete: false,
+      canPin: true,
       reactions: [],
       attachments: [],
     });
@@ -2698,5 +2701,72 @@ describe("stickers", () => {
     for (const answer of answers) answer([stk("1")]);
     await settle();
     expect(ctx.api.stickers).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("pinned messages", () => {
+  it("lists the chat's pins while the panel is open, following pin changes", async () => {
+    const ctx = await signedIn();
+    await ctx.act({ type: "select", channelId: "1" });
+    expect(ctx.chat().channel!.can.pins).toBe(true);
+    const pending = ctx.act({ type: "pins", open: true });
+    expect(ctx.chat().channel!.pins).toEqual({ messages: [], loading: true });
+    await pending;
+    expect(ctx.api.pinned).toHaveBeenCalledWith("1", 50);
+    expect(ctx.chat().channel!.pins).toEqual({ messages: [{ id: "2", author: "User 1", content: "m2", timestamp: new Date(102_000).toISOString() }], loading: false });
+    // Pinned elsewhere: the loaded message is marked, and the open list fetched again.
+    ctx.api.pinned.mockResolvedValueOnce([msg("1", 1, { out: true, pinned: true })]);
+    ctx.api.emit({ type: "pins", chatId: "1", ids: [1], pinned: true });
+    await flush();
+    expect(ctx.chat().channel!.messages[0]).toMatchObject({ id: "1", pinned: true, canPin: true });
+    expect(ctx.chat().channel!.pins!.messages).toEqual([expect.objectContaining({ id: "1", author: "Me" })]);
+    ctx.api.emit({ type: "pins", chatId: "2", ids: [1], pinned: false });
+    expect(ctx.api.pinned).toHaveBeenCalledTimes(2);
+    await ctx.act({ type: "pins", open: false });
+    expect(ctx.chat().channel!.pins).toBeUndefined();
+    // Another chat drops the panel; the same one keeps it.
+    await ctx.act({ type: "pins", open: true });
+    await ctx.act({ type: "select", channelId: "1" });
+    expect(ctx.chat().channel!.pins).toBeDefined();
+    await ctx.act({ type: "select", channelId: "2" });
+    expect(ctx.chat().channel!.pins).toBeUndefined();
+  });
+
+  it("says when the pins cannot be loaded, drops answers for a closed panel, and lists none in forums", async () => {
+    const ctx = await signedIn({ dialogs: [...defaultDialogs(), dlg("-5", { kind: "group", forum: true }), dlg("-6", { kind: "channel", readOnly: true })] });
+    await ctx.act({ type: "pins", open: true });
+    expect(ctx.api.pinned).not.toHaveBeenCalled();
+    await ctx.act({ type: "select", channelId: "1" });
+    ctx.api.pinned.mockRejectedValueOnce(tgError("CHAT_ADMIN_REQUIRED"));
+    await ctx.act({ type: "pins", open: true });
+    expect(ctx.chat().channel!.pins).toEqual({ messages: [], loading: false, error: expect.stringMatching(/^Could not load pinned messages: /) });
+    const reopening = ctx.act({ type: "pins", open: true });
+    await ctx.act({ type: "pins", open: false });
+    await reopening;
+    expect(ctx.chat().channel!.pins).toBeUndefined();
+    await ctx.act({ type: "select", channelId: "-6" });
+    expect(ctx.chat().channel!.messages[0]!.canPin).toBeUndefined();
+    await ctx.act({ type: "select", channelId: "-5" });
+    await ctx.act({ type: "pins", open: true });
+    expect(ctx.chat().channel!.can.pins).not.toBe(true);
+    expect(ctx.api.pinned).toHaveBeenCalledTimes(2);
+  });
+
+  it("pins and unpins quietly, and shows a refusal", async () => {
+    const ctx = await signedIn();
+    await ctx.act({ type: "pin", messageId: "1", pin: true });
+    expect(ctx.api.pin).not.toHaveBeenCalled();
+    await ctx.act({ type: "select", channelId: "1" });
+    await ctx.act({ type: "pin", messageId: "2", pin: true });
+    expect(ctx.api.pin).toHaveBeenCalledWith("1", 2, true);
+    expect(ctx.chat().channel!.messages[1]!.pinned).toBe(true);
+    await ctx.act({ type: "pin", messageId: "2", pin: false });
+    expect(ctx.chat().channel!.messages[1]!.pinned).toBeUndefined();
+    ctx.api.pin.mockRejectedValueOnce(tgError("CHAT_ADMIN_REQUIRED"));
+    await ctx.act({ type: "pin", messageId: "2", pin: true });
+    expect(ctx.chat().error).toMatch(/^Message not pinned: /);
+    ctx.api.pin.mockRejectedValueOnce(tgError("CHAT_ADMIN_REQUIRED"));
+    await ctx.act({ type: "pin", messageId: "2", pin: false });
+    expect(ctx.chat().error).toMatch(/^Message not unpinned: /);
   });
 });

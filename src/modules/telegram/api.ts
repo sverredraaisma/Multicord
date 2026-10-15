@@ -72,6 +72,8 @@ export interface TgMessage {
   reactions?: TgReaction[];
   /** The link preview Telegram made for its link. */
   preview?: TgPreview;
+  /** It is pinned in its chat. */
+  pinned?: boolean;
 }
 
 /** A link preview as Telegram made it; its photo downloads as the message's media. */
@@ -219,7 +221,9 @@ export type TgUpdate =
   /** Someone is typing (or sending something) in a chat, or stopped. */
   | { type: "typing"; chatId: string; userId: string; active: boolean; topicId?: number }
   /** A message's reactions now; `chosen` is only known when `own` is set (Telegram leaves it out of some updates). */
-  | { type: "reactions"; chatId: string; id: number; reactions: TgReaction[]; own: boolean };
+  | { type: "reactions"; chatId: string; id: number; reactions: TgReaction[]; own: boolean }
+  /** Messages in a chat were pinned or unpinned. */
+  | { type: "pins"; chatId: string; ids: number[]; pinned: boolean };
 
 export interface TelegramApi {
   connect(): Promise<void>;
@@ -231,6 +235,10 @@ export interface TelegramApi {
   dialogs(limit: number): Promise<TgDialog[]>;
   /** Messages before `beforeId` (or the newest), oldest first; in a forum, of one topic. */
   history(chatId: string, beforeId: number | undefined, limit: number, topicId?: number): Promise<TgMessage[]>;
+  /** A chat's pinned messages, newest first. */
+  pinned(chatId: string, limit: number): Promise<TgMessage[]>;
+  /** Pins a message quietly (no notification), or unpins it. */
+  pin(chatId: string, id: number, pin: boolean): Promise<void>;
   /** Sends text, in a forum into a topic. */
   send(chatId: string, text: TgText, replyTo?: number, topicId?: number): Promise<TgMessage>;
   /** Uploads a picked file and sends it, with a caption. */

@@ -2,7 +2,7 @@ import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/run
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
-import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeForumPost, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
@@ -30,6 +30,8 @@ export const CAPTION_LIMIT = 1024;
 const PREMIUM_CAPTION_LIMIT = 4096;
 /** Topics listed per forum, most recently active first. */
 export const TOPIC_LIMIT = 50;
+/** Pinned messages listed at most, newest first. */
+export const PINS_LIMIT = 50;
 /** Members fetched per page, and at most for one chat: big groups list their first ones and count the rest. */
 export const MEMBER_PAGE = 50;
 export const MEMBER_LIMIT = 200;
@@ -234,6 +236,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly topicsByView = new Map<string, { chatId: string; topic: number }>();
   /** The view's member panel is open: the selected chat's members are fetched and shown. */
   private membersOpen = false;
+  /** The selected chat's pinned messages, while its pins panel is open. */
+  private pins: { chatId: string; list: NativeMessageList } | undefined;
   private readonly memberLists = new Map<string, MemberList>();
   /** Chats whose members Telegram turned out not to show the user. */
   private readonly membersHidden = new Set<string>();
@@ -485,6 +489,10 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return action.key.startsWith(STICKER_KEY) ? this.loadSticker(action.key.slice(STICKER_KEY.length)) : this.loadMedia(action.key);
       case "sendSticker":
         return this.sendSticker(action.stickerId, action.replyTo);
+      case "pins":
+        return this.showPins(action.open);
+      case "pin":
+        return this.pin(Number(action.messageId), action.pin);
       case "members":
         return this.setMembersOpen(action.open);
       case "loadMembers":
@@ -687,6 +695,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const dialog = this.dialog(chatId);
     if (!dialog || (topic !== undefined && !dialog.forum)) return;
     if (conversation(chatId, topic) !== this.current()) this.noteUnread(dialog, topic);
+    if (this.pins?.chatId !== chatId) this.pins = undefined;
     this.selected = chatId;
     this.topic = topic;
     this.render();
@@ -717,6 +726,51 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const reach = !(this.hasOlder.get(key) ?? false) || messages.some((m) => m.id <= after);
     const first = reach ? messages.find((m) => m.id > after && !m.out) : undefined;
     return first ? { firstId: String(first.id), count: at.count } : { count: at.count };
+  }
+
+  /** Opens the selected chat's pins panel and fetches its pins, or closes it. Forums' pins are not listed. */
+  private async showPins(open: boolean): Promise<void> {
+    const chatId = this.selected;
+    this.pins = open && chatId && !this.dialog(chatId)?.forum ? { chatId, list: { messages: [], loading: true } } : undefined;
+    this.render();
+    if (this.pins) await this.loadPins(this.pins.chatId);
+  }
+
+  /** Fetches the pins of a chat whose pins panel is open; a reply for a panel since closed is dropped. */
+  private async loadPins(chatId: string): Promise<void> {
+    let list: NativeMessageList;
+    try {
+      const dialog = this.dialog(chatId)!;
+      list = { messages: (await this.api!.pinned(chatId, PINS_LIMIT)).map((m) => this.listedMessage(m, dialog)), loading: false };
+    } catch (error) {
+      list = { messages: [], loading: false, error: `Could not load pinned messages: ${friendly(error)}` };
+    }
+    if (this.pins?.chatId !== chatId) return;
+    this.pins = { chatId, list };
+    this.render();
+  }
+
+  /** Pins or unpins a message quietly; Telegram decides whether the user may, and announces the change, which updates the view. */
+  private async pin(id: number, pin: boolean): Promise<void> {
+    const chatId = this.selected;
+    if (!chatId || !this.api) return;
+    try {
+      await this.api.pin(chatId, id, pin);
+    } catch (error) {
+      this.error = `${pin ? "Message not pinned" : "Message not unpinned"}: ${friendly(error)}`;
+      return this.render();
+    }
+    this.onUpdate({ type: "pins", chatId, ids: [id], pinned: pin });
+  }
+
+  /** A message as the pins list shows it. */
+  private listedMessage(message: TgMessage, dialog: TgDialog): NativeListedMessage {
+    return {
+      id: String(message.id),
+      author: message.out ? (this.me?.name ?? "You") : (message.sender ?? dialog.title),
+      content: messageText(message),
+      timestamp: new Date(message.date * 1000).toISOString(),
+    };
   }
 
   /** Lists a forum's topics afresh: up to TOPIC_LIMIT, most recently active first. */
@@ -998,6 +1052,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       }
       case "typing":
         return this.onTyping(update.chatId, update.userId, update.active, update.topicId);
+      case "pins": {
+        const ids = new Set(update.ids);
+        for (const list of this.loaded(update.chatId)) for (const [index, message] of list.entries()) if (ids.has(message.id)) list[index] = { ...message, pinned: update.pinned };
+        if (this.pins?.chatId === update.chatId) void this.loadPins(update.chatId);
+        return this.render();
+      }
       case "reactions": {
         const cached = this.loaded(update.chatId).find((list) => list.some((m) => m.id === update.id));
         const index = cached?.findIndex((m) => m.id === update.id) ?? -1;
@@ -1546,6 +1606,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     };
     // Edited as the markdown it shows, so formatting survives the edit.
     if (native.canEdit) native.source = markdown;
+    if (message.pinned) native.pinned = true;
+    // Who may pin in a group is up to its admins, and Telegram refuses where the user may not; not in forums, whose pins are not listed here.
+    if (!dialog.readOnly && !dialog.forum) native.canPin = true;
     // Telegram's own flag: it mentions the user, or answers one of their messages.
     if (message.mentioned && !message.out) native.mentionsMe = true;
     // Telegram turns "@username" into a mention as it is sent; people without a username are mentioned by name, as plain text.
@@ -1663,7 +1726,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       uploading: this.uploading.has(key),
       ...shared,
       ...(this.unreadAt?.key === key ? { unread: this.unreadView(key, this.unreadAt) } : {}),
-      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog) },
+      ...(this.pins && this.pins.chatId === dialog.chatId && !dialog.forum ? { pins: this.pins.list } : {}),
+      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: !dialog.forum },
     };
   }
 
