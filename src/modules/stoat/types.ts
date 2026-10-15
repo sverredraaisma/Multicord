@@ -100,6 +100,7 @@ export interface StoatMessage {
   replies: string[];
   reactions: StoatReaction[];
   embeds: StoatEmbed[];
+  pinned?: boolean;
 }
 
 /**
@@ -261,6 +262,7 @@ export function parseMessage(value: unknown): StoatMessage | undefined {
     replies: ids(value.replies),
     reactions: parseReactions(value.reactions),
     embeds: list(value.embeds).slice(0, 10).flatMap((e) => parseEmbed(e) ?? []),
+    ...(value.pinned === true ? { pinned: true } : {}),
   };
 }
 

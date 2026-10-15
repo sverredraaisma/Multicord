@@ -405,6 +405,8 @@ export class StoatState {
       if (typeof data.content === "string") message.content = data.content.slice(0, MAX_CONTENT);
       if (typeof data.edited === "string") message.edited = true;
       if (isRecord(data.reactions)) message.reactions = parseReactions(data.reactions);
+      if (typeof data.pinned === "boolean") message.pinned = data.pinned;
+      if (list(d.clear).includes("Pinned")) message.pinned = false;
     }
   }
 

@@ -534,6 +534,7 @@ describe("StoatAdapter messages", () => {
       canEdit: false,
       source: undefined,
       canDelete: false,
+      canPin: true,
       mentionsMe: true,
       authorId: ANA_ID,
       authorMention: `<@${ANA_ID}>`,
@@ -772,7 +773,7 @@ describe("StoatAdapter attachments", () => {
     expect(chat().error).toBe("This Stoat instance does not accept files.");
     await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "a.gif", size: 3, type: "image/gif" } });
     expect(chat().channel!.pending).toEqual([]);
-    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false });
+    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, pins: true });
     // Without a file server there are no avatar or icon URLs either, nor emoji pictures to pick.
     expect(chat().sidebar[0]!.iconUrl).toBeUndefined();
     expect(chat().customEmoji).toEqual([]);
@@ -961,5 +962,99 @@ describe("StoatAdapter display state", () => {
     expect(chat()).toMatchObject({ me: "", sidebar: [], channel: null });
     await adapter.handleAction({ type: "ready" });
     expect(chat().screen).toBe("chat");
+  });
+});
+
+describe("StoatAdapter pins", () => {
+  const STRANGER = { _id: ulid(70), username: "zed", avatar: { _id: "av7", tag: "avatars", filename: "z.png" } };
+
+  it("lists the open channel's pins by search while the panel is open, following pin changes", async () => {
+    let found: unknown = {
+      messages: [
+        message(440, GENERAL, { author: ulid(70), content: `hi <@${ME_ID}>`, pinned: true }),
+        message(441, GENERAL, { author: ulid(71), content: "", attachments: [{ _id: "f1", tag: "attachments", filename: "a.png" }] }),
+        message(442, GENERAL, { author: ulid(72), content: "", masquerade: { name: "Bridged" } }),
+        message(443, GENERAL, { content: "" }),
+      ],
+      users: [STRANGER],
+    };
+    const { adapter, chat, event, online, requests } = setup({ token: "saved", routes: [(url) => (url.endsWith(`/channels/${GENERAL}/search`) ? { status: 200, body: found } : undefined)] });
+    await online();
+    await adapter.openConversation(GENERAL);
+    expect(chat().channel!.can.pins).toBe(true);
+    const pending = adapter.handleAction({ type: "pins", open: true });
+    expect(chat().channel!.pins).toEqual({ messages: [], loading: true });
+    await pending;
+    expect(JSON.parse(requests("/search")[0]!.init.body as string)).toEqual({ pinned: true, limit: 100, sort: "Latest", include_users: true });
+    expect(chat().channel!.pins!.messages).toEqual([
+      { id: ulid(440), author: "zed", avatarUrl: "https://cdn.test/avatars/av7", content: "hi @me", timestamp: expect.any(String) },
+      expect.objectContaining({ author: "Unknown user", content: "📎 a.png" }),
+      { id: ulid(442), author: "Bridged", content: "", timestamp: expect.any(String) },
+      expect.objectContaining({ author: "Ana", content: "" }),
+    ]);
+    // Pinned or unpinned here: fetched again (the answer can be a plain list); edits and other channels change nothing.
+    found = [message(444, GENERAL)];
+    await event({ type: "MessageUpdate", id: ulid(450), channel: GENERAL, data: { content: "edited" } });
+    await event({ type: "MessageUpdate", id: ulid(450), channel: LOBBY, data: { pinned: true } });
+    expect(requests("/search")).toHaveLength(1);
+    await event({ type: "MessageUpdate", id: ulid(450), channel: GENERAL, data: { pinned: true } });
+    expect(chat().channel!.messages.at(-1)!.pinned).toBe(true);
+    expect(chat().channel!.pins!.messages.map((m) => m.id)).toEqual([ulid(444)]);
+    await event({ type: "MessageUpdate", id: ulid(450), channel: GENERAL, data: {}, clear: ["Pinned"] });
+    expect(requests("/search")).toHaveLength(3);
+    expect(chat().channel!.messages.at(-1)!.pinned).toBeUndefined();
+    await event({ type: "MessageUpdate", id: ulid(450), channel: GENERAL, data: {}, clear: "Pinned" });
+    expect(requests("/search")).toHaveLength(3);
+    // Closed, or another channel: no list.
+    await adapter.handleAction({ type: "pins", open: false });
+    expect(chat().channel!.pins).toBeUndefined();
+    await event({ type: "MessageUpdate", id: ulid(450), channel: GENERAL, data: { pinned: true } });
+    await adapter.handleAction({ type: "pins", open: true });
+    await adapter.openConversation(GENERAL);
+    expect(chat().channel!.pins).toBeDefined();
+    await adapter.openConversation(LOBBY);
+    expect(chat().channel!.pins).toBeUndefined();
+  });
+
+  it("says when the pins cannot be loaded, and drops answers for a closed panel", async () => {
+    let fail = true;
+    const { adapter, chat, online, routes } = setup({ token: "saved", routes: [(url) => (url.endsWith("/search") && fail ? { status: 403, body: { type: "MissingPermission" } } : undefined)] });
+    await online();
+    await adapter.openConversation(GENERAL);
+    await adapter.handleAction({ type: "pins", open: true });
+    expect(chat().channel!.pins).toEqual({ messages: [], loading: false, error: "Could not load pinned messages: You do not have permission to do that." });
+    fail = false;
+    routes.unshift((url) => (url.endsWith("/search") ? { status: 200, body: { messages: [] } } : undefined));
+    const reopening = adapter.handleAction({ type: "pins", open: true });
+    await adapter.handleAction({ type: "pins", open: false });
+    await reopening;
+    expect(chat().channel!.pins).toBeUndefined();
+  });
+
+  it("pins and unpins, and shows a refusal", async () => {
+    let refuse = false;
+    const { adapter, chat, online, requests, calls } = setup({
+      token: "saved",
+      routes: [(url) => (url.endsWith("/pin") ? (refuse ? { status: 403, body: { type: "MissingPermission" } } : { status: 204 }) : undefined)],
+    });
+    await online();
+    await adapter.openConversation(GENERAL);
+    expect(chat().channel!.messages[0]).toMatchObject({ canPin: true });
+    await adapter.handleAction({ type: "pin", messageId: ulid(450), pin: true });
+    expect(requests("/pin")[0]).toMatchObject({ url: `https://stoat.test/api/channels/${GENERAL}/messages/${ulid(450)}/pin`, init: { method: "POST" } });
+    expect(chat().channel!.messages[0]!.pinned).toBe(true);
+    await adapter.handleAction({ type: "pin", messageId: ulid(450), pin: false });
+    expect(requests("/pin")[1]!.init.method).toBe("DELETE");
+    await adapter.handleAction({ type: "pin", messageId: ulid(451), pin: true });
+    refuse = true;
+    await adapter.handleAction({ type: "pin", messageId: ulid(450), pin: true });
+    expect(chat().error).toBe("Message not pinned: You do not have permission to do that.");
+    await adapter.handleAction({ type: "pin", messageId: ulid(450), pin: false });
+    expect(chat().error).toBe("Message not unpinned: You do not have permission to do that.");
+    await adapter.openHome();
+    const before = calls.length;
+    await adapter.handleAction({ type: "pin", messageId: ulid(450), pin: true });
+    await adapter.handleAction({ type: "pins", open: true });
+    expect(calls.length).toBe(before);
   });
 });

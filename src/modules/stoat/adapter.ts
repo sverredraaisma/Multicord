@@ -1,5 +1,5 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
-import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeMessage, type NativeSidebarItem, type NativeUnread, type NativeViewState } from "../../shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeListedMessage, type NativeMessage, type NativeMessageList, type NativeSidebarItem, type NativeUnread, type NativeViewState } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
 import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
@@ -7,7 +7,7 @@ import { BaseAdapter } from "../../shared/baseAdapter";
 import { StoatEvents, type EventsStatus, type SocketFactory } from "./events";
 import { discoverInstance, instanceHosts, StoatRest, type LoginResult, type RestOptions, type StoatInstance } from "./rest";
 import { StoatState, TYPING_MS } from "./state";
-import { ChannelType, TEXT_CHANNEL_TYPES, compareIds, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatEmbed, type StoatFile, type StoatMessage } from "./types";
+import { ChannelType, TEXT_CHANNEL_TYPES, compareIds, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatEmbed, type StoatFile, type StoatMessage, type StoatUser } from "./types";
 
 const PAGE_SIZE = 50;
 const PUBLISH_DELAY_MS = 100;
@@ -76,6 +76,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly hasOlder = new Map<string, boolean>();
   /** Where the open channel's news began when it was opened: the last message read then, if any. */
   private unreadAt: { channelId: string; after?: string } | undefined;
+  /** The open channel's pinned messages, while its pins panel is open. */
+  private pins: { channelId: string; list: NativeMessageList } | undefined;
   private readonly loading = new Set<string>();
   private readonly ackTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
@@ -152,6 +154,10 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       case "removeAttachment":
         this.pending.get(this.selectedChannelId ?? "")?.splice(action.index, 1);
         return this.render();
+      case "pins":
+        return this.showPins(action.open);
+      case "pin":
+        return this.pin(action.messageId, action.pin);
       case "logout":
         return this.logout();
       default:
@@ -286,6 +292,9 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       dispatch: (type, data) => {
         this.state.apply(type, data);
         if (type === "Ready") this.onReady();
+        // A message in the channel whose pins are listed was pinned or unpinned.
+        const changed = type === "MessageUpdate" && typeof data === "object" && data !== null ? (data as { channel?: unknown; data?: { pinned?: unknown }; clear?: unknown }) : undefined;
+        if (this.pins && changed?.channel === this.pins.channelId && (changed.data?.pinned !== undefined || (Array.isArray(changed.clear) && changed.clear.includes("Pinned")))) void this.loadPins(this.pins.channelId);
       },
       status: (status) => {
         this.connection = status;
@@ -339,6 +348,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     if (!channel || !TEXT_CHANNEL_TYPES.has(channel.type)) return;
     // Noted before it is read: where its news began.
     if (channelId !== this.selectedChannelId) this.unreadAt = this.state.isUnread(channel) ? { channelId, after: this.state.unreads.get(channelId)?.lastId } : undefined;
+    if (this.pins?.channelId !== channelId) this.pins = undefined;
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.serverId ?? "home", channelId);
     this.error = undefined;
@@ -471,6 +481,55 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       await this.rest!.deleteMessage(channelId, messageId);
       this.state.removeMessage(channelId, messageId);
     });
+  }
+
+  /** Opens the open channel's pins panel and fetches its pins, or closes it. */
+  private async showPins(open: boolean): Promise<void> {
+    const channelId = this.selectedChannelId;
+    this.pins = open && channelId ? { channelId, list: { messages: [], loading: true } } : undefined;
+    this.render();
+    if (this.pins) await this.loadPins(this.pins.channelId);
+  }
+
+  /** Fetches the pins of a channel whose pins panel is open (Stoat finds them by search); a reply for a panel since closed is dropped. */
+  private async loadPins(channelId: string): Promise<void> {
+    let list: NativeMessageList;
+    try {
+      const found = await this.rest!.search(channelId, { pinned: true });
+      const users = new Map(found.users.map((u) => [u.id, u]));
+      list = { messages: found.messages.map((m) => this.listedMessage(m, users)), loading: false };
+    } catch (error) {
+      list = { messages: [], loading: false, error: `Could not load pinned messages: ${messageOf(error)}` };
+    }
+    if (this.pins?.channelId !== channelId) return;
+    this.pins = { channelId, list };
+    this.render();
+  }
+
+  /** Pins or unpins a message; Stoat decides whether the user may. The server's MessageUpdate refreshes an open list. */
+  private async pin(messageId: string, pin: boolean): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.rest) return;
+    await this.attempt(pin ? "Message not pinned" : "Message not unpinned", async () => {
+      await this.rest!.pin(channelId, messageId, pin);
+      const message = this.state.findMessage(channelId, messageId);
+      if (message) message.pinned = pin;
+      this.render();
+    });
+  }
+
+  /** A message as the pins list shows it: its text, or its first file's name. */
+  private listedMessage(message: StoatMessage, users: Map<string, StoatUser>): NativeListedMessage {
+    const user = this.state.users.get(message.authorId) ?? users.get(message.authorId);
+    const listed: NativeListedMessage = {
+      id: message.id,
+      author: message.masquerade ?? (user ? displayName(user) : "Unknown user"),
+      content: this.renderContent(message.system ?? message.content) || (message.attachments[0] ? `📎 ${message.attachments[0].filename}` : ""),
+      timestamp: new Date(idTime(message.id)).toISOString(),
+    };
+    const avatar = message.masquerade ? undefined : this.fileUrl(user?.avatar);
+    if (avatar) listed.avatarUrl = avatar;
+    return listed;
   }
 
   /** Applied locally once the server accepts it; the server's echo changes nothing more. */
@@ -708,6 +767,9 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       source: editable ? message.content : undefined,
       canDelete: mine,
       ...(!mine && this.state.mentionsMe(message) ? { mentionsMe: true } : {}),
+      ...(message.pinned ? { pinned: true } : {}),
+      // Whether this user may pin here is the server's to say; system messages cannot be pinned.
+      canPin: message.system === undefined,
       // Who wrote it, and Stoat's syntax for mentioning them; not for system messages or names a bridge or bot put on.
       ...(message.system === undefined && !message.masquerade ? { authorId: message.authorId, authorMention: `<@${message.authorId}>` } : {}),
       // Only replies to loaded messages can be previewed; others show none rather than "deleted".
@@ -795,8 +857,9 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 pending: (this.pending.get(channel.id) ?? []).map((f) => ({ name: f.filename, size: f.size })),
                 uploading: this.uploading.has(channel.id),
                 ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt) } : {}),
+                ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
                 // Files need the instance's file server (Autumn).
-                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: false },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: false, pins: true },
               }
             : null,
           customEmoji: channel ? this.customEmoji(channel) : [],

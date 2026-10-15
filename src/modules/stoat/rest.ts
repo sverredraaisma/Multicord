@@ -167,6 +167,22 @@ export class StoatRest {
     return { messages, users };
   }
 
+  /**
+   * Searches a channel's messages, with their authors: by text (`query`), or
+   * its pinned ones (`pinned`, which Stoat takes only without a query).
+   */
+  async search(channelId: string, search: { query: string } | { pinned: true }): Promise<{ messages: StoatMessage[]; users: StoatUser[] }> {
+    const data = await this.request("POST", `/channels/${channelId}/search`, { ...search, limit: 100, sort: "Latest", include_users: true });
+    const record = isRecord(data) ? data : { messages: data };
+    const users = (Array.isArray(record.users) ? record.users : []).flatMap((u) => parseUser(u) ?? []);
+    const messages = (Array.isArray(record.messages) ? record.messages : []).flatMap((m) => parseMessage(m) ?? []);
+    return { messages, users };
+  }
+
+  async pin(channelId: string, messageId: string, pin: boolean): Promise<void> {
+    await this.request(pin ? "POST" : "DELETE", `/channels/${channelId}/messages/${messageId}/pin`);
+  }
+
   /** Sends a message; the idempotency key stops a retried request from posting twice. */
   async sendMessage(channelId: string, content: string, nonce: string, replyTo?: string, attachments: string[] = []): Promise<StoatMessage | undefined> {
     const body: Record<string, unknown> = {};
