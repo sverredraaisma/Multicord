@@ -157,11 +157,17 @@ tests/                   Vitest; tests/mocks/electron.ts fakes the Electron API
 
 Coverage is enforced at **95%** for lines, statements, functions and branches (`vitest.config.mts`). `npm run coverage` fails below that. The only files excluded are the one-line bundle entries and the types-only adapter contract. Keep Electron glue thin and put logic in modules that can be tested.
 
+**Live tests against real servers.** `tests/live/` holds two suites that `npm run check` and CI skip. Each runs only when its environment variable names a server:
+- `matrix.live.test.ts` drives the Matrix module against a real Synapse, with matrix-js-sdk as the other user. It covers sign-in, encrypted DMs, recovery from Element's key backup, emoji verification, encrypted and plain media, edits, deletions, read markers, paging, delayed events and sign-out.
+- `stoat.live.test.ts` drives the Stoat module against a self-hosted Stoat. It covers sign-in with authenticator and recovery codes, servers, DMs, messages, reactions, typing, read state, mentions, notification settings, attachments, resuming, paging and logout.
+
+Each file's header says how to run it; both servers run in Docker on this machine. Both suites pass, and they found two Stoat bugs, since fixed. Not covered live: Matrix calls (they need a LiveKit server), Matrix's browser sign-in (it needs the Matrix Authentication Service), and the Electron shell around the modules.
+
 ## Known limitations / next steps
 - Rich Presence game detection goes by process name only, so names several games share are skipped. The WebSocket transport some browser-based apps use is not offered.
 - Guild selectors (`dom.ts`) and store names (`storeBridge.ts`) follow Discord's current client. Settings > Diagnostics checks them against the running client (each hook, and what breaks if it fails). The running app rechecks every minute: once startup has settled, a check that fails (after working, or at all while signed in) brings one notification pointing there. For repairs, "Copy report" puts the checks, with what each breaks and the versions, on the clipboard, for an issue or an AI assistant to propose a fix. Multicord itself calls no AI service. Guilds could later move to store reads too.
 - Rich Presence (arRPC) is not started.
-- Linux screen-share sound goes through venmic, which is only installed on Linux. It is wired and unit-tested but has not been run on a Linux desktop yet.
+- Linux screen-share sound goes through venmic, which installs on Linux only. Its main-process part was verified on real PipeWire: another app's sound reaches the virtual microphone, Multicord's own does not, and stopping unlinks it. The page side, which adds that microphone to a share, has not run on a Linux desktop yet. venmic captures sound going to real output devices, not bare virtual sinks.
 - Fluxer (native) does not support:
   - **Security keys (WebAuthn):** they are bound to Fluxer's own web origin, and Multicord won't impersonate it. Accounts protected only by a security key can sign in with a backup code.
   - **End-to-end encrypted voice channels:** Fluxer's scheme is undocumented, so Multicord refuses them rather than joining unencrypted.
