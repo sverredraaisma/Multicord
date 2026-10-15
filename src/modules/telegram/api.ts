@@ -143,6 +143,8 @@ export type TgUpdate =
   | { type: "message"; message: TgMessage }
   | { type: "edit"; message: TgMessage }
   | { type: "delete"; chatId?: string; ids: number[] }
+  /** Someone is typing (or sending something) in a chat, or stopped. */
+  | { type: "typing"; chatId: string; userId: string; active: boolean }
   /** A message's reactions now; `chosen` is only known when `own` is set (Telegram leaves it out of some updates). */
   | { type: "reactions"; chatId: string; id: number; reactions: TgReaction[]; own: boolean };
 
@@ -176,6 +178,10 @@ export interface TelegramApi {
   allowedReactions(chatId: string): Promise<TgAllowedReactions>;
   /** The emoji Telegram offers as reactions to this user, where a chat takes all. */
   reactionList(): Promise<string[]>;
+  /** Tells the chat the user is typing, or stopped. */
+  typing(chatId: string, active: boolean): Promise<void>;
+  /** A user's name, where Telegram has told it this session. */
+  userName(userId: string): Promise<string | undefined>;
   /** A message's media (or its thumbnail), as bytes; undefined when there is none. */
   download(chatId: string, messageId: number, thumbnail: boolean): Promise<Uint8Array | undefined>;
   onUpdate(cb: (update: TgUpdate) => void): void;

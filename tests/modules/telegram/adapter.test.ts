@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
 import type { TelegramApi, TelegramCredentials, TgAllowedReactions, TgDialog, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgText, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
-import { AVATAR_LIMIT, DIALOG_LIMIT, PREMIUM_REACTIONS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
+import { AVATAR_LIMIT, DIALOG_LIMIT, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import type { NativeAction, NativeViewState } from "../../../src/shared/native";
 
@@ -41,6 +41,8 @@ class FakeTelegramApi implements TelegramApi {
   react = vi.fn(async (_chatId: string, _id: number, _emoji: string[]) => {});
   allowedReactions = vi.fn(async (_chatId: string): Promise<TgAllowedReactions> => ({ kind: "all" }));
   reactionList = vi.fn(async (): Promise<string[]> => ["👍", "❤", "🔥", "😁"]);
+  typing = vi.fn(async (_chatId: string, _active: boolean) => {});
+  userName = vi.fn(async (_userId: string): Promise<string | undefined> => undefined);
   download = vi.fn(async (_chatId: string, _id: number, _thumbnail: boolean): Promise<Uint8Array | undefined> => new Uint8Array([104, 105]));
   onUpdate = vi.fn((cb: (update: TgUpdate) => void) => void (this.listener = cb));
   session = vi.fn(() => "sess");
@@ -522,6 +524,7 @@ describe("prompt handling", () => {
     expect(ctx.renders).toHaveLength(renders + 1);
     await ctx.act({ type: "react", messageId: "1", emoji: "x", add: true });
     await ctx.act({ type: "typing" });
+    await ctx.act({ type: "joinVoice", channelId: "1" });
     expect(ctx.renders).toHaveLength(renders + 1);
   });
 });
@@ -561,8 +564,8 @@ describe("chat view", () => {
     await Promise.all([first, second]);
     expect(ctx.api.history).toHaveBeenCalledWith("1", undefined, PAGE_SIZE);
     expect(ctx.chat().channel).toMatchObject({ loading: false, hasOlder: false });
-    // Files and typing notices are not offered for Telegram yet.
-    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: false, members: false });
+    // Files are not offered for Telegram yet.
+    expect(ctx.chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false });
     expect(ctx.messageIds()).toEqual(["1", "2", "3"]);
 
     await ctx.adapter.openConversation("1");
@@ -1735,5 +1738,145 @@ describe("reactions", () => {
   it("counts the user's choice in: one more for new ones, one less for those given up", () => {
     const before = [{ emoji: "a", count: 1, chosen: true }, { emoji: "b", count: 2, chosen: true }, { emoji: "c", count: 1, chosen: false }];
     expect(withChosen(before, ["b", "c", "d"])).toEqual([{ emoji: "b", count: 2, chosen: true }, { emoji: "c", count: 2, chosen: true }, { emoji: "d", count: 1, chosen: true }]);
+  });
+});
+
+describe("typing", () => {
+  const group = () => [dlg("-5", { kind: "group", title: "G" }), dlg("1", { title: "Ana" }), dlg("-6", { kind: "group", title: "Quiet", readOnly: true })];
+  const typingNow = (ctx: Awaited<ReturnType<typeof signedIn>>) => ctx.chat().channel!.typing;
+
+  it("tells the open chat the user is typing, at most every TYPING_REPEAT_MS, and stops it on sending", async () => {
+    vi.useFakeTimers();
+    const ctx = await signedIn({ dialogs: group() });
+    await ctx.adapter.openConversation("1");
+    expect(ctx.chat().channel!.can.typing).toBe(true);
+    await ctx.act({ type: "typing" });
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing.mock.calls).toEqual([["1", true]]);
+    vi.advanceTimersByTime(TYPING_REPEAT_MS);
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing).toHaveBeenCalledTimes(2);
+    await ctx.act({ type: "send", content: "hi" });
+    expect(ctx.api.typing).toHaveBeenLastCalledWith("1", false);
+    // Sent without typing first, or once the notice ran out: nothing to stop.
+    await ctx.act({ type: "send", content: "again" });
+    await ctx.act({ type: "typing" });
+    vi.advanceTimersByTime(TYPING_SHOWN_MS);
+    await ctx.act({ type: "send", content: "late" });
+    expect(ctx.api.typing.mock.calls.filter((c) => c[1] === false)).toHaveLength(1);
+  });
+
+  it("starts afresh in another chat, and sends nothing where the user cannot write or without a chat", async () => {
+    const ctx = await signedIn({ dialogs: group() });
+    await ctx.act({ type: "typing" });
+    await ctx.adapter.openConversation("1");
+    await ctx.act({ type: "typing" });
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    await ctx.act({ type: "typing" });
+    await ctx.act({ type: "send", content: "x" });
+    await ctx.act({ type: "select", channelId: viewId("-6") });
+    await ctx.act({ type: "typing" });
+    expect(ctx.chat().channel!.can.typing).toBe(false);
+    expect(ctx.api.typing.mock.calls).toEqual([["1", true], ["-5", true], ["-5", false]]);
+  });
+
+  it("ignores a failing typing notice", async () => {
+    const ctx = await signedIn({ dialogs: group() });
+    await ctx.adapter.openConversation("1");
+    ctx.api.typing.mockRejectedValue(new Error("flood"));
+    await ctx.act({ type: "typing" });
+    await ctx.act({ type: "send", content: "x" });
+    await flush();
+    expect(ctx.chat().error).toBeUndefined();
+  });
+
+  it("shows who is typing by name, and drops them after TYPING_SHOWN_MS", async () => {
+    vi.useFakeTimers();
+    const ctx = await signedIn({ dialogs: group() });
+    ctx.api.history.mockResolvedValue([msg("-5", 1, { senderId: "21", sender: "Bo" })]);
+    ctx.api.userName.mockResolvedValue("Cy");
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "21", active: true });
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "22", active: true });
+    expect(typingNow(ctx)).toEqual(["Bo", "Someone"]);
+    await flush();
+    expect(typingNow(ctx)).toEqual(["Bo", "Cy"]);
+    expect(ctx.api.userName).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(TYPING_SHOWN_MS / 2);
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "22", active: true });
+    vi.advanceTimersByTime(TYPING_SHOWN_MS / 2);
+    expect(typingNow(ctx)).toEqual(["Cy"]);
+    vi.advanceTimersByTime(TYPING_SHOWN_MS / 2);
+    expect(typingNow(ctx)).toEqual([]);
+    expect(ctx.api.userName).toHaveBeenCalledTimes(1);
+  });
+
+  it("names typing members from the member list, and the other side of a one-to-one chat by its title", async () => {
+    const ctx = await signedIn({ dialogs: [dlg("-5", { kind: "group", title: "G", members: true }), dlg("1", { title: "Ana" })] });
+    ctx.api.members.mockResolvedValue({ members: [{ id: "31", name: "Di", bot: false, presence: "online" }], total: 1 });
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    await ctx.act({ type: "members", open: true });
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "31", active: true });
+    expect(typingNow(ctx)).toEqual(["Di"]);
+    ctx.api.emit({ type: "typing", chatId: "1", userId: "1", active: true });
+    await ctx.adapter.openConversation("1");
+    expect(typingNow(ctx)).toEqual(["Ana"]);
+    expect(ctx.api.userName).not.toHaveBeenCalled();
+  });
+
+  it("stops showing someone who stopped or sent their message, the user themselves, and chats not listed", async () => {
+    const ctx = await signedIn({ dialogs: group() });
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "21", active: true });
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "21", active: false });
+    expect(typingNow(ctx)).toEqual([]);
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "21", active: true });
+    ctx.api.emit({ type: "message", message: msg("-5", 50, { senderId: "21" }) });
+    expect(typingNow(ctx)).toEqual([]);
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "9", active: true });
+    ctx.api.emit({ type: "typing", chatId: "-77", userId: "21", active: true });
+    expect(typingNow(ctx)).toEqual([]);
+    // Typing elsewhere shows there, not here.
+    const renders = ctx.renders.length;
+    ctx.api.emit({ type: "typing", chatId: "1", userId: "1", active: true });
+    expect(ctx.renders.length).toBe(renders);
+  });
+
+  it("shows at most ten people typing in one chat", async () => {
+    const ctx = await signedIn({ dialogs: group() });
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    for (let i = 0; i < 15; i++) ctx.api.emit({ type: "typing", chatId: "-5", userId: String(100 + i), active: true });
+    expect(typingNow(ctx)).toHaveLength(10);
+  });
+
+  it("keeps no one typing, nor names, across accounts", async () => {
+    const ctx = await signedIn({ dialogs: group() });
+    let answer!: (name: string) => void;
+    ctx.api.userName.mockImplementationOnce(() => new Promise((resolve) => (answer = resolve)));
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "21", active: true });
+    await ctx.act({ type: "logout" });
+    answer("Old");
+    await ctx.answer("phone", { phone: "+31612345678" });
+    await ctx.answer("code", { code: "1" });
+    await flush();
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    expect(typingNow(ctx)).toEqual([]);
+    ctx.api.userName.mockRejectedValueOnce(new Error("unknown"));
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "21", active: true });
+    await flush();
+    expect(typingNow(ctx)).toEqual(["Someone"]);
+    expect(ctx.api.userName).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks no names once signed out", async () => {
+    const ctx = await signedIn({ dialogs: group() });
+    await ctx.act({ type: "select", channelId: viewId("-5") });
+    ctx.api.isAuthorized = false;
+    await ctx.act({ type: "logout" });
+    ctx.api.emit({ type: "typing", chatId: "-5", userId: "21", active: true });
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.userName).not.toHaveBeenCalled();
+    expect(ctx.api.typing).not.toHaveBeenCalled();
   });
 });

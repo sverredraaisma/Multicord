@@ -17,6 +17,9 @@ const h = vi.hoisted(() => {
     "MessageEntityBold", "MessageEntityItalic", "MessageEntityUnderline", "MessageEntityStrike", "MessageEntitySpoiler", "MessageEntityCode", "MessageEntityPre",
     "MessageEntityTextUrl", "MessageEntityBlockquote", "MessageEntityMention",
     "ReactionEmoji", "ReactionCustomEmoji", "ReactionCount", "MessageReactions", "ChatReactionsNone", "ChatReactionsSome", "ChatReactionsAll", "UpdateMessageReactions",
+    "UpdateUserTyping", "UpdateChatUserTyping", "UpdateChannelUserTyping", "SendMessageTypingAction", "SendMessageCancelAction", "SendMessageUploadPhotoAction",
+    "SendMessageRecordVideoAction", "SendMessageUploadVideoAction", "SendMessageRecordAudioAction", "SendMessageUploadAudioAction", "SendMessageUploadDocumentAction",
+    "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
@@ -25,6 +28,7 @@ const h = vi.hoisted(() => {
       ReadMentions: class extends Base {},
       GetFullChat: class extends Base {},
       SendReaction: class extends Base {},
+      SetTyping: class extends Base {},
       GetAvailableReactions: class extends Base {},
       AvailableReactions: class extends Base {},
     },
@@ -47,6 +51,7 @@ const h = vi.hoisted(() => {
     deleteMessages = vi.fn(async () => []);
     markAsRead = vi.fn(async () => true);
     getInputEntity = vi.fn(async (peer: unknown) => ({ input: peer }));
+    getEntity = vi.fn();
     downloadProfilePhoto = vi.fn();
     downloadMedia = vi.fn();
     addEventHandler = vi.fn();
@@ -82,7 +87,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, toMessage } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, toMessage, typingOf } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -398,7 +403,12 @@ describe("createGramApi", () => {
     it("registers handlers for messages, edits, deletions and raw updates", () => {
       setup();
       expect(client.addEventHandler).toHaveBeenCalledTimes(4);
-      expect((client.addEventHandler.mock.calls[3]![1] as { args: { types: unknown[] } }).args.types).toEqual([Api.UpdateMessageReactions]);
+      expect((client.addEventHandler.mock.calls[3]![1] as { args: { types: unknown[] } }).args.types).toEqual([
+        Api.UpdateMessageReactions,
+        Api.UpdateUserTyping,
+        Api.UpdateChatUserTyping,
+        Api.UpdateChannelUserTyping,
+      ]);
     });
 
     it("forwards reaction updates of messages it can place", () => {
@@ -409,6 +419,9 @@ describe("createGramApi", () => {
       rawH(make(Api.UpdateMessageReactions, { peer: make(Api.PeerUser, { userId: 8n }), msgId: 0, reactions }));
       rawH(make(Api.UpdateMessageReactions, { peer: make(Api.PeerUser, { userId: 8n }), msgId: 1.5, reactions }));
       rawH({});
+      rawH(make(Api.UpdateUserTyping, { userId: 8n, action: make(Api.SendMessageTypingAction) }));
+      expect(cb.mock.calls.at(-1)).toEqual([{ type: "typing", chatId: "8", userId: "8", active: true }]);
+      cb.mock.calls.pop();
       expect(cb.mock.calls).toEqual([[{ type: "reactions", chatId: "8", id: 4, reactions: [{ emoji: "👍", count: 2, chosen: false }], own: false }]]);
     });
 
@@ -776,6 +789,54 @@ describe("reactions", () => {
     it("says when the user has Premium", async () => {
       client.getMe.mockResolvedValue({ id: 1n, firstName: "A", premium: true });
       await expect(api.me()).resolves.toEqual({ id: "1", name: "A", bot: false, premium: true });
+    });
+  });
+});
+
+describe("typing", () => {
+  const typing = make(Api.SendMessageTypingAction);
+  const user = (id: bigint) => make(Api.PeerUser, { userId: id });
+
+  it("reads who is typing where: one-to-one chats, basic groups and supergroups", () => {
+    expect(typingOf(make(Api.UpdateUserTyping, { userId: 8n, action: typing }))).toEqual({ type: "typing", chatId: "8", userId: "8", active: true });
+    expect(typingOf(make(Api.UpdateChatUserTyping, { chatId: 7n, fromId: user(8n), action: make(Api.SendMessageUploadPhotoAction) }))).toEqual({ type: "typing", chatId: "-7", userId: "8", active: true });
+    expect(typingOf(make(Api.UpdateChannelUserTyping, { channelId: 1234n, fromId: user(8n), action: make(Api.SendMessageCancelAction) }))).toEqual({ type: "typing", chatId: "-1001234", userId: "8", active: false });
+  });
+
+  it("leaves out channels typing as themselves, other actions, malformed ids and other updates", () => {
+    expect(typingOf(make(Api.UpdateChannelUserTyping, { channelId: 1234n, fromId: make(Api.PeerChannel, { channelId: 1n }), action: typing }))).toBeUndefined();
+    expect(typingOf(make(Api.UpdateUserTyping, { userId: 8n, action: make(Api.SendMessageEmojiInteraction) }))).toBeUndefined();
+    expect(typingOf(make(Api.UpdateUserTyping, { userId: 10n ** 19n, action: typing }))).toBeUndefined();
+    expect(typingOf(make(Api.UpdateChatUserTyping, { chatId: "x", fromId: user(8n), action: typing }))).toBeUndefined();
+    expect(typingOf(make(Api.UpdateMessageReactions))).toBeUndefined();
+    expect(typingOf(undefined)).toBeUndefined();
+  });
+
+  describe("through the client", () => {
+    let client: InstanceType<typeof h.FakeClient>;
+    let api: ReturnType<typeof createGramApi>;
+    beforeEach(() => {
+      api = createGramApi({ apiId: 1, apiHash: "h" }, "", { os: "linux", appVersion: "1" });
+      client = h.FakeClient.instances.at(-1)!;
+    });
+
+    it("says the user is typing, or stopped", async () => {
+      client.invoke.mockResolvedValue(true);
+      await api.typing("-7", true);
+      await api.typing("-7", false);
+      const [start, stop] = client.invoke.mock.calls.map((c) => c[0] as { peer: unknown; action: unknown });
+      expect(start).toBeInstanceOf(Api.messages.SetTyping);
+      expect(start!.peer).toBe(-7n);
+      expect(start!.action).toBeInstanceOf(Api.SendMessageTypingAction);
+      expect(stop!.action).toBeInstanceOf(Api.SendMessageCancelAction);
+    });
+
+    it("names users Telegram knows", async () => {
+      client.getEntity.mockResolvedValue(make(Api.User, { id: 8n, firstName: "Ana" }));
+      await expect(api.userName("8")).resolves.toBe("Ana");
+      expect((client.getEntity.mock.calls[0]![0] as { userId: unknown }).userId).toBe(8n);
+      client.getEntity.mockResolvedValue(make(Api.Channel, { title: "x" }));
+      await expect(api.userName("8")).resolves.toBeUndefined();
     });
   });
 });

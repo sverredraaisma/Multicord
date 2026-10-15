@@ -260,6 +260,40 @@ export function allowedOf(reactions: unknown): TgAllowedReactions {
   return { kind: "all" };
 }
 
+/** What others see as "typing": typing itself, or recording or sending media. */
+const TYPING_ACTIONS = [
+  Api.SendMessageTypingAction,
+  Api.SendMessageRecordVideoAction,
+  Api.SendMessageUploadVideoAction,
+  Api.SendMessageRecordAudioAction,
+  Api.SendMessageUploadAudioAction,
+  Api.SendMessageUploadPhotoAction,
+  Api.SendMessageUploadDocumentAction,
+  Api.SendMessageRecordRoundAction,
+  Api.SendMessageUploadRoundAction,
+  Api.SendMessageChooseStickerAction,
+];
+
+/**
+ * A typing update as a chat, a user and whether they are at it (a cancel
+ * stops it). Undefined for other updates, for chats posting as themselves,
+ * and for other actions (emoji interactions, voice chat speaking).
+ */
+export function typingOf(update: unknown): Extract<TgUpdate, { type: "typing" }> | undefined {
+  let chatId: string;
+  let userId: string | undefined;
+  // In groups, someone typing as a channel (fromId a PeerChannel) has no user id, and is left out.
+  const user = (from: unknown) => (from instanceof Api.PeerUser ? String(from.userId) : undefined);
+  if (update instanceof Api.UpdateUserTyping) chatId = userId = String(update.userId);
+  else if (update instanceof Api.UpdateChatUserTyping) [chatId, userId] = [`-${update.chatId}`, user(update.fromId)];
+  else if (update instanceof Api.UpdateChannelUserTyping) [chatId, userId] = [`-100${update.channelId}`, user(update.fromId)];
+  else return undefined;
+  if (!/^-?\d{1,18}$/.test(chatId) || !userId || !/^\d{1,18}$/.test(userId)) return undefined;
+  const { action } = update;
+  if (action instanceof Api.SendMessageCancelAction) return { type: "typing", chatId, userId, active: false };
+  return TYPING_ACTIONS.some((cls) => action instanceof cls) ? { type: "typing", chatId, userId, active: true } : undefined;
+}
+
 /** Text and its formatting, as GramJS sends them. */
 const outgoing = (text: TgText) => ({ formattingEntities: apiEntities(text.entities) });
 
@@ -429,6 +463,14 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       if (!(list instanceof Api.messages.AvailableReactions)) return [];
       return list.reactions.filter((r) => r.inactive !== true && (r.premium !== true || me.premium === true)).flatMap((r) => emojiOf(new Api.ReactionEmoji({ emoticon: r.reaction })) ?? []);
     },
+    typing: async (chatId, active) => {
+      const action = active ? new Api.SendMessageTypingAction() : new Api.SendMessageCancelAction();
+      await client.invoke(new Api.messages.SetTyping({ peer: peer(chatId), action }));
+    },
+    userName: async (userId) => {
+      const user = await client.getEntity(new Api.PeerUser({ userId: returnBigInt(userId) }));
+      return user instanceof Api.User ? userName(user) : undefined;
+    },
     download: async (chatId, messageId, thumbnail) => {
       const [message] = await client.getMessages(peer(chatId), { ids: [messageId] });
       if (!(message instanceof Api.Message) || !message.media) return undefined;
@@ -454,11 +496,13 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         cb(chatId ? { type: "delete", chatId, ids: event.deletedIds } : { type: "delete", ids: event.deletedIds });
       }, new DeletedMessage({}));
       client.addEventHandler((update: Api.TypeUpdate) => {
+        const typing = typingOf(update);
+        if (typing) return cb(typing);
         if (!(update instanceof Api.UpdateMessageReactions)) return;
         const chatId = chatIdOf(update.peer);
         if (!chatId || !Number.isInteger(update.msgId) || update.msgId <= 0) return;
         cb({ type: "reactions", chatId, id: update.msgId, ...reactionsOf(update.reactions) });
-      }, new Raw({ types: [Api.UpdateMessageReactions] }));
+      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping] }));
     },
     session: () => (client.session as StringSession).save(),
     logOut: async () => void (await client.invoke(new Api.auth.LogOut())),

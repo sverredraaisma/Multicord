@@ -13,6 +13,11 @@ export const PAGE_SIZE = 50;
 export const AVATAR_LIMIT = 40;
 /** Reactions a Premium user may give one message; others give one. Telegram's default (reactions_user_max_premium). */
 export const PREMIUM_REACTIONS = 3;
+/** How long someone shows as typing unless they say so again, as in Telegram's apps; and how often the user's own typing is repeated. */
+export const TYPING_SHOWN_MS = 6000;
+export const TYPING_REPEAT_MS = 5000;
+/** Most people shown typing in one chat. */
+const MAX_TYPING = 10;
 /** Members fetched per page, and at most for one chat: big groups list their first ones and count the rest. */
 export const MEMBER_PAGE = 50;
 export const MEMBER_LIMIT = 200;
@@ -167,6 +172,14 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   /** The emoji Telegram offers as reactions to this user, once asked. */
   private reactionList: string[] | undefined;
   private reactionListAsked = false;
+  /** Who is typing where: chat, then user, then until when (ms). */
+  private readonly typing = new Map<string, Map<string, number>>();
+  private typingTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The user's own typing notice: in which chat, and when it was last sent. */
+  private ownTyping: { chatId: string; sent: number } | undefined;
+  /** Names of people typing, as Telegram told them; and those asked for. */
+  private readonly names = new Map<string, string>();
+  private readonly namesAsked = new Set<string>();
   /** The profile card the view asked for last. */
   private profile: NativeProfile | undefined;
   private visible = false;
@@ -315,6 +328,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.allowedAsked.clear();
     this.reactionList = undefined;
     this.reactionListAsked = false;
+    this.typing.clear();
+    clearTimeout(this.typingTimer);
+    this.typingTimer = undefined;
+    this.ownTyping = undefined;
+    this.names.clear();
+    this.namesAsked.clear();
     this.session++;
     this.selected = undefined;
     this.directsChanged.emit([]);
@@ -357,6 +376,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.showProfile(action.id);
       case "react":
         return this.react(action.messageId, action.emoji, action.add);
+      case "typing":
+        return this.sendTyping();
       case "logout":
         return this.signOut();
       default:
@@ -578,6 +599,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const chatId = this.selected;
     const text = fromMarkdown(content);
     if (!chatId || text.text.trim() === "" || !this.api || this.dialog(chatId)?.readOnly) return;
+    this.stopTyping(chatId);
     await this.attempt("Message not sent", async () => {
       const sent = await this.api!.send(chatId, text, replyTo ? Number(replyTo) : undefined);
       this.onUpdate({ type: "message", message: sent });
@@ -612,6 +634,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         if (!dialog) return this.refreshSoon();
         const cached = this.messages.get(message.chatId);
         if (cached && !cached.some((m) => m.id === message.id)) cached.push(message);
+        // Whoever sent it is done typing, as Telegram's apps show it.
+        if (message.senderId) this.typing.get(message.chatId)?.delete(message.senderId);
         if (message.id >= (dialog.lastMessage?.id ?? 0)) {
           dialog.lastMessage = message;
           dialog.date = message.date;
@@ -649,6 +673,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         if (dialog?.lastMessage?.id === message.id) dialog.lastMessage = message;
         return this.publish();
       }
+      case "typing":
+        return this.onTyping(update.chatId, update.userId, update.active);
       case "reactions": {
         const cached = this.messages.get(update.chatId);
         const index = cached?.findIndex((m) => m.id === update.id) ?? -1;
@@ -669,6 +695,84 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.publish();
       }
     }
+  }
+
+  // --- Typing -------------------------------------------------------------------
+
+  /** Tells the open chat the user is typing: at most once every TYPING_REPEAT_MS, as Telegram's apps repeat it. */
+  private sendTyping(): void {
+    const chatId = this.selected;
+    const dialog = chatId ? this.dialog(chatId) : undefined;
+    if (!chatId || !dialog || dialog.readOnly || !this.api) return;
+    const now = Date.now();
+    if (this.ownTyping?.chatId === chatId && now - this.ownTyping.sent < TYPING_REPEAT_MS) return;
+    this.ownTyping = { chatId, sent: now };
+    // Best effort: a lost notice changes nothing shown.
+    void this.api.typing(chatId, true).catch(() => undefined);
+  }
+
+  /** Ends the user's typing notice in a chat on sending, if it still shows. */
+  private stopTyping(chatId: string): void {
+    const own = this.ownTyping;
+    if (own?.chatId !== chatId) return;
+    this.ownTyping = undefined;
+    if (Date.now() - own.sent < TYPING_SHOWN_MS) void this.api?.typing(chatId, false).catch(() => undefined);
+  }
+
+  /** Someone started or stopped typing in a listed chat; the user's own typing elsewhere is not shown. */
+  private onTyping(chatId: string, userId: string, active: boolean): void {
+    if (!this.dialog(chatId) || userId === this.me?.id) return;
+    const people = this.typing.get(chatId) ?? new Map<string, number>();
+    people.delete(userId);
+    if (active && people.size < MAX_TYPING) people.set(userId, Date.now() + TYPING_SHOWN_MS);
+    if (people.size > 0) this.typing.set(chatId, people);
+    else this.typing.delete(chatId);
+    if (active) void this.askName(chatId, userId);
+    this.scheduleTyping();
+    if (chatId === this.selected) this.render();
+  }
+
+  /** Re-renders when the next typing notice runs out. */
+  private scheduleTyping(): void {
+    clearTimeout(this.typingTimer);
+    this.typingTimer = undefined;
+    const next = Math.min(...[...this.typing.values()].flatMap((people) => [...people.values()]));
+    if (!Number.isFinite(next)) return;
+    this.typingTimer = setTimeout(() => {
+      const now = Date.now();
+      for (const [chatId, people] of this.typing) {
+        for (const [userId, until] of people) if (until <= now) people.delete(userId);
+        if (people.size === 0) this.typing.delete(chatId);
+      }
+      this.scheduleTyping();
+      this.render();
+    }, Math.max(0, next - Date.now()));
+  }
+
+  /** Who is typing in a chat, by name: a one-to-one chat's own title, or what is known of a group's members. */
+  private typingNames(dialog: TgDialog): string[] {
+    const now = Date.now();
+    return [...(this.typing.get(dialog.chatId) ?? [])].filter(([, until]) => until > now).map(([userId]) => (dialog.kind === "user" ? dialog.title : (this.knownName(dialog.chatId, userId) ?? "Someone")));
+  }
+
+  /** A user's name from what the chat shows: its members, their messages, or what Telegram told. */
+  private knownName(chatId: string, userId: string): string | undefined {
+    return (
+      this.memberLists.get(chatId)?.members.find((m) => m.id === userId)?.name ??
+      this.messages.get(chatId)?.findLast((m) => m.senderId === userId && m.sender)?.sender ??
+      this.names.get(userId)
+    );
+  }
+
+  /** Asks Telegram once for the name of someone typing in a group, when the chat does not show it. */
+  private async askName(chatId: string, userId: string): Promise<void> {
+    if (this.dialog(chatId)?.kind === "user" || this.knownName(chatId, userId) || this.namesAsked.has(userId) || !this.api) return;
+    this.namesAsked.add(userId);
+    const session = this.session;
+    const name = await this.api.userName(userId).catch(() => undefined);
+    if (session !== this.session || !name) return;
+    this.names.set(userId, name);
+    this.render();
   }
 
   // --- Reactions ----------------------------------------------------------------
@@ -1022,12 +1126,12 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
             messages: (this.messages.get(dialog.chatId) ?? []).map((m) => this.toNative(m, dialog)),
             loading: this.loading.has(dialog.chatId),
             hasOlder: this.hasOlder.get(dialog.chatId) ?? false,
-            typing: [],
+            typing: this.typingNames(dialog),
             pending: [],
             uploading: false,
             ...(locked ? { locked } : {}),
             // Reactions, files and typing notices are not offered here yet.
-            can: { reply: !locked, react: this.canReact(dialog), attach: false, typing: false, members: this.canListMembers(dialog) },
+            can: { reply: !locked, react: this.canReact(dialog), attach: false, typing: !locked, members: this.canListMembers(dialog) },
             ...(members ? { members } : {}),
           }
         : null,
