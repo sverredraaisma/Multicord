@@ -297,7 +297,7 @@ describe("FluxerAdapter chat", () => {
     ]);
     expect(state.sidebar[3]).toMatchObject({ unread: true, mentions: 2 });
     expect(state.channel).toMatchObject({ id: "113", name: "lobby", loading: false, hasOlder: false });
-    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, gifs: false, pins: true });
+    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, gifs: false, pins: true, search: true });
     expect(state.channel!.messages[0]).toMatchObject({ id: "450", author: "Ana", content: "m450", mine: false });
     expect(calls.some((c) => c.url.includes("/channels/113/messages?limit=50"))).toBe(true);
 
@@ -1499,6 +1499,70 @@ describe("FluxerAdapter pins", () => {
     await ctx.adapter.openHome();
     const before = ctx.calls.length;
     await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
+    expect(ctx.calls.length).toBe(before);
+  });
+});
+
+describe("FluxerAdapter search", () => {
+  async function opened(routes: Handler[] = []) {
+    const ctx = setup({ token: "flx_saved", routes });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openServer("100");
+    return ctx;
+  }
+  const searches = (ctx: Awaited<ReturnType<typeof opened>>) => ctx.calls.filter((c) => c.url.endsWith("/search/messages"));
+
+  it("searches a server channel in its server, and a DM among the DMs", async () => {
+    let answer: unknown = { messages: [message("440", "113", { content: "found it" }), "junk"], total: 1 };
+    const ctx = await opened([(url) => (url.endsWith("/search/messages") ? { status: 200, body: answer } : undefined)]);
+    expect(ctx.chat().channel!.can.search).toBe(true);
+    const pending = ctx.adapter.handleAction({ type: "search", query: " found " });
+    expect(ctx.chat().channel!.search).toEqual({ query: "found", messages: [], loading: true });
+    await pending;
+    expect(JSON.parse(searches(ctx)[0]!.init.body as string)).toEqual({ context_guild_id: "100", channel_ids: ["113"], content: "found", hits_per_page: 25, page: 1 });
+    expect(ctx.chat().channel!.search).toEqual({ query: "found", messages: [expect.objectContaining({ id: "440", content: "found it" })], loading: false });
+    // Still indexing: said so.
+    answer = { indexing: true };
+    await ctx.adapter.handleAction({ type: "search", query: "more" });
+    expect(ctx.chat().channel!.search).toMatchObject({ query: "more", messages: [], note: expect.stringContaining("still indexing") });
+    answer = "odd";
+    await ctx.adapter.handleAction({ type: "search", query: "odd" });
+    expect(ctx.chat().channel!.search).toEqual({ query: "odd", messages: [], loading: false });
+    // Ended, then another channel.
+    await ctx.adapter.handleAction({ type: "search", query: "" });
+    expect(ctx.chat().channel!.search).toBeUndefined();
+    await ctx.adapter.handleAction({ type: "search", query: "x" });
+    await ctx.adapter.handleAction({ type: "select", channelId: "113" });
+    expect(ctx.chat().channel!.search).toBeDefined();
+    await ctx.adapter.handleAction({ type: "select", channelId: "111" });
+    expect(ctx.chat().channel!.search).toBeUndefined();
+    await ctx.adapter.openHome();
+    await ctx.adapter.handleAction({ type: "select", channelId: "900" });
+    await ctx.adapter.handleAction({ type: "search", query: "hi" });
+    expect(JSON.parse(searches(ctx).at(-1)!.init.body as string)).toEqual({ scope: "all_dms", channel_ids: ["900"], content: "hi", hits_per_page: 25, page: 1 });
+  });
+
+  it("shows failures, and drops answers to earlier searches", async () => {
+    let fail = true;
+    const ctx = await opened([(url) => (url.endsWith("/search/messages") ? (fail ? { status: 400, body: { code: "BAD", message: "Search is off" } } : { status: 200, body: { messages: [] } }) : undefined)]);
+    await ctx.adapter.handleAction({ type: "search", query: "a" });
+    expect(ctx.chat().channel!.search).toEqual({ query: "a", messages: [], loading: false, error: "Search failed: Search is off" });
+    fail = false;
+    const first = ctx.adapter.handleAction({ type: "search", query: "first" });
+    const second = ctx.adapter.handleAction({ type: "search", query: "second" });
+    await first;
+    expect(ctx.chat().channel!.search).toMatchObject({ query: "second", loading: true });
+    await second;
+    expect(ctx.chat().channel!.search).toMatchObject({ query: "second", loading: false });
+    // Ended while running: dropped.
+    const ending = ctx.adapter.handleAction({ type: "search", query: "third" });
+    await ctx.adapter.handleAction({ type: "search", query: "" });
+    await ending;
+    expect(ctx.chat().channel!.search).toBeUndefined();
+    await ctx.adapter.openHome();
+    const before = ctx.calls.length;
+    await ctx.adapter.handleAction({ type: "search", query: "nowhere" });
     expect(ctx.calls.length).toBe(before);
   });
 });

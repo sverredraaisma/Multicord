@@ -95,6 +95,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - attachment uploads, picked with the OS file dialog
   - link previews Fluxer made (articles, site cards, bots' rich embeds) as cards, their pictures through the instance's media proxy
   - pinned messages: a channel's pins in the pins panel, followed live, and pinning or unpinning from a message's menu (Fluxer decides who may; Multicord does not track roles, so it offers it on every ordinary message and shows Fluxer's refusal)
+  - search in the open channel or DM, on the instance (its first 25 results, newest first); the instance says when it is still indexing
   - custom emoji, stickers and GIFs in the picker, by Fluxer's rules: a server's own emoji and stickers there, and every server's (also in DMs) only for accounts with global expressions, which Fluxer gives premium (Plutonium) accounts or whomever the instance's limits say. Stickers are WebP, still or animated, and go as stickers; Lottie stickers in messages show their name. GIF search uses the instance's own provider (Klipy on fluxer.app), with trending GIFs before you type, where the instance has one
   - threads under their channel, and forum channels with their posts and a form for new ones
   - voice channels with who is in them, and calls with microphone, camera and screen share (through LiveKit, as Fluxer uses)

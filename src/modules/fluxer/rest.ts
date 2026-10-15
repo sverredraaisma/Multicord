@@ -224,6 +224,18 @@ export class FluxerRest {
     return items.flatMap((item) => (isRecord(item) ? (parseMessage(item.message) ?? []) : []));
   }
 
+  /**
+   * Searches one channel's messages (the first page, newest first): a
+   * server's channel in its server's scope, a DM among the user's DMs.
+   * `indexing` while the instance is still indexing what the search needs.
+   */
+  async search(channel: { id: string; guildId?: string }, query: string): Promise<{ messages: FluxerMessage[]; indexing: boolean }> {
+    const scope = channel.guildId ? { context_guild_id: channel.guildId } : { scope: "all_dms" };
+    const data = await this.request("POST", "/search/messages", { ...scope, channel_ids: [channel.id], content: query, hits_per_page: 25, page: 1 });
+    const record = isRecord(data) ? data : {};
+    return { messages: (Array.isArray(record.messages) ? record.messages : []).flatMap((m) => parseMessage(m) ?? []), indexing: record.indexing === true };
+  }
+
   async pin(channelId: string, messageId: string, pin: boolean): Promise<void> {
     await this.request(pin ? "PUT" : "DELETE", `/channels/${channelId}/pins/${messageId}`);
   }

@@ -8,6 +8,7 @@ import {
   type NativeListedMessage,
   type NativeMessage,
   type NativeMessageList,
+  type NativeSearchResults,
   type NativeStickerPack,
   type NativeUnread,
   type NativeSidebarItem,
@@ -150,6 +151,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private gifSearch = 0;
   /** The open channel's pinned messages, while its pins panel is open. */
   private pins: { channelId: string; list: NativeMessageList } | undefined;
+  /** The open channel's search results, until the search ends; and a count that drops answers to earlier searches. */
+  private search: { channelId: string; results: NativeSearchResults } | undefined;
+  private searchCount = 0;
 
   constructor(private readonly deps: FluxerAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -231,6 +235,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.render();
       case "pins":
         return this.showPins(action.open);
+      case "search":
+        return this.searchMessages(action.query);
       case "pin":
         return this.pin(action.messageId, action.pin);
       case "logout":
@@ -448,6 +454,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     // Noted before it is read: where its news began.
     if (channelId !== this.selectedChannelId) this.unreadAt = !forum && this.state.isUnread(channel) ? { channelId, after: this.state.readStates.get(channelId)?.lastMessageId } : undefined;
     if (this.pins?.channelId !== channelId) this.pins = undefined;
+    if (this.search?.channelId !== channelId) this.search = undefined;
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.guildId ?? "home", channelId);
     this.error = undefined;
@@ -820,6 +827,27 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     this.render();
   }
 
+  /** Searches the open channel on the instance (POST /search/messages), or ends the search with an empty query. */
+  private async searchMessages(query: string): Promise<void> {
+    const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
+    const count = ++this.searchCount;
+    const trimmed = query.trim();
+    this.search = channel && trimmed !== "" ? { channelId: channel.id, results: { query: trimmed, messages: [], loading: true } } : undefined;
+    this.render();
+    if (!this.search || !channel) return;
+    let results: NativeSearchResults;
+    try {
+      const found = await this.rest!.search(channel, trimmed);
+      results = { query: trimmed, messages: found.messages.map((m) => this.listedMessage(m)), loading: false };
+      if (found.indexing) results.note = "Fluxer is still indexing this conversation for search. Try again in a moment.";
+    } catch (error) {
+      results = { query: trimmed, messages: [], loading: false, error: `Search failed: ${messageOf(error)}` };
+    }
+    if (count !== this.searchCount || this.search?.channelId !== channel.id) return;
+    this.search = { channelId: channel.id, results };
+    this.render();
+  }
+
   /** Pins or unpins a message; Fluxer decides whether the user may. */
   private async pin(messageId: string, pin: boolean): Promise<void> {
     const channelId = this.selectedChannelId;
@@ -1153,8 +1181,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                 uploading: this.uploading.has(channel.id),
                 ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt) } : {}),
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
+                ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
                 can: {
                   pins: !FORUM_TYPES.has(channel.type),
+                  search: !FORUM_TYPES.has(channel.type),
                   reply: true,
                   react: true,
                   attach: this.deps.files !== undefined,
