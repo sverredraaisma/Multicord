@@ -773,7 +773,7 @@ describe("StoatAdapter attachments", () => {
     expect(chat().error).toBe("This Stoat instance does not accept files.");
     await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "a.gif", size: 3, type: "image/gif" } });
     expect(chat().channel!.pending).toEqual([]);
-    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, pins: true });
+    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, pins: true, search: true });
     // Without a file server there are no avatar or icon URLs either, nor emoji pictures to pick.
     expect(chat().sidebar[0]!.iconUrl).toBeUndefined();
     expect(chat().customEmoji).toEqual([]);
@@ -1055,6 +1055,58 @@ describe("StoatAdapter pins", () => {
     const before = calls.length;
     await adapter.handleAction({ type: "pin", messageId: ulid(450), pin: true });
     await adapter.handleAction({ type: "pins", open: true });
+    expect(calls.length).toBe(before);
+  });
+});
+
+describe("StoatAdapter search", () => {
+  it("searches the open channel on the instance, newest first", async () => {
+    let answer: unknown = { messages: [message(440, GENERAL, { content: "found it" })], users: [ANA] };
+    const { adapter, chat, online, requests } = setup({ token: "saved", routes: [(url) => (url.endsWith("/search") ? { status: 200, body: answer } : undefined)] });
+    await online();
+    await adapter.openConversation(GENERAL);
+    expect(chat().channel!.can.search).toBe(true);
+    const pending = adapter.handleAction({ type: "search", query: " found " });
+    expect(chat().channel!.search).toEqual({ query: "found", messages: [], loading: true });
+    await pending;
+    expect(JSON.parse(requests("/search")[0]!.init.body as string)).toEqual({ query: "found", limit: 100, sort: "Latest", include_users: true });
+    expect(chat().channel!.search).toEqual({ query: "found", messages: [expect.objectContaining({ id: ulid(440), author: "Ana", content: "found it" })], loading: false });
+    // Too long for Stoat: the start of it is searched, and the results say so.
+    answer = [];
+    const long = "w".repeat(70);
+    await adapter.handleAction({ type: "search", query: long });
+    expect(JSON.parse(requests("/search")[1]!.init.body as string).query).toBe("w".repeat(64));
+    expect(chat().channel!.search).toEqual({ query: long, messages: [], loading: false, note: "Stoat searches for the first 64 characters only." });
+    await adapter.handleAction({ type: "search", query: "" });
+    expect(chat().channel!.search).toBeUndefined();
+    await adapter.handleAction({ type: "search", query: "x" });
+    await adapter.openConversation(GENERAL);
+    expect(chat().channel!.search).toBeDefined();
+    await adapter.openConversation(LOBBY);
+    expect(chat().channel!.search).toBeUndefined();
+  });
+
+  it("shows failures, and drops answers to earlier searches", async () => {
+    let fail = true;
+    const { adapter, chat, online, calls } = setup({ token: "saved", routes: [(url) => (url.endsWith("/search") ? (fail ? { status: 403, body: { type: "MissingPermission" } } : { status: 200, body: [] }) : undefined)] });
+    await online();
+    await adapter.openConversation(GENERAL);
+    await adapter.handleAction({ type: "search", query: "a" });
+    expect(chat().channel!.search).toEqual({ query: "a", messages: [], loading: false, error: "Search failed: You do not have permission to do that." });
+    fail = false;
+    const first = adapter.handleAction({ type: "search", query: "first" });
+    const second = adapter.handleAction({ type: "search", query: "second" });
+    await first;
+    expect(chat().channel!.search).toMatchObject({ query: "second", loading: true });
+    await second;
+    expect(chat().channel!.search).toMatchObject({ query: "second", loading: false });
+    const ending = adapter.handleAction({ type: "search", query: "third" });
+    await adapter.handleAction({ type: "search", query: "" });
+    await ending;
+    expect(chat().channel!.search).toBeUndefined();
+    await adapter.openHome();
+    const before = calls.length;
+    await adapter.handleAction({ type: "search", query: "nowhere" });
     expect(calls.length).toBe(before);
   });
 });

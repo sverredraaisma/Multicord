@@ -1,5 +1,5 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
-import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeListedMessage, type NativeMessage, type NativeMessageList, type NativeSidebarItem, type NativeUnread, type NativeViewState } from "../../shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeListedMessage, type NativeMessage, type NativeMessageList, type NativeSearchResults, type NativeSidebarItem, type NativeUnread, type NativeViewState } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
 import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
@@ -10,6 +10,8 @@ import { StoatState, TYPING_MS } from "./state";
 import { ChannelType, TEXT_CHANNEL_TYPES, compareIds, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatEmbed, type StoatFile, type StoatMessage, type StoatUser } from "./types";
 
 const PAGE_SIZE = 50;
+/** The longest search Stoat takes. */
+export const MAX_SEARCH = 64;
 const PUBLISH_DELAY_MS = 100;
 const ACK_DELAY_MS = 750;
 /** Typing is re-announced this often while the user keeps typing, and ended after this long idle. */
@@ -78,6 +80,9 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   private unreadAt: { channelId: string; after?: string } | undefined;
   /** The open channel's pinned messages, while its pins panel is open. */
   private pins: { channelId: string; list: NativeMessageList } | undefined;
+  /** The open channel's search results, until the search ends; and a count that drops answers to earlier searches. */
+  private search: { channelId: string; results: NativeSearchResults } | undefined;
+  private searchCount = 0;
   private readonly loading = new Set<string>();
   private readonly ackTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private publishTimer: ReturnType<typeof setTimeout> | undefined;
@@ -156,6 +161,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         return this.render();
       case "pins":
         return this.showPins(action.open);
+      case "search":
+        return this.searchMessages(action.query);
       case "pin":
         return this.pin(action.messageId, action.pin);
       case "logout":
@@ -349,6 +356,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     // Noted before it is read: where its news began.
     if (channelId !== this.selectedChannelId) this.unreadAt = this.state.isUnread(channel) ? { channelId, after: this.state.unreads.get(channelId)?.lastId } : undefined;
     if (this.pins?.channelId !== channelId) this.pins = undefined;
+    if (this.search?.channelId !== channelId) this.search = undefined;
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.serverId ?? "home", channelId);
     this.error = undefined;
@@ -503,6 +511,31 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     }
     if (this.pins?.channelId !== channelId) return;
     this.pins = { channelId, list };
+    this.render();
+  }
+
+  /**
+   * Searches the open channel on the instance (its newest 100 matches), or
+   * ends the search with an empty query. Stoat takes at most 64 characters.
+   */
+  private async searchMessages(query: string): Promise<void> {
+    const channelId = this.selectedChannelId;
+    const count = ++this.searchCount;
+    const trimmed = query.trim();
+    this.search = channelId && trimmed !== "" ? { channelId, results: { query: trimmed, messages: [], loading: true } } : undefined;
+    this.render();
+    if (!this.search || !channelId) return;
+    let results: NativeSearchResults;
+    try {
+      const found = await this.rest!.search(channelId, { query: trimmed.slice(0, MAX_SEARCH) });
+      const users = new Map(found.users.map((u) => [u.id, u]));
+      results = { query: trimmed, messages: found.messages.map((m) => this.listedMessage(m, users)), loading: false };
+      if (trimmed.length > MAX_SEARCH) results.note = `Stoat searches for the first ${MAX_SEARCH} characters only.`;
+    } catch (error) {
+      results = { query: trimmed, messages: [], loading: false, error: `Search failed: ${messageOf(error)}` };
+    }
+    if (count !== this.searchCount || this.search?.channelId !== channelId) return;
+    this.search = { channelId, results };
     this.render();
   }
 
@@ -858,8 +891,9 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 uploading: this.uploading.has(channel.id),
                 ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt) } : {}),
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
+                ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
                 // Files need the instance's file server (Autumn).
-                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: false, pins: true },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: false, pins: true, search: true },
               }
             : null,
           customEmoji: channel ? this.customEmoji(channel) : [],
