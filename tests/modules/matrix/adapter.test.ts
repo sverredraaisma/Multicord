@@ -1069,7 +1069,7 @@ describe("shell interface", () => {
     await ctx.adapter.openHome();
     expect(ctx.renders).toHaveLength(renders + 2);
     await expect(ctx.adapter.openServer("x")).rejects.toThrow("Matrix has no server x");
-    expect(ctx.adapter.capabilities).toEqual({ directMessages: true, messagePreviews: true, voice: false, screenShare: false });
+    expect(ctx.adapter.capabilities).toEqual({ directMessages: true, messagePreviews: true, voice: true, screenShare: true });
     expect(ctx.adapter.mode).toBe("native");
   });
 

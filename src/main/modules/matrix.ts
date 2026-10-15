@@ -15,11 +15,14 @@ export const matrixNativeModule: PlatformModule = {
     color: "#0dbd8b",
     configurable: true,
     defaultUrl: "https://matrix.org",
+    // Calls run in the shared call view: the unified devices, processing, shortcuts and push-to-talk apply.
+    usesVoiceSettings: true,
     preload: "preload-native.js",
     engine: "matrix",
     // Encryption keys live in the engine's own IndexedDB, kept on disk per instance.
     storage: true,
     home: true,
-    capabilities: { directMessages: true, messagePreviews: true, voice: false, screenShare: false },
+    screenShare: true,
+    capabilities: { directMessages: true, messagePreviews: true, voice: true, screenShare: true },
   },
 };

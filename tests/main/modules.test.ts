@@ -32,6 +32,15 @@ describe("module registry", () => {
       expect(manifest.color).toMatch(/^#[0-9a-f]{6}$/i);
     }
   });
+
+  it("gives every native module that calls the shared voice settings and screen-share picker", () => {
+    const native = MODULES.filter((m) => m.manifest.preload === "preload-native.js" && m.manifest.capabilities?.voice);
+    expect(native.map((m) => m.manifest.id)).toEqual(["fluxer", "matrix-native"]);
+    for (const { manifest } of native) {
+      expect(manifest.usesVoiceSettings).toBe(true);
+      expect(Boolean(manifest.screenShare)).toBe(Boolean(manifest.capabilities!.screenShare));
+    }
+  });
 });
 
 describe("module boundaries", () => {

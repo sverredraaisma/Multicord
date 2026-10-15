@@ -315,7 +315,7 @@ const messageOf = (error: unknown): string => (error instanceof Error ? error.me
  */
 export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   override readonly mode = "native" as const;
-  readonly capabilities = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+  readonly capabilities = { directMessages: true, messagePreviews: true, voice: true, screenShare: true };
 
   private step: Step = "connecting";
   private status: string | undefined;
