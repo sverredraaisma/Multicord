@@ -343,6 +343,12 @@ export class FluxerState {
     return message.mentionEveryone || (this.me !== undefined && message.mentionIds.includes(this.me.id));
   }
 
+  /** Whether the user muted a channel (or its server, or all DMs) in Fluxer, for now. */
+  isMuted(channel: FluxerChannel, now: number = Date.now()): boolean {
+    const settings = this.notifySettings.get(channel.guildId ?? DM_SETTINGS);
+    return (settings?.channels.get(channel.id)?.mutedUntil ?? 0) > now || (settings?.mutedUntil ?? 0) > now;
+  }
+
   /**
    * Whether a message from someone else should raise a desktop notification,
    * following the user's settings: channel override, then guild, then the
@@ -351,9 +357,9 @@ export class FluxerState {
   shouldNotify(message: FluxerMessage, now: number = Date.now()): boolean {
     const channel = this.channels.get(message.channelId);
     if (!channel || !this.me || message.author.id === this.me.id) return false;
+    if (this.isMuted(channel, now)) return false;
     const settings = this.notifySettings.get(channel.guildId ?? DM_SETTINGS);
     const override = settings?.channels.get(channel.id);
-    if ((override?.mutedUntil ?? 0) > now || (settings?.mutedUntil ?? 0) > now) return false;
     const pick = (value: number | undefined) => (value === undefined || value === NotifyLevel.Inherit ? undefined : value);
     const level = pick(override?.level) ?? pick(settings?.level) ?? (channel.guildId ? NotifyLevel.Mentions : NotifyLevel.All);
     if (level === NotifyLevel.All) return true;

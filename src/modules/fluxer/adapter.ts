@@ -995,6 +995,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       unread: kind !== "category" && this.state.isUnread(channel),
       mentions: kind === "category" ? 0 : this.state.mentions(channel.id),
       active: channel.id === this.selectedChannelId,
+      // Muted in Fluxer (the channel, or its server): shown so; muting from here is not offered.
+      ...(kind !== "category" && this.state.isMuted(channel) ? { muted: true } : {}),
     });
     if (this.selection.kind === "home") return this.state.privateChannels().map((c) => item(c, "dm"));
     const kindOf = (c: FluxerChannel): NativeSidebarItem["kind"] =>

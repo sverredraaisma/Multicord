@@ -598,6 +598,20 @@ describe("FluxerAdapter notifications", () => {
     expect(shown.map((m) => [m.id, m.mentionsMe === true])).toEqual([["801", true], ["802", true], ["803", false], ["804", false]]);
   });
 
+  it("shows channels and DMs muted in Fluxer as muted, without offering to change it", async () => {
+    const { adapter, chat } = await online();
+    adapter.state.apply("USER_GUILD_SETTINGS_UPDATE", { guild_id: "100", channel_overrides: { "113": { muted: true } } });
+    adapter.state.apply("USER_GUILD_SETTINGS_UPDATE", { guild_id: null, muted: true });
+    await adapter.openServer("100");
+    const lobby = chat().sidebar.find((i) => i.id === "113")!;
+    expect(lobby).toMatchObject({ muted: true });
+    expect(lobby).not.toHaveProperty("canMute");
+    expect(chat().sidebar.find((i) => i.id === "111")).not.toHaveProperty("muted");
+    expect(chat().sidebar.filter((i) => i.kind === "category").some((i) => "muted" in i)).toBe(false);
+    await adapter.openHome();
+    expect(chat().sidebar.every((i) => i.muted === true)).toBe(true);
+  });
+
   it("marks notifications for the open, visible conversation", async () => {
     const { adapter, notes } = await online();
     await adapter.openConversation("900");
