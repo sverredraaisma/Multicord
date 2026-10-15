@@ -1457,7 +1457,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.loading.delete(room.id);
     if (generation !== this.generation) return;
     if (page) {
-      this.applyState(room, page.state);
+      // The page's state is older than the room's: it only names senders not known yet.
+      for (const [user, member] of Object.entries(page.state.members)) if (!room.members.has(user)) room.members.set(user, member);
       const known = new Set(room.events.map((e) => e.id));
       const older: Shown[] = [];
       for (const event of page.events) {

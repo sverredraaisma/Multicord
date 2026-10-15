@@ -1591,6 +1591,24 @@ describe("end-to-end encryption", () => {
     expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!sec:x.org", expect.anything(), "m.room.encrypted");
   });
 
+  it("keeps the room's current members over the older state a history page brings", async () => {
+    const ctx = await withCrypto();
+    await ctx.open("Secret");
+    await ctx.act({ type: "send", content: "hush" });
+    await ctx.live(sync({ joined: [room("!sec:x.org", { state: { members: { [BO]: { membership: "leave", name: "Bo" } } } })] }));
+    // From before Bo left (under an older name), with Ana, not seen before.
+    ctx.api.messages.mockResolvedValueOnce({
+      events: [msg("old1", BO, "from Bo", 1), msg("old2", ANA, "from Ana", 2)],
+      state: { members: { [BO]: { membership: "join", name: "Old Bo" }, [ANA]: { membership: "join", name: "Ana" }, [ME]: { membership: "invite" } } },
+    });
+    (ctx.adapter as unknown as { rooms: Map<string, { prevBatch?: string }> }).rooms.get("!sec:x.org")!.prevBatch = "p";
+    await ctx.act({ type: "loadOlder" });
+    expect(ctx.messages().filter((m) => m.content.startsWith("from")).map((m) => m.author)).toEqual(["Bo", "Ana"]);
+    // Bo, gone, does not get the keys again.
+    await ctx.act({ type: "send", content: "after" });
+    expect(ctx.e2ee.encrypt.mock.calls.at(-1)![2]).toEqual([ME]);
+  });
+
   it("encrypts in a room the server says turned encrypted", async () => {
     const ctx = await withCrypto();
     ctx.api.push(sync({ joined: [room("!plain:x.org", { state: { name: "Plain", members: {} } })] }));
