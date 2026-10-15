@@ -2691,7 +2691,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             uploading: this.uploading.has(room.id),
             ...(locked ? { locked } : {}),
             // A locked room takes nothing from here; typing notices follow the user's setting.
-            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices },
+            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false },
           }
         : null,
       voice: this.voiceSession(),

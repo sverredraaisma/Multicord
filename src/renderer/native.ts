@@ -2,13 +2,14 @@ import { screenAudioPatch } from "../shared/screenAudio";
 import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { NativeChannelCan, NativeMessage, NativeViewState } from "../shared/native";
-import { channelCan, MAX_MESSAGE_LENGTH } from "../shared/native";
+import { channelCan, MAX_MESSAGE_LENGTH, memberList } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
-import { el } from "./components/dom";
+import { el, icon, ICONS } from "./components/dom";
 import { emojiPicker, type CustomEmoji, type PickedEmoji } from "./components/emojiPicker";
 import { typingText } from "./components/format";
+import { memberPanel } from "./components/members";
 import { messageItem, type MessageHandlers } from "./components/message";
 import { forumPosts, pendingFiles, postForm, replyBar, voicePanel } from "./components/panels";
 import { isOwnReaction } from "./components/reactions";
@@ -195,6 +196,16 @@ export class NativeView {
 
     const main = el(doc, "main", "conversation");
     const header = el(doc, "header", "conversation-title");
+    const heading = el(doc, "span", "conversation-name");
+    // Shows and hides who is here, where the conversation lists them.
+    const membersToggle = el(doc, "button", "members-toggle");
+    membersToggle.type = "button";
+    membersToggle.title = "Member list";
+    membersToggle.setAttribute("aria-label", "Member list");
+    membersToggle.setAttribute("aria-controls", "member-panel");
+    membersToggle.append(icon(doc, "members-icon", ICONS.members));
+    membersToggle.addEventListener("click", () => this.api.act({ type: "members", open: membersToggle.getAttribute("aria-pressed") !== "true" }));
+    header.append(heading, membersToggle);
     const banner = el(doc, "div", "banner");
     const messages = el(doc, "ol", "messages");
     const stage = el(doc, "div", "voice-stage");
@@ -254,14 +265,24 @@ export class NativeView {
       this.setEditing(undefined);
     });
 
+    const members = el(doc, "aside", "member-panel");
+    members.id = "member-panel";
+    members.setAttribute("aria-label", "Members");
+    members.hidden = true;
+    // The panel sits beside the conversation, or over it where the window is narrow.
+    const area = el(doc, "div", "conversation-area");
+    area.append(main, members);
+
     const layout = el(doc, "div", "chat");
-    layout.append(sidebar, main);
+    layout.append(sidebar, area);
     this.root.replaceChildren(layout);
     Object.assign(this.parts, {
       title,
       list,
       me,
-      header,
+      heading,
+      membersToggle,
+      members,
       banner,
       messages,
       typing,
@@ -381,9 +402,28 @@ export class NativeView {
     });
   }
 
+  /** The member panel: shown while the module lists the open conversation's members, where it can. */
+  private updateMembers(): void {
+    const toggle = this.parts.membersToggle as HTMLButtonElement;
+    const panel = this.parts.members!;
+    const channel = this.lastState?.channel;
+    const list = channel && this.can.members ? memberList(channel.members) : undefined;
+    toggle.hidden = !channel || !this.can.members;
+    toggle.setAttribute("aria-pressed", String(Boolean(list)));
+    panel.hidden = !list;
+    if (!list) return panel.replaceChildren();
+    // Rebuilt on every update: give focus back to the control that had it.
+    const focused = this.doc.activeElement;
+    const focusKey = focused instanceof HTMLElement && panel.contains(focused) ? (focused.dataset.id ?? focused.className) : undefined;
+    const listed = list.sections.reduce((sum, section) => sum + section.members.length, 0);
+    panel.replaceChildren(...memberPanel(this.doc, list, { onLoadMore: () => this.api.act({ type: "loadMembers", offset: listed }) }));
+    if (focusKey === undefined) return;
+    [...panel.querySelectorAll<HTMLButtonElement>("button")].find((b) => (b.dataset.id ?? b.className) === focusKey && !b.disabled)?.focus();
+  }
+
   private updateChat(state: ChatState): void {
     this.lastState = state;
-    const { title, list, me, header, banner, messages, composer, attach } = this.parts as Record<string, HTMLElement>;
+    const { title, list, me, heading, banner, messages, composer, attach } = this.parts as Record<string, HTMLElement>;
     if (state.channel?.id !== this.channelId) {
       // A reply, edit or open picker belongs to the channel it started in.
       this.replyTo = undefined;
@@ -404,7 +444,8 @@ export class NativeView {
     );
 
     const channel = state.channel;
-    header!.textContent = channel ? channel.name : "Select a conversation";
+    heading!.textContent = channel ? channel.name : "Select a conversation";
+    this.updateMembers();
     this.parts.typing!.textContent = typingText(channel?.typing ?? []);
 
     const uploading = channel?.uploading ?? false;

@@ -4,6 +4,7 @@ import { avatar } from "../../src/renderer/components/avatar";
 import { channelItem } from "../../src/renderer/components/channels";
 import { countBadge, icon, initials, setColor } from "../../src/renderer/components/dom";
 import { emojiPicker } from "../../src/renderer/components/emojiPicker";
+import { memberPanel, memberRow, presenceAvatar } from "../../src/renderer/components/members";
 import { messageItem, type MessageHandlers } from "../../src/renderer/components/message";
 import { isOwnReaction, quickReactions } from "../../src/renderer/components/reactions";
 import { moduleLabel, serverIcon, serverTooltip } from "../../src/renderer/components/serverIcon";
@@ -223,5 +224,52 @@ describe("attachments", () => {
     expect((await show({ name: "a.bin", kind: "file", mediaKey: "m:4" }, onLoad)).textContent).toBe("⬇ a.bin");
     // Without a way to ask, a held-back file reads as gone.
     expect((await show({ name: "x", kind: "video", mediaKey: "m:5" })).textContent).toBe("x (link expired)");
+  });
+});
+
+describe("member list", () => {
+  const ana = { id: "1", name: "Ana", presence: "online" as const, color: "#ff0000", status: "Bot" };
+
+  it("shows presence as a labelled dot, or none", () => {
+    const holder = presenceAvatar(document, undefined, "Ana", "dnd");
+    expect(holder.querySelector(".presence")!.getAttribute("aria-label")).toBe("Do not disturb");
+    expect(holder.querySelector(".presence")!.getAttribute("role")).toBe("img");
+    expect(presenceAvatar(document, "https://x/a.png", "Ana", undefined).querySelector(".presence")).toBeNull();
+  });
+
+  it("renders rows as buttons that open a profile, or as plain rows", () => {
+    const onOpen = vi.fn();
+    const row = memberRow(document, ana, onOpen);
+    const button = row.querySelector<HTMLButtonElement>("button.member")!;
+    expect(button.type).toBe("button");
+    expect(button.dataset.id).toBe("1");
+    expect(row.querySelector<HTMLElement>(".member-name")!.style.getPropertyValue("--member-color")).toBe("#ff0000");
+    expect(row.querySelector(".member-status")!.textContent).toBe("Bot");
+    button.click();
+    expect(onOpen).toHaveBeenCalledWith(ana);
+    const plain = memberRow(document, { id: "2", name: "Bo" });
+    expect(plain.querySelector("button")).toBeNull();
+    expect(plain.querySelector(".member-status")).toBeNull();
+  });
+
+  it("lists sections with counts, what is not listed, and loads more once", () => {
+    const onLoadMore = vi.fn();
+    const box = document.createElement("div");
+    box.append(...memberPanel(document, { sections: [{ name: "Admins", members: [ana] }, { name: "Members", members: [{ id: "2", name: "Bo" }] }], more: 1234, hasMore: true, loading: false }, { onLoadMore }));
+    expect([...box.querySelectorAll("h3")].map((h) => h.textContent)).toEqual(["Admins — 1", "Members — 1"]);
+    const lists = box.querySelectorAll("ul.member-list");
+    expect(lists[1]!.getAttribute("aria-labelledby")).toBe(box.querySelectorAll("h3")[1]!.id);
+    expect(box.querySelector(".member-note")!.textContent).toBe("1,234 more");
+    const more = box.querySelector<HTMLButtonElement>(".member-more")!;
+    more.click();
+    expect(more.disabled).toBe(true);
+    expect(onLoadMore).toHaveBeenCalledTimes(1);
+  });
+
+  it("says when it is loading, empty or failed", () => {
+    const parts = (list: Parameters<typeof memberPanel>[1]) => memberPanel(document, list, { onLoadMore: vi.fn() }).map((p) => p.textContent);
+    expect(parts({ sections: [], hasMore: true, loading: true })).toEqual(["Loading members…"]);
+    expect(parts({ sections: [], hasMore: false, loading: false })).toEqual(["No members to show."]);
+    expect(parts({ sections: [], hasMore: false, loading: false, error: "Only admins can see the members." })).toEqual(["Only admins can see the members."]);
   });
 });

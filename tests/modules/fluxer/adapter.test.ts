@@ -297,7 +297,7 @@ describe("FluxerAdapter chat", () => {
     ]);
     expect(state.sidebar[3]).toMatchObject({ unread: true, mentions: 2 });
     expect(state.channel).toMatchObject({ id: "113", name: "lobby", loading: false, hasOlder: false });
-    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true });
+    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false });
     expect(state.channel!.messages[0]).toMatchObject({ id: "450", author: "Ana", content: "m450", mine: false });
     expect(calls.some((c) => c.url.includes("/channels/113/messages?limit=50"))).toBe(true);
 

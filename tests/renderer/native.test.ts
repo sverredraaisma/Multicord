@@ -11,7 +11,7 @@ import { Room, resetLiveKit } from "../mocks/livekit";
 
 type Chat = Extract<NativeViewState, { screen: "chat" }>;
 
-const ALL = { reply: true, react: true, attach: true, typing: true };
+const ALL = { reply: true, react: true, attach: true, typing: true, members: false };
 
 const login: NativeViewState = { screen: "login", platform: "Fluxer", identity: "email", busy: false };
 
@@ -430,7 +430,7 @@ describe("message actions", () => {
 
   it("offers only what the conversation allows", () => {
     const reacted = msg("11", { reactions: [{ key: "👍", label: "👍", count: 2, me: false }] });
-    const none = { reply: false, react: false, attach: false, typing: false };
+    const none = { reply: false, react: false, attach: false, typing: false, members: false };
     const state = (can: unknown) =>
       chat({ channel: { id: "2", name: "general", messages: [reacted], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: can as typeof ALL } });
     view.update(state(ALL));
@@ -879,5 +879,71 @@ describe("media requests from the view", () => {
     view.update(chat({ channel: { ...chat().channel!, messages: [{ ...chat().channel!.messages[0]!, attachments: [{ name: "p.jpg", kind: "image", mediaKey: "m:1" }] }] } }));
     view.update(chat({ channel: { ...chat().channel!, messages: [{ ...chat().channel!.messages[0]!, attachments: [{ name: "p.jpg", kind: "image", mediaKey: "m:1" }] }] } }));
     expect(act.mock.calls.filter(([a]) => a.type === "loadMedia")).toEqual([[{ type: "loadMedia", key: "m:1" }]]);
+  });
+});
+
+describe("member panel", () => {
+  const WITH_MEMBERS = { ...ALL, members: true };
+  const list = { sections: [{ name: "Members", members: [{ id: "5", name: "Ana", presence: "online" }] }], hasMore: true, loading: false };
+  const state = (can: unknown, members?: unknown) =>
+    chat({ channel: { ...chat().channel!, can: can as typeof ALL, ...(members === undefined ? {} : { members: members as never }) } });
+  const toggle = () => root.querySelector<HTMLButtonElement>(".members-toggle")!;
+  const panel = () => root.querySelector<HTMLElement>("#member-panel")!;
+
+  it("is offered only where the conversation lists its members", () => {
+    view.update(state(ALL));
+    expect(toggle().hidden).toBe(true);
+    view.update(state(WITH_MEMBERS));
+    expect(toggle().hidden).toBe(false);
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    expect(toggle().getAttribute("aria-controls")).toBe("member-panel");
+    expect(panel().hidden).toBe(true);
+    view.update(chat({ channel: null }));
+    expect(toggle().hidden).toBe(true);
+    // A list without the flag stays hidden.
+    view.update(state(ALL, list));
+    expect(panel().hidden).toBe(true);
+    expect(root.querySelector(".conversation-name")!.textContent).toBe("general");
+  });
+
+  it("opens and closes through the module, which then sends the list", () => {
+    view.update(state(WITH_MEMBERS));
+    toggle().click();
+    expect(act).toHaveBeenLastCalledWith({ type: "members", open: true });
+    view.update(state(WITH_MEMBERS, list));
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    expect(panel().hidden).toBe(false);
+    expect(panel().getAttribute("aria-label")).toBe("Members");
+    expect(panel().querySelector(".member-name")!.textContent).toBe("Ana");
+    expect(panel().querySelector(".presence.online")).not.toBeNull();
+    toggle().click();
+    expect(act).toHaveBeenLastCalledWith({ type: "members", open: false });
+    view.update(state(WITH_MEMBERS));
+    expect(panel().hidden).toBe(true);
+    expect(panel().children).toHaveLength(0);
+  });
+
+  it("loads more from the number listed, keeping focus on the button across updates", () => {
+    view.update(state(WITH_MEMBERS, list));
+    const more = panel().querySelector<HTMLButtonElement>(".member-more")!;
+    more.focus();
+    view.update(state(WITH_MEMBERS, list));
+    const again = panel().querySelector<HTMLButtonElement>(".member-more")!;
+    expect(again).not.toBe(more);
+    expect(document.activeElement).toBe(again);
+    again.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "loadMembers", offset: 1 });
+    // Focus outside the panel stays where it is.
+    root.querySelector<HTMLTextAreaElement>(".composer")!.focus();
+    view.update(state(WITH_MEMBERS, { ...list, loading: true }));
+    expect(document.activeElement).toBe(root.querySelector(".composer"));
+    expect(panel().textContent).toContain("Loading members…");
+  });
+
+  it("drops focus quietly when its control is gone", () => {
+    view.update(state(WITH_MEMBERS, list));
+    panel().querySelector<HTMLButtonElement>(".member-more")!.focus();
+    view.update(state(WITH_MEMBERS, { ...list, hasMore: false }));
+    expect(panel().querySelector(".member-more")).toBeNull();
   });
 });

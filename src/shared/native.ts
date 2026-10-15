@@ -141,6 +141,47 @@ export interface NativeChannelView {
   locked?: string;
   /** What this conversation takes from here besides text; the view offers only these. */
   can: NativeChannelCan;
+  /**
+   * Who is here, while the member panel is open (after a `members` action
+   * with open: true) and `can.members` is on. Read by the view through
+   * memberList(), which bounds what it shows.
+   */
+  members?: NativeMemberList;
+}
+
+/** How present someone is, where the platform says. */
+export type NativePresence = "online" | "idle" | "dnd" | "offline";
+export const PRESENCES = ["online", "idle", "dnd", "offline"] as const satisfies readonly NativePresence[];
+
+/** One person in a member list. */
+export interface NativeMember {
+  /** Opaque and module-scoped (the same as NativeMessage.authorId for the same person); passed back in profile actions. */
+  id: string;
+  name: string;
+  avatarUrl?: string;
+  presence?: NativePresence;
+  /** "#rrggbb", e.g. the colour of their highest role. */
+  color?: string;
+  /** A short line under the name, e.g. "last seen recently" or "Bot". */
+  status?: string;
+}
+
+/** A heading in the member list ("Admins", "Online"…) and who is under it. */
+export interface NativeMemberSection {
+  name: string;
+  members: NativeMember[];
+}
+
+/** The open conversation's members, as far as the module has fetched them. */
+export interface NativeMemberList {
+  sections: NativeMemberSection[];
+  /** Members known to exist beyond those listed, e.g. a big group's total minus the first page. */
+  more?: number;
+  /** A loadMembers action fetches the next page. */
+  hasMore: boolean;
+  loading: boolean;
+  /** Why the list could not be (fully) loaded. */
+  error?: string;
 }
 
 /**
@@ -159,14 +200,86 @@ export interface NativeChannelCan {
   attach: boolean;
   /** Tell the others while the user types. */
   typing: boolean;
+  /** List who is here (the member panel: `members` and `loadMembers` actions, NativeChannelView.members). */
+  members: boolean;
 }
 
-export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing"] as const satisfies readonly (keyof NativeChannelCan)[];
+export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members"] as const satisfies readonly (keyof NativeChannelCan)[];
 
 /** A conversation's flags as the view trusts them: each on only when it is exactly `true`. */
 export function channelCan(value: unknown): NativeChannelCan {
   const flags = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
   return Object.fromEntries(CHANNEL_CAN_FLAGS.map((flag) => [flag, flags[flag] === true])) as unknown as NativeChannelCan;
+}
+
+/** Most member rows the view shows at once, over all sections; the rest are counted as "N more". */
+export const MEMBER_ROWS_SHOWN = 200;
+export const MAX_MEMBER_SECTIONS = 20;
+/** Highest offset a loadMembers action may ask for. */
+export const MAX_MEMBER_OFFSET = 100_000;
+const MAX_MEMBER_TEXT = 100;
+
+/** A member or author id: opaque to the view, but plain enough to pass back (snowflakes, ULIDs, Matrix user ids). */
+export const isMemberId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9@:._=+/-]{1,255}$/.test(value);
+
+const record = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
+/** A non-empty string, cut to a length; undefined otherwise. */
+const shortText = (value: unknown, max = MAX_MEMBER_TEXT): string | undefined => (typeof value === "string" && value.trim() !== "" ? value.slice(0, max) : undefined);
+const presenceOf = (value: unknown): NativePresence | undefined => (PRESENCES as readonly unknown[]).includes(value) ? (value as NativePresence) : undefined;
+const colorOf = (value: unknown): string | undefined => (typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value) ? value : undefined);
+const count = (value: unknown): number => (typeof value === "number" && Number.isInteger(value) && value > 0 ? Math.min(value, 100_000_000) : 0);
+
+/** A member row as the view trusts it; undefined without a usable id and name. */
+function member(value: unknown): NativeMember | undefined {
+  const v = record(value);
+  const name = shortText(v?.name);
+  if (!v || !isMemberId(v.id) || !name) return undefined;
+  const row: NativeMember = { id: v.id, name };
+  if (typeof v.avatarUrl === "string" && v.avatarUrl !== "") row.avatarUrl = v.avatarUrl;
+  const presence = presenceOf(v.presence);
+  if (presence) row.presence = presence;
+  const color = colorOf(v.color);
+  if (color) row.color = color;
+  const status = shortText(v.status);
+  if (status) row.status = status;
+  return row;
+}
+
+/**
+ * A member list as the view trusts it: malformed rows and sections dropped,
+ * texts cut short, and at most MEMBER_ROWS_SHOWN rows, the rest counted in
+ * `more` (and no further pages, which could not be shown). Undefined when
+ * there is no list.
+ */
+export function memberList(value: unknown): NativeMemberList | undefined {
+  const v = record(value);
+  if (!v) return undefined;
+  let room = MEMBER_ROWS_SHOWN;
+  let hidden = 0;
+  const sections: NativeMemberSection[] = [];
+  for (const raw of Array.isArray(v.sections) ? v.sections.slice(0, MAX_MEMBER_SECTIONS) : []) {
+    const section = record(raw);
+    const name = shortText(section?.name);
+    const rows = Array.isArray(section?.members) ? (section.members as unknown[]) : [];
+    if (!name) continue;
+    const members: NativeMember[] = [];
+    for (const row of rows) {
+      const m = member(row);
+      if (!m) continue;
+      if (room > 0) {
+        members.push(m);
+        room--;
+      } else hidden++;
+    }
+    if (members.length > 0) sections.push({ name, members });
+  }
+  const list: NativeMemberList = { sections, hasMore: v.hasMore === true && hidden === 0, loading: v.loading === true };
+  const more = count(v.more) + hidden;
+  if (more > 0) list.more = more;
+  const error = shortText(v.error, 300);
+  if (error) list.error = error;
+  return list;
 }
 
 /** One input of a sign-in step. */
@@ -244,6 +357,10 @@ export type NativeAction =
   | { type: "removeAttachment"; index: number }
   /** Fetch an attachment the engine holds back until asked (NativeAttachment.mediaKey). */
   | { type: "loadMedia"; key: string }
+  /** The member panel opened or closed: the module lists the open conversation's members (NativeChannelView.members) only while it is open. */
+  | { type: "members"; open: boolean }
+  /** The next page of members; `offset` is how many are listed, so a page is never asked twice. */
+  | { type: "loadMembers"; offset: number }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -299,6 +416,10 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return text(v.message, 1, 500) && (v.off === undefined || v.off === "video" || v.off === "stream");
     case "loadMedia":
       return typeof v.key === "string" && /^[A-Za-z0-9:._-]{1,200}$/.test(v.key);
+    case "members":
+      return typeof v.open === "boolean";
+    case "loadMembers":
+      return typeof v.offset === "number" && Number.isInteger(v.offset) && v.offset >= 0 && v.offset <= MAX_MEMBER_OFFSET;
     case "createPost":
       return text(v.name, 1, 100) && (v.name as string).trim() !== "" && content(v.content);
     case "removeAttachment":

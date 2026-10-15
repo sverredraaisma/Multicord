@@ -690,7 +690,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 pending: (this.pending.get(channel.id) ?? []).map((f) => ({ name: f.filename, size: f.size })),
                 uploading: this.uploading.has(channel.id),
                 // Files need the instance's file server (Autumn).
-                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: false },
               }
             : null,
           voice: null,

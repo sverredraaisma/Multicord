@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createNativeApi } from "../../src/preload/native";
-import { channelCan, isNativeAction, MAX_MESSAGE_LENGTH, NATIVE_IPC } from "../../src/shared/native";
+import { channelCan, isNativeAction, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MESSAGE_LENGTH, MEMBER_ROWS_SHOWN, memberList, NATIVE_IPC } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -144,8 +144,83 @@ describe("media requests", () => {
 
 describe("conversation capability flags", () => {
   it("turns a flag on only when it is exactly true", () => {
-    expect(channelCan({ reply: true, react: true, attach: true, typing: true })).toEqual({ reply: true, react: true, attach: true, typing: true });
-    expect(channelCan({ reply: true, react: "yes", attach: 1, extra: true })).toEqual({ reply: true, react: false, attach: false, typing: false });
-    for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual({ reply: false, react: false, attach: false, typing: false });
+    expect(channelCan({ reply: true, react: true, attach: true, typing: true, members: true })).toEqual({ reply: true, react: true, attach: true, typing: true, members: true });
+    expect(channelCan({ reply: true, react: "yes", attach: 1, members: "true", extra: true })).toEqual({ reply: true, react: false, attach: false, typing: false, members: false });
+    for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual({ reply: false, react: false, attach: false, typing: false, members: false });
+  });
+});
+
+describe("member panel actions", () => {
+  it("validates opening, closing and paging", () => {
+    expect(isNativeAction({ type: "members", open: true })).toBe(true);
+    expect(isNativeAction({ type: "members", open: false })).toBe(true);
+    expect(isNativeAction({ type: "members", open: "yes" })).toBe(false);
+    expect(isNativeAction({ type: "members" })).toBe(false);
+    expect(isNativeAction({ type: "loadMembers", offset: 0 })).toBe(true);
+    expect(isNativeAction({ type: "loadMembers", offset: MAX_MEMBER_OFFSET })).toBe(true);
+    for (const offset of [-1, 1.5, MAX_MEMBER_OFFSET + 1, "5", undefined]) expect(isNativeAction({ type: "loadMembers", offset })).toBe(false);
+  });
+});
+
+describe("memberList", () => {
+  const ana = { id: "1", name: "Ana" };
+
+  it("has no list without an object", () => {
+    for (const value of [undefined, null, "list", 5, []]) expect(memberList(value)).toBeUndefined();
+  });
+
+  it("keeps well-formed rows and sections, with their optional fields", () => {
+    const row = { id: "@ana:example.org", name: "Ana", avatarUrl: "https://x/a.png", presence: "dnd", color: "#AABBCC", status: "Busy" };
+    expect(memberList({ sections: [{ name: "Admins", members: [row] }], more: 12, hasMore: true, loading: true, error: "Partly" })).toEqual({
+      sections: [{ name: "Admins", members: [row] }],
+      more: 12,
+      hasMore: true,
+      loading: true,
+      error: "Partly",
+    });
+    expect(memberList({})).toEqual({ sections: [], hasMore: false, loading: false });
+  });
+
+  it("drops malformed rows, sections and fields, and cuts long texts", () => {
+    const list = memberList({
+      sections: [
+        { name: "", members: [ana] },
+        { name: "Empty", members: [] },
+        { name: "No rows", members: "Ana" },
+        null,
+        {
+          name: "x".repeat(150),
+          members: [
+            null,
+            { id: "bad id", name: "Bo" },
+            { id: "2", name: " " },
+            { id: "3", name: "y".repeat(150), avatarUrl: "", presence: "away", color: "red", status: 5 },
+            ana,
+          ],
+        },
+      ],
+      more: -3,
+      hasMore: "yes",
+      loading: 1,
+      error: "",
+    })!;
+    expect(list.sections).toHaveLength(1);
+    expect(list.sections[0]!.name).toHaveLength(100);
+    expect(list.sections[0]!.members).toEqual([{ id: "3", name: "y".repeat(100) }, ana]);
+    expect(list).toMatchObject({ hasMore: false, loading: false });
+    expect(list.more).toBeUndefined();
+    expect(list.error).toBeUndefined();
+  });
+
+  it("shows at most MEMBER_ROWS_SHOWN rows in MAX_MEMBER_SECTIONS sections, counting the rest, and asks for no further pages then", () => {
+    const rows = (n: number, from = 0) => Array.from({ length: n }, (_, i) => ({ id: String(from + i), name: `M${from + i}` }));
+    const list = memberList({ sections: [{ name: "A", members: rows(150) }, { name: "B", members: rows(100, 150) }], more: 10, hasMore: true, loading: false })!;
+    expect(list.sections.map((s) => s.members.length)).toEqual([150, MEMBER_ROWS_SHOWN - 150]);
+    expect(list.more).toBe(10 + 250 - MEMBER_ROWS_SHOWN);
+    expect(list.hasMore).toBe(false);
+    const many = memberList({ sections: Array.from({ length: 30 }, (_, i) => ({ name: `S${i}`, members: rows(1, i) })), hasMore: true })!;
+    expect(many.sections).toHaveLength(MAX_MEMBER_SECTIONS);
+    expect(many.hasMore).toBe(true);
+    expect(memberList({ sections: [], more: 1e12 })!.more).toBe(100_000_000);
   });
 });

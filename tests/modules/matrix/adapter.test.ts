@@ -706,7 +706,7 @@ describe("conversations", () => {
     const { channel } = ctx.chat();
     expect(channel).toMatchObject({ id: ctx.item("Bo").id, name: "Bo", loading: false, hasOlder: true, typing: [], pending: [], uploading: false });
     expect(channel).not.toHaveProperty("locked");
-    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true });
+    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false });
     expect(ctx.item("Bo").active).toBe(true);
     expect(ctx.messages()).toEqual([
       {
@@ -864,7 +864,7 @@ describe("conversations", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     expect(ctx.chat().channel!.locked).toBe(ENCRYPTED_NOTICE);
-    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true });
+    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: false });
     expect(ctx.messages()).toEqual([
       expect.objectContaining({ content: ENCRYPTED_TEXT.replace("—", "—"), author: ANA, canEdit: false, canDelete: false }),
       expect.objectContaining({ content: "before encryption", mine: true, canEdit: false, canDelete: true }),

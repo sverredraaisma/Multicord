@@ -245,7 +245,7 @@ export class TemplateAdapter extends BaseAdapter implements PlatformAdapter {
           pending: [],
           uploading: false,
           // Only what handleAction() supports: plain messages here. Turn flags on as the module grows.
-          can: { reply: false, react: false, attach: false, typing: false },
+          can: { reply: false, react: false, attach: false, typing: false, members: false },
         },
         voice: null,
         error: this.error,

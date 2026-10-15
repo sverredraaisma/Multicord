@@ -651,7 +651,7 @@ describe("StoatAdapter attachments", () => {
     await adapter.openConversation(DM);
     await adapter.handleAction({ type: "attach" });
     expect(chat().error).toBe("This Stoat instance does not accept files.");
-    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true });
+    expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false });
     // Without a file server there are no avatar or icon URLs either.
     expect(chat().sidebar[0]!.iconUrl).toBeUndefined();
 

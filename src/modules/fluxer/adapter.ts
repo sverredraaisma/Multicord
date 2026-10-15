@@ -932,7 +932,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                 typing: this.state.typingIn(channel.id).map((u) => displayName(u)),
                 pending: (this.pending.get(channel.id) ?? []).map((f) => ({ name: f.filename, size: f.size })),
                 uploading: this.uploading.has(channel.id),
-                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: true },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: true, members: false },
                 posts: FORUM_TYPES.has(channel.type)
                   ? this.state.forumPosts(channel.id).map((p) => ({
                       id: p.id,

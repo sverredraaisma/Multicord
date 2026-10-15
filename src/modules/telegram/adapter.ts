@@ -729,7 +729,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
             uploading: false,
             ...(locked ? { locked } : {}),
             // Reactions, files and typing notices are not offered here yet.
-            can: { reply: !locked, react: false, attach: false, typing: false },
+            can: { reply: !locked, react: false, attach: false, typing: false, members: false },
           }
         : null,
       voice: null,
