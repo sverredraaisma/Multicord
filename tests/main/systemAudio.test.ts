@@ -49,8 +49,9 @@ describe("SystemAudio", () => {
     });
     expect(new SystemAudio(() => broken.venmic, () => []).available()).toBe(false);
     new SystemAudio(() => undefined, () => []).stop(); // nothing to stop
-    // venmic installs on Linux only.
-    if (process.platform === "linux") expect(typeof loadVenmic()?.PatchBay).toBe("function");
-    else expect(loadVenmic()).toBeUndefined();
+    // venmic installs on Linux only, and loads only where its PipeWire libraries do.
+    const venmic = loadVenmic();
+    if (process.platform !== "linux") expect(venmic).toBeUndefined();
+    else if (venmic) expect(typeof venmic.PatchBay).toBe("function");
   });
 });
