@@ -24,5 +24,22 @@ export const matrixNativeModule: PlatformModule = {
     home: true,
     screenShare: true,
     capabilities: { directMessages: true, messagePreviews: true, voice: true, screenShare: true },
+    // Keys as SETTING in src/modules/matrix/adapter.ts names them (tested).
+    settings: [
+      {
+        kind: "toggle",
+        key: "typing",
+        label: "Send typing notices",
+        hint: "Others in a room see while you type. Matrix sends these unencrypted, also in encrypted rooms.",
+        default: true,
+      },
+      {
+        kind: "action",
+        key: "forgetCallServices",
+        label: "Forget call services",
+        hint: "Calls reach only the call services your homeserver named and the call servers they sent you to, remembered from before. Forget them if your homeserver changed its call setup: they are looked up again now, and new ones work after a restart.",
+        confirm: "Click again to forget",
+      },
+    ],
   },
 };

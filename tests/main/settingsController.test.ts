@@ -9,7 +9,7 @@ import { MODULES } from "../../src/main/modules/index";
 import { SettingsController, type SettingsDeps } from "../../src/main/settingsController";
 import { SettingsStore } from "../../src/main/settingsStore";
 import type { PlatformAdapter } from "../../src/shared/adapter";
-import { DEFAULT_SETTINGS, type SettingsViewState } from "../../src/shared/settings";
+import { DEFAULT_SETTINGS, type ServiceSettingValues, type SettingsViewState } from "../../src/shared/settings";
 
 let dir: string;
 let platformsFile: string;
@@ -241,6 +241,63 @@ describe("settings actions", () => {
     expect(deps.openService).toHaveBeenCalledWith("fluxer");
     await settings.handle({ type: "restart" });
     expect(deps.restart).toHaveBeenCalled();
+  });
+});
+
+describe("settings modules declare", () => {
+  const withMatrix = () => fs.writeFileSync(platformsFile, JSON.stringify([{ id: "mx", name: "Matrix", url: "https://x.org", module: "matrix-native" }]));
+
+  it("shows a module's fields with each service, and only declared keys of what the service reports", () => {
+    withMatrix();
+    const { settings } = controller({
+      mx: { settingsStatus: () => ({ forgetCallServices: { text: "Remembered: a.org" }, sneaky: { text: "not declared" } }) },
+      telegram: { settingsStatus: () => ({}) },
+    });
+    const services = settings.state().services;
+    const mx = services.find((s) => s.id === "mx")!;
+    expect(mx.settings!.map((f) => f.key)).toEqual(["typing", "forgetCallServices"]);
+    expect(mx.settingsStatus).toEqual({ forgetCallServices: { text: "Remembered: a.org" } });
+    // Declares settings but reports nothing (or is off): no status.
+    expect(services.find((s) => s.id === "telegram")!.settings!.map((f) => f.key)).toEqual(["forgetApiId"]);
+    expect(services.find((s) => s.id === "telegram")).not.toHaveProperty("settingsStatus");
+    expect(services.find((s) => s.id === "discord")).not.toHaveProperty("settings");
+  });
+
+  it("stores values only for the service's own declared toggles and choices", async () => {
+    withMatrix();
+    const { settings, deps, last } = controller();
+    await settings.handle({ type: "update", patch: { services: { mx: { options: { typing: false } } } } });
+    expect(deps.store.get().services.mx).toEqual({ notifications: true, options: { typing: false } });
+    for (const options of [{ typing: "dark" }, { forgetCallServices: true }, { other: true }] as ServiceSettingValues[]) {
+      await settings.handle({ type: "update", patch: { services: { mx: { options } } } });
+      expect(last().error).toBe("That setting does not exist for this service.");
+    }
+    // Not for another module's fields, nor for a service that does not exist.
+    await settings.handle({ type: "update", patch: { services: { discord: { options: { typing: false } } } } });
+    expect(last().error).toBe("That setting does not exist for this service.");
+    await settings.handle({ type: "update", patch: { services: { nope: { options: { typing: false } } } } });
+    expect(last().error).toBe("That setting does not exist for this service.");
+    expect(deps.store.get().services.mx).toEqual({ notifications: true, options: { typing: false } });
+    // Notifications and resets need no fields.
+    await settings.handle({ type: "update", patch: { services: { discord: { notifications: false }, mx: null } } });
+    expect(last().error).toBeUndefined();
+    expect(deps.store.get().services).toEqual({ discord: { notifications: false } });
+  });
+
+  it("runs a declared action on the running service only", async () => {
+    withMatrix();
+    const runSettingAction = vi.fn(async () => {});
+    const { settings, last } = controller({ mx: { runSettingAction }, telegram: {} });
+    await settings.handle({ type: "serviceAction", id: "mx", key: "forgetCallServices" });
+    expect(runSettingAction).toHaveBeenCalledWith("forgetCallServices");
+    expect(last().error).toBeUndefined();
+    await settings.handle({ type: "serviceAction", id: "mx", key: "typing" });
+    expect(last().error).toBe("That setting does not exist for this service.");
+    await settings.handle({ type: "serviceAction", id: "discord", key: "forgetCallServices" });
+    expect(last().error).toBe("That setting does not exist for this service.");
+    await settings.handle({ type: "serviceAction", id: "telegram", key: "forgetApiId" });
+    expect(last().error).toBe("Turn the service on first.");
+    expect(runSettingAction).toHaveBeenCalledOnce();
   });
 });
 

@@ -38,6 +38,7 @@ export async function startMatrixEngine(bridge: EngineBridge, options: MatrixEng
     crypto: options.crypto,
     lockHosts: (hosts) => lockHosts(bridge, hosts),
     files: { pick: () => pickFiles(bridge) },
+    settings: info.settings,
   });
   served = serveAdapter(bridge, adapter);
   await adapter.start();

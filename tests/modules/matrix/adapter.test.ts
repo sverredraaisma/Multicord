@@ -48,7 +48,9 @@ import {
   TOKEN_NOTICE,
   TOO_LARGE,
   UNVERIFIED_LABEL,
+  SETTING,
 } from "../../../src/modules/matrix/adapter";
+import { MAX_STATUS_TEXT } from "../../../src/shared/settings";
 import type { DeviceRef, E2ee, E2eeOptions, E2eeStatus, RecoveryResult, RoomEncryption, SecureToDevice } from "../../../src/modules/matrix/crypto";
 import type { Verification, VerificationState } from "../../../src/modules/matrix/verification";
 import { OAuthError, type DeviceGrant, type DevicePoll, type OAuthServer, type OAuthTokens } from "../../../src/modules/matrix/oauth";
@@ -1137,6 +1139,27 @@ describe("typing", () => {
       ["!lounge:x.org", true],
     ]);
     expect(ctx.chat().error).toBeUndefined();
+  });
+
+  it("sends no typing notices while Settings turns them off, ending one in progress", async () => {
+    const off = setup({ session: SESSION_JSON }, false, { settings: { [SETTING.typing]: false } });
+    off.api.push(initialSync());
+    await off.adapter.start();
+    await flush();
+    await off.open("Bo");
+    await off.act({ type: "typing" });
+    expect(off.api.typing).not.toHaveBeenCalled();
+
+    const ctx = await signedIn();
+    await ctx.open("Bo");
+    await ctx.act({ type: "typing" });
+    ctx.adapter.applySettings({ [SETTING.typing]: false });
+    expect(ctx.api.typing.mock.calls.map((c) => c[2])).toEqual([true, false]);
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing).toHaveBeenCalledTimes(2);
+    ctx.adapter.applySettings({});
+    await ctx.act({ type: "typing" });
+    expect(ctx.api.typing).toHaveBeenCalledTimes(3);
   });
 
   it("forgets its typing on signing out, without a notice from the ended session", async () => {
@@ -2754,6 +2777,40 @@ describe("call services and the host lock", () => {
     await flush();
     expect(ctx.api.rtcTransports).toHaveBeenCalledWith(SESSION);
     expect(JSON.parse(ctx.secrets.get("rtc")!)).toEqual({ foci: [FOCUS], sfu: [], servers: [{ url: SFU, focus: FOCUS }] });
+  });
+
+  it("shows the remembered call hosts in Settings, shortened when there are many", async () => {
+    const ctx = setup({ rtc: JSON.stringify({ foci: [FOCUS], sfu: ["sfu.call.x.org"], servers: [{ url: SFU, focus: FOCUS }] }) });
+    expect(ctx.adapter.settingsStatus()).toEqual({ [SETTING.forgetCallServices]: { text: "None remembered yet.", disabled: true } });
+    await ctx.adapter.start();
+    const hosts = [FOCUS, SFU].map((url) => new URL(url).hostname);
+    expect(ctx.adapter.settingsStatus()).toEqual({ [SETTING.forgetCallServices]: { text: `Remembered: ${[...new Set([...hosts, "sfu.call.x.org"])].join(", ")}` } });
+    const many = setup({ rtc: JSON.stringify({ foci: [], sfu: Array.from({ length: 10 }, (_, i) => `${"a".repeat(60)}${i}.example.org`) }) });
+    await many.adapter.start();
+    const text = many.adapter.settingsStatus()[SETTING.forgetCallServices]!.text!;
+    expect(text).toHaveLength(MAX_STATUS_TEXT);
+    expect(text.endsWith("…")).toBe(true);
+  });
+
+  it("forgets the remembered call hosts and looks the services up again", async () => {
+    const ctx = setup({ session: SESSION_JSON, rtc: JSON.stringify({ foci: ["https://old.x.org"], sfu: ["sfu.call.x.org"] }) });
+    ctx.api.push(initialSync());
+    await ctx.adapter.start();
+    await flush();
+    ctx.api.rtcFoci.mockResolvedValue([FOCUS]);
+    ctx.api.rtcTransports.mockClear();
+    await ctx.adapter.runSettingAction(SETTING.forgetCallServices);
+    expect(ctx.api.rtcTransports).toHaveBeenCalledWith(SESSION);
+    expect(JSON.parse(ctx.secrets.get("rtc")!)).toEqual({ foci: [FOCUS], sfu: [] });
+    // Nothing found: nothing is remembered.
+    ctx.api.rtcFoci.mockResolvedValue([]);
+    await ctx.adapter.runSettingAction(SETTING.forgetCallServices);
+    expect(ctx.secrets.has("rtc")).toBe(false);
+    expect(ctx.adapter.settingsStatus()[SETTING.forgetCallServices]!.disabled).toBe(true);
+    // Other keys do nothing.
+    ctx.secrets.set("rtc", "kept");
+    await ctx.adapter.runSettingAction("typing");
+    expect(ctx.secrets.get("rtc")).toBe("kept");
   });
 
   it("includes the call service in the lock before signing in", async () => {

@@ -91,6 +91,25 @@ describe("Matrix engine wiring", () => {
   });
 });
 
+describe("Matrix settings", () => {
+  it("takes its values from the engine info and changes from Settings, and reports the remembered call hosts", async () => {
+    const { bridge, command } = fakeBridge({ session: SESSION, rtc: JSON.stringify({ foci: ["https://jwt.call.x.org"], sfu: [] }) });
+    const original = bridge.request.getMockImplementation()!;
+    bridge.request.mockImplementation((async (request: EngineRequest) =>
+      request.type === "info" ? { ...(await original(request) as object), settings: { typing: false } } : original(request)) as typeof original);
+    const api = { check: vi.fn(async () => {}), sync: vi.fn(() => new Promise(() => {})), rtcFoci: vi.fn(async () => []), rtcTransports: vi.fn(async () => []) } as unknown as MatrixApi;
+    const adapter = await startMatrixEngine(bridge, { createApi: () => api });
+    const typingOn = () => (adapter as unknown as { typingNotices: boolean }).typingNotices;
+    expect(typingOn()).toBe(false);
+    command({ type: "settings", values: { typing: true } });
+    await vi.waitFor(() => expect(typingOn()).toBe(true));
+    expect(bridge.emit).toHaveBeenCalledWith({ type: "settingsStatus", status: { forgetCallServices: { text: "Remembered: jwt.call.x.org" } } });
+    command({ type: "settingAction", key: "forgetCallServices" });
+    await vi.waitFor(() => expect(bridge.emit).toHaveBeenCalledWith({ type: "settingsStatus", status: { forgetCallServices: { text: "None remembered yet.", disabled: true } } }));
+    expect(bridge.request).toHaveBeenCalledWith({ type: "secretDelete", key: "rtc" });
+  });
+});
+
 describe("Matrix files", () => {
   it("picks files through the bridge", async () => {
     const { bridge } = fakeBridge({ session: SESSION });

@@ -870,6 +870,78 @@ describe("settings", () => {
     );
   });
 
+  it("gives each engine its own service's settings values, checked against its module's fields", async () => {
+    fs.writeFileSync(
+      path.join(userData, "settings.json"),
+      JSON.stringify({ services: { mx: { notifications: true, options: { typing: false, sneaky: true } }, mx2: { notifications: true, options: { typing: "no" } } } }),
+    );
+    const { handle } = await shellWith([
+      { id: "mx", name: "Matrix", url: "https://x.org", module: "matrix-native" },
+      { id: "mx2", name: "Matrix 2", url: "https://y.org", module: "matrix-native" },
+    ]);
+    const engineOf = (id: string) => WebContentsView.instances.find((v) => v.options.webPreferences.partition === `persist:engine_${id}` || v.options.webPreferences.partition === `engine_${id}`)!;
+    const info = (id: string) => ipcMain.invoke(ENGINE_IPC.invoke, senderEvent(engineOf(id)), { type: "info" });
+    expect(await info("mx")).toMatchObject({ id: "mx", settings: { typing: false } });
+    expect(await info("mx2")).toMatchObject({ id: "mx2", settings: { typing: true } });
+    expect(await info("telegram")).toMatchObject({ settings: {} });
+    expect(await info("fluxer")).not.toHaveProperty("settings");
+
+    // A change reaches only that service's engine.
+    engineOf("mx").webContents.send.mockClear();
+    engineOf("mx2").webContents.send.mockClear();
+    handle.settingsStore.update({ services: { mx2: { options: { typing: false } } } });
+    expect(engineOf("mx2").webContents.send).toHaveBeenCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: false } });
+    expect(engineOf("mx").webContents.send).not.toHaveBeenCalledWith(ENGINE_IPC.command, expect.objectContaining({ type: "settings" }));
+    handle.settingsStore.update({ general: { closeToTray: false } });
+    expect(engineOf("mx2").webContents.send).toHaveBeenCalledTimes(1);
+    handle.settingsStore.update({ services: { mx2: null } });
+    expect(engineOf("mx2").webContents.send).toHaveBeenLastCalledWith(ENGINE_IPC.command, { type: "settings", values: { typing: true } });
+  });
+
+  it("shows what an engine says about its settings while the page is open, and runs its actions", async () => {
+    const { handle, railView } = await shellWith([{ id: "mx", name: "Matrix", url: "https://x.org", module: "matrix-native" }]);
+    const engine = WebContentsView.instances.find((v) => v.options.webPreferences.partition === "persist:engine_mx")!;
+    const status = { forgetCallServices: { text: "Remembered: jwt.x.org" } };
+    ipcMain.emit(ENGINE_IPC.event, senderEvent(engine), { type: "settingsStatus", status }); // page closed: nothing to refresh
+    ipcMain.emit(IPC.railSettings, senderEvent(railView), true);
+    const view = handle.settingsView() as unknown as InstanceType<typeof WebContentsView>;
+    view.webContents.send.mockClear();
+    ipcMain.emit(ENGINE_IPC.event, senderEvent(engine), { type: "settingsStatus", status: { forgetCallServices: { text: "None remembered yet.", disabled: true } } });
+    expect(view.webContents.send).toHaveBeenLastCalledWith(
+      SETTINGS_IPC.state,
+      expect.objectContaining({ services: expect.arrayContaining([expect.objectContaining({ id: "mx", settingsStatus: { forgetCallServices: { text: "None remembered yet.", disabled: true } } })]) }),
+    );
+    await ipcMain.invoke(ENGINE_IPC.invoke, senderEvent(engine), { type: "info" });
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "serviceAction", id: "mx", key: "forgetCallServices" });
+    await flush();
+    expect(engine.webContents.send).toHaveBeenCalledWith(ENGINE_IPC.command, { type: "settingAction", key: "forgetCallServices" });
+  });
+
+  it("gives a module that wires its own view its values, and changes to its adapter", async () => {
+    let host: Parameters<NonNullable<PlatformModule["load"]>>[0] | undefined;
+    const applySettings = vi.fn();
+    const custom: PlatformModule = {
+      manifest: { id: "custom", name: "Custom", label: "Custom", color: "#123456", configurable: true, settings: [{ kind: "toggle", key: "sound", label: "Sound", default: true }] },
+      load: (h) => {
+        host = h;
+        return { adapter: Object.assign(new GenericWebAdapter(h.def), { applySettings }), start: () => {} };
+      },
+    };
+    const bare: PlatformModule = { manifest: { ...custom.manifest, id: "bare" }, load: ({ def }) => ({ adapter: new GenericWebAdapter(def), start: () => {} }) };
+    fs.writeFileSync(
+      path.join(userData, "platforms.json"),
+      JSON.stringify([{ id: "mine", name: "Mine", url: "https://mine.example", module: "custom" }, { id: "b", name: "B", url: "https://b.example", module: "bare" }]),
+    );
+    const handle = await createShell({ dist: DIST, userData }, "win32", undefined, [custom, bare]);
+    expect(host!.settings()).toEqual({ sound: true });
+    handle.settingsStore.update({ services: { mine: { options: { sound: false } } } });
+    expect(host!.settings()).toEqual({ sound: false });
+    expect(applySettings).toHaveBeenCalledWith({ sound: false });
+    // An adapter without applySettings is left alone.
+    handle.settingsStore.update({ services: { b: { options: { sound: false } } } });
+    expect(applySettings).toHaveBeenCalledOnce();
+  });
+
   it("opens settings from the tray", async () => {
     const { handle, window } = await shellWith();
     const tray = Tray.instances[0]!;

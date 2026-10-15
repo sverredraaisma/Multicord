@@ -16,7 +16,7 @@ import {
   type NativeVoiceSession,
   type VoiceNoticeFlag,
 } from "../../shared/native";
-import type { AccountStatus } from "../../shared/settings";
+import { MAX_STATUS_TEXT, type AccountStatus, type ServiceSettingStatus, type ServiceSettingValues } from "../../shared/settings";
 import {
   MatrixError,
   matrixErrcode,
@@ -144,7 +144,12 @@ export interface MatrixAdapterDeps {
   mediaBudget?: number;
   /** Lets the user pick files; the engine reads only what was picked. */
   files?: { pick(): Promise<FileSource[]> };
+  /** This instance's values for the manifest's settings (see SETTING); changes come through applySettings(). */
+  settings?: ServiceSettingValues;
 }
+
+/** The keys of the settings the manifest declares for each Matrix service. */
+export const SETTING = { typing: "typing", forgetCallServices: "forgetCallServices" } as const;
 
 /** The distinct hosts of these URLs, skipping any that are missing. */
 export function hostsOf(...urls: (string | undefined)[]): string[] {
@@ -440,6 +445,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   /** Counts sign-ins and sign-outs, so a sync loop or task started for one session stops for the next. */
   private generation = 0;
   private rtc: RtcHosts = { foci: [], sfu: [] };
+  /** Settings: others see while we type. */
+  private typingNotices: boolean;
   /** The hosts the engine locked itself to (and so its view); undefined while it is not locked. */
   private lockedHosts: string[] | undefined;
   /** Our device's call, joining or joined; one at a time. */
@@ -466,6 +473,36 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
     this.delay = deps.delay ?? defaultDelay;
     this.log = deps.log ?? ((message) => console.warn(`[matrix] ${message}`));
+    this.typingNotices = deps.settings?.[SETTING.typing] !== false;
+  }
+
+  // --- Settings (the manifest's `settings`) ----------------------------------------
+
+  applySettings(values: ServiceSettingValues): void {
+    this.typingNotices = values[SETTING.typing] !== false;
+    // Turned off while typing: end the notice now rather than letting it run out.
+    if (!this.typingNotices) this.stopTyping();
+  }
+
+  /** The call hosts stored from discovery and from calls, which the host lock allows from each start. */
+  settingsStatus(): ServiceSettingStatus {
+    const hosts = [...new Set([...hostsOf(...this.rtc.foci, ...(this.rtc.servers ?? []).map((s) => s.url)), ...this.rtc.sfu])];
+    if (hosts.length === 0) return { [SETTING.forgetCallServices]: { text: "None remembered yet.", disabled: true } };
+    let text = `Remembered: ${hosts.join(", ")}`;
+    if (text.length > MAX_STATUS_TEXT) text = `${text.slice(0, MAX_STATUS_TEXT - 1)}…`;
+    return { [SETTING.forgetCallServices]: { text } };
+  }
+
+  /**
+   * Settings' "Forget call services": drops what was learned, including call
+   * servers calls ran into, and looks the services up again now. The host
+   * lock stays as it is until the next start, as it can only narrow.
+   */
+  async runSettingAction(key: string): Promise<void> {
+    if (key !== SETTING.forgetCallServices) return;
+    this.rtc = { foci: [], sfu: [] };
+    await this.deps.secrets.delete(RTC_KEY);
+    await this.discoverFoci(this.session);
   }
 
   /** Resumes a saved session, else starts signing in. */
@@ -1953,7 +1990,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
    */
   private sendTyping(): void {
     const room = this.selectedRoom();
-    if (!room) return;
+    if (!room || !this.typingNotices) return;
     const now = Date.now();
     const current = this.ownTyping?.roomId === room.id ? this.ownTyping : undefined;
     if (!current) this.stopTyping();

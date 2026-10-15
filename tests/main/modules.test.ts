@@ -43,6 +43,16 @@ describe("module registry", () => {
     }
   });
 
+  it("declares well-formed settings, with the keys its code handles", async () => {
+    const { isServiceSettingFields } = await import("../../src/shared/settings");
+    for (const { manifest } of MODULES) expect(manifest.settings === undefined || isServiceSettingFields(manifest.settings), manifest.id).toBe(true);
+    const keys = (id: string) => findModule(id)!.manifest.settings!.map((f) => f.key);
+    const { SETTING } = await import("../../src/modules/matrix/adapter");
+    expect(keys("matrix-native")).toEqual(Object.values(SETTING));
+    const { FORGET_API_ID } = await import("../../src/modules/telegram/adapter");
+    expect(keys("telegram")).toEqual([FORGET_API_ID]);
+  });
+
   it("builds an engine bundle for every native module, and none for anything else", async () => {
     const fs = await import("node:fs");
     // scripts/build.mjs bundles each src/entries/engine-<id>.ts as dist/engines/<id>.js.
