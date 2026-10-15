@@ -187,6 +187,8 @@ export interface NativeMessage {
   attachments: NativeAttachment[];
   /** It mentions the user (by name, a role they have, or everyone), as the platform says; the view highlights it. */
   mentionsMe?: boolean;
+  /** What the composer inserts to mention the author, in the platform's syntax (e.g. `<@id>`, `@username`); read through mentionText(). */
+  authorMention?: string;
 }
 
 export interface NativeForumPost {
@@ -237,6 +239,8 @@ export interface NativeMember {
   color?: string;
   /** A short line under the name, e.g. "last seen recently" or "Bot". */
   status?: string;
+  /** What the composer inserts to mention them, in the platform's syntax; without it, their name. */
+  mention?: string;
 }
 
 /** A heading in the member list ("Admins", "Online"…) and who is under it. */
@@ -340,7 +344,21 @@ function member(value: unknown): NativeMember | undefined {
   if (color) row.color = color;
   const status = shortText(v.status);
   if (status) row.status = status;
+  const mention = mentionText(v.mention);
+  if (mention) row.mention = mention;
   return row;
+}
+
+/** Longest text a module may have the composer insert to mention someone. */
+export const MAX_MENTION_TEXT = 100;
+
+/**
+ * What to insert to mention someone (NativeMember.mention,
+ * NativeMessage.authorMention) as the view trusts it: one line of plain text
+ * without control or invisible formatting characters; undefined otherwise.
+ */
+export function mentionText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" && value.length <= MAX_MENTION_TEXT && !/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(value) ? value : undefined;
 }
 
 /**

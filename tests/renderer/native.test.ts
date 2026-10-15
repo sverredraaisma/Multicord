@@ -522,6 +522,123 @@ describe("typing", () => {
   });
 });
 
+describe("mentions", () => {
+  const people = [msg("10", { author: "Ana", authorId: "a", authorMention: "<@a>" }), msg("11", { author: "Bo", authorId: "b" }), msg("12", { author: "Me", authorId: "m", mine: true })];
+  const withPeople = (extra: Partial<NonNullable<Chat["channel"]>> = {}) =>
+    chat({ channel: { id: "2", name: "general", messages: people, loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL, ...extra } });
+  const type = (field: HTMLTextAreaElement, value: string, cursor = value.length) => {
+    field.value = value;
+    field.selectionStart = field.selectionEnd = cursor;
+    field.dispatchEvent(new Event("input"));
+  };
+  const key = (field: HTMLTextAreaElement, name: string, extra: KeyboardEventInit = {}) => {
+    const event = new KeyboardEvent("keydown", { key: name, cancelable: true, ...extra });
+    field.dispatchEvent(event);
+    return event;
+  };
+  const list = () => root.querySelector<HTMLElement>(".mention-list")!;
+  const names = () => [...list().querySelectorAll(".mention-name")].map((n) => n.textContent);
+  const active = () => list().querySelector('[aria-selected="true"] .mention-name')?.textContent;
+
+  it("suggests recent authors for @name and inserts the module's mention for the one picked", () => {
+    view.update(withPeople());
+    const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
+    expect(composer.getAttribute("aria-autocomplete")).toBe("list");
+    type(composer, "hi @");
+    expect(list().hidden).toBe(false);
+    expect(names()).toEqual(["Bo", "Ana"]);
+    expect(composer.getAttribute("aria-expanded")).toBe("true");
+    expect(composer.getAttribute("aria-activedescendant")).toBe("mention-option-0");
+    expect(key(composer, "ArrowUp").defaultPrevented).toBe(true);
+    expect(active()).toBe("Ana");
+    key(composer, "ArrowDown");
+    expect(active()).toBe("Bo");
+    key(composer, "ArrowDown");
+    expect(active()).toBe("Ana");
+    // Other keys type as usual.
+    expect(key(composer, "a").defaultPrevented).toBe(false);
+    expect(key(composer, "Enter").defaultPrevented).toBe(true);
+    expect(composer.value).toBe("hi <@a> ");
+    expect(composer.selectionStart).toBe(8);
+    expect(list().hidden).toBe(true);
+    expect(composer.getAttribute("aria-expanded")).toBe("false");
+    expect(composer.hasAttribute("aria-activedescendant")).toBe(false);
+    expect(act).not.toHaveBeenCalledWith(expect.objectContaining({ type: "send" }));
+
+    // Without a mention of the module's own, the name goes in; Tab picks too, text after the cursor stays.
+    type(composer, "@b and more", 2);
+    expect(names()).toEqual(["Bo"]);
+    key(composer, "Tab");
+    expect(composer.value).toBe("Bo  and more");
+  });
+
+  it("closes on Escape, blur, a send or a switch, keeps the reply, and lets Shift+Enter add a line", () => {
+    view.update(withPeople());
+    const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
+    root.querySelector<HTMLButtonElement>(".message-actions button")!.click();
+    type(composer, "@a");
+    expect(key(composer, "Escape").defaultPrevented).toBe(true);
+    expect(list().hidden).toBe(true);
+    expect(root.querySelector<HTMLElement>(".reply-bar")!.hidden).toBe(false);
+    type(composer, "@a");
+    expect(key(composer, "Enter", { shiftKey: true }).defaultPrevented).toBe(false);
+    expect(list().hidden).toBe(false);
+    key(composer, "Tab", { shiftKey: true });
+    composer.dispatchEvent(new Event("blur"));
+    expect(list().hidden).toBe(true);
+    type(composer, "@a");
+    view.update(chat());
+    expect(list().hidden).toBe(true);
+    // Nobody fits, or there is no @name: no list.
+    type(composer, "@zz");
+    expect(list().hidden).toBe(true);
+    type(composer, "plain");
+    expect(list().hidden).toBe(true);
+  });
+
+  it("follows the cursor, refreshes with new state keeping the highlighted one, and adds listed members", () => {
+    view.update(withPeople());
+    const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
+    type(composer, "@ x", 1);
+    key(composer, "ArrowDown");
+    expect(active()).toBe("Ana");
+    view.update(withPeople({ messages: [...people, msg("13", { author: "Cy", authorId: "c" })] }));
+    expect(names()).toEqual(["Cy", "Bo", "Ana"]);
+    expect(active()).toBe("Ana");
+    composer.selectionStart = composer.selectionEnd = 3;
+    composer.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowRight" }));
+    expect(list().hidden).toBe(true);
+    composer.selectionStart = composer.selectionEnd = 1;
+    composer.dispatchEvent(new KeyboardEvent("keyup", { key: "a" }));
+    expect(list().hidden).toBe(true);
+    composer.dispatchEvent(new MouseEvent("click"));
+    expect(list().hidden).toBe(false);
+    // Members count where the module lists them.
+    const members = { sections: [{ name: "Members", members: [{ id: "d", name: "Di", mention: "@di" }] }], hasMore: false, loading: false };
+    view.update(withPeople({ members, can: { ...ALL, members: true } }));
+    expect(names()).toEqual(["Bo", "Ana", "Di"]);
+    expect(active()).toBe("Bo");
+    view.update(withPeople({ members }));
+    expect(names()).toEqual(["Bo", "Ana"]);
+    // Pressing an option picks it.
+    list().querySelector(".mention-option")!.dispatchEvent(new MouseEvent("mousedown", { cancelable: true }));
+    expect(composer.value).toBe("Bo  x");
+  });
+
+  it("offers nothing where the composer is off, and inserts nothing past the length limit", () => {
+    view.update(withPeople({ locked: "Read only" }));
+    const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
+    type(composer, "@");
+    expect(list().hidden).toBe(true);
+    view.update(withPeople());
+    const long = `${"x".repeat(3998)} @b`;
+    type(composer, long);
+    key(composer, "Enter");
+    expect(composer.value).toBe(long);
+    expect(list().hidden).toBe(true);
+  });
+});
+
 describe("attachments", () => {
   const withFiles = (pending: { name: string; size: number }[], uploading = false) =>
     chat({ channel: { id: "2", name: "general", messages: [], loading: false, hasOlder: false, typing: [], pending, uploading, can: ALL } });

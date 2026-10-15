@@ -387,6 +387,26 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
 .composer-row { position: relative; }
 .composer-picker { position: absolute; right: 0; bottom: 48px; z-index: 5; }
 .composer-picker[hidden] { display: none; }
+/* People to mention, above the composer while "@name" is typed. */
+.mention-list {
+  position: absolute;
+  left: 48px;
+  right: 48px;
+  bottom: 48px;
+  z-index: 5;
+  margin: 0;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  list-style: none;
+}
+.mention-list[hidden] { display: none; }
+.mention-option { display: flex; gap: 8px; align-items: center; padding: 4px 8px; border-radius: 4px; cursor: pointer; }
+.mention-option .avatar { width: 24px; height: 24px; font-size: 10px; }
+.mention-option[aria-selected="true"], .mention-option:hover { background: var(--border); }
+.mention-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mention-text { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .emoji-button {
   flex: none;
   width: 40px;

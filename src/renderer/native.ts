@@ -12,6 +12,7 @@ import { emojiPicker, type SourceBadge } from "./components/emojiPicker";
 import { MediaPicker, type MediaPickerData, type MediaPickerHandlers, type RecentMedia } from "./components/mediaPicker";
 import { typingText } from "./components/format";
 import { memberPanel, profileCard, type ProfileCardData } from "./components/members";
+import { matchMentions, mentionCandidates, mentionOptionId, mentionOptions, mentionQuery, type MentionCandidate } from "./components/mentions";
 import { autoLoads, favouriteKind, messageItem, type MessageHandlers } from "./components/message";
 import { forumPosts, pendingFiles, postForm, replyBar, voicePanel } from "./components/panels";
 import { isOwnReaction } from "./components/reactions";
@@ -65,6 +66,8 @@ export class NativeView {
   private favourites: FavouritesState | undefined;
   /** The composer's picker, while open. */
   private picker: MediaPicker | undefined;
+  /** The mention being typed in the composer, while it has suggestions: where its "@" is, who fits, and the highlighted one. */
+  private mention: { start: number; options: MentionCandidate[]; active: number } | undefined;
 
   constructor(
     private readonly root: HTMLElement,
@@ -165,6 +168,7 @@ export class NativeView {
     this.login = undefined;
     this.channelId = undefined;
     this.firstMessageId = undefined;
+    this.mention = undefined;
     // It watched the old messages list.
     this.observer?.disconnect();
     this.observer = undefined;
@@ -246,7 +250,12 @@ export class NativeView {
     const composer = el(doc, "textarea", "composer");
     composer.maxLength = MAX_MESSAGE_LENGTH;
     composer.rows = 1;
+    // Typing "@" and a name suggests people to mention, from the list below the composer.
+    composer.setAttribute("aria-autocomplete", "list");
+    composer.setAttribute("aria-controls", "mention-list");
+    composer.setAttribute("aria-expanded", "false");
     composer.addEventListener("keydown", (event) => {
+      if (this.mention && this.mentionKey(event)) return;
       if (event.key === "Escape" && this.replyTo) return this.setReply(undefined);
       if (event.key !== "Enter" || event.shiftKey) return;
       event.preventDefault();
@@ -255,11 +264,24 @@ export class NativeView {
       if (content.trim() === "" && !hasFiles) return;
       this.api.act(this.replyTo ? { type: "send", content, replyTo: this.replyTo.id } : { type: "send", content });
       composer.value = "";
+      this.closeMention();
       this.setReply(undefined);
     });
     composer.addEventListener("input", () => {
       if (composer.value.trim() !== "" && this.can.typing) this.api.act({ type: "typing" });
+      this.updateMention();
     });
+    // Moving the cursor into or out of an "@name" shows or hides its suggestions.
+    composer.addEventListener("click", () => this.updateMention());
+    composer.addEventListener("keyup", (event) => {
+      if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) this.updateMention();
+    });
+    composer.addEventListener("blur", () => this.closeMention());
+    const mentionList = el(doc, "ul", "mention-list");
+    mentionList.id = "mention-list";
+    mentionList.setAttribute("role", "listbox");
+    mentionList.setAttribute("aria-label", "People to mention");
+    mentionList.hidden = true;
     const typing = el(doc, "div", "typing");
     const pending = el(doc, "ul", "pending-files");
     const attach = el(doc, "button", "attach", "+");
@@ -274,7 +296,7 @@ export class NativeView {
     const composerPicker = el(doc, "div", "composer-picker");
     composerPicker.hidden = true;
     const composerRow = el(doc, "div", "composer-row");
-    composerRow.append(attach, composer, emoji, composerPicker);
+    composerRow.append(attach, composer, emoji, composerPicker, mentionList);
     // Why the composer is off in a conversation that takes no messages from here.
     const notice = el(doc, "div", "locked-notice");
     notice.hidden = true;
@@ -328,6 +350,7 @@ export class NativeView {
       emoji,
       composer,
       composerPicker,
+      mentionList,
       notice,
       editBox,
       voice,
@@ -455,6 +478,78 @@ export class NativeView {
     holder.hidden = true;
     holder.replaceChildren();
     this.parts.emoji!.setAttribute("aria-expanded", "false");
+  }
+
+  /**
+   * Suggestions for the "@name" before the composer's cursor: the open
+   * conversation's recent authors and listed members whose name fits. The
+   * highlighted one stays while the same mention is refreshed.
+   */
+  private updateMention(keepActive = false): void {
+    const field = this.parts.composer as HTMLTextAreaElement;
+    const channel = this.lastState?.channel;
+    const typed = field.disabled || !channel ? undefined : mentionQuery(field.value, field.selectionStart);
+    const options = typed ? matchMentions(mentionCandidates(channel!.messages, this.can.members ? memberList(channel!.members) : undefined), typed.query) : [];
+    if (!typed || options.length === 0) return this.closeMention();
+    const kept = keepActive && this.mention?.start === typed.start ? this.mention.options[this.mention.active]!.id : undefined;
+    const active = Math.max(0, options.findIndex((option) => option.id === kept));
+    this.mention = { start: typed.start, options, active };
+    this.renderMention();
+  }
+
+  private renderMention(): void {
+    const { start, options, active } = this.mention!;
+    const list = this.parts.mentionList!;
+    list.hidden = false;
+    list.replaceChildren(...mentionOptions(this.doc, options, active, (picked) => this.pickMention(picked, start)));
+    this.parts.composer!.setAttribute("aria-expanded", "true");
+    this.parts.composer!.setAttribute("aria-activedescendant", mentionOptionId(active));
+  }
+
+  private closeMention(): void {
+    this.mention = undefined;
+    const list = this.parts.mentionList!;
+    list.hidden = true;
+    list.replaceChildren();
+    this.parts.composer!.setAttribute("aria-expanded", "false");
+    this.parts.composer!.removeAttribute("aria-activedescendant");
+  }
+
+  /** Puts the module's mention for someone in place of the "@name" typed, followed by a space. */
+  private pickMention(picked: MentionCandidate, start: number): void {
+    const field = this.parts.composer as HTMLTextAreaElement;
+    const cursor = field.selectionStart;
+    const value = `${field.value.slice(0, start)}${picked.text} ${field.value.slice(cursor)}`;
+    this.closeMention();
+    if (value.length > MAX_MESSAGE_LENGTH) return;
+    field.value = value;
+    field.selectionStart = field.selectionEnd = start + picked.text.length + 1;
+    field.focus();
+  }
+
+  /** The suggestion list's keys: arrows move, Enter or Tab picks, Escape closes. Whether the key was the list's. */
+  private mentionKey(event: KeyboardEvent): boolean {
+    const mention = this.mention!;
+    const count = mention.options.length;
+    switch (event.key) {
+      case "ArrowDown":
+      case "ArrowUp":
+        mention.active = (mention.active + (event.key === "ArrowDown" ? 1 : count - 1)) % count;
+        this.renderMention();
+        break;
+      case "Enter":
+      case "Tab":
+        if (event.shiftKey) return false;
+        this.pickMention(mention.options[mention.active]!, mention.start);
+        break;
+      case "Escape":
+        this.closeMention();
+        break;
+      default:
+        return false;
+    }
+    event.preventDefault();
+    return true;
   }
 
   private setReply(target: { id: string; author: string } | undefined): void {
@@ -671,6 +766,7 @@ export class NativeView {
       this.fullPickerFor = undefined;
       this.profileFor = undefined;
       this.closePicker();
+      this.closeMention();
     }
     title!.textContent = state.title;
     me!.textContent = state.me;
@@ -703,6 +799,8 @@ export class NativeView {
     (this.parts.emoji as HTMLButtonElement).disabled = field.disabled;
     if (field.disabled) this.closePicker();
     this.picker?.update(this.pickerData());
+    // New messages or members may change who fits the mention being typed.
+    if (this.mention) this.updateMention(true);
     field.placeholder = channel && !locked ? `Message ${channel.name}` : "";
     this.parts.pending!.replaceChildren(
       ...pendingFiles(this.doc, channel?.pending ?? [], uploading, (index) => this.api.act({ type: "removeAttachment", index })),

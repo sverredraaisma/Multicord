@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, memberList, memberProfile, NATIVE_IPC } from "../../src/shared/native";
+import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, memberList, memberProfile, mentionText, NATIVE_IPC } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -176,6 +176,21 @@ describe("member panel actions", () => {
   });
 });
 
+describe("mentionText", () => {
+  it("takes one line of plain text within the cap", () => {
+    expect(mentionText("<@123>")).toBe("<@123>");
+    expect(mentionText("@ana:example.org")).toBe("@ana:example.org");
+    expect(mentionText("x".repeat(MAX_MENTION_TEXT))).toBe("x".repeat(MAX_MENTION_TEXT));
+  });
+
+  it("refuses anything else", () => {
+    const char = (code: number) => String.fromCharCode(code);
+    for (const value of [undefined, 5, "", "  ", "x".repeat(MAX_MENTION_TEXT + 1), "a\nb", `a${char(0)}b`, `a${char(0x202e)}b`, `a${char(0x200b)}b`, `a${char(0x2028)}b`]) {
+      expect(mentionText(value)).toBeUndefined();
+    }
+  });
+});
+
 describe("memberList", () => {
   const ana = { id: "1", name: "Ana" };
 
@@ -184,7 +199,7 @@ describe("memberList", () => {
   });
 
   it("keeps well-formed rows and sections, with their optional fields", () => {
-    const row = { id: "@ana:example.org", name: "Ana", avatarUrl: "https://x/a.png", presence: "dnd", color: "#AABBCC", status: "Busy" };
+    const row = { id: "@ana:example.org", name: "Ana", avatarUrl: "https://x/a.png", presence: "dnd", color: "#AABBCC", status: "Busy", mention: "<@1>" };
     expect(memberList({ sections: [{ name: "Admins", members: [row] }], more: 12, hasMore: true, loading: true, error: "Partly" })).toEqual({
       sections: [{ name: "Admins", members: [row] }],
       more: 12,

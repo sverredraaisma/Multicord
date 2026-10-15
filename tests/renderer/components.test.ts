@@ -6,6 +6,7 @@ import { countBadge, icon, initials, setColor } from "../../src/renderer/compone
 import { emojiPicker } from "../../src/renderer/components/emojiPicker";
 import { memberPanel, memberRow, presenceAvatar, profileCard } from "../../src/renderer/components/members";
 import { messageItem, type MessageHandlers } from "../../src/renderer/components/message";
+import { matchMentions, MAX_MENTION_SUGGESTIONS, mentionCandidates, mentionOptions, mentionQuery } from "../../src/renderer/components/mentions";
 import { isOwnReaction, quickReactions } from "../../src/renderer/components/reactions";
 import { moduleLabel, serverIcon, serverTooltip } from "../../src/renderer/components/serverIcon";
 import type { NativeMessage } from "../../src/shared/native";
@@ -132,6 +133,72 @@ describe("messages", () => {
     expect(item.querySelectorAll(".message-actions button")).toHaveLength(0);
     expect(item.querySelector(".reactions")).toBeNull();
     expect(item.querySelector(".full-picker")).toBeNull();
+  });
+});
+
+describe("mention suggestions", () => {
+  const base = { content: "", timestamp: "2026-10-14T12:00:00Z", edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] };
+
+  it("gathers recent authors, newest first, then listed members, each once", () => {
+    const messages: NativeMessage[] = [
+      { ...base, id: "1", author: "Ana", authorId: "a", authorMention: "<@a>", avatarUrl: "https://x/a.png" },
+      { ...base, id: "2", author: "Bo", authorId: "b" },
+      { ...base, id: "3", author: "Me", authorId: "m", mine: true },
+      { ...base, id: "4", author: "No id" },
+      { ...base, id: "5", author: " ", authorId: "blank" },
+      { ...base, id: "6", author: "Bad mention", authorId: "c", authorMention: "a\nb" },
+      { ...base, id: "7", author: "Ana again", authorId: "a" },
+    ];
+    const members = { sections: [{ name: "Members", members: [{ id: "b", name: "Bo" }, { id: "d", name: "Di", mention: "@di", avatarUrl: "" }] }], hasMore: false, loading: false };
+    expect(mentionCandidates(messages, members)).toEqual([
+      { id: "a", name: "Ana again", text: "Ana again" },
+      { id: "c", name: "Bad mention", text: "Bad mention" },
+      { id: "b", name: "Bo", text: "Bo" },
+      { id: "d", name: "Di", text: "@di" },
+    ]);
+    expect(mentionCandidates(messages.slice(0, 1), undefined)).toEqual([{ id: "a", name: "Ana", text: "<@a>", avatarUrl: "https://x/a.png" }]);
+  });
+
+  it("finds the @name before the cursor", () => {
+    expect(mentionQuery("hi @an", 6)).toEqual({ start: 3, query: "an" });
+    expect(mentionQuery("@", 1)).toEqual({ start: 0, query: "" });
+    expect(mentionQuery("hi @an there", 6)).toEqual({ start: 3, query: "an" });
+    expect(mentionQuery("mail a@b", 8)).toBeUndefined();
+    expect(mentionQuery("hi @an there", 12)).toBeUndefined();
+    expect(mentionQuery(`@${"x".repeat(33)}`, 34)).toBeUndefined();
+  });
+
+  it("matches names by a word's start before names that merely contain the text, up to a limit", () => {
+    const people = [
+      { id: "1", name: "Joanna", text: "Joanna" },
+      { id: "2", name: "Ana Lee", text: "Ana Lee" },
+      { id: "3", name: "Bo", text: "Bo" },
+      { id: "4", name: "Mila Anders", text: "Mila Anders" },
+    ];
+    expect(matchMentions(people, "AN").map((p) => p.id)).toEqual(["2", "4", "1"]);
+    expect(matchMentions(people, "").map((p) => p.id)).toEqual(["1", "2", "3", "4"]);
+    const many = Array.from({ length: 20 }, (_, i) => ({ id: String(i), name: `P${i}`, text: `P${i}` }));
+    expect(matchMentions(many, "p")).toHaveLength(MAX_MENTION_SUGGESTIONS);
+  });
+
+  it("lists options with the active one selected, picked by pressing without taking focus", () => {
+    const onPick = vi.fn();
+    const people = [
+      { id: "1", name: "Ana", text: "<@1>", avatarUrl: "https://x/a.png" },
+      { id: "2", name: "Bo", text: "Bo" },
+    ];
+    const rows = mentionOptions(document, people, 1, onPick);
+    expect(rows.map((r) => [r.id, r.getAttribute("role"), r.getAttribute("aria-selected")])).toEqual([
+      ["mention-option-0", "option", "false"],
+      ["mention-option-1", "option", "true"],
+    ]);
+    expect(rows[0]!.querySelector("img.avatar")).not.toBeNull();
+    expect(rows[0]!.querySelector(".mention-text")!.textContent).toBe("<@1>");
+    expect(rows[1]!.querySelector(".mention-text")).toBeNull();
+    const press = new MouseEvent("mousedown", { cancelable: true });
+    rows[0]!.dispatchEvent(press);
+    expect(press.defaultPrevented).toBe(true);
+    expect(onPick).toHaveBeenCalledWith(people[0]);
   });
 });
 
