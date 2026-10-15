@@ -84,6 +84,7 @@ describe("settings state", () => {
       ["matrix", false],
       ["stoat-native", false],
       ["stoat", false],
+      ["spacebar-native", false],
       ["spacebar", false],
       ["nerimity", false],
       ["mumble", false],

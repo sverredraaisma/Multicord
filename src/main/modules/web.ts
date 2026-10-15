@@ -46,7 +46,7 @@ export const webModule = webClientModule({ id: "web", name: "Web app", label: "W
 export const fluxerWebModule = webClientModule({ id: "fluxer-web", name: "Fluxer (web)", label: "Fluxer", color: "#4f8cf7", defaultUrl: "https://web.fluxer.app/" });
 export const stoatModule = webClientModule({ id: "stoat", name: "Stoat (web)", label: "Stoat", color: "#ff5a5f", defaultUrl: "https://stoat.chat/app", check: { name: "Stoat's API answers", path: "/api/" } });
 export const matrixModule = webClientModule({ id: "matrix", name: "Matrix (Element)", label: "Matrix", color: "#0dbd8b", defaultUrl: "https://app.element.io" });
-export const spacebarModule = webClientModule({ id: "spacebar", name: "Spacebar", label: "Spacebar", color: "#7a5af8", defaultUrl: "https://app.spacebar.chat", check: { name: "Spacebar's API answers", path: "/api/ping" } });
+export const spacebarModule = webClientModule({ id: "spacebar", name: "Spacebar (web)", label: "Spacebar", color: "#7a5af8", defaultUrl: "https://app.spacebar.chat", check: { name: "Spacebar's API answers", path: "/api/ping" } });
 export const nerimityModule = webClientModule({ id: "nerimity", name: "Nerimity", label: "Nerimity", color: "#4c93ff", defaultUrl: "https://nerimity.com/app", check: { name: "Nerimity's API answers", path: "/api/" } });
 /**
  * Mumble, voice only, as the study plans for voice-first apps: its own
