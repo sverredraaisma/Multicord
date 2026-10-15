@@ -85,14 +85,16 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
   It covers:
   - direct chats as DM bubbles and in the unified Messages page, with previews, unread counts and profile pictures, plus your other rooms in its sidebar;
   - history, sending, replying, and editing and deleting your own messages;
+  - reactions, typing indicators, files and pictures (one message per file, up to the homeserver's upload limit and at most 50 MB);
   - notifications for DMs and mentions.
 
   **End-to-end encryption.** On devices of its own, Multicord encrypts and decrypts with the Matrix Rust crypto library (WebAssembly) in its engine:
   - it reads and sends in encrypted rooms, and marks messages from devices their owner has not verified;
+  - files sent into encrypted rooms are encrypted on the device with a key of their own (AES-CTR, as Element does), and the homeserver only ever stores the ciphertext, without the file's name. Reactions and typing notices go unencrypted, as Element sends them;
   - its keys live in the engine's encrypted, per-instance storage, which is deleted on sign-out;
   - "Verify this device" takes your Element recovery key or security phrase. It imports your cross-signing keys, so your other devices trust this one, and restores the key backup, so older messages can be read. You can also verify by comparing emoji with another of your devices, such as Element: start it with "Verify with another device", or accept a request your other device sends. Afterwards Multicord asks that device for the key backup's key; if none arrives, "Restore older messages" takes your recovery key.
 
-  With an access token, Multicord is using Element's own device, so encrypted rooms stay locked and nothing is ever sent unencrypted into them.
+  With an access token, Multicord is using Element's own device, so encrypted rooms stay locked and nothing (no messages, files or reactions) is sent into them.
 
   **Calls.** Calls work the way Element Call makes them (MatrixRTC with LiveKit), in the native view with the same controls as Fluxer calls:
   - ongoing calls and who is in them show under Calls, a call can be started in any room, and calls starting in a DM ring;
@@ -160,7 +162,7 @@ tests/                   Vitest; tests/mocks/electron.ts fakes the Electron API
 Coverage is enforced at **95%** for lines, statements, functions and branches (`vitest.config.mts`). `npm run coverage` fails below that. The only files excluded are the one-line bundle entries and the types-only adapter contract. Keep Electron glue thin and put logic in modules that can be tested.
 
 **Live tests against real servers.** `tests/live/` holds five suites, and `scripts/live-media/` a media check, that `npm run check` and CI skip. Each runs only when its environment variable names a server:
-- `matrix.live.test.ts` drives the Matrix module against a real Synapse, with matrix-js-sdk as the other user. It covers sign-in, encrypted DMs, recovery from Element's key backup, emoji verification, encrypted and plain media, edits, deletions, read markers, paging, delayed events and sign-out.
+- `matrix.live.test.ts` drives the Matrix module against a real Synapse, with matrix-js-sdk as the other user. It covers sign-in, encrypted DMs, recovery from Element's key backup, emoji verification, encrypted and plain media, reactions, typing and file uploads (encrypted and plain), edits, deletions, read markers, paging, delayed events and sign-out.
 - `matrix-calls.live.test.ts` drives Matrix calls against a real Synapse, a LiveKit server and Element's lk-jwt-service, with matrix-js-sdk's MatrixRTC as the other caller. It covers finding the call service, the LiveKit grant (LiveKit itself admits Multicord), call memberships both sides read, the E2EE key exchange both ways, the delayed leave being pushed back, leaving, and a client vanishing mid-call. Sound and video themselves run only in the browser view and are not part of it.
 - `matrix-rtc.live.test.ts` drives calls in the newer format against the same servers: Synapse with sticky events and lk-jwt-service as its application service (MSC4195). It covers Element's encrypted sticky membership, joining in that format with a grant from the homeserver under the hashed identity (LiveKit admits it so), media keys both ways under those identities, the delayed sticky leave, leaving, and vanishing mid-call.
 - `matrix-oauth.live.test.ts` drives Matrix's browser sign-in against a real Synapse that hands its accounts to the Matrix Authentication Service, as matrix.org does, approving the code on MAS's own pages. It covers finding the account server, registering Multicord, codes that stay pending, are declined, or belong to another app, signing in with a device of its own, refreshing the token before it expires and after the server expired it, resuming, revoking on sign-out, and homeservers whose login endpoint does not reach MAS.

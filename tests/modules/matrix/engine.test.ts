@@ -91,6 +91,18 @@ describe("Matrix engine wiring", () => {
   });
 });
 
+describe("Matrix files", () => {
+  it("picks files through the bridge", async () => {
+    const { bridge } = fakeBridge({ session: SESSION });
+    const original = bridge.request.getMockImplementation()!;
+    bridge.request.mockImplementation((async (request: EngineRequest) => (request.type === "pickFiles" ? [{ handle: "h1", name: "a.png", size: 3, type: "image/png" }] : original(request))) as typeof original);
+    const api = { check: vi.fn(async () => {}), sync: vi.fn(() => new Promise(() => {})), rtcFoci: vi.fn(async () => []), rtcTransports: vi.fn(async () => []) } as unknown as MatrixApi;
+    const adapter = await startMatrixEngine(bridge, { createApi: () => api });
+    const pick = (adapter as unknown as { deps: { files: { pick(): Promise<{ filename: string; contentType: string }[]> } } }).deps.files.pick;
+    expect(await pick()).toMatchObject([{ filename: "a.png", contentType: "image/png" }]);
+  });
+});
+
 describe("Matrix host lock", () => {
   it("names hosts once, and carries on when the shell refuses a lock", async () => {
     const { hostsOf } = await import("../../../src/modules/matrix/adapter");

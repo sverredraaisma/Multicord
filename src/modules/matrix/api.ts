@@ -312,6 +312,10 @@ export interface MatrixApi {
   thumbnail(session: MxSession, mxc: string): Promise<string | undefined>;
   /** An mxc:// file, through authenticated media; undefined when it is larger than `maxBytes`. */
   download(session: MxSession, mxc: string, maxBytes: number): Promise<MxDownload | undefined>;
+  /** The largest upload the homeserver takes (m.upload.size), in bytes; undefined when it does not say. */
+  uploadLimit(session: MxSession): Promise<number | undefined>;
+  /** Uploads a file to the homeserver's media repository; returns its mxc:// URI. */
+  upload(session: MxSession, bytes: Uint8Array<ArrayBuffer>, contentType: string, filename?: string): Promise<string>;
   /** The user's account data of a type, or undefined when there is none. */
   accountData(session: MxSession, type: string): Promise<Record<string, unknown> | undefined>;
   /**

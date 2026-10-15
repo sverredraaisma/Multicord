@@ -1,9 +1,21 @@
-import type { AsyncSecretStore } from "../../engine/runtime";
+import type { AsyncSecretStore, FileSource } from "../../engine/runtime";
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
-import { MAX_DIRECTS } from "../../shared/engine";
+import { MAX_DIRECTS, MAX_HTTP_BODY, MAX_READ } from "../../shared/engine";
 import { escapeMarkdown } from "../../shared/markdown";
-import type { NativeAction, NativeAttachment, NativeMessage, NativePrompt, NativeReaction, NativeSidebarItem, NativeViewState, NativeVoiceMember, NativeVoiceSession, VoiceNoticeFlag } from "../../shared/native";
+import {
+  MAX_ATTACHMENTS,
+  type NativeAction,
+  type NativeAttachment,
+  type NativeMessage,
+  type NativePrompt,
+  type NativeReaction,
+  type NativeSidebarItem,
+  type NativeViewState,
+  type NativeVoiceMember,
+  type NativeVoiceSession,
+  type VoiceNoticeFlag,
+} from "../../shared/native";
 import type { AccountStatus } from "../../shared/settings";
 import {
   MatrixError,
@@ -27,8 +39,8 @@ import {
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, reactionKey, serviceUrl, userId } from "./events";
-import { AttachmentError, decryptAttachment } from "./media";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, mimeType, parseContent, reactionKey, serviceUrl, userId } from "./events";
+import { AttachmentError, decryptAttachment, encryptAttachment, imageSize } from "./media";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 import type { Verification, VerificationState } from "./verification";
 
@@ -82,6 +94,23 @@ export const MEDIA_CACHE_BYTES = 200 * 1024 * 1024;
 export const TOO_LARGE = "too large to show here; open it in Element";
 /** loadMedia keys: "mx:", the room's local id and the local id of the event whose content is shown. */
 const MEDIA_KEY = /^mx:(\d{1,12}):(\d{1,12})$/;
+/** What a file is sent as, by the first part of its MIME type; anything else goes as m.file. */
+const MSGTYPES = ["image", "video", "audio"] as const;
+
+/** Bytes as MB, or KB below one, for messages. */
+const sizeText = (bytes: number): string => (bytes >= 1024 * 1024 ? `${Math.round(bytes / 1024 / 1024)} MB` : `${Math.round(bytes / 1024)} KB`);
+
+/** A picked file's bytes, read in pieces the engine's bridge allows; one that shrank meanwhile is refused. */
+async function readFile(file: FileSource): Promise<Uint8Array<ArrayBuffer>> {
+  const bytes = new Uint8Array(file.size);
+  for (let start = 0; start < file.size; start += MAX_READ) {
+    const end = Math.min(file.size, start + MAX_READ);
+    const chunk = await file.read(start, end);
+    if (chunk.length !== end - start) throw new Error(`${cleanName(file.filename) ?? "a file"} changed while it was read`);
+    bytes.set(chunk, start);
+  }
+  return bytes;
+}
 
 export interface MatrixInstanceDef {
   id: string;
@@ -112,6 +141,8 @@ export interface MatrixAdapterDeps {
   lockHosts?(hosts: string[]): Promise<void>;
   /** Bytes of loaded media kept for the view (default MEDIA_CACHE_BYTES). */
   mediaBudget?: number;
+  /** Lets the user pick files; the engine reads only what was picked. */
+  files?: { pick(): Promise<FileSource[]> };
 }
 
 /** The distinct hosts of these URLs, skipping any that are missing. */
@@ -387,6 +418,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private ringing: string | undefined;
   /** Our own typing notice: in which room, when it was last sent, and the timer that ends it. */
   private ownTyping: { roomId: string; sent: number; stop: ReturnType<typeof setTimeout> } | undefined;
+  /** Files picked for each room's next message, and the rooms whose files are being sent. */
+  private readonly pending = new Map<string, FileSource[]>();
+  private readonly uploading = new Set<string>();
+  /** The largest file that can be sent, once the homeserver was asked. */
+  private uploadLimit: number | undefined;
   private readonly delay: (ms: number) => Promise<void>;
   private readonly log: (message: string) => void;
 
@@ -543,6 +579,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     // The notice ends by itself on the server; the session to end it with is gone.
     clearTimeout(this.ownTyping?.stop);
     this.ownTyping = undefined;
+    // Files picked for this account are not sent from the next.
+    this.pending.clear();
+    this.uploadLimit = undefined;
     await this.deps.secrets.delete(SESSION_KEY);
     await this.stopCrypto(true);
   }
@@ -683,6 +722,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.react(action.messageId, action.emoji, action.add);
       case "typing":
         return this.sendTyping();
+      case "attach":
+        return this.attach();
+      case "removeAttachment":
+        // Not while the files are going out.
+        if (!this.uploading.has(this.selected ?? "")) this.pending.get(this.selected ?? "")?.splice(action.index, 1);
+        return this.render();
       case "loadOlder":
         return this.loadOlder();
       case "logout":
@@ -700,7 +745,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       case "loadMedia":
         return this.loadMedia(action.key);
       default:
-        // Uploads and forums are not offered for Matrix.
+        // Forums are not offered for Matrix.
         return;
     }
   }
@@ -1611,16 +1656,22 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
    * server is asked first; if it cannot answer, nothing is sent. Into an
    * encrypted room nothing goes without working encryption.
    */
-  private async sendContent(session: MxSession, room: Room, content: Record<string, unknown>, type = "m.room.message"): Promise<string> {
-    if (!room.encrypted) {
-      const encryption = await this.deps.api.encryption(session, room.id);
-      if (encryption) {
-        room.encrypted = true;
-        room.encryption = encryption;
-      }
-    }
+  private async sendContent(session: MxSession, room: Room, content: Record<string, unknown>, type = "m.room.message", clearMedia = false): Promise<string> {
+    await this.checkEncryption(session, room);
+    // A file uploaded unencrypted never goes into a room that turned encrypted meanwhile.
+    if (clearMedia && room.encrypted) throw new Error("the room turned end-to-end encrypted while the file was uploading");
     const sealed = await this.seal(session, room, type, content);
     return sealed.type === "m.room.message" ? this.deps.api.send(session, room.id, sealed.content) : this.deps.api.send(session, room.id, sealed.content, sealed.type);
+  }
+
+  /** Asks the server whether a room is encrypted, unless we know it is; an unanswered question throws. */
+  private async checkEncryption(session: MxSession, room: Room): Promise<void> {
+    if (room.encrypted) return;
+    const encryption = await this.deps.api.encryption(session, room.id);
+    if (encryption) {
+      room.encrypted = true;
+      room.encryption = encryption;
+    }
   }
 
   /** A room event as it may be sent: encrypted when the room (as we know it) is; nothing without working encryption. */
@@ -1642,21 +1693,111 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return id ? room.events.find((e) => e.id === id) : undefined;
   }
 
+  /**
+   * Sends the open room's picked files, each a message of its own as Element
+   * sends them, then the text. A reply goes with the text, or without text
+   * with the first file. Files sent are dropped from the list at once, so a
+   * failure part way sends only the rest next time.
+   */
   private async send(text: string, replyTo?: string): Promise<void> {
     const room = this.selectedRoom();
-    if (!room || text.trim() === "") return;
+    const files = room ? (this.pending.get(room.id) ?? []) : [];
+    if (!room || this.uploading.has(room.id) || (text.trim() === "" && files.length === 0)) return;
     const session = this.session!;
     this.stopTyping();
+    const replied = replyTo ? this.findEvent(room, replyTo) : undefined;
+    const uploading = files.length > 0;
+    if (uploading) {
+      this.uploading.add(room.id);
+      this.render();
+    }
     await this.attempt("Message not sent", async () => {
-      const content: Record<string, unknown> = { msgtype: "m.text", body: text, "m.mentions": {} };
-      const replied = replyTo ? this.findEvent(room, replyTo) : undefined;
-      if (replied) content["m.relates_to"] = { "m.in_reply_to": { event_id: replied.id } };
-      const id = await this.sendContent(session, room, content);
-      const sent: Message = { kind: "message", id, sender: session.userId, ts: Date.now(), content: { msgtype: "m.text", text }, mentions: [] };
-      if (replied) sent.replyTo = replied.id;
-      this.addEvent(room, sent, false);
+      let fileReply = text.trim() === "" ? replied : undefined;
+      while (files.length > 0) {
+        await this.sendFile(session, room, files[0]!, fileReply);
+        files.shift();
+        fileReply = undefined;
+      }
+      if (text.trim() !== "") await this.sendText(session, room, text, replied);
       this.publish();
     });
+    if (!uploading) return;
+    this.uploading.delete(room.id);
+    if (files.length === 0) this.pending.delete(room.id);
+    this.render();
+  }
+
+  private async sendText(session: MxSession, room: Room, text: string, replied: Shown | undefined): Promise<void> {
+    const content: Record<string, unknown> = { msgtype: "m.text", body: text, "m.mentions": {} };
+    if (replied) content["m.relates_to"] = { "m.in_reply_to": { event_id: replied.id } };
+    const id = await this.sendContent(session, room, content);
+    const sent: Message = { kind: "message", id, sender: session.userId, ts: Date.now(), content: { msgtype: "m.text", text }, mentions: [] };
+    if (replied) sent.replyTo = replied.id;
+    this.addEvent(room, sent, false);
+  }
+
+  /**
+   * Uploads a picked file and sends it. Whether the room is encrypted is
+   * settled before anything is uploaded: into an encrypted room only
+   * ciphertext goes, with a key of its own inside the encrypted event and
+   * without its name, and nothing at all without working encryption.
+   */
+  private async sendFile(session: MxSession, room: Room, file: FileSource, replied: Shown | undefined): Promise<void> {
+    await this.checkEncryption(session, room);
+    const lock = this.lock(room);
+    if (lock) {
+      this.render();
+      throw new Error(lock.reason);
+    }
+    const bytes = await readFile(file);
+    const mime = mimeType(file.contentType) ?? "application/octet-stream";
+    const name = cleanName(file.filename, 255) ?? "file";
+    const msgtype = MSGTYPES.find((type) => mime.startsWith(`${type}/`)) ?? "file";
+    const info: Record<string, unknown> = { mimetype: mime, size: bytes.length };
+    if (msgtype === "image") Object.assign(info, await imageSize(bytes, mime));
+    const content: Record<string, unknown> = { msgtype: `m.${msgtype}`, body: name, info, "m.mentions": {} };
+    if (room.encrypted) {
+      const encrypted = await encryptAttachment(bytes);
+      content.file = { ...encrypted.file, url: await this.deps.api.upload(session, encrypted.data, "application/octet-stream") };
+    } else {
+      content.url = await this.deps.api.upload(session, bytes, mime, name);
+    }
+    if (replied) content["m.relates_to"] = { "m.in_reply_to": { event_id: replied.id } };
+    const id = await this.sendContent(session, room, content, "m.room.message", content.url !== undefined);
+    // Shown at once from the bytes at hand, rather than downloaded again.
+    const sent: Message = { kind: "message", id, sender: session.userId, ts: Date.now(), content: parseContent(content)!, mentions: [] };
+    if (replied) sent.replyTo = replied.id;
+    this.addEvent(room, sent, false);
+    if (bytes.length <= MAX_MEDIA_BYTES) this.remember(`mx:${room.local}:${this.local(id)}`, `data:${mime};base64,${base64(bytes)}`);
+  }
+
+  /** Adds files from the OS picker to the open room's next message, leaving out any larger than can be sent. */
+  private async attach(): Promise<void> {
+    const room = this.selectedRoom();
+    if (!room || !this.deps.files || this.uploading.has(room.id) || this.lock(room)) return;
+    const session = this.session!;
+    await this.attempt("Could not attach", async () => {
+      // Picked first: the shell lets the engine open the picker only right after the user asked.
+      const picked = await this.deps.files!.pick();
+      const limit = await this.maxUpload(session);
+      const list = this.pending.get(room.id) ?? [];
+      for (const file of picked) {
+        if (list.length >= MAX_ATTACHMENTS) {
+          this.error = `At most ${MAX_ATTACHMENTS} files per message.`;
+          break;
+        }
+        if (file.size > limit) this.error = `${cleanName(file.filename) ?? "A file"} is larger than the ${sizeText(limit)} ${this.host()} takes.`;
+        else list.push(file);
+      }
+      this.pending.set(room.id, list);
+      this.render();
+    });
+  }
+
+  /** The largest file that can be sent: the homeserver's limit (asked once), within what the engine's bridge carries. */
+  private async maxUpload(session: MxSession): Promise<number> {
+    this.uploadLimit ??= Math.min((await this.deps.api.uploadLimit(session).catch(() => undefined)) ?? MAX_HTTP_BODY, MAX_HTTP_BODY);
+    return this.uploadLimit;
   }
 
   private async edit(local: string, text: string): Promise<void> {
@@ -2295,8 +2436,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             loading: this.loading.has(room.id),
             hasOlder: room.prevBatch !== undefined,
             typing: room.typing.filter((user) => user !== userId).map((user) => this.memberName(room, user)),
-            pending: [],
-            uploading: false,
+            pending: (this.pending.get(room.id) ?? []).map((file) => ({ name: file.filename, size: file.size })),
+            uploading: this.uploading.has(room.id),
             ...(locked ? { locked } : {}),
           }
         : null,

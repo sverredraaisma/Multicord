@@ -5,6 +5,7 @@ import {
   type MatrixApi,
   type MxCryptoSync,
   type MxEncryptedEvent,
+  type MxEncryptedFile,
   type MxEncryption,
   type MxCallMember,
   type MxDownload,
@@ -48,10 +49,12 @@ import {
 import type { DeviceRef, E2ee, E2eeOptions, E2eeStatus, RecoveryResult, RoomEncryption, SecureToDevice } from "../../../src/modules/matrix/crypto";
 import type { Verification, VerificationState } from "../../../src/modules/matrix/verification";
 import { OAuthError, type DeviceGrant, type DevicePoll, type OAuthServer, type OAuthTokens } from "../../../src/modules/matrix/oauth";
-import { parseEvent } from "../../../src/modules/matrix/events";
-import { MAX_DIRECTS } from "../../../src/shared/engine";
+import { parseEncryptedFile, parseEvent } from "../../../src/modules/matrix/events";
+import { decryptAttachment } from "../../../src/modules/matrix/media";
+import { MAX_DIRECTS, MAX_HTTP_BODY, MAX_READ } from "../../../src/shared/engine";
+import type { FileSource } from "../../../src/engine/runtime";
 import { encryptAttachment } from "./attachments";
-import type { NativeAction, NativeViewState } from "../../../src/shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeViewState } from "../../../src/shared/native";
 
 const ME = "@me:x.org";
 const BO = "@bo:x.org";
@@ -128,6 +131,8 @@ class FakeMatrixApi implements MatrixApi {
   markRead = vi.fn(async (_s: MxSession, _room: string, _id: string) => {});
   thumbnail = vi.fn(async (_s: MxSession, _mxc: string): Promise<string | undefined> => undefined);
   download = vi.fn(async (_s: MxSession, _mxc: string, _max: number): Promise<MxDownload | undefined> => undefined);
+  uploadLimit = vi.fn(async (_s: MxSession): Promise<number | undefined> => 1024 * 1024);
+  upload = vi.fn(async (_s: MxSession, _bytes: Uint8Array<ArrayBuffer>, _type: string, _name?: string) => `mxc://x.org/up${this.upload.mock.calls.length}`);
   logout = vi.fn(async (_s: MxSession) => {});
   rtcFoci = vi.fn(async (_url: string): Promise<string[]> => []);
   rtcTransports = vi.fn(async (_s: MxSession): Promise<MxRtcTransport[]> => []);
@@ -1142,6 +1147,254 @@ describe("typing", () => {
   });
 });
 
+/** A picked file whose bytes are `bytes`, read as the bridge reads (ranges). */
+const picked = (filename: string, bytes: Uint8Array, contentType = "application/octet-stream"): FileSource => ({
+  filename,
+  size: bytes.length,
+  contentType,
+  read: vi.fn(async (start: number, end: number) => bytes.slice(start, end)),
+});
+const text = (value: string) => new TextEncoder().encode(value);
+
+/** A signed-in adapter whose file picker hands out `picks`, one list per attach. */
+async function withFiles(first: MxSync = initialSync()) {
+  const picks: FileSource[][] = [];
+  const pick = vi.fn(async () => picks.shift() ?? []);
+  const ctx = setup({ session: SESSION_JSON }, false, { files: { pick } });
+  ctx.api.push(first);
+  await ctx.adapter.start();
+  await flush();
+  const attach = async (...files: FileSource[]) => {
+    picks.push(files);
+    await ctx.act({ type: "attach" });
+  };
+  return { ...ctx, pick, attach };
+}
+
+describe("uploads", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("sends a picked picture into an unencrypted room, with its type, size and dimensions, and shows it at once", async () => {
+    vi.stubGlobal("createImageBitmap", vi.fn(async (_blob: Blob) => ({ width: 4, height: 3, close: vi.fn() })));
+    const ctx = await withFiles();
+    await ctx.open("Bo");
+    const png = text("not really a PNG");
+    await ctx.attach(picked("cat.png", png, "image/png"));
+    expect(ctx.chat().channel!.pending).toEqual([{ name: "cat.png", size: png.length }]);
+    await ctx.act({ type: "send", content: "" });
+    expect(ctx.api.encryption).toHaveBeenCalledWith(SESSION, "!dm:x.org");
+    expect(ctx.api.upload).toHaveBeenCalledWith(SESSION, png, "image/png", "cat.png");
+    expect(ctx.api.send).toHaveBeenCalledWith(SESSION, "!dm:x.org", {
+      msgtype: "m.image",
+      body: "cat.png",
+      info: { mimetype: "image/png", size: png.length, w: 4, h: 3 },
+      "m.mentions": {},
+      url: "mxc://x.org/up1",
+    });
+    expect(ctx.messages().at(-1)).toMatchObject({ mine: true, content: "", attachments: [{ name: "cat.png", kind: "image", url: `data:image/png;base64,${Buffer.from(png).toString("base64")}`, width: 4, height: 3 }] });
+    expect(ctx.chat().channel).toMatchObject({ pending: [], uploading: false });
+    expect(ctx.renders.some((r) => r.screen === "chat" && r.channel?.uploading)).toBe(true);
+    expect(ctx.directs.at(-1)![0]!.preview).toBe("📷 Image");
+  });
+
+  it("encrypts files for an encrypted room: only ciphertext is uploaded, without its name", async () => {
+    const pick = vi.fn<() => Promise<FileSource[]>>();
+    const ctx = await withCrypto({ extra: { files: { pick } } });
+    await ctx.open("Bo");
+    const plain = text("meeting notes");
+    pick.mockResolvedValueOnce([picked("notes.txt", plain, "text/plain")]);
+    await ctx.act({ type: "attach" });
+    await ctx.act({ type: "send", content: "see attached" });
+    const [, ciphertext, type, name] = ctx.api.upload.mock.calls[0]!;
+    expect([type, name]).toEqual(["application/octet-stream", undefined]);
+    expect(Buffer.from(ciphertext).equals(Buffer.from(plain))).toBe(false);
+    const [, , , eventType, content] = ctx.e2ee.encrypt.mock.calls[0]!;
+    expect(eventType).toBe("m.room.message");
+    expect(content).toMatchObject({ msgtype: "m.file", body: "notes.txt", info: { mimetype: "text/plain", size: plain.length } });
+    expect(content).not.toHaveProperty("url");
+    const file = parseEncryptedFile(content.file);
+    expect(file).toMatchObject({ url: "mxc://x.org/up1" });
+    expect(await decryptAttachment(ciphertext, file as MxEncryptedFile)).toEqual(plain);
+    // Both the file and the text went encrypted.
+    expect(ctx.e2ee.encrypt.mock.calls[1]![4]).toMatchObject({ msgtype: "m.text", body: "see attached" });
+    expect(ctx.api.send.mock.calls.map((c) => (c as unknown[])[3])).toEqual(["m.room.encrypted", "m.room.encrypted"]);
+    expect(ctx.messages().slice(-2).map((m) => [m.attachments[0]?.name, m.content])).toEqual([
+      ["notes.txt", ""],
+      [undefined, "see attached"],
+    ]);
+  });
+
+  it("uploads nothing into an encrypted room it cannot encrypt in", async () => {
+    const ctx = await withFiles();
+    await ctx.open("Secret");
+    await ctx.act({ type: "attach" });
+    expect(ctx.pick).not.toHaveBeenCalled();
+    await ctx.open("Lounge");
+    await ctx.attach(picked("a.txt", text("a")));
+    ctx.api.encryption.mockResolvedValueOnce({ algorithm: "m.megolm.v1.aes-sha2" });
+    await ctx.act({ type: "send", content: "" });
+    expect(ctx.api.upload).not.toHaveBeenCalled();
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    expect(ctx.chat().error).toBe("Message not sent: this room is end-to-end encrypted, which Multicord does not support");
+    expect(ctx.chat().channel).toMatchObject({ locked: ENCRYPTED_NOTICE, pending: [{ name: "a.txt", size: 1 }], uploading: false });
+  });
+
+  it("does not send a file uploaded unencrypted once the room has turned encrypted", async () => {
+    const ctx = await withFiles();
+    await ctx.open("Lounge");
+    await ctx.attach(picked("a.txt", text("a")));
+    ctx.api.encryption.mockResolvedValueOnce(undefined).mockResolvedValueOnce({ algorithm: "m.megolm.v1.aes-sha2" });
+    await ctx.act({ type: "send", content: "" });
+    expect(ctx.api.upload).toHaveBeenCalledTimes(1);
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    expect(ctx.chat().error).toBe("Message not sent: the room turned end-to-end encrypted while the file was uploading");
+  });
+
+  it("sends each file as a message of its own, then the text, with a reply on the text or else the first file", async () => {
+    const ctx = await withFiles();
+    await ctx.open("Bo");
+    const target = ctx.messages()[0]!.id;
+    await ctx.attach(picked("clip.mp4", text("v"), "video/mp4"), picked("song.ogg", text("s"), "audio/ogg"));
+    await ctx.attach(picked("odd\u0000name.pdf", text("p"), "Application/PDF; x=1"), picked("\u0007", text("x"), "image/png"));
+    await ctx.act({ type: "send", content: "four files", replyTo: target });
+    const sent = ctx.api.send.mock.calls.map((c) => c[2]);
+    expect(sent.map((c) => [c.msgtype, c.body, (c.info as Record<string, unknown> | undefined)?.mimetype, c["m.relates_to"]])).toEqual([
+      ["m.video", "clip.mp4", "video/mp4", undefined],
+      ["m.audio", "song.ogg", "audio/ogg", undefined],
+      ["m.file", "oddname.pdf", "application/octet-stream", undefined],
+      // A picture the engine cannot measure goes without its dimensions.
+      ["m.image", "file", "image/png", undefined],
+      ["m.text", "four files", undefined, { "m.in_reply_to": { event_id: "$d1" } }],
+    ]);
+    expect(sent[3]!.info).toEqual({ mimetype: "image/png", size: 1 });
+    await ctx.attach(picked("only.txt", text("o"), "text/plain"));
+    await ctx.act({ type: "send", content: " ", replyTo: target });
+    expect(ctx.api.send.mock.calls.at(-1)![2]).toMatchObject({ msgtype: "m.file", "m.relates_to": { "m.in_reply_to": { event_id: "$d1" } } });
+    expect(ctx.messages().at(-1)!.reply).toEqual({ author: "Bo", content: "hello *there*" });
+  });
+
+  it("keeps the files not yet sent when one fails, and sends only those next time", async () => {
+    const ctx = await withFiles();
+    await ctx.open("Bo");
+    await ctx.attach(picked("one.txt", text("1")), picked("two.txt", text("2")));
+    ctx.api.upload.mockResolvedValueOnce("mxc://x.org/one").mockRejectedValueOnce(new MatrixError(413, "M_TOO_LARGE", "Too large"));
+    await ctx.act({ type: "send", content: "both" });
+    expect(ctx.chat().error).toBe("Message not sent: Too large");
+    expect(ctx.chat().channel).toMatchObject({ pending: [{ name: "two.txt", size: 1 }], uploading: false });
+    expect(ctx.api.send).toHaveBeenCalledTimes(1);
+    await ctx.act({ type: "send", content: "" });
+    expect(ctx.api.send.mock.calls.map((c) => c[2].body)).toEqual(["one.txt", "two.txt"]);
+    expect(ctx.chat().channel!.pending).toEqual([]);
+  });
+
+  it("refuses files larger than the homeserver takes, and more than fit in a message", async () => {
+    const ctx = await withFiles();
+    await ctx.open("Bo");
+    await ctx.attach(picked("big.bin", new Uint8Array(1024 * 1024 + 1)), picked("ok.bin", new Uint8Array(1024 * 1024)));
+    expect(ctx.chat().error).toBe("big.bin is larger than the 1 MB x.org takes.");
+    expect(ctx.chat().channel!.pending.map((f) => f.name)).toEqual(["ok.bin"]);
+    await ctx.attach(...Array.from({ length: MAX_ATTACHMENTS }, (_, i) => picked(`f${i}`, text("x"))));
+    expect(ctx.chat().error).toBe(`At most ${MAX_ATTACHMENTS} files per message.`);
+    expect(ctx.chat().channel!.pending).toHaveLength(MAX_ATTACHMENTS);
+    // The limit is asked for once.
+    expect(ctx.api.uploadLimit).toHaveBeenCalledTimes(1);
+    await ctx.act({ type: "removeAttachment", index: 0 });
+    expect(ctx.chat().channel!.pending[0]!.name).toBe("f0");
+  });
+
+  it("names small limits in KB, and keeps within the bridge when the homeserver names none", async () => {
+    const small = await withFiles();
+    small.api.uploadLimit.mockResolvedValueOnce(512 * 1024);
+    await small.open("Bo");
+    await small.attach(picked("\u0000", new Uint8Array(512 * 1024 + 1)));
+    expect(small.chat().error).toBe("A file is larger than the 512 KB x.org takes.");
+    for (const limit of [Promise.resolve(undefined), Promise.resolve(MAX_HTTP_BODY * 2), Promise.reject(new Error("offline"))]) {
+      const ctx = await withFiles();
+      ctx.api.uploadLimit.mockReturnValueOnce(limit);
+      await ctx.open("Bo");
+      await ctx.attach({ ...picked("huge.bin", new Uint8Array(0)), size: MAX_HTTP_BODY + 1 });
+      expect(ctx.chat().error).toBe("huge.bin is larger than the 50 MB x.org takes.");
+    }
+  });
+
+  it("reads large files in pieces, refuses one that shrank, and holds back what is too large to show", async () => {
+    const ctx = await withFiles();
+    ctx.api.uploadLimit.mockResolvedValueOnce(MAX_HTTP_BODY);
+    await ctx.open("Bo");
+    const big = picked("big.bin", new Uint8Array(MAX_MEDIA_BYTES + 1));
+    await ctx.attach(big);
+    await ctx.act({ type: "send", content: "" });
+    expect(vi.mocked(big.read).mock.calls).toEqual([
+      [0, MAX_READ],
+      [MAX_READ, 2 * MAX_READ],
+      [2 * MAX_READ, MAX_MEDIA_BYTES + 1],
+    ]);
+    expect(ctx.messages().at(-1)!.attachments[0]).toMatchObject({ name: "big.bin", kind: "file" });
+    expect(ctx.messages().at(-1)!.attachments[0]!.url).toBeUndefined();
+    const shrunk = picked("gone.txt", text("abc"));
+    vi.mocked(shrunk.read).mockResolvedValueOnce(text("a"));
+    await ctx.attach(shrunk);
+    await ctx.act({ type: "send", content: "" });
+    expect(ctx.chat().error).toBe("Message not sent: gone.txt changed while it was read");
+    await ctx.act({ type: "removeAttachment", index: 0 });
+    const nameless = picked("\u0000", text("abc"));
+    vi.mocked(nameless.read).mockResolvedValueOnce(text(""));
+    await ctx.attach(nameless);
+    await ctx.act({ type: "send", content: "" });
+    expect(ctx.chat().error).toBe("Message not sent: a file changed while it was read");
+    expect(ctx.api.upload).toHaveBeenCalledTimes(1);
+  });
+
+  it("holds the list still while files go out", async () => {
+    const ctx = await withFiles();
+    await ctx.open("Bo");
+    await ctx.attach(picked("a.txt", text("a")), picked("b.txt", text("b")));
+    let finish!: (uri: string) => void;
+    ctx.api.upload.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    const sending = ctx.act({ type: "send", content: "" });
+    await flush();
+    expect(ctx.chat().channel!.uploading).toBe(true);
+    await ctx.act({ type: "removeAttachment", index: 1 });
+    await ctx.act({ type: "attach" });
+    await ctx.act({ type: "send", content: "meanwhile" });
+    expect(ctx.pick).toHaveBeenCalledTimes(1);
+    finish("mxc://x.org/a");
+    await sending;
+    expect(ctx.api.send.mock.calls.map((c) => c[2].body)).toEqual(["a.txt", "b.txt"]);
+  });
+
+  it("attaches nothing without a room or a picker, and reports a picker that fails", async () => {
+    const ctx = await withFiles();
+    await ctx.act({ type: "attach" });
+    await ctx.act({ type: "removeAttachment", index: 0 });
+    expect(ctx.pick).not.toHaveBeenCalled();
+    await ctx.open("Bo");
+    ctx.pick.mockRejectedValueOnce(new Error("Files can only be picked when the user asks to attach"));
+    await ctx.act({ type: "attach" });
+    expect(ctx.chat().error).toBe("Could not attach: Files can only be picked when the user asks to attach");
+    const plain = await signedIn();
+    await plain.open("Bo");
+    await plain.act({ type: "attach" });
+    expect(plain.chat().channel!.pending).toEqual([]);
+  });
+
+  it("forgets picked files and the limit on signing out", async () => {
+    const ctx = await withFiles();
+    await ctx.open("Bo");
+    await ctx.attach(picked("a.txt", text("a")));
+    await ctx.adapter.signOut();
+    // The first answers the previous session's sync, which drops it.
+    ctx.api.push(initialSync());
+    ctx.api.push(initialSync());
+    await ctx.answer("login", { user: "me", password: "pw" });
+    await flush();
+    await ctx.open("Bo");
+    expect(ctx.chat().channel!.pending).toEqual([]);
+    await ctx.attach(picked("b.txt", text("b")));
+    expect(ctx.api.uploadLimit).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("read state", () => {
   it("marks a room read when opened while visible, once per newest event", async () => {
     const ctx = await signedIn();
@@ -1282,7 +1535,7 @@ describe("shell interface", () => {
   it("ignores actions Matrix does not offer", async () => {
     const ctx = await signedIn();
     const renders = ctx.renders.length;
-    for (const action of [{ type: "attach" }, { type: "removeAttachment", index: 0 }] as NativeAction[]) await ctx.act(action);
+    for (const action of [{ type: "createPost", name: "x", content: "y" }] as NativeAction[]) await ctx.act(action);
     expect(ctx.renders).toHaveLength(renders);
   });
 });
@@ -1670,12 +1923,12 @@ class FakeE2ee implements E2ee {
 const encRaw = (id: string, sender: string, ts: number, extra: Partial<MxEncryptedEvent> = {}): MxEncryptedEvent => ({ kind: "encrypted", id: `$${id}`, sender, ts, raw: `{"event_id":"$${id}"}`, sessionId: "S1", ...extra });
 
 /** A signed-in adapter with encryption: a DM with Bo and an encrypted room, both with encrypted events. */
-async function withCrypto(options: { session?: MxSession; first?: MxSync; secrets?: Record<string, string> } = {}) {
+async function withCrypto(options: { session?: MxSession; first?: MxSync; secrets?: Record<string, string>; extra?: Partial<MatrixAdapterDeps> } = {}) {
   const e2ee = new FakeE2ee();
   e2ee.clear.set("$c1", msg("c1", BO, "decrypted hello", 3000));
   const crypto = { open: vi.fn(async (_options: E2eeOptions): Promise<E2ee> => e2ee), deleteStore: vi.fn(async (_name: string) => {}) };
   const log = vi.fn();
-  const ctx = setup({ session: JSON.stringify(options.session ?? SESSION), ...options.secrets }, false, { crypto, log });
+  const ctx = setup({ session: JSON.stringify(options.session ?? SESSION), ...options.secrets }, false, { crypto, log, ...options.extra });
   ctx.api.push(
     options.first ??
       sync({

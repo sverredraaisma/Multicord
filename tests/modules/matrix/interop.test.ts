@@ -2,12 +2,14 @@
 // MatrixClient with its Rust crypto talks to Multicord's Matrix code through
 // one in-memory homeserver (interopServer.ts).
 
+import { createDecipheriv, createHash } from "node:crypto";
 import { initAsync } from "@matrix-org/matrix-sdk-crypto-wasm";
 import { ClientEvent, createClient, MatrixEvent, SyncState, type MatrixClient } from "matrix-js-sdk";
 import { CryptoEvent, VerificationPhase, VerifierEvent, type CryptoApi, type ShowSasCallbacks, type VerificationRequest } from "matrix-js-sdk/lib/crypto-api/index.js";
 import { CallMembership, getCallNotificationExpiry, MatrixRTCSessionEvent, parseCallNotificationContent, RTC_SLOT_ENCRYPTION_PER_MEMBER } from "matrix-js-sdk/lib/matrixrtc/index.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { MxSession } from "../../../src/modules/matrix/api";
+import type { FileSource } from "../../../src/engine/runtime";
 import { MatrixAdapter } from "../../../src/modules/matrix/adapter";
 import { createMatrixClient } from "../../../src/modules/matrix/client";
 import { computeRtcIdentityRaw, isLeftMembershipContent } from "matrix-js-sdk/lib/matrixrtc/membershipData/index.js";
@@ -69,6 +71,8 @@ async function multicord(server: InteropHomeserver, user: string, device: string
   const renders: NativeViewState[] = [];
   const logs: string[] = [];
   let e2ee: MatrixE2ee | undefined;
+  /** What the file picker hands out, one list per attach. */
+  const picks: FileSource[][] = [];
   const adapter = new MatrixAdapter({
     def: { id: "matrix-native", name: "Matrix", url: "https://x.org" },
     secrets: {
@@ -81,6 +85,7 @@ async function multicord(server: InteropHomeserver, user: string, device: string
     // In memory: Node has no IndexedDB.
     crypto: { open: async (options) => (e2ee = await openE2ee({ ...options, store: undefined })), deleteStore: async () => {} },
     log: (message) => logs.push(message),
+    files: { pick: async () => picks.shift() ?? [] },
   });
   await adapter.start();
   const chat = () => {
@@ -94,7 +99,7 @@ async function multicord(server: InteropHomeserver, user: string, device: string
     await adapter.handleAction({ type: "select", channelId: item.id });
   };
   const messages = () => chat()?.channel?.messages ?? [];
-  return { adapter, session, e2ee: e2ee!, renders, logs, chat, open, messages, act: (action: Parameters<MatrixAdapter["handleAction"]>[0]) => adapter.handleAction(action) };
+  return { adapter, session, e2ee: e2ee!, renders, logs, picks, chat, open, messages, act: (action: Parameters<MatrixAdapter["handleAction"]>[0]) => adapter.handleAction(action) };
 }
 
 function encryptedRoom(server: InteropHomeserver, members: string[]): void {
@@ -220,6 +225,35 @@ describe("encrypted attachments with Element (matrix-js-sdk)", { timeout: 30_000
     expect(file("photo.png")!.url).toBe(`data:image/png;base64,${Buffer.from(picture).toString("base64")}`);
     expect(file("swapped.png")).toMatchObject({ unavailable: "it does not match its checksum, so it may have been changed" });
     expect(file("swapped.png")!.url).toBeUndefined();
+    expect(server.unknown).toEqual([]);
+  });
+
+  it("sends Element a file it decrypts, uploading only ciphertext without the file's name", async () => {
+    const server = new InteropHomeserver();
+    encryptedRoom(server, [BOB, ALICE]);
+    const mc = await multicord(server, ALICE, "MULTI");
+    const bob = await element(server, BOB, "ELEMENT");
+    await mc.open("Secret");
+    const plain = new TextEncoder().encode("the minutes of the secret meeting");
+    mc.picks.push([{ filename: "minutes.txt", size: plain.length, contentType: "text/plain", read: async (start, end) => plain.slice(start, end) }]);
+    await mc.act({ type: "attach" });
+    await mc.act({ type: "send", content: "" });
+    expect(mc.chat()?.error).toBeUndefined();
+
+    const event = await elementSees(bob, ALICE, "minutes.txt");
+    expect(event.getWireType()).toBe("m.room.encrypted");
+    const content = event.getContent();
+    expect(content).toMatchObject({ msgtype: "m.file", body: "minutes.txt", info: { mimetype: "text/plain", size: plain.length } });
+    expect(content.url).toBeUndefined();
+    expect(server.uploads).toEqual([{ user: ALICE, type: "application/octet-stream", filename: null, uri: content.file.url }]);
+    // What Element does with it (matrix-encrypt-attachment): check the hash, then AES-256-CTR with the event's key and counter.
+    const response = await server.fetch(`${HS}/_matrix/client/v1/media/download/${content.file.url.slice("mxc://".length)}`, { headers: { Authorization: `Bearer ${bob.getAccessToken()}` } });
+    const ciphertext = new Uint8Array(await response.arrayBuffer());
+    expect(Buffer.from(ciphertext).includes(Buffer.from("secret meeting"))).toBe(false);
+    expect(createHash("sha256").update(ciphertext).digest("base64").replace(/=+$/, "")).toBe(content.file.hashes.sha256);
+    expect(content.file.key).toMatchObject({ alg: "A256CTR", kty: "oct", key_ops: expect.arrayContaining(["decrypt"]) });
+    const decipher = createDecipheriv("aes-256-ctr", Buffer.from(content.file.key.k, "base64url"), Buffer.from(content.file.iv, "base64"));
+    expect(Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString()).toBe("the minutes of the secret meeting");
     expect(server.unknown).toEqual([]);
   });
 });

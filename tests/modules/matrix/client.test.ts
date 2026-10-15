@@ -164,6 +164,45 @@ describe("syncing and history", () => {
     expect(JSON.parse(url.searchParams.get("filter")!)).toMatchObject({ lazy_load_members: true });
   });
 
+  it("asks the homeserver for its upload limit, through authenticated media first", async () => {
+    const v1 = fakeFetch(() => json({ "m.upload.size": 50_000_000 }));
+    expect(await v1.client.uploadLimit(SESSION)).toBe(50_000_000);
+    expect(callOf(v1.fetchFn).url.pathname).toBe("/_matrix/client/v1/media/config");
+    expect(callOf(v1.fetchFn).init.headers.Authorization).toBe("Bearer tok");
+    for (const missing of [json({ errcode: "M_UNRECOGNIZED" }, 400), json({ errcode: "M_NOT_FOUND" }, 404)]) {
+      const old = fakeFetch((url) => (url.pathname.startsWith("/_matrix/client/") ? missing.clone() : json({ "m.upload.size": 10 })));
+      expect(await old.client.uploadLimit(SESSION)).toBe(10);
+      expect(callOf(old.fetchFn, 1).url.pathname).toBe("/_matrix/media/v3/config");
+    }
+    for (const limit of [0, -1, 1.5, "10", undefined]) expect(await fakeFetch(() => json({ "m.upload.size": limit })).client.uploadLimit(SESSION)).toBeUndefined();
+    await expect(fakeFetch(() => json({ errcode: "M_FORBIDDEN" }, 403)).client.uploadLimit(SESSION)).rejects.toMatchObject({ errcode: "M_FORBIDDEN" });
+    await expect(fakeFetch(() => Promise.reject(new Error("offline"))).client.uploadLimit(SESSION)).rejects.toThrow("offline");
+  });
+
+  it("uploads raw bytes to the homeserver's media repository", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({ content_uri: "mxc://x.org/abc" }));
+    const bytes = new Uint8Array([1, 2, 3]);
+    expect(await client.upload(SESSION, bytes, "image/png", "cat & dog.png")).toBe("mxc://x.org/abc");
+    // Not JSON: callOf would parse it.
+    const [href, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+    const url = new URL(href);
+    expect(url.origin + url.pathname).toBe(`${BASE}/_matrix/media/v3/upload`);
+    expect(url.searchParams.get("filename")).toBe("cat & dog.png");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBe(bytes);
+    expect(init.headers).toEqual({ Accept: "application/json", Authorization: "Bearer tok", "Content-Type": "image/png" });
+    await client.upload(SESSION, bytes, "application/octet-stream");
+    expect(new URL(fetchFn.mock.calls[1]![0] as string).search).toBe("");
+  });
+
+  it("reports refused uploads and unreadable answers", async () => {
+    await expect(fakeFetch(() => json({ errcode: "M_TOO_LARGE", error: "Too large" }, 413)).client.upload(SESSION, new Uint8Array(1), "a/b")).rejects.toMatchObject({ status: 413, errcode: "M_TOO_LARGE" });
+    await expect(fakeFetch(() => new Response("<html>", { status: 502 })).client.upload(SESSION, new Uint8Array(1), "a/b")).rejects.toMatchObject({ status: 502 });
+    for (const answer of [{ content_uri: "https://evil.example/x" }, {}, []]) {
+      await expect(fakeFetch(() => json(answer)).client.upload(SESSION, new Uint8Array(1), "a/b")).rejects.toThrow("unreadable upload response");
+    }
+  });
+
   it("asks for typing notices but no other ephemeral events", () => {
     expect(JSON.parse(SYNC_FILTER).room.ephemeral).toEqual({ types: ["m.typing"] });
   });

@@ -141,11 +141,25 @@ export class InteropHomeserver extends FakeHomeserver {
     return bytes ? new Response(bytes, { headers: { "Content-Type": "application/octet-stream" } }) : Response.json({ errcode: "M_NOT_FOUND", error: "No such media" }, { status: 404 });
   }
 
+  /** Uploads as they came: who sent them, with which type and file name. */
+  readonly uploads: { user: string; type: string | null; filename: string | null; uri: string }[] = [];
+
+  /** Media uploads (POST /_matrix/media/v3/upload), which carry raw bytes. */
+  private mediaUpload(url: URL, method: string, init: RequestInit | undefined): Response | undefined {
+    if (url.origin !== HS || url.pathname !== "/_matrix/media/v3/upload" || method !== "POST") return undefined;
+    const headers = new Headers(init?.headers);
+    const who = this.tokens.get(headers.get("authorization")?.replace(/^Bearer /, "") ?? "");
+    if (!who) return Response.json({ errcode: "M_MISSING_TOKEN", error: "No token" }, { status: 401 });
+    const uri = this.storeMedia(new Uint8Array(init!.body as Uint8Array));
+    this.uploads.push({ user: who.user, type: headers.get("content-type"), filename: url.searchParams.get("filename"), uri });
+    return Response.json({ content_uri: uri });
+  }
+
   /** The fetch both clients use. */
   readonly fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const method = (init?.method ?? "GET").toUpperCase();
-    const media = method === "GET" ? this.download(url, new Headers(init?.headers).get("authorization")) : undefined;
+    const media = method === "GET" ? this.download(url, new Headers(init?.headers).get("authorization")) : this.mediaUpload(url, method, init);
     if (media) return media;
     const text = typeof init?.body === "string" ? init.body : undefined;
     const body = text ? (JSON.parse(text) as Json) : {};
@@ -179,6 +193,7 @@ export class InteropHomeserver extends FakeHomeserver {
     if (key === "GET /v3/sync") return this.syncFor(user, device, url.searchParams);
     if (key === "GET /v3/pushrules/") return { global: { override: [], content: [], room: [], sender: [], underride: [] } };
     if (key === "GET /v3/capabilities") return { capabilities: {} };
+    if (key === "GET /v1/media/config") return { "m.upload.size": 10 * 1024 * 1024 };
     if (key === "POST /v3/logout") return {};
     // Like most homeservers, no MSC4143 transports endpoint: clients fall back to .well-known.
     if (key === "GET /unstable/org.matrix.msc4143/rtc/transports") throw new MatrixError(404, "M_UNRECOGNIZED", "Unrecognized request");

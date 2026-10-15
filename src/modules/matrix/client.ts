@@ -296,6 +296,33 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
       return download;
     },
 
+    async uploadLimit(session) {
+      let body: Record<string, unknown>;
+      try {
+        // Authenticated media (Matrix 1.11); older servers have only the media API's own.
+        body = await authed(session, "/_matrix/client/v1/media/config");
+      } catch (error) {
+        if (!(error instanceof MatrixError && (error.status === 404 || error.errcode === "M_UNRECOGNIZED"))) throw error;
+        body = await authed(session, "/_matrix/media/v3/config");
+      }
+      const limit = body["m.upload.size"];
+      return typeof limit === "number" && Number.isSafeInteger(limit) && limit > 0 ? limit : undefined;
+    },
+
+    async upload(session, bytes, contentType, filename) {
+      await fresh(session);
+      // Uploading stayed in the media API when downloads moved (Matrix 1.11); it goes to the homeserver only.
+      const url = new URL(`${session.baseUrl}/_matrix/media/v3/upload`);
+      if (filename) url.searchParams.set("filename", filename);
+      const headers = { Accept: "application/json", Authorization: `Bearer ${session.accessToken}`, "Content-Type": contentType };
+      const response = await fetchFn(url.href, { method: "POST", headers, body: bytes });
+      const json: unknown = await response.json().catch(() => undefined);
+      if (!response.ok) throw failure(response.status, json);
+      const uri = isRecord(json) ? json.content_uri : undefined;
+      if (!parseMxc(uri)) throw new Error("The homeserver sent an unreadable upload response");
+      return uri as string;
+    },
+
     async accountData(session, type) {
       if (!ACCOUNT_DATA_TYPE.test(type)) throw new Error("Invalid account data type");
       try {

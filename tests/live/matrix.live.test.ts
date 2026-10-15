@@ -17,10 +17,11 @@
 import { initAsync } from "@matrix-org/matrix-sdk-crypto-wasm";
 import { ClientEvent, createClient, EventType, Preset, SyncState, type MatrixClient, type MatrixEvent } from "matrix-js-sdk";
 import { CryptoEvent, VerificationPhase, VerifierEvent, type ShowSasCallbacks, type VerificationRequest } from "matrix-js-sdk/lib/crypto-api/index.js";
-import { createHmac } from "node:crypto";
+import { createDecipheriv, createHash, createHmac } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { MxSession } from "../../src/modules/matrix/api";
+import type { FileSource } from "../../src/engine/runtime";
 import { MatrixAdapter } from "../../src/modules/matrix/adapter";
 import { createMatrixClient } from "../../src/modules/matrix/client";
 import { openE2ee, type MatrixE2ee } from "../../src/modules/matrix/crypto";
@@ -81,6 +82,8 @@ async function multicord(user: string, password: string) {
   const logs: string[] = [];
   let e2ee: MatrixE2ee | undefined;
   const api = createMatrixClient(liveFetch);
+  /** What the file picker hands out, one list per attach. */
+  const picks: FileSource[][] = [];
   const adapter = new MatrixAdapter({
     def: { id: "matrix-live", name: "Matrix", url: HTTPS },
     secrets: {
@@ -94,6 +97,7 @@ async function multicord(user: string, password: string) {
     // In memory: Node has no IndexedDB.
     crypto: { open: async (options) => (e2ee = await openE2ee({ ...options, store: undefined })), deleteStore: async () => {} },
     log: (message) => logs.push(message),
+    files: { pick: async () => picks.shift() ?? [] },
   });
   const last = () => renders.at(-1);
   const prompt = (id: string) => {
@@ -123,7 +127,7 @@ async function multicord(user: string, password: string) {
     if (!response.ok) throw new Error(`${method} ${path}: ${response.status} ${JSON.stringify(json)}`);
     return json;
   };
-  return { adapter, api, session, e2ee: () => e2ee!, renders, logs, last, prompt, chat, messages, act, raw };
+  return { adapter, api, session, e2ee: () => e2ee!, renders, logs, picks, last, prompt, chat, messages, act, raw };
 }
 type Multicord = Awaited<ReturnType<typeof multicord>>;
 
@@ -322,6 +326,73 @@ describe.skipIf(!LIVE || !SECRET)("Matrix against a live homeserver", { timeout:
     await mc.act({ type: "loadMedia", key: fileKey });
     const file = await until(() => (attachment("notes.txt")?.url ? attachment("notes.txt") : undefined), `the file to load (${JSON.stringify(attachment("notes.txt"))})`);
     expect(file.url).toBe(`data:text/plain;base64,${Buffer.from(text).toString("base64")}`);
+  });
+
+  it("reacts, shows typing and sends files, encrypted in the DM and plain in the lobby, as Element reads them", async () => {
+    await mc.adapter.openConversation(dm);
+    const { event_id: target } = await bob.sendTextMessage(dm, "react here");
+    const message = await until(() => mc.messages().find((m) => m.content === "react here"), "Multicord to show the message to react to");
+
+    // Reactions: Element's (unencrypted, as Element sends them) in Multicord, Multicord's in Element, and taking one back.
+    await bob.sendEvent(dm, EventType.Reaction, { "m.relates_to": { rel_type: "m.annotation", event_id: target, key: "👍" } } as never);
+    await until(() => mc.messages().find((m) => m.id === message.id)?.reactions.some((r) => r.key === "👍" && r.count === 1 && !r.me), "Multicord to show Element's reaction");
+    const reactions = () =>
+      bob
+        .getRoom(dm)
+        ?.relations.getChildEventsForEvent(target, "m.annotation", "m.reaction")
+        ?.getRelations()
+        .filter((e) => !e.isRedacted() && e.getSender() === aliceId)
+        .map((e) => e.getRelation()?.key);
+    await mc.act({ type: "react", messageId: message.id, emoji: "🎉", add: true });
+    await until(() => reactions()?.includes("🎉"), "Element to see Multicord's reaction");
+    await mc.act({ type: "react", messageId: message.id, emoji: "🎉", add: false });
+    await until(() => reactions()?.length === 0, "Element to see Multicord take its reaction back");
+    expect(mc.messages().find((m) => m.id === message.id)!.reactions).toEqual([{ key: "👍", label: "👍", count: 1, me: false }]);
+
+    // Typing, both ways; sending ends Multicord's.
+    await bob.sendTyping(dm, true, 30_000);
+    await until(() => mc.chat()?.channel?.typing.includes(BOB), "Multicord to show Element typing");
+    await bob.sendTyping(dm, false, 30_000);
+    await until(() => mc.chat()?.channel?.typing.length === 0, "Multicord to stop showing Element typing");
+    const typing = () => bob.getRoom(dm)?.getMember(aliceId)?.typing;
+    await mc.act({ type: "typing" });
+    await until(() => typing() === true, "Element to show Multicord typing");
+
+    // A picture into the encrypted DM: ciphertext on the server, the key in the encrypted event.
+    expect(await mc.api.uploadLimit(mc.session)).toBeGreaterThan(0);
+    const png = solidPng(8, 6, [20, 120, 220]);
+    mc.picks.push([{ filename: "blue.png", size: png.length, contentType: "image/png", read: async (start, end) => png.slice(start, end) }]);
+    await mc.act({ type: "attach" });
+    await mc.act({ type: "send", content: "a blue picture" });
+    await until(() => typing() === false, "Element to see Multicord stop typing");
+    const sent = await elementSees(bob, dm, (e) => e.getSender() === aliceId && e.getContent().body === "blue.png", "Element to decrypt Multicord's picture");
+    expect(sent.getWireType()).toBe("m.room.encrypted");
+    const content = sent.getContent();
+    expect(content).toMatchObject({ msgtype: "m.image", info: { mimetype: "image/png", size: png.length } });
+    expect(content.url).toBeUndefined();
+    const download = async (mxc: string) => {
+      const response = await fetch(`${HTTP}/_matrix/client/v1/media/download/${mxc.slice("mxc://".length)}`, { headers: { Authorization: `Bearer ${bob.getAccessToken()}` } });
+      expect(response.status).toBe(200);
+      return Buffer.from(await response.arrayBuffer());
+    };
+    const ciphertext = await download(content.file.url);
+    expect(createHash("sha256").update(ciphertext).digest("base64").replace(/=+$/, "")).toBe(content.file.hashes.sha256);
+    const decipher = createDecipheriv("aes-256-ctr", Buffer.from(content.file.key.k, "base64url"), Buffer.from(content.file.iv, "base64"));
+    expect(Buffer.concat([decipher.update(ciphertext), decipher.final()]).equals(Buffer.from(png))).toBe(true);
+    await elementSees(bob, dm, (e) => e.getSender() === aliceId && e.getContent().body === "a blue picture", "Element to see the text after the picture");
+    expect(mc.messages().find((m) => m.attachments[0]?.name === "blue.png")!.attachments[0]!.url).toBe(`data:image/png;base64,${Buffer.from(png).toString("base64")}`);
+
+    // A file into the unencrypted lobby: in the clear, with its name.
+    const notes = new TextEncoder().encode("lobby notes\n");
+    const lobbyItem = mc.chat()!.sidebar.find((i) => i.name === `Lobby ${run}`)!;
+    await mc.act({ type: "select", channelId: lobbyItem.id });
+    mc.picks.push([{ filename: "lobby.txt", size: notes.length, contentType: "text/plain", read: async (start, end) => notes.slice(start, end) }]);
+    await mc.act({ type: "attach" });
+    await mc.act({ type: "send", content: "" });
+    const file = await elementSees(bob, lobby, (e) => e.getSender() === aliceId && e.getContent().body === "lobby.txt", "Element to see Multicord's file");
+    expect(file.getContent()).toMatchObject({ msgtype: "m.file", info: { mimetype: "text/plain", size: notes.length } });
+    expect((await download(file.getContent().url)).toString()).toBe("lobby notes\n");
+    expect(mc.chat()?.error).toBeUndefined();
   });
 
   it("replies, edits and deletes, both ways, and moves the read marker", async () => {
