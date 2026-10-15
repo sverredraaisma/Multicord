@@ -96,6 +96,24 @@ const api = {
       height: v.videoHeight,
       frames: v.getVideoPlaybackQuality().totalVideoFrames,
     })),
+  /** The video as LiveKit sees it here (each remote publication, the own camera, the cameras listed), for failure reports. */
+  async diag(): Promise<Record<string, unknown>> {
+    const own = room.localParticipant.getTrackPublication(Track.Source.Camera);
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return {
+      remote: [...room.remoteParticipants.values()].flatMap((p) =>
+        [...p.videoTrackPublications.values()].map((pub) => ({
+          identity: p.identity.slice(0, 10),
+          muted: pub.isMuted,
+          status: pub.subscriptionStatus,
+          streamState: pub.track?.streamState,
+          trackMuted: pub.track?.mediaStreamTrack.muted,
+        })),
+      ),
+      camera: own ? { muted: own.isMuted, track: own.track?.mediaStreamTrack.readyState } : null,
+      cameras: devices.filter((d) => d.kind === "videoinput").length,
+    };
+  },
   errors: (): { count: number; first: string[] } => ({ count: errorCount, first: errors.slice(0, 3) }),
   leave: (): Promise<void> => room.disconnect(),
 };

@@ -180,7 +180,19 @@ async function main() {
     { id: "telegram", enabled: false },
     { id: "mx", name: "Matrix media check", module: "matrix-native", url: `https://${HOSTS.synapse}` },
   ]));
-  const media = ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--disable-features=CalculateNativeWinOcclusion", "--disable-backgrounding-occluded-windows"];
+  const media = [
+    "--use-fake-device-for-media-stream",
+    "--use-fake-ui-for-media-stream",
+    "--disable-features=CalculateNativeWinOcclusion",
+    "--disable-backgrounding-occluded-windows",
+    // Chromium's fake camera handing frames over in GPU memory buffers (its
+    // path once a page has a peer connection) crashes its video capture service
+    // now and then on Windows; shared memory does not (see README).
+    "--disable-video-capture-use-gpu-memory-buffer",
+    // Chromium's warnings into the logs, such as "Detected crash of video capture service".
+    "--enable-logging=stderr",
+    "--log-level=1",
+  ];
   out("starting the scratch Multicord and Element");
   const launchMulticord = () => launch([
     ".",
@@ -239,15 +251,18 @@ async function main() {
   const localState = path.join(mcProfile, "Local State");
   await until(async () => existsSync(localState) && (process.platform !== "win32" || readFileSync(localState, "utf8").includes('"encrypted_key"')), "the profile's Local State to be written", 60_000);
   await new Promise((r) => setTimeout(r, 2000));
-  stop(multicord);
-  await until(async () => !(await hasPage(PORTS.multicordCdp, ".")), "the scratch Multicord to exit", 30_000);
-  await new Promise((r) => setTimeout(r, 1000));
-  multicord = launchMulticord();
-  children.push(multicord);
-  await until(() => hasPage(PORTS.multicordCdp, "native\\.html"), "Multicord's Matrix view after the restart", 60_000);
-  await until(signedIn, "Multicord to resume its session", 60_000).catch(async (error) => {
-    throw new Error(`${error.message}; the view shows: ${String(await mc("document.body.innerText.slice(0, 300)").catch(() => "?")).replace(/\s+/g, " ")}`);
-  });
+  const restart = async () => {
+    stop(multicord);
+    await until(async () => !(await hasPage(PORTS.multicordCdp, ".")), "the scratch Multicord to exit", 30_000);
+    await new Promise((r) => setTimeout(r, 1000));
+    multicord = launchMulticord();
+    children.push(multicord);
+    await until(() => hasPage(PORTS.multicordCdp, "native\\.html"), "Multicord's Matrix view after the restart", 60_000);
+    await until(signedIn, "Multicord to resume its session", 60_000).catch(async (error) => {
+      throw new Error(`${error.message}; the view shows: ${String(await mc("document.body.innerText.slice(0, 300)").catch(() => "?")).replace(/\s+/g, " ")}`);
+    });
+  };
+  await restart();
 
   const ctx = {
     hs,
@@ -266,8 +281,19 @@ async function main() {
     mc,
     el,
     out,
+    /** How often each side's log says Chromium's video capture service crashed (so far, over all its restarts). */
+    captureCrashes: () => Object.fromEntries(["multicord", "element"].map((side) => {
+      const file = path.join(dir, `${side}.log`);
+      return [side, existsSync(file) ? readFileSync(file, "utf8").split("Detected crash of video capture service").length - 1 : 0];
+    })),
   };
-  for (const format of FORMATS) {
+  for (const [i, format] of FORMATS.entries()) {
+    // Each call in a fresh Multicord process: after a crash of Chromium's video
+    // capture service a process lists no camera any more (see README).
+    if (i > 0) {
+      out("restarting the scratch Multicord, so this call is its first");
+      await restart();
+    }
     out(`${format} format`);
     await runFormat(ctx, format, check(format)).catch((error) => check(format)("aborted", "call ran to the end", false, error.message));
   }

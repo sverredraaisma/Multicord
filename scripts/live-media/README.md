@@ -57,7 +57,8 @@ npm run live:media -- --json result.json # the result rows as JSON too
    is allowed from the next start (the app tells users the same).
 6. For each format (the `org.matrix.msc3401.call.member` state event, then the
    sticky `m.rtc.member` that Element Call's "Matrix 2.0" mode sends), in a
-   fresh encrypted room:
+   fresh encrypted room and a fresh Multicord process (it restarts before the
+   second format):
    - **audio**: LiveKit's `ListParticipants` shows both publishing MICROPHONE
      with encryption GCM; Multicord's LiveKit identity shows the format it
      joined in; Element hears 440 Hz from Multicord and Multicord hears 880 Hz
@@ -83,13 +84,28 @@ mute and deafen, device switching, push to talk, calls ringing, more than two
 media participants, real microphones and cameras, Element Call itself (the peer
 is its media layer and MatrixRTC, not its UI), matrix.org, and network loss.
 
-## Known failure
+## Video and Chromium's fake camera
 
-Multicord's call video fails now and then: in some runs its remote video stays
-at 0 frames although LiveKit has the other camera encrypted and unmuted, in
-others its own camera reaches LiveKit muted. Audio, encryption, key rotation
-and the wrong-key check have passed every run. The cause is not known yet, so
-a failing video row is a real finding, not the runner's fault.
+Both Electrons film with Chromium's fake camera. On Windows, once a page has
+a peer connection, Chromium asks for the camera's frames in GPU memory
+buffers, and in that mode its video capture service process crashed about a
+second into 3 of 14 captures in a bare Electron page (Electron 44), and in 2
+of 4 runs of this check. The crash ends that camera, and Chromium, listing
+the devices again while the service is down, keeps an empty list for the rest
+of the process: LiveKit then mutes that side's camera (the other side sees no
+frames), and the next call's camera cannot start ("Requested device not
+found"). Multicord's own code is not involved.
+
+So the runner starts both Electrons with
+`--disable-video-capture-use-gpu-memory-buffer` (frames in shared memory: no
+crash in 15 captures, against 3 in 14 without it), restarts Multicord before
+each format so a crash cannot carry over into the next call, and logs
+Chromium's warnings. If a video row still fails, its detail says whether the
+capture service crashed in either process since the cameras went on, and
+shows both sides' WebRTC video statistics, tracks and listed cameras.
+
+The switch is backed by the bare-page probe only: no full run of this check
+has finished with it yet, so whether video now passes every time is not known.
 
 ## Platform notes
 
@@ -99,7 +115,8 @@ Written for and run on Windows. The parts that are Windows-only:
   killed as a whole;
 - waiting for the profile's `Local State` to hold safeStorage's key before the
   restart (elsewhere the key lives in the OS keychain);
-- `--disable-features=CalculateNativeWinOcclusion` (harmless elsewhere).
+- `--disable-features=CalculateNativeWinOcclusion` and
+  `--disable-video-capture-use-gpu-memory-buffer` (harmless elsewhere).
 
 On Linux and macOS it should work as is (Synapse runs as the host user so it
 can write the mounted folder), but it has not been run there.

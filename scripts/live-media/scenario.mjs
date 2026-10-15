@@ -97,6 +97,51 @@ const VIEW_LAYOUT = `(() => {
   };
 })()`;
 
+/**
+ * Keeps each RTCPeerConnection the page makes from now on (window.__mcPCs), so
+ * the video's WebRTC statistics can be read when a check fails. Idempotent.
+ */
+const PC_HOOK = `(() => {
+  if (window.__mcPCs) return true;
+  window.__mcPCs = [];
+  const Native = window.RTCPeerConnection;
+  window.RTCPeerConnection = function (...args) { const pc = new Native(...args); window.__mcPCs.push(pc); return pc; };
+  window.RTCPeerConnection.prototype = Native.prototype;
+  Object.setPrototypeOf(window.RTCPeerConnection, Native);
+  return true;
+})()`;
+
+/**
+ * Video statistics of the open peer connections (inbound: is the SFU sending,
+ * does it decode; outbound: does the camera encode and send), the local
+ * camera track, the video inputs and any banner, for failure reports.
+ */
+const VIDEO_DIAG = `(async () => {
+  const pick = (o, keys) => Object.fromEntries(keys.filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
+  const pcs = (window.__mcPCs ?? []).filter((pc) => pc.connectionState !== "closed");
+  const rtc = [];
+  for (const pc of pcs) {
+    const stats = await pc.getStats();
+    stats.forEach((s) => {
+      if (s.kind !== "video") return;
+      if (s.type === "inbound-rtp") rtc.push({ in: pick(s, ["packetsReceived", "bytesReceived", "framesReceived", "framesDecoded", "keyFramesDecoded", "framesDropped", "frameWidth", "frameHeight", "pliCount", "firCount", "nackCount", "packetsLost", "decoderImplementation"]) });
+      if (s.type === "outbound-rtp") rtc.push({ out: pick(s, ["rid", "active", "bytesSent", "framesEncoded", "framesSent", "keyFramesEncoded", "frameWidth", "frameHeight", "qualityLimitationReason", "pliCount", "encoderImplementation"]) });
+      if (s.type === "media-source") rtc.push({ source: pick(s, ["width", "height", "frames", "framesPerSecond"]) });
+    });
+    for (const t of pc.getTransceivers()) if (t.receiver.track?.kind === "video" || t.sender.track?.kind === "video")
+      rtc.push({ transceiver: t.mid + " " + t.currentDirection + " recv:" + (t.receiver.track ? t.receiver.track.readyState + (t.receiver.track.muted ? ",muted" : "") : "-") + " send:" + (t.sender.track ? t.sender.track.readyState + (t.sender.track.muted ? ",muted" : "") + (t.sender.track.enabled ? "" : ",disabled") : "-") });
+  }
+  const tracks = [...document.querySelectorAll(".voice-stage video")].map((v) => {
+    const t = v.srcObject?.getVideoTracks?.()[0];
+    const s = t?.getSettings?.() ?? {};
+    return { local: Boolean(v.closest(".video-tile")?.classList.contains("local")), size: v.clientWidth + "x" + v.clientHeight, video: v.videoWidth + "x" + v.videoHeight, frames: v.getVideoPlaybackQuality().totalVideoFrames, paused: v.paused, track: t ? { label: t.label, readyState: t.readyState, muted: t.muted, enabled: t.enabled, settings: pick(s, ["deviceId", "width", "height", "frameRate"]) } : null };
+  });
+  const devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput").map((d) => d.label || d.deviceId.slice(0, 8));
+  const banner = document.querySelector(".banner")?.textContent || "";
+  const voice = document.querySelector(".voice-panel")?.innerText.replace(/\\s+/g, " ").slice(0, 200) || "";
+  return { pcs: pcs.length, rtc, tracks, devices, banner, voice, visibility: document.visibilityState, focus: document.hasFocus(), window: innerWidth + "x" + innerHeight };
+})()`;
+
 const heard = (h, hz) => h && h.rmsDb !== null && h.rmsDb > HEARD_DB && Math.abs(h.peakHz - hz) <= HZ_TOLERANCE;
 const silent = (h) => Boolean(h) && (h.rmsDb === null || h.rmsDb < SILENT_DB);
 const fmt = (h) => (h ? `${h.rmsDb ?? "-inf"} dBFS @ ${h.peakHz} Hz` : "no track");
@@ -104,7 +149,8 @@ const loudest = (list) => [...list].sort((a, b) => (b.rmsDb ?? -999) - (a.rmsDb 
 
 /**
  * @param {object} ctx  hs, focus, livekitHttp, livekitWs, lkInternal, lkPublic, focusPublic,
- *   sharedSecret, lkKey, lkSecret, serverName, mcUser, mcPassword, mc(expr), el(expr), out(line)
+ *   sharedSecret, lkKey, lkSecret, serverName, mcUser, mcPassword, mc(expr), el(expr), out(line),
+ *   captureCrashes() (per side, how often its log says Chromium's video capture service crashed)
  * @param {"legacy" | "sticky"} format
  * @param {(phase: string, name: string, ok: boolean, detail: string) => void} check
  */
@@ -169,6 +215,7 @@ export async function runFormat(ctx, format, check) {
     };
 
     const multicordJoin = async () => {
+      await mc(PC_HOOK);
       await mc(`(() => { document.querySelector(".voice-panel button.leave")?.click(); return true; })()`);
       await until(() => mc(`(() => { const b = [...document.querySelectorAll(".sidebar button.channel:not(.voice)")].find((b) => b.textContent.includes(${JSON.stringify(roomName)})); b?.click(); return Boolean(b); })()`), "the room in Multicord's sidebar", 60_000);
       // A call in progress is listed by room name; a room without one offers "Start a call in".
@@ -221,13 +268,23 @@ export async function runFormat(ctx, format, check) {
     await listen("audio");
 
     // --- video ---
+    // Failure details: a crash of Chromium's video capture service since the
+    // cameras went on (it ends that side's camera), and what both sides see.
+    const crashesBefore = ctx.captureCrashes();
+    const why = async () => {
+      const now = ctx.captureCrashes();
+      const crashed = ["multicord", "element"].filter((side) => now[side] > crashesBefore[side]);
+      const note = crashed.length ? `; Chromium's video capture service crashed in the scratch ${crashed.join(" and ")} (a test-device fault, see README)` : "";
+      return `${note}; Multicord ${JSON.stringify(await mc(VIDEO_DIAG))}; Element ${JSON.stringify(await el(`el.diag()`))}`;
+    };
     await el(`el.camera(true)`);
     await mc(`(() => { const b = [...document.querySelectorAll(".voice-controls button")].find((b) => b.textContent === "Camera"); b?.click(); return Boolean(b); })()`);
     const withCamera = await until(async () => {
       const list = await participants();
       return encryptedBoth(list, "CAMERA") ? list : undefined;
     }, "both cameras on LiveKit", 30_000).catch(async () => participants());
-    check("video", "LiveKit: both publish CAMERA, GCM, unmuted", encryptedBoth(withCamera, "CAMERA"), describe(withCamera, "CAMERA"));
+    const camerasOk = encryptedBoth(withCamera, "CAMERA");
+    check("video", "LiveKit: both publish CAMERA, GCM, unmuted", camerasOk, `${describe(withCamera, "CAMERA")}${camerasOk ? "" : await why()}`);
     await sleep(3000);
     const frames = async () => ({
       element: (await el(`el.videos()`)).find((v) => v.identity === mcIdentity)?.frames ?? 0,
@@ -238,15 +295,16 @@ export async function runFormat(ctx, format, check) {
       const now = await frames();
       return now.element > first.element && now.multicord > first.multicord ? now : undefined;
     }, "frames both ways", 15_000).catch(() => frames());
-    check("video", "Element decodes Multicord's video", second.element > first.element, `frames ${first.element} -> ${second.element}`);
+    check("video", "Element decodes Multicord's video", second.element > first.element, `frames ${first.element} -> ${second.element}${second.element > first.element ? "" : await why()}`);
     let diagnosis = "";
     if (!(second.multicord > first.multicord)) {
       // Where the remote tile is and what its track does; then whether scrolling it into view helps (adaptiveStream).
       const layout = await mc(VIEW_LAYOUT);
+      const before = await why();
       await mc(`(() => { const v = [...document.querySelectorAll(".voice-stage video")].find((v) => !v.closest(".video-tile")?.classList.contains("local")); v?.scrollIntoView(); return Boolean(v); })()`);
       await sleep(5000);
       const scrolled = await frames();
-      diagnosis = `; view ${JSON.stringify(layout)}; after scrolling the remote tile into view: frames ${second.multicord} -> ${scrolled.multicord}`;
+      diagnosis = `${before}; view ${JSON.stringify(layout)}; after scrolling the remote tile into view: frames ${second.multicord} -> ${scrolled.multicord}`;
     }
     check("video", "Multicord decodes Element's video", second.multicord > first.multicord, `frames ${first.multicord} -> ${second.multicord}${diagnosis}`);
     await listen("video");
