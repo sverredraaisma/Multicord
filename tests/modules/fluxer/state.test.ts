@@ -82,9 +82,9 @@ describe("FluxerState", () => {
     const state = ready();
     const author = { id: "2", username: "ana" };
     state.addHistory("211", [
-      { id: "1", channelId: "211", author: { id: "2", username: "ana" }, content: "a", timestamp: "", edited: false, mentionIds: [], mentionEveryone: false, attachments: [], stickers: [], embeds: [] },
-      { id: "2", channelId: "211", author: { id: "2", username: "ana" }, content: "b", timestamp: "", edited: false, mentionIds: [], mentionEveryone: false, attachments: [], stickers: [], embeds: [] },
-      { id: "3", channelId: "211", author: { id: "2", username: "ana" }, content: "c", timestamp: "", edited: false, mentionIds: [], mentionEveryone: false, attachments: [], stickers: [], embeds: [] },
+      { id: "1", channelId: "211", author: { id: "2", username: "ana" }, content: "a", timestamp: "", edited: false, mentionIds: [], mentionEveryone: false, attachments: [], stickers: [], embeds: [], links: [] },
+      { id: "2", channelId: "211", author: { id: "2", username: "ana" }, content: "b", timestamp: "", edited: false, mentionIds: [], mentionEveryone: false, attachments: [], stickers: [], embeds: [], links: [] },
+      { id: "3", channelId: "211", author: { id: "2", username: "ana" }, content: "c", timestamp: "", edited: false, mentionIds: [], mentionEveryone: false, attachments: [], stickers: [], embeds: [], links: [] },
     ], false);
     state.apply("MESSAGE_UPDATE", { id: "1", channel_id: "211", author, content: "edited", edited_timestamp: "t" });
     state.apply("MESSAGE_UPDATE", { id: "9", channel_id: "211", author, content: "unknown" });
@@ -105,7 +105,7 @@ describe("FluxerState", () => {
 
   it("prepends older history without duplicates", () => {
     const state = ready();
-    const msg = (id: string) => ({ id, channelId: "211", author: { id: "2", username: "ana" }, content: id, timestamp: "", edited: false, mentionIds: [], mentionEveryone: false, attachments: [], stickers: [], embeds: [] });
+    const msg = (id: string) => ({ id, channelId: "211", author: { id: "2", username: "ana" }, content: id, timestamp: "", edited: false, mentionIds: [], mentionEveryone: false, attachments: [], stickers: [], embeds: [], links: [] });
     state.addHistory("211", [msg("5"), msg("6")], false);
     state.addHistory("211", [msg("3"), msg("4"), msg("5")], true);
     expect(state.messages.get("211")!.map((m) => m.id)).toEqual(["3", "4", "5", "6"]);
@@ -171,7 +171,7 @@ describe("notification settings", () => {
     edited: false,
     mentionIds: [] as string[],
     mentionEveryone: false,
-    attachments: [], stickers: [], embeds: [],
+    attachments: [], stickers: [], embeds: [], links: [],
     ...extra,
   });
 

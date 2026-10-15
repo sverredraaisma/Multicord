@@ -523,6 +523,7 @@ describe("FluxerAdapter chat", () => {
                       { type: "gifv", video: { url: "https://media.fx/g.mp4" } },
                       { type: "video", video: { url: "https://media.fx/v.mp4" } },
                       { type: "image", image: { url: "https://media.fx/i.png" } },
+                      { type: "article", url: "https://site/a", title: "Read" },
                     ],
                   }),
                 ],
@@ -563,6 +564,7 @@ describe("FluxerAdapter chat", () => {
         { name: "Video", kind: "video", url: "https://media.fx/v.mp4", previewUrl: undefined, width: undefined, height: undefined, loop: undefined },
         { name: "Image", kind: "image", url: "https://media.fx/i.png", previewUrl: undefined, width: undefined, height: undefined, loop: undefined },
       ],
+      embeds: [{ url: "https://site/a", title: "Read" }],
     });
   });
 

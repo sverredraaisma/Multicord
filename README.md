@@ -91,6 +91,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - where the news begins: opening a channel with unread messages marks the first after your read position (Fluxer gives no count, so the divider says "New messages")
   - mentions: messages that mention you or @everyone are highlighted (role mentions are not, as Multicord does not track your roles), and `@name` in the composer inserts a real Fluxer mention of someone who wrote recently
   - attachment uploads, picked with the OS file dialog
+  - link previews Fluxer made (articles, site cards, bots' rich embeds) as cards, their pictures through the instance's media proxy
   - custom emoji, stickers and GIFs in the picker, by Fluxer's rules: a server's own emoji and stickers there, and every server's (also in DMs) only for accounts with global expressions, which Fluxer gives premium (Plutonium) accounts or whomever the instance's limits say. Stickers are WebP, still or animated, and go as stickers; Lottie stickers in messages show their name. GIF search uses the instance's own provider (Klipy on fluxer.app), with trending GIFs before you type, where the instance has one
   - threads under their channel, and forum channels with their posts and a form for new ones
   - voice channels with who is in them, and calls with microphone, camera and screen share (through LiveKit, as Fluxer uses)

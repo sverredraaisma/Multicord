@@ -107,6 +107,7 @@ describe("Fluxer parsers", () => {
       ],
       stickers: [],
       embeds: [],
+      links: [],
       type: undefined,
       replyTo: undefined,
       reactions: [],
@@ -217,6 +218,35 @@ describe("Fluxer media", () => {
       { kind: "image", url: "https://media/t.png", width: undefined, height: undefined },
     ]);
     expect(parseMessage({ id: "1", channel_id: "2", author, stickers: [{ id: "9", name: "Old", format_type: 4 }] })!.stickers).toEqual([{ id: "9", name: "Old", format: 4, animated: false }]);
+    // An article without words or a proxied picture is no card.
+    expect(message.links).toEqual([]);
+  });
+
+  it("reads link previews with words, their pictures only through the media proxy", async () => {
+    const { parseMessage } = await import("../../../src/modules/fluxer/types");
+    const message = parseMessage({
+      id: "100",
+      channel_id: "10",
+      author: { id: "1", username: "ana" },
+      embeds: [
+        {
+          type: "article",
+          url: "https://site/a",
+          title: "T".repeat(300),
+          description: "Words",
+          color: 0xff8800,
+          provider: { name: "Site" },
+          thumbnail: { url: "https://site/t.png", proxy_url: "https://media/t.png", width: 80, height: 80 },
+        },
+        { type: "rich", url: "http://plain/a", title: "Bot", author: { name: "Bot author" }, color: -1, image: { url: "https://x/i.png", proxy_url: "https://media/i.png" } },
+        { type: "link", description: " ", provider: "x", author: "y", color: 0x1000000, image: { url: "https://x/i.png" } },
+        { type: "image", title: "media only", image: { proxy_url: "https://media/m.png" } },
+      ],
+    })!;
+    expect(message.links).toEqual([
+      { url: "https://site/a", site: "Site", title: "T".repeat(256), description: "Words", color: "#ff8800", image: { url: "https://media/t.png", width: 80, height: 80, thumbnail: true } },
+      { site: "Bot author", title: "Bot", image: { url: "https://media/i.png", width: undefined, height: undefined, thumbnail: false } },
+    ]);
   });
 });
 

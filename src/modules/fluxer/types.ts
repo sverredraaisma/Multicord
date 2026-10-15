@@ -151,6 +151,18 @@ export interface FluxerMediaEmbed {
   height?: number;
 }
 
+/** A link preview with words: an article, a site's card, or a rich embed a bot made. */
+export interface FluxerLinkEmbed {
+  url?: string;
+  site?: string;
+  title?: string;
+  description?: string;
+  /** "#rrggbb". */
+  color?: string;
+  /** Its picture, through the instance's media proxy only. */
+  image?: { url: string; width?: number; height?: number; thumbnail: boolean };
+}
+
 export interface FluxerMessage {
   id: string;
   channelId: string;
@@ -163,6 +175,7 @@ export interface FluxerMessage {
   attachments: FluxerAttachment[];
   stickers: FluxerSticker[];
   embeds: FluxerMediaEmbed[];
+  links: FluxerLinkEmbed[];
   /** 0 DEFAULT, 19 REPLY; only these can be edited. */
   type?: number;
   /** The message this one replies to; null when it no longer exists. */
@@ -307,6 +320,10 @@ export function parseMessage(value: unknown): FluxerMessage | undefined {
       const embed = isRecord(e) ? parseMediaEmbed(e) : undefined;
       return embed ? [embed] : [];
     }),
+    links: list(value.embeds).flatMap((e) => {
+      const embed = isRecord(e) ? parseLinkEmbed(e) : undefined;
+      return embed ? [embed] : [];
+    }),
     type: typeof value.type === "number" ? value.type : undefined,
     replyTo: parseReplyTo(value),
     reactions: list(value.reactions).flatMap((r) => {
@@ -339,6 +356,34 @@ function parseMediaEmbed(e: Record<string, unknown>): FluxerMediaEmbed | undefin
     return url ? { kind: "image", url, width: dimension(image?.width), height: dimension(image?.height) } : undefined;
   }
   return undefined;
+}
+
+/**
+ * Embeds with words (articles, site cards, rich embeds), the media ones being
+ * left to parseMediaEmbed. Pictures come only through the instance's media
+ * proxy (proxy_url), so showing one does not reach the linked site.
+ */
+function parseLinkEmbed(e: Record<string, unknown>): FluxerLinkEmbed | undefined {
+  if (e.type === "image" || e.type === "gifv" || e.type === "video") return undefined;
+  const text = (value: unknown, max: number): string | undefined => (typeof value === "string" && value.trim() !== "" ? value.slice(0, max) : undefined);
+  const embed: FluxerLinkEmbed = {};
+  const url = httpsUrl(e.url);
+  if (url) embed.url = url;
+  const site = text(isRecord(e.provider) ? e.provider.name : undefined, 100) ?? text(isRecord(e.author) ? e.author.name : undefined, 100);
+  if (site) embed.site = site;
+  const title = text(e.title, 256);
+  if (title) embed.title = title;
+  const description = text(e.description, 1000);
+  if (description) embed.description = description;
+  if (typeof e.color === "number" && Number.isInteger(e.color) && e.color >= 0 && e.color <= 0xffffff) embed.color = `#${e.color.toString(16).padStart(6, "0")}`;
+  const picture = (key: string, thumbnail: boolean): FluxerLinkEmbed["image"] => {
+    const media = isRecord(e[key]) ? (e[key] as Record<string, unknown>) : {};
+    const proxied = httpsUrl(media.proxy_url);
+    return proxied ? { url: proxied, width: dimension(media.width), height: dimension(media.height), thumbnail } : undefined;
+  };
+  const image = picture("image", false) ?? picture("thumbnail", true);
+  if (image) embed.image = image;
+  return title || description || image ? embed : undefined;
 }
 
 /** referenced_message: absent for non-replies, null when the original is gone (per the docs). */

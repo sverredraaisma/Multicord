@@ -969,6 +969,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         me: r.me,
       })),
       attachments: this.media(message),
+      ...(message.links.length > 0 ? { embeds: message.links } : {}),
     };
   }
 
