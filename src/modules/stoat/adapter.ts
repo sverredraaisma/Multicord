@@ -1,5 +1,5 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
-import { MAX_ATTACHMENTS, type NativeAction, type NativeMessage, type NativeSidebarItem, type NativeViewState } from "../../shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeMessage, type NativeSidebarItem, type NativeViewState } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
 import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
@@ -547,6 +547,21 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     return file && this.instance?.autumn ? `${this.instance.autumn}/${file.tag}/${file.id}` : undefined;
   }
 
+  /** A custom emoji's picture, as Stoat's own client links it. */
+  private emojiUrl(id: string): string | undefined {
+    return this.instance?.autumn ? `${this.instance.autumn}/emojis/${id}` : undefined;
+  }
+
+  /** The picker's custom emoji for a channel: messages carry them as :id:, reactions by id. */
+  private customEmoji(channel: StoatChannel): NativeCustomEmoji[] {
+    return this.state.usableEmoji(channel).flatMap((emoji) => {
+      const url = this.emojiUrl(emoji.id);
+      if (!url) return [];
+      const source = this.state.servers.get(emoji.serverId!)!.name;
+      return [{ id: emoji.id, name: emoji.name, animated: emoji.animated, url, source, text: `:${emoji.id}:`, key: emoji.id }];
+    });
+  }
+
   railServers(): RailServer[] {
     return [...this.state.servers.values()].map((server) => ({
       key: server.id,
@@ -651,7 +666,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         return {
           key: r.emoji,
           label: isId(r.emoji) ? `:${custom?.name ?? "emoji"}:` : r.emoji,
-          imageUrl: isId(r.emoji) && this.instance?.autumn ? `${this.instance.autumn}/emojis/${r.emoji}` : undefined,
+          imageUrl: isId(r.emoji) ? this.emojiUrl(r.emoji) : undefined,
           count: r.userIds.length,
           me: this.state.meId !== undefined && r.userIds.includes(this.state.meId),
         };
@@ -718,6 +733,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: false },
               }
             : null,
+          customEmoji: channel ? this.customEmoji(channel) : [],
           voice: null,
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };

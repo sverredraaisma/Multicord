@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StoatAdapter, type StoatAdapterDeps } from "../../../src/modules/stoat/adapter";
 import type { EventSocket } from "../../../src/modules/stoat/events";
 import type { FileSource } from "../../../src/engine/runtime";
-import type { NativeViewState } from "../../../src/shared/native";
+import { customEmojiList, type NativeViewState } from "../../../src/shared/native";
 import { idTime } from "../../../src/modules/stoat/types";
 import { ALPHA, ANA, ANA_ID, BETA, BOB_ID, CHAT, DM, EMOJI, GENERAL, GROUP, LOBBY, ME_ID, RULES, message, readyPayload, ulid } from "./fixtures";
 
@@ -411,6 +411,30 @@ describe("StoatAdapter navigation", () => {
   });
 });
 
+describe("StoatAdapter custom emoji", () => {
+  it("offers the emoji usable in the open conversation, in Stoat's own syntax", async () => {
+    const { adapter, chat, event, online, requests } = setup({ token: "saved" });
+    await online();
+    await event({ type: "EmojiCreate", _id: ulid(53), name: "wave", animated: true, parent: { type: "Server", id: BETA } });
+    expect(chat().customEmoji).toEqual([]);
+    const party = { id: EMOJI, name: "party", animated: false, url: `https://cdn.test/emojis/${EMOJI}`, source: "Alpha", text: `:${EMOJI}:`, key: EMOJI };
+    const wave = { id: ulid(53), name: "wave", animated: true, url: `https://cdn.test/emojis/${ulid(53)}`, source: "Beta", text: `:${ulid(53)}:`, key: ulid(53) };
+    await adapter.openConversation(GENERAL);
+    expect(chat().customEmoji).toEqual([party]);
+    await adapter.openConversation(DM);
+    expect(chat().customEmoji).toEqual([party, wave]);
+    // The view takes them as they are, reactions included.
+    expect(customEmojiList(chat().customEmoji, chat().emojiBase)).toEqual([{ ...party, react: true }, { ...wave, react: true }]);
+    // Picking one for a reaction sends its id as the key.
+    await adapter.handleAction({ type: "react", messageId: ulid(450), emoji: EMOJI, add: true });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(requests(`/reactions/${EMOJI}`)).toHaveLength(1);
+    expect(chat().channel!.messages[0]!.reactions).toEqual([{ key: EMOJI, label: ":party:", imageUrl: `https://cdn.test/emojis/${EMOJI}`, count: 1, me: true }]);
+    await event({ type: "EmojiDelete", id: EMOJI });
+    expect(chat().customEmoji).toEqual([wave]);
+  });
+});
+
 describe("StoatAdapter messages", () => {
   it("renders authors, mentions, emoji, replies, reactions and attachments", async () => {
     const { adapter, chat, event, online, routes } = setup({ token: "saved" });
@@ -672,8 +696,9 @@ describe("StoatAdapter attachments", () => {
     await adapter.handleAction({ type: "sendFile", file: { handle: "h", name: "a.gif", size: 3, type: "image/gif" } });
     expect(chat().channel!.pending).toEqual([]);
     expect(chat().channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false });
-    // Without a file server there are no avatar or icon URLs either.
+    // Without a file server there are no avatar or icon URLs either, nor emoji pictures to pick.
     expect(chat().sidebar[0]!.iconUrl).toBeUndefined();
+    expect(chat().customEmoji).toEqual([]);
 
     const bare = setup({ token: "saved" });
     await bare.online();

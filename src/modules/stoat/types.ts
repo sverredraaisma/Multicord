@@ -108,9 +108,12 @@ export interface StoatUnread {
   mentions: string[];
 }
 
+/** A custom emoji. Its picture is <autumn>/emojis/<id>; messages carry it as :<id>: and reactions by its id. */
 export interface StoatEmoji {
   id: string;
   name: string;
+  animated: boolean;
+  /** The server it belongs to; detached emoji (their server is gone) have none. */
   serverId?: string;
 }
 
@@ -315,7 +318,7 @@ export function parseUnread(value: unknown): StoatUnread | undefined {
 export function parseEmoji(value: unknown): StoatEmoji | undefined {
   if (!isRecord(value) || !isId(value._id) || typeof value.name !== "string" || !/^[a-z0-9_]{1,32}$/i.test(value.name)) return undefined;
   const parent = isRecord(value.parent) && value.parent.type === "Server" && isId(value.parent.id) ? value.parent.id : undefined;
-  return { id: value._id, name: value.name, serverId: parent };
+  return { id: value._id, name: value.name, animated: value.animated === true, serverId: parent };
 }
 
 const LEVELS: ReadonlySet<string> = new Set(["all", "mention", "none", "muted"]);

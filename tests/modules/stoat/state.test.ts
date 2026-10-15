@@ -309,6 +309,22 @@ describe("StoatState servers, channels and users", () => {
     expect(state.users.get(ulid(77))?.username).toBe("newfriend");
   });
 
+  it("offers a server channel its own server's emoji, and DMs every joined server's", () => {
+    const state = ready();
+    state.apply("EmojiCreate", { _id: ulid(53), name: "beta_wave", animated: true, parent: { type: "Server", id: BETA } });
+    state.apply("EmojiCreate", { _id: ulid(54), name: "orphan", parent: { type: "Detached" } });
+    state.apply("EmojiCreate", { _id: ulid(55), name: "elsewhere", parent: { type: "Server", id: ulid(999) } });
+    const ids = (channelId: string) => state.usableEmoji(state.channels.get(channelId)!).map((e) => e.id);
+    expect(ids(GENERAL)).toEqual([EMOJI]);
+    expect(ids(CHAT)).toEqual([ulid(53)]);
+    expect(ids(DM)).toEqual([EMOJI, ulid(53)]);
+    expect(ids(GROUP)).toEqual([EMOJI, ulid(53)]);
+    // Leaving a server stops offering its emoji, but messages keep their names.
+    state.apply("ServerMemberLeave", { id: BETA, user: ME_ID });
+    expect(ids(DM)).toEqual([EMOJI]);
+    expect(state.emojis.get(ulid(53))?.name).toBe("beta_wave");
+  });
+
   it("follows emoji changes and ignores unknown events", () => {
     const state = ready();
     const changed = vi.fn();

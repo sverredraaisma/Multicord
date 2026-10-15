@@ -360,7 +360,18 @@ export class StoatState {
     if (emoji) this.emojis.set(emoji.id, emoji);
   }
 
+  /**
+   * Custom emoji the user may use in a channel. Members may use their
+   * servers' emoji in DMs and groups; in a server channel, another server's
+   * emoji needs the UseExternalEmojis permission there, which this client
+   * does not work out, so a server channel offers only its own server's.
+   */
+  usableEmoji(channel: StoatChannel): StoatEmoji[] {
+    return [...this.emojis.values()].filter((e) => e.serverId !== undefined && this.servers.has(e.serverId) && (channel.serverId ?? e.serverId) === e.serverId);
+  }
+
   private removeServer(serverId: string): void {
+    // Its emoji stay known, so messages with them keep their names, but are no longer offered.
     this.servers.delete(serverId);
     for (const channel of this.serverChannels(serverId)) this.removeChannel(channel.id);
   }

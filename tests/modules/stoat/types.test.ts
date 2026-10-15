@@ -176,8 +176,8 @@ describe("Stoat parsers", () => {
     expect(parseUnread({ _id: ulid(5) })).toBeUndefined();
     expect(parseUnread(null)).toBeUndefined();
 
-    expect(parseEmoji({ _id: ulid(50), name: "party", parent: { type: "Server", id: ulid(100) } })).toEqual({ id: ulid(50), name: "party", serverId: ulid(100) });
-    expect(parseEmoji({ _id: ulid(50), name: "party", parent: { type: "Detached" } })).toEqual({ id: ulid(50), name: "party", serverId: undefined });
+    expect(parseEmoji({ _id: ulid(50), name: "party", animated: true, parent: { type: "Server", id: ulid(100) } })).toEqual({ id: ulid(50), name: "party", animated: true, serverId: ulid(100) });
+    expect(parseEmoji({ _id: ulid(50), name: "party", parent: { type: "Detached" } })).toEqual({ id: ulid(50), name: "party", animated: false, serverId: undefined });
     expect(parseEmoji({ _id: ulid(50), name: "<script>" })).toBeUndefined();
     expect(parseEmoji({ _id: ulid(50) })).toBeUndefined();
 

@@ -108,6 +108,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - DMs and groups as DM bubbles and in the Messages page, with previews;
   - channel history, sending, replies, reactions, and editing and deleting your own messages;
   - typing indicators, read state, and attachments uploaded to the instance's file server;
+  - custom emoji from your servers in the emoji picker, for messages and reactions. A server channel offers its own server's emoji, since another server's need a permission there that Multicord does not work out; DMs and groups offer every server's. Messages show custom emoji by name, and reactions with their picture. Stoat has no stickers, and its GIF search (Gifbox) needs a key of its own, so neither is offered;
   - notifications that follow your Stoat notification settings.
 
   Self-hosted instances can be added with `"module": "stoat-native"` and the instance URL. The web client stays available as "Stoat (web)". Voice is not built in.
