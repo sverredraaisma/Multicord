@@ -10,6 +10,7 @@ import {
   type NativeCustomEmoji,
   type NativeMessage,
   type NativeMessageList,
+  type NativeSearchResults,
   type NativePrompt,
   type NativeReaction,
   type NativeSidebarItem,
@@ -58,6 +59,8 @@ import type { Verification, VerificationState } from "./verification";
 export const PAGE_SIZE = 50;
 /** Pinned messages the pins panel lists at most, newest pin first. */
 export const MAX_LISTED_PINS = 50;
+/** Search results listed at most, newest first. */
+export const SEARCH_LIMIT = 50;
 /** Profile pictures fetched per refresh; the rest show initials. */
 export const AVATAR_LIMIT = 40;
 /** How long the server may hold a /sync open; the HTTP bridge sets no timeout of its own. */
@@ -529,6 +532,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private lockedHosts: string[] | undefined;
   /** The open room's pinned messages, while its pins panel is open. */
   private pins: { roomId: string; list: NativeMessageList } | undefined;
+  /** The open room's search results, until the search ends; and a count that drops answers to earlier searches. */
+  private search: { roomId: string; results: NativeSearchResults } | undefined;
+  private searchCount = 0;
   /** Pinned events fetched for the pins panel (decrypted where they could be), by event id; null for one the server would not give. */
   private readonly pinnedEvents = new Map<string, Shown | null>();
   /** Our device's call, joining or joined; one at a time. */
@@ -840,6 +846,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.packRooms = [];
     this.mutedRooms.clear();
     this.pins = undefined;
+    this.search = undefined;
     this.pinnedEvents.clear();
     this.directsChanged.emit([]);
     this.publishServers();
@@ -948,6 +955,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.sendSticker(action.stickerId, action.replyTo);
       case "pins":
         return this.showPins(action.open);
+      case "search":
+        return this.searchMessages(action.query);
       case "pin":
         return this.pin(action.messageId, action.pin);
       default:
@@ -1843,6 +1852,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (!room) return;
     if (this.selected !== room.id) this.noteUnread(room);
     if (this.pins?.roomId !== room.id) this.pins = undefined;
+    if (this.search?.roomId !== room.id) this.search = undefined;
     this.selected = room.id;
     this.lastRoom.set(this.openSpace ?? "", room.id);
     this.render();
@@ -1977,6 +1987,39 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (this.pins?.roomId !== room.id) return;
     const messages = shown.map((event) => ({ id: this.local(event.id), author: this.memberName(room, event.sender), content: escapeMarkdown(this.eventText(room, event)), timestamp: new Date(event.ts).toISOString() }));
     this.pins = { roomId: room.id, list: { messages, loading: false, ...(shown.length < Math.min(room.pinned.length, MAX_LISTED_PINS) ? { note: "Some pinned messages could not be loaded." } : {}) } };
+    this.render();
+  }
+
+  /**
+   * Searches the open room on the homeserver (POST /search, newest first),
+   * or ends the search with an empty query. The homeserver cannot read
+   * encrypted messages, so in an encrypted room the results say so.
+   */
+  private async searchMessages(query: string): Promise<void> {
+    const room = this.selectedRoom();
+    const count = ++this.searchCount;
+    const trimmed = query.trim();
+    this.search = room && trimmed !== "" ? { roomId: room.id, results: { query: trimmed, messages: [], loading: true } } : undefined;
+    this.render();
+    if (!this.search || !room) return;
+    let results: NativeSearchResults;
+    try {
+      const body = { search_categories: { room_events: { search_term: trimmed, order_by: "recent", filter: { rooms: [room.id], limit: SEARCH_LIMIT } } } };
+      const answer = await this.deps.api.request(this.session!, "POST", "/v3/search", body);
+      const categories = isRecord(answer.search_categories) ? answer.search_categories : {};
+      const found = isRecord(categories.room_events) && Array.isArray(categories.room_events.results) ? categories.room_events.results : [];
+      const events = found.slice(0, SEARCH_LIMIT).flatMap((hit) => {
+        const event = parseEvent(isRecord(hit) ? hit.result : undefined);
+        return event?.kind === "message" ? [event] : [];
+      });
+      const messages = events.map((event) => ({ id: this.local(event.id), author: this.memberName(room, event.sender), content: escapeMarkdown(this.eventText(room, event)), timestamp: new Date(event.ts).toISOString() }));
+      results = { query: trimmed, messages, loading: false };
+    } catch (error) {
+      results = { query: trimmed, messages: [], loading: false, error: `Search failed: ${friendly(error)}` };
+    }
+    if (room.encrypted) results.note = "This room is encrypted, so the homeserver can only search messages sent before that.";
+    if (count !== this.searchCount || this.search?.roomId !== room.id) return;
+    this.search = { roomId: room.id, results };
     this.render();
   }
 
@@ -3139,8 +3182,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             ...(locked ? { locked } : {}),
             ...(this.unreadAt?.roomId === room.id ? { unread: this.unreadView(room, this.unreadAt) } : {}),
             ...(this.pins?.roomId === room.id ? { pins: this.pins.list } : {}),
+            ...(this.search?.roomId === room.id ? { search: this.search.results } : {}),
             // A locked room takes nothing from here; typing notices follow the user's setting.
-            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false, stickers: !locked, pins: true },
+            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false, stickers: !locked, pins: true, search: true },
           }
         : null,
       // After the messages, which fill it.

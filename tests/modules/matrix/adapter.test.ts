@@ -826,7 +826,7 @@ describe("conversations", () => {
     const { channel } = ctx.chat();
     expect(channel).toMatchObject({ id: ctx.item("Bo").id, name: "Bo", loading: false, hasOlder: true, typing: [], pending: [], uploading: false });
     expect(channel).not.toHaveProperty("locked");
-    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, pins: true });
+    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, pins: true, search: true });
     expect(ctx.item("Bo").active).toBe(true);
     expect(ctx.messages()).toEqual([
       {
@@ -987,7 +987,7 @@ describe("conversations", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     expect(ctx.chat().channel!.locked).toBe(ENCRYPTED_NOTICE);
-    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: false, stickers: false, pins: true });
+    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: false, stickers: false, pins: true, search: true });
     expect(ctx.messages()).toEqual([
       expect.objectContaining({ content: ENCRYPTED_TEXT.replace("—", "—"), author: ANA, canEdit: false, canDelete: false }),
       expect.objectContaining({ content: "before encryption", mine: true, canEdit: false, canDelete: true }),
@@ -4726,5 +4726,55 @@ describe("pinned messages", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     expect(ctx.messages().some((m) => m.canPin)).toBe(false);
+  });
+});
+
+describe("search", () => {
+  const hit = (id: string, body: string, ts: number) => ({ rank: 1, result: { event_id: id, type: "m.room.message", sender: ANA, origin_server_ts: ts, content: { msgtype: "m.text", body } } });
+
+  it("searches the open room on the homeserver, newest first", async () => {
+    const ctx = await signedIn();
+    let answer: Record<string, unknown> = { search_categories: { room_events: { results: [hit("$w1", "a *warm* welcome", 500), { rank: 1, result: { event_id: "$r", type: "m.reaction", sender: ANA, origin_server_ts: 1, content: {} } }, "junk"], count: 3 } } };
+    ctx.api.request.mockImplementation(async () => answer);
+    await ctx.act({ type: "search", query: "nowhere" });
+    await ctx.open("Lounge");
+    expect(ctx.chat().channel!.can.search).toBe(true);
+    const pending = ctx.act({ type: "search", query: " warm " });
+    expect(ctx.chat().channel!.search).toEqual({ query: "warm", messages: [], loading: true });
+    await pending;
+    expect(ctx.api.request).toHaveBeenCalledTimes(1);
+    expect(ctx.api.request).toHaveBeenCalledWith(SESSION, "POST", "/v3/search", { search_categories: { room_events: { search_term: "warm", order_by: "recent", filter: { rooms: ["!lounge:x.org"], limit: 50 } } } });
+    expect(ctx.chat().channel!.search).toEqual({ query: "warm", messages: [{ id: expect.stringMatching(/^\d+$/), author: "Ana", content: "a \\*warm\\* welcome", timestamp: new Date(500).toISOString() }], loading: false });
+    for (const odd of [{}, { search_categories: { room_events: {} } }]) {
+      answer = odd;
+      await ctx.act({ type: "search", query: "odd" });
+      expect(ctx.chat().channel!.search).toEqual({ query: "odd", messages: [], loading: false });
+    }
+    await ctx.act({ type: "search", query: "" });
+    expect(ctx.chat().channel!.search).toBeUndefined();
+    await ctx.act({ type: "search", query: "x" });
+    await ctx.open("Lounge");
+    expect(ctx.chat().channel!.search).toBeDefined();
+    await ctx.open("Bo");
+    expect(ctx.chat().channel!.search).toBeUndefined();
+  });
+
+  it("says what an encrypted room's search can find, shows failures and drops earlier answers", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Secret");
+    ctx.api.request.mockRejectedValueOnce(new Error("M_UNKNOWN"));
+    await ctx.act({ type: "search", query: "a" });
+    expect(ctx.chat().channel!.search).toEqual({ query: "a", messages: [], loading: false, error: expect.stringMatching(/^Search failed: /), note: expect.stringContaining("encrypted") });
+    let release: (value: Record<string, unknown>) => void = () => {};
+    ctx.api.request.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    const first = ctx.act({ type: "search", query: "first" });
+    await ctx.act({ type: "search", query: "second" });
+    release({});
+    await first;
+    expect(ctx.chat().channel!.search).toMatchObject({ query: "second", loading: false });
+    const ending = ctx.act({ type: "search", query: "third" });
+    await ctx.act({ type: "search", query: "" });
+    await ending;
+    expect(ctx.chat().channel!.search).toBeUndefined();
   });
 });
