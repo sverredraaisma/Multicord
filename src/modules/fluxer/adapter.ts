@@ -31,6 +31,8 @@ import { FluxerState, MEMBER_LIST_POSITIONS, TYPING_MS } from "./state";
 import {
   ChannelType,
   compareIds,
+  DM_SETTINGS,
+  NotifyLevel,
   FORUM_TYPES,
   MessageType,
   THREAD_TYPES,
@@ -273,6 +275,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.voiceNotice(action.message, action.off);
       case "declineCall":
         return this.declineCall(action.channelId);
+      case "mute":
+        return this.mute(action.channelId, action.mute);
       case "removeAttachment":
         this.pending.get(this.selectedChannelId ?? "")?.splice(action.index, 1);
         return this.render();
@@ -1046,6 +1050,33 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   /** Runs a user action, showing a failure in the view's banner. */
+  /**
+   * Whether a channel's own mute may be changed from here: not a thread
+   * (Fluxer mutes those per thread member), and not in a server, or among
+   * the DMs, that is muted as a whole, which its channel's mute cannot undo.
+   */
+  private canMute(channel: FluxerChannel, now: number = Date.now()): boolean {
+    const whole = this.state.notifySettings.get(channel.guildId ?? DM_SETTINGS)?.mutedUntil ?? 0;
+    return !THREAD_TYPES.has(channel.type) && whole <= now;
+  }
+
+  /**
+   * Mutes or unmutes a channel, DM or group in the user's Fluxer
+   * notification settings, for good. Fluxer takes the complete map of
+   * channel overrides, so every other override goes back as it was.
+   */
+  private async mute(channelId: string, mute: boolean): Promise<void> {
+    const channel = this.state.channels.get(channelId);
+    if (!channel || !this.rest || !this.canMute(channel) || this.state.isMuted(channel) === mute) return;
+    const key = channel.guildId ?? DM_SETTINGS;
+    const overrides = { ...this.state.overrideInputs.get(key) };
+    overrides[channelId] = { collapsed: false, message_notifications: NotifyLevel.Inherit, ...overrides[channelId], muted: mute, mute_config: null };
+    await this.attempt(mute ? "Could not mute" : "Could not unmute", async () => {
+      this.state.applyGuildSettings(await this.rest!.setGuildSettings(key, { channel_overrides: overrides }));
+      this.state.changed.emit();
+    });
+  }
+
   private async attempt(failure: string, action: () => Promise<void>): Promise<void> {
     try {
       await action();
@@ -1463,8 +1494,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       unread: kind !== "category" && this.state.isUnread(channel),
       mentions: kind === "category" ? 0 : this.state.mentions(channel.id),
       active: channel.id === this.selectedChannelId,
-      // Muted in Fluxer (the channel, or its server): shown so; muting from here is not offered.
+      // Muted in Fluxer (the channel, or its server); the bell changes the channel's own mute where that can.
       ...(kind !== "category" && this.state.isMuted(channel) ? { muted: true } : {}),
+      ...(kind !== "category" && kind !== "voice" && this.canMute(channel) ? { canMute: true } : {}),
     });
     // Who is in a voice channel or call, listed under its row.
     const inVoice = (channelId: string) =>

@@ -15,7 +15,9 @@ import {
   parseGuildEmoji,
   parseGuildSticker,
   parseTraits,
+  overrideInputs,
   parseGuildSettings,
+  type OverrideInput,
   parseMessage,
   parseReadState,
   parseUser,
@@ -84,6 +86,8 @@ export class FluxerState {
   readonly calls = new Map<string, { ringing: string[] }>();
   /** Who is typing where: channel id -> user id -> expiry (epoch ms). */
   readonly typing = new Map<string, Map<string, number>>();
+  /** Each settings object's channel overrides as a write sends them back, by the same key as notifySettings. */
+  readonly overrideInputs = new Map<string, Record<string, OverrideInput>>();
   /** Notification settings per guild id, or DM_SETTINGS for DMs. */
   readonly notifySettings = new Map<string, FluxerNotifySettings>();
   folders: FluxerFolder[] | undefined;
@@ -104,7 +108,7 @@ export class FluxerState {
     this.me = undefined;
     this.traits = [];
     this.folders = undefined;
-    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.notifySettings, this.typing, this.voiceStates, this.calls, this.emojis, this.stickers, this.roles, this.ownRoles, this.presences, this.memberLists]) map.clear();
+    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.notifySettings, this.overrideInputs, this.typing, this.voiceStates, this.calls, this.emojis, this.stickers, this.roles, this.ownRoles, this.presences, this.memberLists]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -120,7 +124,7 @@ export class FluxerState {
         for (const c of list(d.private_channels)) this.addChannel(parseChannel(c));
         for (const r of list(d.read_states)) this.setReadState(parseReadState(r));
         this.folders = parseFolders(d.user_settings);
-        for (const g of list(d.user_guild_settings)) this.setNotifySettings(parseGuildSettings(g));
+        for (const g of list(d.user_guild_settings)) this.applyGuildSettings(g);
         for (const p of list(d.presences)) this.setPresence(parsePresence(p));
         break;
       case "PRESENCE_UPDATE":
@@ -145,7 +149,7 @@ export class FluxerState {
         this.applyMemberList(data);
         break;
       case "USER_GUILD_SETTINGS_UPDATE":
-        this.setNotifySettings(parseGuildSettings(data));
+        this.applyGuildSettings(data);
         break;
       case "GUILD_MEMBER_UPDATE":
         if (isId(d.guild_id) && isRecord(d.user) && d.user.id === this.me?.id) this.ownRoles.set(d.guild_id, list(d.roles).filter(isId));
@@ -439,8 +443,12 @@ export class FluxerState {
     return (message.roleMentionIds ?? []).some((r) => roles.includes(r));
   }
 
-  private setNotifySettings(entry: [string, FluxerNotifySettings] | undefined): void {
-    if (entry) this.notifySettings.set(entry[0], entry[1]);
+  /** One user guild settings object, from READY, its update event or a write's answer. */
+  applyGuildSettings(value: unknown): void {
+    const entry = parseGuildSettings(value);
+    if (!entry) return;
+    this.notifySettings.set(entry[0], entry[1]);
+    this.overrideInputs.set(entry[0], overrideInputs(value));
   }
 
   private setPresence(presence: FluxerPresence | undefined): void {

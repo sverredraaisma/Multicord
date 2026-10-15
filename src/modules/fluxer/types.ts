@@ -500,6 +500,36 @@ function mutedUntil(muted: unknown, config: unknown): number | undefined {
 const level = (value: unknown): number | undefined =>
   typeof value === "number" && value >= NotifyLevel.All && value <= NotifyLevel.Inherit ? value : undefined;
 
+/** A channel notification override in the form Fluxer takes it back (the channel override input object). */
+export type OverrideInput = Record<string, unknown>;
+
+/**
+ * A settings object's channel overrides as input objects, by channel id:
+ * what a write must send back for every channel it does not mean to change,
+ * since Fluxer replaces the whole map. Fields keep their values; required
+ * ones that are missing get Fluxer's defaults.
+ */
+export function overrideInputs(value: unknown): Record<string, OverrideInput> {
+  const overrides = isRecord(value) && isRecord(value.channel_overrides) ? value.channel_overrides : {};
+  const inputs: Record<string, OverrideInput> = {};
+  for (const [id, o] of Object.entries(overrides).slice(0, 1000)) {
+    if (!isId(id) || !isRecord(o)) continue;
+    const config = isRecord(o.mute_config) ? o.mute_config : undefined;
+    const input: OverrideInput = {
+      collapsed: o.collapsed === true,
+      message_notifications: level(o.message_notifications) ?? NotifyLevel.Inherit,
+      muted: o.muted === true,
+      mute_config: config
+        ? { end_time: typeof config.end_time === "string" ? config.end_time : null, selected_time_window: Number.isInteger(config.selected_time_window) ? config.selected_time_window : 0 }
+        : null,
+    };
+    if (o.unread_badges === null || Number.isInteger(o.unread_badges)) input.unread_badges = o.unread_badges;
+    if (Number.isInteger(o.flags)) input.flags = o.flags;
+    inputs[id] = input;
+  }
+  return inputs;
+}
+
 /** Parses one user guild settings object; returns its guild key and settings. */
 export function parseGuildSettings(value: unknown): [string, FluxerNotifySettings] | undefined {
   if (!isRecord(value)) return undefined;

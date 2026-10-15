@@ -109,7 +109,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - threads under their channel, and forum channels with their posts and a form for new ones
   - voice channels with who is in them, and calls with microphone, camera and screen share (through LiveKit, as Fluxer uses)
   - calls in DMs and groups: the call button in the header starts one, which rings the others, or joins the one going on; a call ringing for you shows above the conversation with Accept and Decline (which stops it ringing for you, as in Fluxer's apps) and as a notification while Multicord is not in front; who is in a call shows under its DM
-  - desktop notifications that follow your Fluxer notification settings (mutes, server and channel levels, @everyone suppression); muted channels and DMs show as muted. Muting from Multicord is not offered, as Fluxer does not document how its settings are changed
+  - desktop notifications that follow your Fluxer notification settings (mutes, server and channel levels, @everyone suppression); muted channels and DMs show as muted, and the bell beside a channel, DM or group mutes or unmutes it in those settings for good (not threads, which Fluxer mutes per thread, nor where the whole server or all DMs are muted, which a channel's own mute cannot undo)
   - service status in Settings > Diagnostics: whether the instance's API, gateway and media servers answer their documented health checks (`/_health`), asked every five minutes, with the instance's status page where it names one
 
   Large servers (over 250 members) are subscribed to while open, so they deliver every message.

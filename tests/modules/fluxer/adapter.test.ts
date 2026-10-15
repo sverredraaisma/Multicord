@@ -512,8 +512,8 @@ describe("FluxerAdapter chat", () => {
     let state = chat();
     expect(state.title).toBe("Direct Messages");
     expect(state.sidebar).toEqual([
-      { id: "900", name: "Ana", kind: "dm", iconUrl: "https://media.fx/avatars/2/av.png?size=64", unread: true, mentions: 1, active: true },
-      { id: "901", name: "Group", kind: "dm", iconUrl: undefined, unread: false, mentions: 0, active: false },
+      { id: "900", name: "Ana", kind: "dm", iconUrl: "https://media.fx/avatars/2/av.png?size=64", unread: true, mentions: 1, active: true, canMute: true },
+      { id: "901", name: "Group", kind: "dm", iconUrl: undefined, unread: false, mentions: 0, active: false, canMute: true },
     ]);
     await adapter.openServer("100");
     await adapter.openHome();
@@ -677,18 +677,75 @@ describe("FluxerAdapter notifications", () => {
     expect(shown.map((m) => [m.id, m.mentionsMe === true])).toEqual([["801", true], ["802", true], ["803", false], ["804", false]]);
   });
 
-  it("shows channels and DMs muted in Fluxer as muted, without offering to change it", async () => {
+  it("shows channels and DMs muted in Fluxer as muted, offering the bell only where a channel's own mute decides", async () => {
     const { adapter, chat } = await online();
     adapter.state.apply("USER_GUILD_SETTINGS_UPDATE", { guild_id: "100", channel_overrides: { "113": { muted: true } } });
     adapter.state.apply("USER_GUILD_SETTINGS_UPDATE", { guild_id: null, muted: true });
+    adapter.state.apply("CHANNEL_CREATE", { id: "130", type: 11, guild_id: "100", parent_id: "111", name: "thread" });
     await adapter.openServer("100");
     const lobby = chat().sidebar.find((i) => i.id === "113")!;
-    expect(lobby).toMatchObject({ muted: true });
-    expect(lobby).not.toHaveProperty("canMute");
+    expect(lobby).toMatchObject({ muted: true, canMute: true });
     expect(chat().sidebar.find((i) => i.id === "111")).not.toHaveProperty("muted");
-    expect(chat().sidebar.filter((i) => i.kind === "category").some((i) => "muted" in i)).toBe(false);
+    expect(chat().sidebar.filter((i) => i.kind !== "text").some((i) => "muted" in i || "canMute" in i)).toBe(false);
+    // All DMs are muted at once: a DM's own bell could not undo that.
     await adapter.openHome();
-    expect(chat().sidebar.every((i) => i.muted === true)).toBe(true);
+    expect(chat().sidebar.every((i) => i.muted === true && !("canMute" in i))).toBe(true);
+  });
+
+  it("mutes and unmutes a channel in Fluxer's settings, sending every other override back as it was", async () => {
+    const stored = {
+      guild_id: "100",
+      message_notifications: 1,
+      channel_overrides: {
+        "111": { collapsed: true, message_notifications: 0, muted: false, mute_config: { end_time: null, selected_time_window: 5 }, unread_badges: null, flags: 8192 },
+        "114": { message_notifications: 9, muted: true, mute_config: { end_time: "2099-01-01T00:00:00Z" }, unread_badges: 1 },
+      },
+      version: 4,
+    };
+    let answer: { status: number; body?: unknown } | undefined;
+    const ctx = setup({ token: "flx", routes: [(url, init) => (url.includes("/users/@me/guilds/") && init.method === "PATCH" ? answer : undefined)] });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    const { adapter, chat, calls } = ctx;
+    adapter.state.apply("USER_GUILD_SETTINGS_UPDATE", stored);
+    await adapter.openServer("100");
+    const sent = () => {
+      const patch = calls.filter((c) => c.init.method === "PATCH").at(-1)!;
+      return [patch.url, JSON.parse(patch.init.body as string)];
+    };
+    answer = { status: 200, body: { ...stored, channel_overrides: { ...stored.channel_overrides, "113": { muted: true } } } };
+    await adapter.handleAction({ type: "mute", channelId: "113", mute: true });
+    expect(sent()).toEqual([
+      "https://api.fx/v1/users/@me/guilds/100/settings",
+      {
+        channel_overrides: {
+          "111": { collapsed: true, message_notifications: 0, muted: false, mute_config: { end_time: null, selected_time_window: 5 }, unread_badges: null, flags: 8192 },
+          "114": { collapsed: false, message_notifications: 3, muted: true, mute_config: { end_time: "2099-01-01T00:00:00Z", selected_time_window: 0 }, unread_badges: 1 },
+          "113": { collapsed: false, message_notifications: 3, muted: true, mute_config: null },
+        },
+      },
+    ]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(chat().sidebar.find((i) => i.id === "113")).toMatchObject({ muted: true, canMute: true });
+    // Unmuting ends a timed mute too; the rest of the override stays.
+    answer = { status: 200, body: { ...stored, channel_overrides: { ...stored.channel_overrides, "114": { muted: false } } } };
+    await adapter.handleAction({ type: "mute", channelId: "114", mute: false });
+    expect(sent()[1].channel_overrides["114"]).toEqual({ collapsed: false, message_notifications: 3, muted: false, mute_config: null, unread_badges: 1 });
+    // DMs and groups go to the DM settings.
+    answer = { status: 200, body: { guild_id: null, channel_overrides: { "900": { muted: true } } } };
+    await adapter.handleAction({ type: "mute", channelId: "900", mute: true });
+    expect(sent()).toEqual(["https://api.fx/v1/users/@me/guilds/@me/settings", { channel_overrides: { "900": { collapsed: false, message_notifications: 3, muted: true, mute_config: null } } }]);
+    // Nothing to change, unknown channels and threads: nothing is sent.
+    const patches = calls.filter((c) => c.init.method === "PATCH").length;
+    adapter.state.apply("CHANNEL_CREATE", { id: "130", type: 11, guild_id: "100", parent_id: "111", name: "thread" });
+    await adapter.handleAction({ type: "mute", channelId: "900", mute: true });
+    await adapter.handleAction({ type: "mute", channelId: "404", mute: true });
+    await adapter.handleAction({ type: "mute", channelId: "130", mute: true });
+    expect(calls.filter((c) => c.init.method === "PATCH")).toHaveLength(patches);
+    // Fluxer's refusal is shown.
+    answer = { status: 400, body: { code: "INVALID_FORM_BODY", message: "Invalid form body" } };
+    await adapter.handleAction({ type: "mute", channelId: "111", mute: true });
+    expect(chat().error).toMatch(/^Could not mute: /);
   });
 
   it("marks notifications for the open, visible conversation", async () => {

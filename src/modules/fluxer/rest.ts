@@ -243,6 +243,11 @@ export class FluxerRest {
     return { messages: (Array.isArray(record.messages) ? record.messages : []).flatMap((m) => parseMessage(m) ?? []), indexing: record.indexing === true };
   }
 
+  /** Changes the user's notification settings for a guild, or for DMs and groups ("@me"), and returns them as Fluxer stored them. */
+  async setGuildSettings(key: string, changes: Record<string, unknown>): Promise<unknown> {
+    return this.request("PATCH", `/users/@me/guilds/${key}/settings`, changes);
+  }
+
   /** Starts a DM or group call, ringing the others (POST /channels/{id}/call/ring). */
   async ringCall(channelId: string): Promise<void> {
     await this.request("POST", `/channels/${channelId}/call/ring`, {});
