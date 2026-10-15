@@ -27,10 +27,77 @@ export interface NativeVoiceMember {
   video: boolean;
 }
 
+/**
+ * A custom emoji the user may use in the open conversation. A module lists
+ * only those that work there (e.g. another server's emoji only where the
+ * platform lets this account use them), so the picker offers nothing the
+ * message would lose.
+ */
 export interface NativeCustomEmoji {
   id: string;
   name: string;
   animated: boolean;
+  /** Its picture (https: or a data: URL); without it, <emojiBase>/<id>.webp (.gif when animated). */
+  url?: string;
+  /** The server or pack it comes from, shown with it in the picker. */
+  source?: string;
+  /** What goes into the message, in the module's own syntax; `<:name:id>` (`<a:name:id>` when animated) without it. */
+  text?: string;
+  /** The reaction key; `name:id` without it. */
+  key?: string;
+  /** False where it may go into messages but not be reacted with. */
+  react?: boolean;
+}
+
+/** How a sticker is stored, which decides how it shows and how it goes where it cannot be sent as a sticker. */
+export type NativeStickerFormat = "png" | "apng" | "webp" | "gif" | "avif" | "webm" | "lottie";
+export const STICKER_FORMATS = ["png", "apng", "webp", "gif", "avif", "webm", "lottie"] as const satisfies readonly NativeStickerFormat[];
+
+/** A sticker the user may send here (natively with can.stickers, else as a picture or video file). */
+export interface NativeSticker {
+  /** Module-scoped; passed back in sendSticker. */
+  id: string;
+  name: string;
+  format: NativeStickerFormat;
+  /**
+   * What to show and, sent as a file, what goes: a picture, or the video
+   * for WebM. Lottie stickers cannot be drawn here: this is a still of it.
+   * https: or a data: URL; absent while it has to be loaded (mediaKey).
+   */
+  url?: string;
+  /** Set when the engine fetches the picture on request (a loadMedia action with this key). */
+  mediaKey?: string;
+  /** The emoji it stands for, for search. */
+  emoji?: string;
+}
+
+/** A server's stickers, or a sticker set the user has. */
+export interface NativeStickerPack {
+  id: string;
+  name: string;
+  stickers: NativeSticker[];
+}
+
+/** A GIF from the platform's own GIF search. */
+export interface NativeGif {
+  id: string;
+  /** What is sent: its page, as a message's text, which the platform shows as the GIF. */
+  url: string;
+  /** What the picker shows: a picture, or a looping video when `video` is set. */
+  preview: string;
+  video: boolean;
+  width?: number;
+  height?: number;
+  name?: string;
+}
+
+/** The answer to the last searchGifs action. */
+export interface NativeGifResults {
+  /** What was searched for; empty for the platform's trending GIFs. */
+  query: string;
+  results: NativeGif[];
+  loading: boolean;
+  error?: string;
 }
 
 /** The user's own voice connection. The LiveKit grant is short-lived and scoped to this call. */
@@ -226,14 +293,18 @@ export interface NativeChannelCan {
   typing: boolean;
   /** List who is here (the member panel: `members` and `loadMembers` actions, NativeChannelView.members). */
   members: boolean;
+  /** Send the module's own stickers as stickers (sendSticker); without it they go as files, where `attach` is on. */
+  stickers?: boolean;
+  /** Search the platform's GIFs (searchGifs; the chat state's gifs). */
+  gifs?: boolean;
 }
 
-export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members"] as const satisfies readonly (keyof NativeChannelCan)[];
+export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs"] as const satisfies readonly (keyof NativeChannelCan)[];
 
 /** A conversation's flags as the view trusts them: each on only when it is exactly `true`. */
-export function channelCan(value: unknown): NativeChannelCan {
+export function channelCan(value: unknown): Required<NativeChannelCan> {
   const flags = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-  return Object.fromEntries(CHANNEL_CAN_FLAGS.map((flag) => [flag, flags[flag] === true])) as unknown as NativeChannelCan;
+  return Object.fromEntries(CHANNEL_CAN_FLAGS.map((flag) => [flag, flags[flag] === true])) as unknown as Required<NativeChannelCan>;
 }
 
 /** Most member rows the view shows at once, over all sections; the rest are counted as "N more". */
@@ -337,6 +408,111 @@ export function memberProfile(value: unknown): NativeProfile | undefined {
   return profile;
 }
 
+export const MAX_CUSTOM_EMOJI = 2000;
+export const MAX_STICKER_PACKS = 200;
+export const MAX_PACK_STICKERS = 300;
+export const MAX_STICKERS = 5000;
+export const MAX_GIF_RESULTS = 100;
+export const MAX_GIF_QUERY = 100;
+/** Emoji and sticker ids: plain enough to pass back (snowflakes, ULIDs, mxc paths, Telegram document ids). */
+const MEDIA_ID = /^[A-Za-z0-9:._@!+=/-]{1,200}$/;
+export const isMediaKey = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9:._-]{1,200}$/.test(value);
+const isHttps = (value: unknown): value is string => typeof value === "string" && /^https:\/\/\S{1,2040}$/.test(value);
+
+/** An address the view may show media from: https, or a data: URL of a picture or video. */
+export function isShownUrl(value: unknown): value is string {
+  return isHttps(value) || (typeof value === "string" && /^data:(image|video)\/[a-z0-9.+-]{1,40};base64,/.test(value));
+}
+
+/** A custom emoji as the pickers use it: its picture, what to insert and how to react with it. */
+export interface PickerEmoji {
+  id: string;
+  name: string;
+  animated: boolean;
+  url: string;
+  source?: string;
+  text: string;
+  key: string;
+  react: boolean;
+}
+
+/**
+ * Custom emoji as the view trusts them: each with a usable id, name and
+ * picture (its own, or one under `base`), its text and key within what
+ * messages and reactions take, at most MAX_CUSTOM_EMOJI.
+ */
+export function customEmojiList(value: unknown, base?: string): PickerEmoji[] {
+  const list: PickerEmoji[] = [];
+  for (const raw of Array.isArray(value) ? value : []) {
+    if (list.length >= MAX_CUSTOM_EMOJI) break;
+    const v = record(raw);
+    const name = shortText(v?.name, 64);
+    if (!v || typeof v.id !== "string" || !MEDIA_ID.test(v.id) || !name || /[\s:<>]/.test(name)) continue;
+    const animated = v.animated === true;
+    // A picture under the base only for a plain id, which cannot step out of it.
+    const url = isShownUrl(v.url) ? v.url : isHttps(base) && /^[A-Za-z0-9_-]{1,64}$/.test(v.id) ? `${base}/${v.id}.${animated ? "gif" : "webp"}?size=48` : undefined;
+    if (!url) continue;
+    const text = typeof v.text === "string" && v.text.trim() !== "" && v.text.length <= 200 ? v.text : `<${animated ? "a" : ""}:${name}:${v.id}>`;
+    const key = typeof v.key === "string" && v.key !== "" && v.key.length <= 64 ? v.key : `${name}:${v.id}`;
+    const emoji: PickerEmoji = { id: v.id, name, animated, url, text, key, react: v.react !== false && key.length <= 64 };
+    const source = shortText(v.source);
+    if (source) emoji.source = source;
+    list.push(emoji);
+  }
+  return list;
+}
+
+/** Sticker packs as the view trusts them: well-formed stickers only, within the caps; empty packs dropped. */
+export function stickerPacks(value: unknown): NativeStickerPack[] {
+  const packs: NativeStickerPack[] = [];
+  let room = MAX_STICKERS;
+  for (const raw of Array.isArray(value) ? value.slice(0, MAX_STICKER_PACKS) : []) {
+    const v = record(raw);
+    const name = shortText(v?.name);
+    if (!v || typeof v.id !== "string" || !MEDIA_ID.test(v.id) || !name) continue;
+    const stickers: NativeSticker[] = [];
+    for (const item of Array.isArray(v.stickers) ? v.stickers.slice(0, MAX_PACK_STICKERS) : []) {
+      if (room <= 0) break;
+      const s = record(item);
+      const stickerName = shortText(s?.name) ?? shortText(s?.emoji, 16);
+      if (!s || typeof s.id !== "string" || !MEDIA_ID.test(s.id) || !stickerName || !(STICKER_FORMATS as readonly unknown[]).includes(s.format)) continue;
+      const sticker: NativeSticker = { id: s.id, name: stickerName, format: s.format as NativeStickerFormat };
+      if (isShownUrl(s.url)) sticker.url = s.url;
+      else if (isMediaKey(s.mediaKey)) sticker.mediaKey = s.mediaKey;
+      else continue;
+      const emoji = shortText(s.emoji, 16);
+      if (emoji) sticker.emoji = emoji;
+      stickers.push(sticker);
+      room--;
+    }
+    if (stickers.length > 0) packs.push({ id: v.id, name, stickers });
+  }
+  return packs;
+}
+
+/** GIF results as the view trusts them: https addresses only, at most MAX_GIF_RESULTS; undefined without any. */
+export function gifResults(value: unknown): NativeGifResults | undefined {
+  const v = record(value);
+  if (!v) return undefined;
+  const results: NativeGif[] = [];
+  for (const raw of Array.isArray(v.results) ? v.results.slice(0, MAX_GIF_RESULTS) : []) {
+    const g = record(raw);
+    if (!g || typeof g.id !== "string" || !MEDIA_ID.test(g.id) || !isHttps(g.url) || !isHttps(g.preview)) continue;
+    const gif: NativeGif = { id: g.id, url: g.url, preview: g.preview, video: g.video === true };
+    if (count(g.width) && count(g.height)) {
+      gif.width = Math.min(count(g.width), 4096);
+      gif.height = Math.min(count(g.height), 4096);
+    }
+    const name = shortText(g.name);
+    if (name) gif.name = name;
+    results.push(gif);
+  }
+  const gifs: NativeGifResults = { query: typeof v.query === "string" ? v.query.slice(0, MAX_GIF_QUERY) : "", results, loading: v.loading === true };
+  const error = shortText(v.error, 300);
+  if (error) gifs.error = error;
+  return gifs;
+}
+
 /** One input of a sign-in step. */
 export interface NativePromptField {
   name: string;
@@ -378,8 +554,12 @@ export type NativeViewState =
       voice: NativeVoiceSession | null;
       /** Base URL for custom emoji images: <base>/<id>.webp (or .gif when animated). */
       emojiBase?: string;
-      /** The open server's custom emoji, for the picker. */
+      /** Custom emoji usable in the open conversation, for the pickers; read by the view through customEmojiList(). */
       customEmoji?: NativeCustomEmoji[];
+      /** Sticker packs usable in the open conversation; read through stickerPacks(). */
+      stickers?: NativeStickerPack[];
+      /** GIF search results while the picker's GIF tab searches (can.gifs); read through gifResults(). */
+      gifs?: NativeGifResults;
       /** The profile last asked for (a `profile` action), read by the view through memberProfile(). */
       profile?: NativeProfile;
       error?: string;
@@ -427,6 +607,10 @@ export type NativeAction =
    * and stickers that cannot go natively this way.
    */
   | { type: "sendFile"; file: PickedFile; replyTo?: string }
+  /** Sends one of the module's own stickers (NativeSticker.id) as a sticker, where can.stickers says it may. */
+  | { type: "sendSticker"; stickerId: string; replyTo?: string }
+  /** Searches the platform's GIFs (can.gifs); an empty query asks for its trending ones. */
+  | { type: "searchGifs"; query: string }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -481,7 +665,11 @@ export function isNativeAction(value: unknown): value is NativeAction {
     case "voiceNotice":
       return text(v.message, 1, 500) && (v.off === undefined || v.off === "video" || v.off === "stream");
     case "loadMedia":
-      return typeof v.key === "string" && /^[A-Za-z0-9:._-]{1,200}$/.test(v.key);
+      return isMediaKey(v.key);
+    case "sendSticker":
+      return typeof v.stickerId === "string" && MEDIA_ID.test(v.stickerId) && (v.replyTo === undefined || id(v.replyTo));
+    case "searchGifs":
+      return text(v.query, 0, MAX_GIF_QUERY);
     case "members":
       return typeof v.open === "boolean";
     case "loadMembers":

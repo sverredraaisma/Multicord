@@ -8,6 +8,7 @@ import { channelList } from "./components/channels";
 import { conversationItem } from "./components/conversations";
 import { el } from "./components/dom";
 import { emojiPicker } from "./components/emojiPicker";
+import { MediaPicker } from "./components/mediaPicker";
 import { typingText } from "./components/format";
 import { renderMarkdown } from "./components/markdown";
 import { messageItem, type MessageHandlers } from "./components/message";
@@ -131,6 +132,8 @@ export const SAMPLE_MESSAGES: NativeMessage[] = [
   { ...base, id: "5", author: "Ana", content: "😂🎉👍" },
 ];
 
+const SAMPLE_BADGE = { label: "Fluxer", color: "#4f8cf7", name: "Fluxer" };
+
 const log =
   (name: string) =>
   (...args: unknown[]): void =>
@@ -198,7 +201,30 @@ export function renderGallery(root: HTMLElement): void {
     ),
     section(doc, "Markdown", "The renderer on its own.", renderMarkdown(doc, MARKDOWN_SAMPLE, { customEmojiUrl: emojiUrl })),
     section(doc, "Reactions", "The quick palette with its more button.", quickReactions(doc, [{ key: "👍", label: "👍", count: 1, me: true }], log("react"), log("more"))),
-    section(doc, "Emoji picker", "Server emoji first, then Unicode emoji by group; search by shortcode, name or tag.", emojiPicker(doc, log("picked"), [{ id: "55", name: "party", animated: false, url: emojiUrl("55") }])),
+    section(
+      doc,
+      "Emoji picker",
+      "Custom emoji usable here first, under where they come from, then Unicode emoji by group; search by shortcode, name or tag.",
+      emojiPicker(doc, log("picked"), [{ id: "55", name: "party", animated: false, url: emojiUrl("55"), source: "Release crew", text: "<:party:55>", key: "party:55" }], SAMPLE_BADGE),
+    ),
+    section(
+      doc,
+      "Media picker",
+      "The composer's picker: emoji, stickers (sent natively or as pictures), GIFs and favourites, each with where it comes from.",
+      new MediaPicker(
+        doc,
+        { onEmoji: log("emoji"), onSticker: log("sticker"), onGif: log("gif"), onRecent: log("recent"), onFavourite: log("favourite"), onSearchGifs: log("search"), onLoadMedia: log("load"), onFavourites: log("favourites"), onClose: log("close") },
+        {
+          module: SAMPLE_BADGE,
+          emoji: [],
+          stickers: [{ id: "p1", name: "Release crew", stickers: [{ id: "s1", name: "Wave", format: "png", url: placeholderImage("#4f8cf7", "W") }] }],
+          nativeStickers: true,
+          files: true,
+          gifSearch: false,
+          recent: [],
+        },
+      ).element,
+    ),
     section(
       doc,
       "Forum",

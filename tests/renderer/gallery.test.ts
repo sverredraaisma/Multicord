@@ -15,6 +15,7 @@ describe("component gallery", () => {
       "Markdown",
       "Reactions",
       "Emoji picker",
+      "Media picker",
       "Forum",
       "Composer extras",
       "Voice panel",
@@ -25,6 +26,7 @@ describe("component gallery", () => {
     expect(root.querySelector(".messages .content h1")!.textContent).toBe("Release notes");
     expect(root.querySelector(".markdown.jumbo")).not.toBeNull();
     expect(root.querySelector(".emoji-picker")).not.toBeNull();
+    expect(root.querySelector(".media-picker .picker-tab")).not.toBeNull();
     expect(root.querySelector('form.auth input[type="email"]')).not.toBeNull();
   });
 

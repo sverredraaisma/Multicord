@@ -1,5 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import { createNativeApi } from "../../src/preload/native";
+import {
+  customEmojiList,
+  gifResults,
+  isShownUrl,
+  MAX_CUSTOM_EMOJI,
+  MAX_GIF_QUERY,
+  MAX_GIF_RESULTS,
+  MAX_PACK_STICKERS,
+  MAX_STICKER_PACKS,
+  MAX_STICKERS,
+  stickerPacks,
+} from "../../src/shared/native";
 import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, memberList, memberProfile, NATIVE_IPC } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
@@ -144,9 +156,10 @@ describe("media requests", () => {
 
 describe("conversation capability flags", () => {
   it("turns a flag on only when it is exactly true", () => {
-    expect(channelCan({ reply: true, react: true, attach: true, typing: true, members: true })).toEqual({ reply: true, react: true, attach: true, typing: true, members: true });
-    expect(channelCan({ reply: true, react: "yes", attach: 1, members: "true", extra: true })).toEqual({ reply: true, react: false, attach: false, typing: false, members: false });
-    for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual({ reply: false, react: false, attach: false, typing: false, members: false });
+    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false };
+    expect(channelCan({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true })).toEqual({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true });
+    expect(channelCan({ reply: true, react: "yes", attach: 1, members: "true", stickers: "yes", extra: true })).toEqual({ ...none, reply: true });
+    for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual(none);
   });
 });
 
@@ -255,5 +268,119 @@ describe("profiles", () => {
     expect(profile.roles).toHaveLength(MAX_PROFILE_ROLES - 2);
     expect(Object.keys(profile).sort()).toEqual(["about", "id", "roles"]);
     expect(memberProfile({ id: "5", roles: "Admin" })).toEqual({ id: "5" });
+  });
+});
+
+describe("stickers, emoji and GIFs", () => {
+  it("validates sticker and GIF search actions", () => {
+    expect(isNativeAction({ type: "sendSticker", stickerId: "123" })).toBe(true);
+    expect(isNativeAction({ type: "sendSticker", stickerId: "tg:set:5", replyTo: "9" })).toBe(true);
+    expect(isNativeAction({ type: "sendSticker", stickerId: "a b" })).toBe(false);
+    expect(isNativeAction({ type: "sendSticker", stickerId: "1", replyTo: "x" })).toBe(false);
+    expect(isNativeAction({ type: "searchGifs", query: "" })).toBe(true);
+    expect(isNativeAction({ type: "searchGifs", query: "x".repeat(MAX_GIF_QUERY + 1) })).toBe(false);
+    expect(isNativeAction({ type: "loadMedia", key: "tg:doc:5" })).toBe(true);
+  });
+
+  it("shows media only from https or data: pictures and videos", () => {
+    expect(isShownUrl("https://cdn.example/a.webp")).toBe(true);
+    expect(isShownUrl("data:image/webp;base64,AAAA")).toBe(true);
+    expect(isShownUrl("data:video/webm;base64,AAAA")).toBe(true);
+    for (const url of ["http://cdn.example/a", "javascript:alert(1)", "data:text/html;base64,AA", "https://a b", 5]) expect(isShownUrl(url)).toBe(false);
+  });
+
+  it("trusts custom emoji only with an id, a name and a picture", () => {
+    const list = customEmojiList(
+      [
+        { id: "55", name: "party", animated: false, source: "Cats" },
+        { id: "56", name: "dance", animated: true, url: "https://cdn.example/56.gif", text: ":dance:", key: "dance", react: false },
+        { id: "57", name: "bad name" },
+        { id: "../x", name: "x" },
+        { id: "58", name: "long", text: "x".repeat(201), key: "k".repeat(65) },
+        { id: "59", name: "evil", url: "javascript:alert(1)" },
+        { id: "60", name: "spin", animated: true },
+        null,
+      ],
+      "https://media.example/emojis",
+    );
+    expect(list).toEqual([
+      { id: "55", name: "party", animated: false, url: "https://media.example/emojis/55.webp?size=48", text: "<:party:55>", key: "party:55", react: true, source: "Cats" },
+      { id: "56", name: "dance", animated: true, url: "https://cdn.example/56.gif", text: ":dance:", key: "dance", react: false },
+      { id: "58", name: "long", animated: false, url: "https://media.example/emojis/58.webp?size=48", text: "<:long:58>", key: "long:58", react: true },
+      { id: "59", name: "evil", animated: false, url: "https://media.example/emojis/59.webp?size=48", text: "<:evil:59>", key: "evil:59", react: true },
+      { id: "60", name: "spin", animated: true, url: "https://media.example/emojis/60.gif?size=48", text: "<a:spin:60>", key: "spin:60", react: true },
+    ]);
+    // Without a picture of its own or a base, nothing shows.
+    expect(customEmojiList([{ id: "55", name: "party" }])).toEqual([]);
+    expect(customEmojiList([{ id: "55", name: "party" }], "javascript:x")).toEqual([]);
+    expect(customEmojiList("nope")).toEqual([]);
+    expect(customEmojiList(Array.from({ length: MAX_CUSTOM_EMOJI + 5 }, (_, i) => ({ id: String(i), name: "e", url: "https://x/e.png" })))).toHaveLength(MAX_CUSTOM_EMOJI);
+  });
+
+  it("trusts sticker packs only with whole stickers, within the caps", () => {
+    const packs = stickerPacks([
+      {
+        id: "p1",
+        name: "Cats",
+        stickers: [
+          { id: "s1", name: "Wave", format: "webp", url: "https://cdn.example/s1.webp", emoji: "👋" },
+          { id: "s2", emoji: "😺", format: "lottie", mediaKey: "tg:thumb:2" },
+          { id: "s3", name: "Bad", format: "svg", url: "https://cdn.example/s3.svg" },
+          { id: "s4", name: "Nowhere", format: "png" },
+          { id: "s5", name: "Evil", format: "png", url: "javascript:alert(1)" },
+          { id: "a b", name: "Space", format: "png", url: "https://cdn.example/x.png" },
+          "junk",
+        ],
+      },
+      { id: "p2", name: "Empty", stickers: [] },
+      { id: "p3", name: "", stickers: [{ id: "s", name: "s", format: "png", url: "https://x/s.png" }] },
+      { id: "p4", name: "No list" },
+      null,
+    ]);
+    expect(packs).toEqual([
+      {
+        id: "p1",
+        name: "Cats",
+        stickers: [
+          { id: "s1", name: "Wave", format: "webp", url: "https://cdn.example/s1.webp", emoji: "👋" },
+          { id: "s2", name: "😺", format: "lottie", mediaKey: "tg:thumb:2", emoji: "😺" },
+        ],
+      },
+    ]);
+    expect(stickerPacks(undefined)).toEqual([]);
+    const sticker = (i: number) => ({ id: `s${i}`, name: "s", format: "png", url: "https://x/s.png" });
+    const big = Array.from({ length: MAX_STICKER_PACKS + 10 }, (_, p) => ({ id: `p${p}`, name: "P", stickers: Array.from({ length: MAX_PACK_STICKERS + 1 }, (_, i) => sticker(i)) }));
+    const capped = stickerPacks(big);
+    expect(capped[0]!.stickers).toHaveLength(MAX_PACK_STICKERS);
+    expect(capped.reduce((n, p) => n + p.stickers.length, 0)).toBe(MAX_STICKERS);
+  });
+
+  it("trusts GIF results only with https addresses", () => {
+    expect(gifResults(undefined)).toBeUndefined();
+    expect(
+      gifResults({
+        query: "cats",
+        loading: true,
+        error: "Rate limited",
+        results: [
+          { id: "g1", url: "https://gifs.example/g1", preview: "https://media.example/g1.mp4", video: true, width: 10000, height: 200, name: "Cat" },
+          { id: "g2", url: "https://gifs.example/g2", preview: "https://media.example/g2.gif", width: 0 },
+          { id: "g3", url: "http://gifs.example/g3", preview: "https://media.example/g3.gif" },
+          { id: "g4", url: "https://gifs.example/g4", preview: "data:image/gif;base64,AA" },
+          null,
+        ],
+      }),
+    ).toEqual({
+      query: "cats",
+      loading: true,
+      error: "Rate limited",
+      results: [
+        { id: "g1", url: "https://gifs.example/g1", preview: "https://media.example/g1.mp4", video: true, width: 4096, height: 200, name: "Cat" },
+        { id: "g2", url: "https://gifs.example/g2", preview: "https://media.example/g2.gif", video: false },
+      ],
+    });
+    expect(gifResults({ query: 5, results: "no" })).toEqual({ query: "", results: [], loading: false });
+    const many = Array.from({ length: MAX_GIF_RESULTS + 3 }, (_, i) => ({ id: `g${i}`, url: "https://g/x", preview: "https://g/x.gif" }));
+    expect(gifResults({ results: many })!.results).toHaveLength(MAX_GIF_RESULTS);
   });
 });

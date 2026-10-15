@@ -1,4 +1,5 @@
-import type { NativeAttachment, NativeChannelCan, NativeMessage } from "../../shared/native";
+import type { FavouriteKind } from "../../shared/favourites";
+import { isShownUrl, type NativeAttachment, type NativeChannelCan, type NativeMessage } from "../../shared/native";
 import { avatar } from "./avatar";
 import { el } from "./dom";
 import { formatSize, formatTime } from "./format";
@@ -25,8 +26,17 @@ function sized<T extends HTMLImageElement | HTMLVideoElement>(media: T, file: Na
  */
 export function attachment(doc: Document, file: NativeAttachment, onLoad?: (key: string) => void): HTMLElement {
   if (!file.url) {
-    // Animated vector stickers (Lottie) have no picture to show: their name stands in.
-    if (file.kind === "sticker" && !file.mediaKey) return el(doc, "span", "attachment sticker-name", `${file.name} (sticker)`);
+    // Animated vector stickers (Lottie) cannot be drawn here: their still stands in, said to be one, or else their name.
+    if (file.kind === "sticker" && !file.mediaKey) {
+      if (!file.previewUrl) return el(doc, "span", "attachment sticker-name", `${file.name} (sticker)`);
+      const still = el(doc, "figure", "attachment-sticker-still");
+      const img = sized(el(doc, "img", "attachment-sticker"), file);
+      img.src = file.previewUrl;
+      img.alt = file.name;
+      still.title = `${file.name}: an animated sticker, shown still`;
+      still.append(img, el(doc, "figcaption", "sticker-label", "Animated sticker"));
+      return still;
+    }
     if (!file.mediaKey || !onLoad) return el(doc, "span", "attachment expired", `${file.name} (${file.unavailable ?? "link expired"})`);
     const key = file.mediaKey;
     if (file.kind === "image" || file.kind === "sticker") {
@@ -103,6 +113,16 @@ export function attachment(doc: Document, file: NativeAttachment, onLoad?: (key:
   }
 }
 
+/** What a shown attachment would be as a favourite, if it can be one: a sticker, a GIF (or looping video) or a picture. */
+export function favouriteKind(file: NativeAttachment): FavouriteKind | undefined {
+  // The shell keeps only what it can fetch (https) or is handed (a data: URL of a picture or video).
+  if (!file.url || !isShownUrl(file.url)) return undefined;
+  if (file.kind === "sticker") return "sticker";
+  if (file.kind === "video") return file.loop ? "gif" : undefined;
+  if (file.kind !== "image") return undefined;
+  return file.mime === "image/gif" ? "gif" : "image";
+}
+
 export interface MessageHandlers {
   /** Asks the engine for media it holds back (NativeAttachment.mediaKey). */
   onLoadMedia?(key: string): void;
@@ -115,6 +135,10 @@ export interface MessageHandlers {
   onDelete(message: NativeMessage): void;
   /** Opens the author's profile (messages with an authorId); without it the author is plain text. */
   onOpenProfile?(message: NativeMessage): void;
+  /** Stars or unstars a GIF, sticker or picture; without it media has no star. */
+  onFavourite?(file: NativeAttachment, kind: FavouriteKind): void;
+  /** Whether this media is a favourite already. */
+  isFavourite?(file: NativeAttachment): boolean;
 }
 
 export interface MessageOptions extends MarkdownOptions {
@@ -187,7 +211,25 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
     content.classList.add("content");
     body.append(content);
   }
-  for (const file of message.attachments) body.append(attachment(doc, file, handlers.onLoadMedia));
+  for (const file of message.attachments) {
+    const shown = attachment(doc, file, handlers.onLoadMedia);
+    const kind = handlers.onFavourite && favouriteKind(file);
+    if (!kind) {
+      body.append(shown);
+      continue;
+    }
+    // A star on hover (and on focus) keeps it, cached by the shell.
+    const saved = handlers.isFavourite?.(file) === true;
+    const wrap = el(doc, "div", "media-wrap");
+    const star = el(doc, "button", "favourite-star", saved ? "★" : "☆");
+    star.type = "button";
+    star.setAttribute("aria-pressed", String(saved));
+    star.setAttribute("aria-label", saved ? `Remove ${file.name} from favourites` : `Add ${file.name} to favourites`);
+    star.title = saved ? "Remove from favourites" : "Add to favourites";
+    star.addEventListener("click", () => handlers.onFavourite!(file, kind));
+    wrap.append(shown, star);
+    body.append(wrap);
+  }
 
   // Where reactions cannot be given, the ones others gave still show.
   const canReact = options.can?.react !== false;

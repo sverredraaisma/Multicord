@@ -126,7 +126,7 @@ describe("messages", () => {
 });
 
 describe("emoji picker", () => {
-  const custom = [{ id: "55", name: "party", animated: false, url: "https://media/55.webp" }];
+  const custom = [{ id: "55", name: "party", animated: false, url: "https://media/55.webp", text: "<:party:55>", key: "party:55" }];
 
   it("opens on the custom emoji when there are some, else on the first group", () => {
     const withCustom = emojiPicker(document, vi.fn(), custom);
@@ -142,9 +142,10 @@ describe("emoji picker", () => {
     const picker = emojiPicker(document, onPick, custom);
     picker.querySelector<HTMLButtonElement>(".emoji-option.custom")!.click();
     expect(onPick).toHaveBeenLastCalledWith({ text: "<:party:55>", key: "party:55" });
-    const animated = emojiPicker(document, onPick, [{ ...custom[0]!, animated: true }]);
-    animated.querySelector<HTMLButtonElement>(".emoji-option.custom")!.click();
-    expect(onPick).toHaveBeenLastCalledWith({ text: "<a:party:55>", key: "party:55" });
+    // A module's own syntax goes in as it says.
+    const own = emojiPicker(document, onPick, [{ ...custom[0]!, text: ":01ARZ3NDEKTSV4RRFFQ69G5FAV:", key: "01ARZ3NDEKTSV4RRFFQ69G5FAV" }]);
+    own.querySelector<HTMLButtonElement>(".emoji-option.custom")!.click();
+    expect(onPick).toHaveBeenLastCalledWith({ text: ":01ARZ3NDEKTSV4RRFFQ69G5FAV:", key: "01ARZ3NDEKTSV4RRFFQ69G5FAV" });
 
     const search = picker.querySelector<HTMLInputElement>(".emoji-search")!;
     search.value = "joy";
@@ -154,6 +155,20 @@ describe("emoji picker", () => {
     first.click();
     expect(onPick).toHaveBeenLastCalledWith({ text: "😂", key: "😂" });
     expect(picker.querySelector(".emoji-tab.active")).toBeNull(); // searching: no tab highlighted
+  });
+
+  it("shows where each custom emoji comes from", () => {
+    const badge = { label: "FX", color: "#4f8cf7", name: "Fluxer" };
+    const picker = emojiPicker(document, vi.fn(), [{ ...custom[0]!, source: "Cats" }, { ...custom[0]!, id: "56", name: "wave", source: "Dogs" }, { ...custom[0]!, id: "57", name: "loose" }], badge);
+    expect([...picker.querySelectorAll(".picker-heading")].map((h) => h.textContent)).toEqual(["FXCats", "FXDogs", "FXCustom emoji"]);
+    const badgeEl = picker.querySelector<HTMLElement>(".source-badge")!;
+    expect(badgeEl.style.backgroundColor).toBeTruthy();
+    expect(badgeEl.getAttribute("aria-label")).toBe("Fluxer");
+    expect(picker.querySelector<HTMLButtonElement>(".emoji-option.custom")!.title).toBe(":party: from Cats, Fluxer");
+    expect(picker.querySelector(".emoji-tab")!.getAttribute("aria-label")).toBe("Custom emoji from Fluxer");
+    const plain = emojiPicker(document, vi.fn(), custom);
+    expect(plain.querySelector(".source-badge")).toBeNull();
+    expect(plain.querySelector(".emoji-tab")!.getAttribute("aria-label")).toBe("Custom emoji");
   });
 
   it("searches custom emoji too, reports no results, and switches groups", () => {
@@ -200,6 +215,11 @@ describe("attachments", () => {
     const moving = (await show({ name: "Dance", kind: "sticker", url: "data:video/webm;base64,AA", mime: "video/webm" })) as HTMLVideoElement;
     expect([moving.tagName, moving.loop, moving.muted]).toEqual(["VIDEO", true, true]);
     expect((await show({ name: "Lottie", kind: "sticker" })).textContent).toBe("Lottie (sticker)");
+    // With a still of it, the still shows, said to be one.
+    const still = await show({ name: "Spin", kind: "sticker", previewUrl: "data:image/webp;base64,AA", mime: "application/x-tgsticker" });
+    expect(still.querySelector("img")!.getAttribute("src")).toBe("data:image/webp;base64,AA");
+    expect(still.querySelector("figcaption")!.textContent).toBe("Animated sticker");
+    expect(still.title).toBe("Spin: an animated sticker, shown still");
 
     const web = (await show({ name: "notes.txt", kind: "file", url: "https://cdn/notes.txt", size: 2048 })) as HTMLAnchorElement;
     expect([web.textContent, web.target, web.download]).toEqual(["📎 notes.txt (2.0 KB)", "_blank", ""]);
@@ -224,6 +244,45 @@ describe("attachments", () => {
     expect((await show({ name: "a.bin", kind: "file", mediaKey: "m:4" }, onLoad)).textContent).toBe("⬇ a.bin");
     // Without a way to ask, a held-back file reads as gone.
     expect((await show({ name: "x", kind: "video", mediaKey: "m:5" })).textContent).toBe("x (link expired)");
+  });
+});
+
+describe("favourite stars", () => {
+  const handlers = (): MessageHandlers => ({ onReply: vi.fn(), onToggleReactionPicker: vi.fn(), onReact: vi.fn(), onEdit: vi.fn(), onDelete: vi.fn() });
+  const base: NativeMessage = { id: "1", author: "Ana", content: "", timestamp: "2026-01-01T00:00:00Z", edited: false, mine: false, canEdit: false, canDelete: false, reactions: [], attachments: [] };
+  const files = [
+    { name: "cat.png", kind: "image" as const, url: "https://cdn/cat.png" },
+    { name: "dance.gif", kind: "image" as const, url: "https://cdn/dance.gif", mime: "image/gif" },
+    { name: "GIF", kind: "video" as const, url: "https://cdn/g.mp4", loop: true },
+    { name: "Wave", kind: "sticker" as const, url: "data:image/webp;base64,AA" },
+    { name: "clip.mp4", kind: "video" as const, url: "https://cdn/clip.mp4" },
+    { name: "notes.txt", kind: "file" as const, url: "https://cdn/notes.txt" },
+    { name: "old.png", kind: "image" as const },
+    { name: "blob.png", kind: "image" as const, url: "blob:file:///1" },
+  ];
+
+  it("knows what can be kept, and as what", async () => {
+    const { favouriteKind } = await import("../../src/renderer/components/message");
+    expect(files.map(favouriteKind)).toEqual(["image", "gif", "gif", "sticker", undefined, undefined, undefined, undefined]);
+  });
+
+  it("stars pictures, GIFs and stickers, showing which are kept", () => {
+    const onFavourite = vi.fn();
+    const item = messageItem(document, { ...base, attachments: files }, { ...handlers(), onFavourite, isFavourite: (file) => file.name === "dance.gif" });
+    const stars = [...item.querySelectorAll<HTMLButtonElement>(".favourite-star")];
+    expect(stars.map((s) => [s.textContent, s.getAttribute("aria-pressed")])).toEqual([
+      ["☆", "false"],
+      ["★", "true"],
+      ["☆", "false"],
+      ["☆", "false"],
+    ]);
+    expect(stars[1]!.getAttribute("aria-label")).toBe("Remove dance.gif from favourites");
+    stars[3]!.click();
+    expect(onFavourite).toHaveBeenCalledWith(files[3], "sticker");
+    // Without the handler, no stars at all.
+    expect(messageItem(document, { ...base, attachments: files }, handlers()).querySelector(".favourite-star")).toBeNull();
+    const noCheck = messageItem(document, { ...base, attachments: [files[0]!] }, { ...handlers(), onFavourite });
+    expect(noCheck.querySelector(".favourite-star")!.getAttribute("aria-pressed")).toBe("false");
   });
 });
 

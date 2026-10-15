@@ -5,6 +5,7 @@ vi.mock("livekit-client", () => import("../mocks/livekit"));
 
 import { formatSize, formatTime, insertAtCursor, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
 import type { NativeApi } from "../../src/preload/native";
+import type { FavouritesState } from "../../src/shared/favourites";
 import type { NativeMessage, NativeViewState } from "../../src/shared/native";
 import { DEFAULT_SETTINGS, type VoiceSettings } from "../../src/shared/settings";
 import { Room, resetLiveKit } from "../mocks/livekit";
@@ -264,6 +265,7 @@ describe("helpers", () => {
     let pushVoice: (settings: VoiceSettings) => void = () => {};
     let pushCompact: (compact: boolean) => void = () => {};
     let voiceCommand: (command: "toggleMute" | "toggleDeafen") => void = () => {};
+    let pushFavourites: (state: FavouritesState) => void = () => {};
     const api: NativeApi = {
       onState: (cb) => (push = cb),
       act: vi.fn(),
@@ -271,7 +273,7 @@ describe("helpers", () => {
       onCompact: (cb) => (pushCompact = cb),
       onVoiceCommand: (cb) => (voiceCommand = cb),
       screenAudioEnded: vi.fn(),
-      onFavourites: vi.fn(),
+      onFavourites: (cb) => (pushFavourites = cb),
       favourites: vi.fn(),
     };
     startNative(document, api);
@@ -281,6 +283,10 @@ describe("helpers", () => {
     pushVoice({ ...DEFAULT_SETTINGS.voice, noiseSuppression: false }); // before a chat view exists: kept for later
     push(chat());
     expect(document.querySelector(".voice-stage")).not.toBeNull();
+    pushFavourites({ categories: [], items: [], module: { name: "Fluxer", label: "FX", color: "#4f8cf7" }, saving: [] });
+    document.querySelector<HTMLButtonElement>(".emoji-button")!.click();
+    expect(document.querySelector(".media-picker")).not.toBeNull();
+    document.querySelector<HTMLButtonElement>(".emoji-button")!.click();
     pushCompact(true);
     expect(document.body.classList.contains("compact")).toBe(true);
     pushCompact(false);
@@ -1004,5 +1010,225 @@ describe("profile cards", () => {
     view.update(chat({ channel: { ...chat().channel!, can: { ...ALL, members: true }, members: list as never } }));
     expect(document.activeElement).toBe(root.querySelector("button.member"));
     expect(document.activeElement).not.toBe(row);
+  });
+});
+
+describe("media picker and favourites", () => {
+  const FAV = "a".repeat(64);
+  const module = { name: "Fluxer", label: "FX", color: "#4f8cf7" };
+  const state = (over: Partial<FavouritesState> = {}): FavouritesState => ({
+    categories: [],
+    items: [
+      {
+        id: FAV,
+        kind: "gif",
+        name: "Dance",
+        mime: "image/gif",
+        animated: true,
+        size: 5,
+        categories: [],
+        source: { platform: "Stoat", label: "ST", color: "#ff4655" },
+        addedAt: 1,
+        origin: "https://cdn/dance.gif",
+        cached: true,
+      },
+    ],
+    module,
+    saving: [],
+    ...over,
+  });
+  let favourites: ReturnType<typeof vi.fn<NativeApi["favourites"]>>;
+  const media = [
+    { name: "dance.gif", kind: "image" as const, url: "https://cdn/dance.gif", mime: "image/gif" },
+    { name: "cat.png", kind: "image" as const, url: "https://cdn/cat.png" },
+    { name: "GIF", kind: "video" as const, url: "https://cdn/loop.mp4", loop: true },
+  ];
+  const stickers = [
+    {
+      id: "p1",
+      name: "Cats",
+      stickers: [
+        { id: "s1", name: "Wave", format: "webp" as const, url: "https://cdn/s1.webp" },
+        { id: "s2", name: "Later", format: "png" as const, mediaKey: "st:2" },
+      ],
+    },
+  ];
+  const withMedia = (can: Record<string, boolean> = {}, extra: Partial<Chat> = {}) =>
+    chat({
+      stickers,
+      emojiBase: "https://media.fx/emojis",
+      customEmoji: [
+        { id: "55", name: "party", animated: false, source: "Alpha" },
+        { id: "56", name: "noreact", animated: false, react: false },
+      ],
+      gifs: { query: "", results: [{ id: "g1", url: "https://gifs/g1", preview: "https://gifs/g1.gif", video: false }], loading: false },
+      channel: {
+        id: "2",
+        name: "general",
+        messages: [msg("10", { attachments: media }), msg("11", { attachments: [media[0]!] })],
+        loading: false,
+        hasOlder: false,
+        typing: [],
+        pending: [],
+        uploading: false,
+        can: { ...ALL, ...can },
+      },
+      ...extra,
+    });
+  const open = () => root.querySelector<HTMLButtonElement>(".emoji-button")!.click();
+  const tab = (name: string) => root.querySelector<HTMLButtonElement>(`.picker-tab[data-tab="${name}"]`)!.click();
+  const pick = (key: string) => root.querySelector<HTMLButtonElement>(`[data-key="${key}"]`)!.click();
+  const reply = () => [...root.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "Reply")!.click();
+
+  beforeEach(() => {
+    favourites = vi.fn<NativeApi["favourites"]>();
+    view = new NativeView(root, { act, favourites });
+  });
+
+  it("stars media in messages, and unstars what is kept", () => {
+    view.update(withMedia());
+    view.setFavourites(state());
+    const stars = [...root.querySelectorAll<HTMLButtonElement>(".message .favourite-star")];
+    expect(stars.map((s) => s.textContent)).toEqual(["★", "☆", "☆", "★"]);
+    stars[1]!.click();
+    expect(favourites).toHaveBeenLastCalledWith({ type: "add", url: "https://cdn/cat.png", kind: "image", name: "cat.png", place: "general" });
+    stars[0]!.click();
+    expect(favourites).toHaveBeenLastCalledWith({ type: "remove", id: FAV });
+    // A nameless file in a nameless conversation still gets saved.
+    view.update(chat({ channel: { id: "2", name: " ", messages: [msg("12", { attachments: [{ name: " ", kind: "image", url: "https://cdn/x.png" }] })], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL } }));
+    root.querySelector<HTMLButtonElement>(".favourite-star")!.click();
+    expect(favourites).toHaveBeenLastCalledWith({ type: "add", url: "https://cdn/x.png", kind: "image", name: "Media" });
+  });
+
+  it("shows no stars and sends no files without the shell's favourites", () => {
+    view = new NativeView(root, { act });
+    view.update(withMedia());
+    expect(root.querySelector(".favourite-star")).toBeNull();
+    open();
+    tab("favourites");
+    expect(root.querySelector(".picker-note")!.textContent).toBe("This conversation takes no files, so favourites cannot be sent here.");
+  });
+
+  it("sends the module's stickers as stickers where it may, with the reply", () => {
+    view.update(withMedia({ stickers: true }));
+    view.setFavourites(state());
+    reply();
+    open();
+    tab("stickers");
+    expect(root.querySelector(".picker-heading")!.textContent).toBe("FXCats");
+    expect(act).toHaveBeenCalledWith({ type: "loadMedia", key: "st:2" });
+    pick("sticker:p1:s1");
+    expect(act).toHaveBeenLastCalledWith({ type: "sendSticker", stickerId: "s1", replyTo: "10" });
+    expect(root.querySelector(".media-picker")).toBeNull();
+    expect(root.querySelector<HTMLElement>(".reply-bar")!.hidden).toBe(true);
+    open();
+    tab("stickers");
+    pick("sticker:p1:s1");
+    expect(act).toHaveBeenLastCalledWith({ type: "sendSticker", stickerId: "s1" });
+  });
+
+  it("sends stickers as files where they cannot go as stickers", () => {
+    view.update(withMedia({ stickers: false }));
+    open();
+    tab("stickers");
+    pick("sticker:p1:s1");
+    expect(favourites).toHaveBeenLastCalledWith({ type: "sendMedia", url: "https://cdn/s1.webp", name: "Wave" });
+    reply();
+    open();
+    tab("stickers");
+    pick("sticker:p1:s1");
+    expect(favourites).toHaveBeenLastCalledWith({ type: "sendMedia", url: "https://cdn/s1.webp", name: "Wave", replyTo: "10" });
+  });
+
+  it("searches and sends the platform's GIFs, and sends GIFs seen here as files", () => {
+    view.update(withMedia({ gifs: true }));
+    view.setFavourites(state());
+    open();
+    tab("gifs");
+    expect(act).toHaveBeenCalledWith({ type: "searchGifs", query: "" });
+    pick("gif:g1");
+    expect(act).toHaveBeenLastCalledWith({ type: "send", content: "https://gifs/g1" });
+    reply();
+    open();
+    tab("gifs");
+    pick("gif:g1");
+    expect(act).toHaveBeenLastCalledWith({ type: "send", content: "https://gifs/g1", replyTo: "10" });
+    open();
+    tab("gifs");
+    // Seen here: newest first, once each.
+    const recent = [...root.querySelectorAll<HTMLElement>('[data-key^="recent:"]')].map((b) => b.dataset.key);
+    expect(recent).toEqual(["recent:https://cdn/dance.gif", "recent:https://cdn/loop.mp4"]);
+    pick("recent:https://cdn/loop.mp4");
+    expect(favourites).toHaveBeenLastCalledWith({ type: "sendMedia", url: "https://cdn/loop.mp4", name: "GIF" });
+    reply();
+    open();
+    tab("gifs");
+    pick("recent:https://cdn/loop.mp4");
+    expect(favourites).toHaveBeenLastCalledWith({ type: "sendMedia", url: "https://cdn/loop.mp4", name: "GIF", replyTo: "10" });
+  });
+
+  it("sends favourites, and changes them from the picker", () => {
+    view.update(withMedia());
+    view.setFavourites(state());
+    open();
+    tab("favourites");
+    root.querySelector<HTMLButtonElement>(".picker-manage")!.click();
+    const input = root.querySelector<HTMLInputElement>('[data-key="new-category"]')!;
+    input.value = "Cats";
+    root.querySelector<HTMLFormElement>(".picker-new-category")!.dispatchEvent(new Event("submit", { cancelable: true }));
+    expect(favourites).toHaveBeenLastCalledWith({ type: "createCategory", name: "Cats" });
+    pick(`fav:${FAV}`);
+    expect(favourites).toHaveBeenLastCalledWith({ type: "send", id: FAV });
+    reply();
+    open();
+    tab("favourites");
+    pick(`fav:${FAV}`);
+    expect(favourites).toHaveBeenLastCalledWith({ type: "send", id: FAV, replyTo: "10" });
+  });
+
+  it("inserts custom emoji with where they come from, and reacts only with those that may", () => {
+    view.update(withMedia());
+    view.setFavourites(state());
+    open();
+    expect(root.querySelector(".media-picker .picker-heading")!.textContent).toBe("FXAlpha");
+    expect(root.querySelectorAll(".media-picker .emoji-option.custom")).toHaveLength(2);
+    [...root.querySelectorAll<HTMLButtonElement>(".message-actions button")].find((b) => b.textContent === "React")!.click();
+    root.querySelector<HTMLButtonElement>(".quick-reactions .more")!.click();
+    expect(root.querySelectorAll(".message .emoji-picker .emoji-option.custom")).toHaveLength(1);
+  });
+
+  it("keeps the picker current, and closes it on Escape, on switching or when sending is off", () => {
+    view.update(withMedia({ stickers: true }));
+    open();
+    tab("stickers");
+    expect(root.querySelector<HTMLButtonElement>('[data-key="sticker:p1:s2"]')!.disabled).toBe(true);
+    const loaded = [{ ...stickers[0]!, stickers: [stickers[0]!.stickers[0]!, { id: "s2", name: "Later", format: "png" as const, url: "https://cdn/s2.png" }] }];
+    view.update(withMedia({ stickers: true }, { stickers: loaded }));
+    expect(root.querySelector<HTMLButtonElement>('[data-key="sticker:p1:s2"]')!.disabled).toBe(false);
+    // Asked for once, however often it renders.
+    expect(act.mock.calls.filter(([a]) => a.type === "loadMedia")).toHaveLength(1);
+    expect(root.querySelector(".emoji-button")!.getAttribute("aria-expanded")).toBe("true");
+    root.querySelector(".media-picker")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(root.querySelector(".media-picker")).toBeNull();
+    expect(root.querySelector(".emoji-button")!.getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(root.querySelector(".emoji-button"));
+    open();
+    view.update(chat({ channel: { id: "3", name: "Ana", messages: [], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL } }));
+    expect(root.querySelector(".media-picker")).toBeNull();
+    open();
+    view.update(chat({ channel: { id: "3", name: "Ana", messages: [], loading: false, hasOlder: false, typing: [], pending: [], uploading: true, can: ALL } }));
+    expect(root.querySelector(".media-picker")).toBeNull();
+    // Signing out leaves no picker behind.
+    view.update(login);
+    view.update(withMedia());
+    expect(root.querySelector(".media-picker")).toBeNull();
+  });
+
+  it("inserts a picked emoji and closes", () => {
+    view.update(withMedia());
+    open();
+    root.querySelector<HTMLButtonElement>(".media-picker .emoji-option.custom")!.click();
+    expect(root.querySelector<HTMLTextAreaElement>(".composer")!.value).toBe("<:party:55>");
+    expect(root.querySelector(".media-picker")).toBeNull();
   });
 });
