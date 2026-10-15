@@ -5,7 +5,7 @@ import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
 import { channelCan, chatFolders, customEmojiList, emojiUrls, gifResults, incomingCall, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
-import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
+import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, setPromptQr, type LoginForm } from "./components/auth";
 import { channelList, folderTabs } from "./components/channels";
 import { el, icon, ICONS } from "./components/dom";
 import { emojiPicker, type SourceBadge } from "./components/emojiPicker";
@@ -183,6 +183,7 @@ export class NativeView {
         (this.parts.submit as HTMLButtonElement).disabled = state.busy;
         setFormMessage(this.parts.form!, "status", state.status);
         setFormMessage(this.parts.form!, "error", state.error);
+        setPromptQr(this.parts.form!, state.prompt.qr);
         return;
       case "connecting":
         this.parts.status!.textContent = state.status;

@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, chatFolders, incomingCall, MAX_FOLDERS, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_THREAD_MESSAGES, threadSummary, threadView, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
+import { channelCan, chatFolders, incomingCall, MAX_FOLDERS, MAX_QR_TEXT, promptQr, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_THREAD_MESSAGES, threadSummary, threadView, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -188,6 +188,14 @@ describe("conversation capability flags", () => {
     expect(channelCan(all)).toEqual(all);
     expect(channelCan({ reply: true, react: "yes", attach: 1, members: "true", stickers: "yes", extra: true })).toEqual({ ...none, reply: true });
     for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual(none);
+  });
+});
+
+describe("prompt QR codes", () => {
+  it("takes printable ASCII up to MAX_QR_TEXT characters", () => {
+    expect(promptQr("tg://login?token=ab-_")).toBe("tg://login?token=ab-_");
+    expect(promptQr("x".repeat(MAX_QR_TEXT))).toHaveLength(MAX_QR_TEXT);
+    for (const value of ["", "a b", "é", "x".repeat(MAX_QR_TEXT + 1), "a\nb", 5, undefined]) expect(promptQr(value)).toBeUndefined();
   });
 });
 

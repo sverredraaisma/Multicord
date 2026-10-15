@@ -935,6 +935,20 @@ export interface NativePrompt {
   cancel?: string;
   /** A web page to open in the browser, e.g. where to confirm a sign-in code. Only https links are shown. */
   link?: { url: string; label: string };
+  /**
+   * Text the view shows as a QR code, to scan with another device: e.g.
+   * Telegram's sign-in link, which is a credential. The view draws the code
+   * itself and keeps the text nowhere else. Read through promptQr().
+   */
+  qr?: string;
+}
+
+/** Longest text shown as a QR code. */
+export const MAX_QR_TEXT = 200;
+
+/** A prompt's QR code text as the view trusts it: printable ASCII, at most MAX_QR_TEXT characters; undefined otherwise. */
+export function promptQr(value: unknown): string | undefined {
+  return typeof value === "string" && value.length <= MAX_QR_TEXT && /^[!-~]+$/.test(value) ? value : undefined;
 }
 
 export type NativeViewState =

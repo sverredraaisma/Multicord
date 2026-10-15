@@ -1345,6 +1345,29 @@ describe("prompt steps", () => {
     expect(root.querySelector(".prompt-description")).toBeNull();
     expect(root.querySelector("a.prompt-link")).not.toBeNull();
   });
+
+  it("draws a step's QR code itself, following the step as its code changes", () => {
+    const view = new NativeView(root, { act: vi.fn() });
+    const withQr = (qr: unknown) => {
+      const base = step("qr") as Extract<NativeViewState, { screen: "prompt" }>;
+      return { ...base, prompt: { ...base.prompt, fields: [], qr: qr as string } };
+    };
+    view.update(step("phone"));
+    expect(root.querySelector<HTMLElement>(".prompt-qr")!.hidden).toBe(true);
+    view.update(withQr("tg://login?token=AAAA"));
+    const box = root.querySelector<HTMLElement>(".prompt-qr")!;
+    expect(box.hidden).toBe(false);
+    const first = box.querySelector("svg.qr-code")!.querySelector("path")!.getAttribute("d");
+    view.update(withQr("tg://login?token=BBBB"));
+    expect(root.querySelector(".prompt-qr")).toBe(box);
+    expect(box.querySelector("path")!.getAttribute("d")).not.toBe(first);
+    // Text the view does not take shows no code.
+    for (const bad of ["two words", "x".repeat(201), 5, undefined]) {
+      view.update(withQr(bad));
+      expect(box.hidden).toBe(true);
+      expect(box.childElementCount).toBe(0);
+    }
+  });
 });
 
 describe("voice shortcuts without a call", () => {

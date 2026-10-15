@@ -1,5 +1,6 @@
-import type { NativePrompt } from "../../shared/native";
+import { promptQr, type NativePrompt } from "../../shared/native";
 import { el } from "./dom";
+import { qrPicture } from "./qr";
 
 export interface LoginForm {
   form: HTMLFormElement;
@@ -78,6 +79,15 @@ export function setFormMessage(form: HTMLElement, kind: "status" | "error", text
   form.querySelector(`.${kind}`)!.textContent = text ?? "";
 }
 
+/** Shows a prompt form's QR code for this text, drawn here; none for text the view does not take. */
+export function setPromptQr(form: HTMLElement, value: unknown): void {
+  const box = form.querySelector<HTMLElement>(".prompt-qr")!;
+  const text = promptQr(value);
+  const picture = text === undefined ? undefined : qrPicture(form.ownerDocument, text, "QR code to scan");
+  box.hidden = picture === undefined;
+  box.replaceChildren(...(picture ? [picture] : []));
+}
+
 /**
  * A sign-in step defined by the module: its fields, a submit button and
  * optionally a secondary one. Status and error lines as in the login form.
@@ -101,6 +111,10 @@ export function promptForm(
     line.append(link);
     form.append(line);
   }
+  // A code to scan, where the step has one; it may change while the step lasts.
+  const qr = el(doc, "div", "prompt-qr");
+  form.append(qr);
+  setPromptQr(form, prompt.qr);
   const inputs = prompt.fields.map((field) => {
     const input = el(doc, "input");
     input.name = field.name;

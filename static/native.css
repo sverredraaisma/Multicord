@@ -55,6 +55,9 @@
 .auth .status { margin: 0; color: var(--muted); }
 .auth .error { margin: 0; color: var(--danger); }
 .auth .status:empty, .auth .error:empty { display: none; }
+/* A code to scan: always dark on light, with room around it, as scanners need. */
+.prompt-qr:not([hidden]) { display: flex; justify-content: center; }
+.qr-code { width: 232px; height: 232px; border-radius: 8px; }
 .note { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
 .spinner {
   width: 32px;
