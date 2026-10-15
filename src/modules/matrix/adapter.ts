@@ -178,6 +178,8 @@ export interface MatrixAdapterDeps {
   api: MatrixApi;
   /** OAuth 2.0 sign-in; without it only passwords and access tokens are offered. */
   oauth?: MatrixOAuth;
+  /** Single sign-on: opens the homeserver's SSO page in the browser and gives the login token that comes back (the shell receives it). */
+  sso?(url: string): Promise<string>;
   crypto?: MatrixCryptoDeps;
   /** Waits before retrying a failed sync, and between sign-in polls; tests pass their own. */
   delay?: (ms: number) => Promise<void>;
@@ -203,9 +205,9 @@ export function hostsOf(...urls: (string | undefined)[]): string[] {
 
 /** The screens of a verification by comparing emoji, one per phase. */
 type VerifyStep = "verify-incoming" | "verify-wait" | "verify-emoji" | "verify-confirmed" | "verify-done" | "verify-cancelled";
-type Step = "connecting" | "oauth" | "device" | "login" | "token" | "retry" | "chat" | "recovery" | VerifyStep;
+type Step = "connecting" | "oauth" | "sso" | "device" | "login" | "token" | "retry" | "chat" | "recovery" | VerifyStep;
 /** The sign-in screens the secondary button cycles through. */
-type SignInStep = "oauth" | "login" | "token";
+type SignInStep = "oauth" | "sso" | "login" | "token";
 
 const VERIFY_STEPS: Record<VerificationState["phase"], VerifyStep> = {
   incoming: "verify-incoming",
@@ -519,6 +521,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private error: string | undefined;
   private baseUrl: string | undefined;
   private passwordLogin = false;
+  /** The homeserver offers single sign-on, and the engine can receive its token. */
+  private ssoLogin = false;
+  /** Waiting for single sign-on in the browser; a counter drops a token that comes after the user moved on. */
+  private ssoWaiting = false;
+  private ssoAttempt = 0;
   private oauthServer: OAuthServer | undefined;
   /** The code on screen while signing in with OAuth, and a counter that stops the polling for an abandoned one. */
   private grant: DeviceGrant | undefined;
@@ -745,7 +752,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.connecting(`Looking up ${this.host()}…`);
     const unreachable = (failure: unknown) => this.showRetry(`Could not reach a Matrix homeserver at ${this.host()}: ${friendly(failure)}`, () => this.showSignIn(error));
     let loginFailure: unknown;
-    let flows: { password: boolean } | undefined;
+    let flows: { password: boolean; sso: boolean } | undefined;
     try {
       this.baseUrl = await this.deps.api.discover(this.deps.def.url);
       flows = await this.deps.api.loginFlows(this.baseUrl).catch((failure: unknown) => void (loginFailure = failure));
@@ -757,6 +764,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     // A homeserver that signs in only through its account server need not serve the login endpoint (Synapse with MAS answers it with M_UNRECOGNIZED).
     if (!flows && !this.oauthServer) return unreachable(loginFailure);
     this.passwordLogin = flows?.password ?? false;
+    this.ssoLogin = (flows?.sso ?? false) && this.deps.sso !== undefined;
     await this.discoverFoci();
     const server = this.oauthServer;
     await this.lockToHosts(hostsOf(this.deps.def.url, this.baseUrl, server?.issuer, server?.deviceEndpoint, server?.tokenEndpoint, server?.registrationEndpoint, server?.revocationEndpoint));
@@ -769,6 +777,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private signInSteps(): SignInStep[] {
     const steps: SignInStep[] = [];
     if (this.oauthServer) steps.push("oauth");
+    if (this.ssoLogin) steps.push("sso");
     if (this.passwordLogin) steps.push("login");
     steps.push("token");
     return steps;
@@ -1074,9 +1083,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       this.step = "oauth";
     } else if (step === "recovery") {
       this.step = "chat";
-    } else if (step === "oauth" || step === "login" || step === "token") {
+    } else if (step === "oauth" || step === "sso" || step === "login" || step === "token") {
       const next = this.nextSignIn(step);
       if (!next) return;
+      // A token the browser still brings is not used.
+      this.ssoAttempt++;
+      this.ssoWaiting = false;
       this.step = next;
     } else {
       return;
@@ -1090,6 +1102,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (step !== this.step || this.busy) return;
     if (step === "retry") return this.retry!();
     if (step === "oauth" || step === "device") return this.startDeviceSignIn();
+    if (step === "sso") return this.startSso();
     if (step === "recovery") return this.recover(values.key ?? "");
     if (isVerifyStep(step)) return this.answerVerification(step);
     this.busy = true;
@@ -1114,6 +1127,36 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       session = undefined;
     }
     this.busy = false;
+    if (session) return this.signedIn(session);
+    this.render();
+  }
+
+  /**
+   * Single sign-on: the homeserver's sign-in page in the browser, whose
+   * login token the shell receives on this computer; then m.login.token
+   * gives Multicord a device of its own. A token that comes after the user
+   * moved on is dropped unused (it expires by itself).
+   */
+  private async startSso(): Promise<void> {
+    const attempt = ++this.ssoAttempt;
+    const baseUrl = this.baseUrl!;
+    this.ssoWaiting = true;
+    this.error = undefined;
+    this.status = "Waiting for you to sign in in your browser…";
+    this.render();
+    let session: MxSession | undefined;
+    try {
+      const token = await this.deps.sso!(`${baseUrl}/_matrix/client/v3/login/sso/redirect`);
+      if (attempt !== this.ssoAttempt) return;
+      session = await this.deps.api.loginToken(baseUrl, token);
+      await this.deps.secrets.save(SESSION_KEY, JSON.stringify(session));
+    } catch (error) {
+      if (attempt !== this.ssoAttempt) return;
+      this.error = `Single sign-on did not work: ${friendly(error)}`;
+      session = undefined;
+    }
+    this.ssoWaiting = false;
+    this.status = undefined;
     if (session) return this.signedIn(session);
     this.render();
   }
@@ -1222,7 +1265,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const host = this.host();
     const withCancel = (prompt: NativePrompt, step: SignInStep): NativePrompt => {
       const next = this.nextSignIn(step);
-      if (next) prompt.cancel = { oauth: "Sign in with the browser instead", login: "Use a password instead", token: "Use an access token instead" }[next];
+      if (next) prompt.cancel = { oauth: "Sign in with the browser instead", sso: "Use single sign-on instead", login: "Use a password instead", token: "Use an access token instead" }[next];
       return prompt;
     };
     const encryption = this.deps.crypto ? "Multicord gets a device of its own, with end-to-end encryption." : "Encrypted rooms cannot be read in Multicord.";
@@ -1277,6 +1320,17 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             submit: "Sign in with the browser",
           },
           "oauth",
+        );
+      case "sso":
+        return withCancel(
+          {
+            id: "sso",
+            title: `Sign in to ${host}`,
+            description: `You sign in on ${host}'s own sign-in page in your browser (single sign-on), which then hands Multicord a one-time sign-in token on this computer: your password never passes through Multicord. ${encryption}`,
+            fields: [],
+            submit: "Sign in with single sign-on",
+          },
+          "sso",
         );
       case "token":
         return withCancel(
@@ -3660,7 +3714,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (isVerifyStep(this.step) && this.verification) this.step = VERIFY_STEPS[this.verification.state().phase];
     if (this.step !== "chat") {
       // The waiting screens have nothing to submit.
-      const waiting = this.step === "verify-wait" || this.step === "verify-confirmed";
+      const waiting = this.step === "verify-wait" || this.step === "verify-confirmed" || this.ssoWaiting;
       return { screen: "prompt", platform, prompt: this.prompt(), busy: this.busy || waiting, status: this.promptStatus(), error: this.error };
     }
     const layout = this.spaceLayout();

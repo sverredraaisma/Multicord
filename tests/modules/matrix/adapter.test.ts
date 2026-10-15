@@ -128,13 +128,14 @@ const initialSync = (): MxSync =>
   });
 
 class FakeMatrixApi implements MatrixApi {
-  flows = { password: true };
+  flows = { password: true, sso: false };
   private readonly queue: (MxSync | Error)[] = [];
   private waiting: { resolve(s: MxSync): void; reject(e: Error): void } | undefined;
 
   discover = vi.fn(async (_url: string) => BASE);
   loginFlows = vi.fn(async (_base: string) => this.flows);
   login = vi.fn(async (_base: string, _user: string, _password: string): Promise<MxSession> => SESSION);
+  loginToken = vi.fn(async (_base: string, _token: string): Promise<MxSession> => SESSION);
   whoami = vi.fn(async (_base: string, _token: string): Promise<{ userId: string; deviceId?: string }> => ({ userId: ME, deviceId: "D" }));
   sync = vi.fn((_session: MxSession, _since: string | undefined, _timeout: number, _mode?: MxSyncMode): Promise<MxSync> => {
     const next = this.queue.shift();
@@ -271,7 +272,7 @@ describe("starting", () => {
 
   it("asks for an access token when the homeserver offers no password sign-in", async () => {
     const ctx = setup();
-    ctx.api.flows = { password: false };
+    ctx.api.flows = { password: false, sso: false };
     await ctx.adapter.start();
     const { prompt } = ctx.prompt();
     expect(prompt).toMatchObject({ id: "token", fields: [{ name: "token", type: "password" }] });
@@ -332,10 +333,77 @@ describe("starting", () => {
   });
 });
 
+describe("signing in with single sign-on", () => {
+  async function atSso(sso: (url: string) => Promise<string>) {
+    const ctx = setup({}, false, { sso: vi.fn(sso) });
+    ctx.api.flows = { password: true, sso: true };
+    await ctx.adapter.start();
+    return ctx;
+  }
+  const ssoOf = (ctx: ReturnType<typeof setup>) => (ctx.adapter as unknown as { deps: { sso: ReturnType<typeof vi.fn> } }).deps.sso;
+
+  it("offers it where the homeserver has it and the engine can receive the token, and signs in with the token", async () => {
+    let finish: (token: string) => void = () => {};
+    const ctx = await atSso(() => new Promise((resolve) => (finish = resolve)));
+    expect(ctx.prompt().prompt).toMatchObject({ id: "sso", title: "Sign in to x.org", submit: "Sign in with single sign-on", cancel: "Use a password instead" });
+    void ctx.answer("sso");
+    await flush();
+    expect(ssoOf(ctx)).toHaveBeenCalledWith(`${BASE}/_matrix/client/v3/login/sso/redirect`);
+    expect(ctx.prompt()).toMatchObject({ busy: true, status: "Waiting for you to sign in in your browser…" });
+    finish("syl_t");
+    await flush();
+    expect(ctx.api.loginToken).toHaveBeenCalledWith(BASE, "syl_t");
+    expect(JSON.parse(ctx.secrets.get("session")!)).toEqual(SESSION);
+    expect(ctx.last()).toEqual({ screen: "connecting", platform: "Matrix", status: "Loading your chats…" });
+    // The password prompt points back to it.
+    const other = await atSso(async () => "t");
+    await other.act({ type: "cancelPrompt", id: "sso" });
+    expect(other.prompt().prompt).toMatchObject({ id: "login", cancel: "Use an access token instead" });
+    await other.act({ type: "cancelPrompt", id: "login" });
+    expect(other.prompt().prompt).toMatchObject({ id: "token", cancel: "Use single sign-on instead" });
+  });
+
+  it("says when it did not work, and drops a token that comes after the user moved on", async () => {
+    const failing = await atSso(async () => Promise.reject(new Error("Single sign-on timed out")));
+    await failing.answer("sso");
+    expect(failing.prompt()).toMatchObject({ busy: false, error: "Single sign-on did not work: Single sign-on timed out" });
+    expect(failing.prompt().status).toBeUndefined();
+    const refused = await atSso(async () => "syl_old");
+    refused.api.loginToken.mockRejectedValueOnce(new MatrixError(403, "M_FORBIDDEN", "Token is not active"));
+    await refused.answer("sso");
+    expect(refused.prompt().error).toBe("Single sign-on did not work: Token is not active");
+    let finish: (token: string) => void = () => {};
+    let fail: (error: Error) => void = () => {};
+    const late = await atSso(() => new Promise((resolve, reject) => ((finish = resolve), (fail = reject))));
+    void late.answer("sso");
+    await flush();
+    await late.act({ type: "cancelPrompt", id: "sso" });
+    expect(late.prompt()).toMatchObject({ busy: false, prompt: { id: "login" } });
+    finish("syl_late");
+    await flush();
+    expect(late.api.loginToken).not.toHaveBeenCalled();
+    expect(late.prompt().prompt.id).toBe("login");
+    const late2 = await atSso(() => new Promise((_resolve, reject) => (fail = reject)));
+    void late2.answer("sso");
+    await flush();
+    await late2.act({ type: "cancelPrompt", id: "sso" });
+    fail(new Error("cancelled"));
+    await flush();
+    expect(late2.prompt().error).toBeUndefined();
+  });
+
+  it("is not offered without a way to receive the token", async () => {
+    const ctx = setup();
+    ctx.api.flows = { password: true, sso: true };
+    await ctx.adapter.start();
+    expect(ctx.prompt().prompt.id).toBe("login");
+  });
+});
+
 describe("signing in", () => {
   async function atLogin(passwordLogin = true) {
     const ctx = setup();
-    ctx.api.flows = { password: passwordLogin };
+    ctx.api.flows = { password: passwordLogin, sso: false };
     await ctx.adapter.start();
     return ctx;
   }
@@ -2425,7 +2493,7 @@ describe("end-to-end encryption", () => {
     await ctx.act({ type: "send", content: "hi" });
     expect(ctx.chat().error).toBe("Message not sent: this room is end-to-end encrypted, and with an access token Multicord cannot encrypt");
     const tokenPrompt = setup({}, false, { crypto: { open: vi.fn(), deleteStore: vi.fn() } });
-    tokenPrompt.api.flows = { password: false };
+    tokenPrompt.api.flows = { password: false, sso: false };
     await tokenPrompt.adapter.start();
     expect(tokenPrompt.prompt().prompt.description).toContain("Encrypted rooms stay locked");
   });

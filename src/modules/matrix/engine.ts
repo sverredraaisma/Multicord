@@ -1,4 +1,4 @@
-import { bridgeFetch, bridgeSecrets, engineInfo, lockHosts, fileSource, pickFiles, serveAdapter } from "../../engine/runtime";
+import { bridgeFetch, bridgeSecrets, engineInfo, lockHosts, fileSource, pickFiles, serveAdapter, ssoSignIn } from "../../engine/runtime";
 import type { EngineBridge } from "../../preload/engine";
 import { MatrixAdapter, type MatrixCryptoDeps } from "./adapter";
 import type { MatrixApi } from "./api";
@@ -37,6 +37,7 @@ export async function startMatrixEngine(bridge: EngineBridge, options: MatrixEng
     oauth: (options.createOAuth ?? createOAuthClient)(fetchFn),
     crypto: options.crypto,
     lockHosts: (hosts) => lockHosts(bridge, hosts),
+    sso: (url) => ssoSignIn(bridge, url),
     files: { pick: () => pickFiles(bridge), open: (file) => fileSource(bridge, file) },
     settings: info.settings,
   });

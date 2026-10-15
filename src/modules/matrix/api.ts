@@ -65,6 +65,8 @@ export interface MxCryptoSync {
 
 export interface MxLoginFlows {
   password: boolean;
+  /** The homeserver signs in through its own page in the browser (m.login.sso), handing back a login token. */
+  sso: boolean;
 }
 
 export interface MxMember {
@@ -463,6 +465,8 @@ export interface MatrixApi {
   discover(serverUrl: string): Promise<string>;
   loginFlows(baseUrl: string): Promise<MxLoginFlows>;
   login(baseUrl: string, user: string, password: string): Promise<MxSession>;
+  /** Signs in with a login token from single sign-on (m.login.token), as a device of our own. */
+  loginToken(baseUrl: string, token: string): Promise<MxSession>;
   /** Checks a token; for tokens copied from elsewhere, also learns the user and device. */
   whoami(baseUrl: string, accessToken: string): Promise<{ userId: string; deviceId?: string }>;
   /** Checks that a stored session still works (refreshing an OAuth token first when it expired). */

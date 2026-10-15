@@ -149,8 +149,9 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - notifications that follow your Stoat notification settings. Channels, DMs and groups muted there (or in a muted server) show as muted, and the bell beside one mutes or unmutes it in those settings, which Stoat's own apps share.
 
   Self-hosted instances can be added with `"module": "stoat-native"` and the instance URL. The web client stays available as "Stoat (web)". Voice is not built in.
-- **Matrix, native:** a built-in Matrix client for any homeserver; matrix.org is the default, and Element stays available as a web view. It talks to the homeserver's API directly from its engine, with no SDK. There are three ways to sign in:
+- **Matrix, native:** a built-in Matrix client for any homeserver; matrix.org is the default, and Element stays available as a web view. It talks to the homeserver's API directly from its engine, with no SDK. There are four ways to sign in:
   - **Your homeserver's account page, in the browser** (OAuth 2.0 with a code you confirm). matrix.org and other homeservers that run the Matrix Authentication Service give Multicord a device of its own this way, and your password never passes through Multicord.
+  - **Single sign-on, in the browser** (`m.login.sso`), where the homeserver offers it: its sign-in page (or the identity provider it sends you to) opens in your browser and sends the browser back to a one-time address on this computer (127.0.0.1, a random port and path) with a login token, which Multicord exchanges for a device of its own (`m.login.token`). The shell receives the token, not the engine, and only for the sign-in you just started; see the engines bullet above. Your password never passes through Multicord.
   - **A password**, where the homeserver offers password sign-in.
   - **An access token copied from Element.**
 

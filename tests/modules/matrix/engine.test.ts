@@ -110,6 +110,19 @@ describe("Matrix settings", () => {
   });
 });
 
+describe("Matrix single sign-on", () => {
+  it("asks the shell for the login token", async () => {
+    const { bridge } = fakeBridge({ session: SESSION });
+    const original = bridge.request.getMockImplementation()!;
+    bridge.request.mockImplementation((async (request: EngineRequest) => (request.type === "ssoSignIn" ? { loginToken: "syl_t" } : original(request))) as typeof original);
+    const api = { check: vi.fn(async () => {}), sync: vi.fn(() => new Promise(() => {})), rtcFoci: vi.fn(async () => []), rtcTransports: vi.fn(async () => []) } as unknown as MatrixApi;
+    const adapter = await startMatrixEngine(bridge, { createApi: () => api });
+    const sso = (adapter as unknown as { deps: { sso(url: string): Promise<string> } }).deps.sso;
+    expect(await sso("https://hs.x.org/_matrix/client/v3/login/sso/redirect")).toBe("syl_t");
+    expect(bridge.request).toHaveBeenCalledWith({ type: "ssoSignIn", url: "https://hs.x.org/_matrix/client/v3/login/sso/redirect" });
+  });
+});
+
 describe("Matrix files", () => {
   it("picks files through the bridge", async () => {
     const { bridge } = fakeBridge({ session: SESSION });

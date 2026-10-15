@@ -189,6 +189,19 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
     }
   }
 
+  /** POST /login as device "Multicord", and the session it gives. */
+  async function signIn(baseUrl: string, how: Record<string, unknown>): Promise<MxSession> {
+    const body = await call(baseUrl, `${CLIENT}/login`, { method: "POST", body: { ...how, initial_device_display_name: "Multicord" } });
+    const { access_token: accessToken, device_id: deviceId } = body;
+    const id = userId(body.user_id);
+    if (typeof accessToken !== "string" || accessToken === "" || accessToken.length > MAX_ACCESS_TOKEN || !id || typeof deviceId !== "string" || deviceId === "" || deviceId.length > 255) {
+      throw new Error("The homeserver sent an unreadable sign-in response");
+    }
+    // The server may name a different client API base for this account.
+    const wellKnown = isRecord(body.well_known) && isRecord(body.well_known["m.homeserver"]) ? httpsBase(body.well_known["m.homeserver"].base_url) : undefined;
+    return { baseUrl: wellKnown ?? baseUrl, accessToken, userId: id, deviceId, ownDevice: true };
+  }
+
   const room = (roomId: string): string => `${CLIENT}/rooms/${encodeURIComponent(roomId)}`;
 
   const syncStates = new WeakMap<MxSession, SyncState>();
@@ -270,27 +283,16 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
     async loginFlows(baseUrl): Promise<MxLoginFlows> {
       const body = await call(baseUrl, `${CLIENT}/login`);
       const flows = Array.isArray(body.flows) ? body.flows : [];
-      return { password: flows.some((flow) => isRecord(flow) && flow.type === "m.login.password") };
+      const offers = (type: string) => flows.some((flow) => isRecord(flow) && flow.type === type);
+      return { password: offers("m.login.password"), sso: offers("m.login.sso") };
     },
 
     async login(baseUrl, user, password): Promise<MxSession> {
-      const body = await call(baseUrl, `${CLIENT}/login`, {
-        method: "POST",
-        body: {
-          type: "m.login.password",
-          identifier: { type: "m.id.user", user },
-          password,
-          initial_device_display_name: "Multicord",
-        },
-      });
-      const { access_token: accessToken, device_id: deviceId } = body;
-      const id = userId(body.user_id);
-      if (typeof accessToken !== "string" || accessToken === "" || accessToken.length > MAX_ACCESS_TOKEN || !id || typeof deviceId !== "string" || deviceId === "" || deviceId.length > 255) {
-        throw new Error("The homeserver sent an unreadable sign-in response");
-      }
-      // The server may name a different client API base for this account.
-      const wellKnown = isRecord(body.well_known) && isRecord(body.well_known["m.homeserver"]) ? httpsBase(body.well_known["m.homeserver"].base_url) : undefined;
-      return { baseUrl: wellKnown ?? baseUrl, accessToken, userId: id, deviceId, ownDevice: true };
+      return signIn(baseUrl, { type: "m.login.password", identifier: { type: "m.id.user", user }, password });
+    },
+
+    async loginToken(baseUrl, token): Promise<MxSession> {
+      return signIn(baseUrl, { type: "m.login.token", token });
     },
 
     async whoami(baseUrl, accessToken) {

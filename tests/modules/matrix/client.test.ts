@@ -58,13 +58,19 @@ describe("discovery", () => {
 describe("signing in", () => {
   it("reads the login flows", async () => {
     const { client, fetchFn } = fakeFetch(() => json({ flows: [{ type: "m.login.sso" }, { type: "m.login.password" }] }));
-    expect(await client.loginFlows(BASE)).toEqual({ password: true });
+    expect(await client.loginFlows(BASE)).toEqual({ password: true, sso: true });
     expect(callOf(fetchFn).url.href).toBe(`${BASE}/_matrix/client/v3/login`);
     expect(callOf(fetchFn).init.headers).toEqual({ Accept: "application/json" });
     const sso = fakeFetch(() => json({ flows: [{ type: "m.login.sso" }, "junk"] }));
-    expect(await sso.client.loginFlows(BASE)).toEqual({ password: false });
+    expect(await sso.client.loginFlows(BASE)).toEqual({ password: false, sso: true });
     const none = fakeFetch(() => json({}));
-    expect(await none.client.loginFlows(BASE)).toEqual({ password: false });
+    expect(await none.client.loginFlows(BASE)).toEqual({ password: false, sso: false });
+  });
+
+  it("signs in with a login token from single sign-on as device Multicord", async () => {
+    const { client, fetchFn } = fakeFetch(() => json({ access_token: "T", user_id: "@me:x.org", device_id: "DEV" }));
+    expect(await client.loginToken(BASE, "syl_t")).toEqual({ baseUrl: BASE, accessToken: "T", userId: "@me:x.org", deviceId: "DEV", ownDevice: true });
+    expect(callOf(fetchFn).body).toEqual({ type: "m.login.token", token: "syl_t", initial_device_display_name: "Multicord" });
   });
 
   it("logs in with a password as device Multicord", async () => {
