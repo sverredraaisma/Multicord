@@ -630,6 +630,12 @@ export type NativeAction =
   | { type: "sendSticker"; stickerId: string; replyTo?: string }
   /** Searches the platform's GIFs (can.gifs); an empty query asks for its trending ones. */
   | { type: "searchGifs"; query: string }
+  /**
+   * The composer's picker opened or closed. A module may keep heavy picker
+   * data (sticker pictures as data: URLs) out of the chat state while it is
+   * closed, so they do not travel with every update.
+   */
+  | { type: "picker"; open: boolean }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -689,6 +695,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return typeof v.stickerId === "string" && MEDIA_ID.test(v.stickerId) && (v.replyTo === undefined || id(v.replyTo));
     case "searchGifs":
       return text(v.query, 0, MAX_GIF_QUERY);
+    case "picker":
+      return typeof v.open === "boolean";
     case "members":
       return typeof v.open === "boolean";
     case "loadMembers":

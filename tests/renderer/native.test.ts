@@ -1132,13 +1132,13 @@ describe("media picker and favourites", () => {
     expect(root.querySelector(".picker-heading")!.textContent).toBe("FXCats");
     expect(act).toHaveBeenCalledWith({ type: "loadMedia", key: "st:2" });
     pick("sticker:p1:s1");
-    expect(act).toHaveBeenLastCalledWith({ type: "sendSticker", stickerId: "s1", replyTo: "10" });
+    expect(act).toHaveBeenCalledWith({ type: "sendSticker", stickerId: "s1", replyTo: "10" });
     expect(root.querySelector(".media-picker")).toBeNull();
     expect(root.querySelector<HTMLElement>(".reply-bar")!.hidden).toBe(true);
     open();
     tab("stickers");
     pick("sticker:p1:s1");
-    expect(act).toHaveBeenLastCalledWith({ type: "sendSticker", stickerId: "s1" });
+    expect(act).toHaveBeenCalledWith({ type: "sendSticker", stickerId: "s1" });
   });
 
   it("sends stickers as files where they cannot go as stickers", () => {
@@ -1161,12 +1161,12 @@ describe("media picker and favourites", () => {
     tab("gifs");
     expect(act).toHaveBeenCalledWith({ type: "searchGifs", query: "" });
     pick("gif:g1");
-    expect(act).toHaveBeenLastCalledWith({ type: "send", content: "https://gifs/g1" });
+    expect(act).toHaveBeenCalledWith({ type: "send", content: "https://gifs/g1" });
     reply();
     open();
     tab("gifs");
     pick("gif:g1");
-    expect(act).toHaveBeenLastCalledWith({ type: "send", content: "https://gifs/g1", replyTo: "10" });
+    expect(act).toHaveBeenCalledWith({ type: "send", content: "https://gifs/g1", replyTo: "10" });
     open();
     tab("gifs");
     // Seen here: newest first, once each.
@@ -1222,9 +1222,12 @@ describe("media picker and favourites", () => {
     // Asked for once, however often it renders.
     expect(act.mock.calls.filter(([a]) => a.type === "loadMedia")).toHaveLength(1);
     expect(root.querySelector(".emoji-button")!.getAttribute("aria-expanded")).toBe("true");
+    expect(act).toHaveBeenCalledWith({ type: "picker", open: true });
+    expect(act).not.toHaveBeenCalledWith({ type: "picker", open: false });
     root.querySelector(".media-picker")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     expect(root.querySelector(".media-picker")).toBeNull();
     expect(root.querySelector(".emoji-button")!.getAttribute("aria-expanded")).toBe("false");
+    expect(act).toHaveBeenLastCalledWith({ type: "picker", open: false });
     expect(document.activeElement).toBe(root.querySelector(".emoji-button"));
     open();
     view.update(chat({ channel: { id: "3", name: "Ana", messages: [], loading: false, hasOlder: false, typing: [], pending: [], uploading: false, can: ALL } }));

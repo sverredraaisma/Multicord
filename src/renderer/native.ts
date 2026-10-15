@@ -433,12 +433,16 @@ export class NativeView {
     holder.replaceChildren(this.picker.element);
     holder.hidden = false;
     this.parts.emoji!.setAttribute("aria-expanded", "true");
+    this.api.act({ type: "picker", open: true });
     this.picker.show("emoji");
   }
 
   private closePicker(): void {
     const holder = this.parts.composerPicker;
-    this.picker?.close();
+    if (this.picker) {
+      this.picker.close();
+      this.api.act({ type: "picker", open: false });
+    }
     this.picker = undefined;
     if (!holder) return;
     holder.hidden = true;

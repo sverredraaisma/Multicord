@@ -281,6 +281,8 @@ describe("stickers, emoji and GIFs", () => {
     expect(isNativeAction({ type: "searchGifs", query: "" })).toBe(true);
     expect(isNativeAction({ type: "searchGifs", query: "x".repeat(MAX_GIF_QUERY + 1) })).toBe(false);
     expect(isNativeAction({ type: "loadMedia", key: "tg:doc:5" })).toBe(true);
+    expect(isNativeAction({ type: "picker", open: true })).toBe(true);
+    expect(isNativeAction({ type: "picker", open: "yes" })).toBe(false);
   });
 
   it("shows media only from https or data: pictures and videos", () => {
