@@ -3,7 +3,10 @@ import {
   MAX_ATTACHMENTS,
   type NativeAction,
   type NativeAttachment,
+  type NativeCustomEmoji,
+  type NativeGifResults,
   type NativeMessage,
+  type NativeStickerPack,
   type NativeSidebarItem,
   type NativeViewState,
   type NativeVoiceSession,
@@ -13,7 +16,7 @@ import type { PickedFile } from "../../shared/engine";
 import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import { solveAltcha } from "./captcha";
-import { discoverInstance, type FluxerInstance } from "./discovery";
+import { discoverInstance, globalExpressions, type FluxerInstance } from "./discovery";
 import { FluxerGateway, type GatewayStatus, type SocketFactory } from "./gateway";
 import { FluxerRest, type LoginResult, type RestOptions } from "./rest";
 import { FluxerState, TYPING_MS } from "./state";
@@ -40,6 +43,8 @@ const LAZY_REQUEST = 14;
 const TYPING_REPEAT_MS = 8_000;
 const VOICE_STATE_UPDATE = 4;
 const VOICE_JOIN_TIMEOUT_MS = 15_000;
+/** GIF searches wait for a pause in typing; only the latest one is shown. */
+const GIF_DEBOUNCE_MS = 300;
 
 /** LiveKit wants a ws(s) URL; Fluxer's endpoint may be a bare host. */
 export function liveKitUrl(endpoint: string): string {
@@ -84,6 +89,7 @@ type Selection = { kind: "home" } | { kind: "guild"; guildId: string };
 
 const timestampOf = (id: string | undefined): number => (id ? Number((BigInt(id) >> 22n) + FLUXER_EPOCH) : 0);
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+const newNonce = (): string => String(Date.now()) + String(Math.floor(Math.random() * 1e6));
 
 /**
  * Native Fluxer adapter: talks to the Fluxer API from its sandboxed engine
@@ -133,6 +139,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private voice: VoiceConnection | undefined;
   private voiceTimer: ReturnType<typeof setTimeout> | undefined;
   private visible = false;
+  private gifResults: NativeGifResults | undefined;
+  private gifTimer: ReturnType<typeof setTimeout> | undefined;
+  private gifSearch = 0;
 
   constructor(private readonly deps: FluxerAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -193,6 +202,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.attach();
       case "sendFile":
         return this.sendShared(action.file, action.replyTo);
+      case "sendSticker":
+        return this.sendSticker(action.stickerId, action.replyTo);
+      case "searchGifs":
+        return this.searchGifs(action.query);
       case "createPost":
         return this.createPost(action.name, action.content);
       case "joinVoice":
@@ -400,6 +413,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     this.hasToken = false;
     void this.deps.secrets.delete(this.secretKey);
     this.state.reset();
+    clearTimeout(this.gifTimer);
+    this.gifResults = undefined;
     this.selection = { kind: "home" };
     this.selectedChannelId = undefined;
     this.lastChannel.clear();
@@ -455,7 +470,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       this.error = "This instance only accepts inline uploads, which Multicord does not support yet.";
       return this.render();
     }
-    const nonce = String(Date.now()) + String(Math.floor(Math.random() * 1e6));
+    const nonce = newNonce();
     this.uploading.add(channelId);
     this.render();
     await this.attempt("Message not sent", async () => {
@@ -465,6 +480,98 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       if (sent) this.state.addHistory(channelId, [sent], false);
     });
     this.uploading.delete(channelId);
+    this.render();
+  }
+
+  // --- Emoji, stickers and GIFs ---------------------------------------------
+
+  /** The guild of the open conversation, whose emoji and stickers are always usable there; undefined in DMs. */
+  private expressionGuild(): string | undefined {
+    const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
+    return channel ? channel.guildId : this.selection.kind === "guild" ? this.selection.guildId : undefined;
+  }
+
+  /** Whether this account may use emoji and stickers outside their own guild (Fluxer: premium, per the instance's limits). */
+  private globalExpressions(): boolean {
+    return this.instance !== undefined && globalExpressions(this.instance, this.state.traits);
+  }
+
+  /**
+   * Guilds whose emoji and stickers work in the open conversation, as
+   * Fluxer's server checks them: the open guild's own, and every other
+   * guild's only with global expressions (in DMs too). The guild's
+   * "use external emoji/stickers" permission is not tracked here.
+   */
+  private expressionGuilds(): string[] {
+    const own = this.expressionGuild();
+    const others = this.globalExpressions() ? this.state.guildLayout().flatMap((slot) => slot.guildIds).filter((id) => id !== own) : [];
+    return (own ? [own, ...others] : others).filter((id) => this.state.guilds.has(id));
+  }
+
+  private customEmoji(guilds: string[]): NativeCustomEmoji[] {
+    return guilds.flatMap((guildId) =>
+      (this.state.emojis.get(guildId) ?? []).map((emoji) => ({
+        id: emoji.id,
+        name: emoji.name,
+        animated: emoji.animated,
+        // Fluxer serves emoji as WebP and animates them on request.
+        url: `${this.instance!.media}/emojis/${emoji.id}.webp?size=48${emoji.animated ? "&animated=true" : ""}`,
+        source: this.state.guilds.get(guildId)!.name,
+      })),
+    );
+  }
+
+  private stickerPacks(guilds: string[]): NativeStickerPack[] {
+    return guilds
+      .map((guildId) => ({
+        id: guildId,
+        name: this.state.guilds.get(guildId)!.name,
+        stickers: (this.state.stickers.get(guildId) ?? []).map((sticker) => ({
+          id: sticker.id,
+          name: sticker.name,
+          format: "webp" as const,
+          url: this.stickerUrl(sticker.id, sticker.animated),
+        })),
+      }))
+      .filter((pack) => pack.stickers.length > 0);
+  }
+
+  /** Fluxer stores stickers as WebP, still or animated. */
+  private stickerUrl(id: string, animated: boolean): string {
+    return `${this.instance!.media}/stickers/${id}.webp?size=160${animated ? "&animated=true" : ""}`;
+  }
+
+  /** Sends one of the stickers offered here as a sticker; any other id is ignored. */
+  private async sendSticker(stickerId: string, replyTo?: string): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.stickerPacks(this.expressionGuilds()).some((p) => p.stickers.some((s) => s.id === stickerId))) return;
+    await this.attempt("Sticker not sent", async () => {
+      const sent = await this.rest!.sendMessage(channelId, "", newNonce(), replyTo, [], [stickerId]);
+      if (sent) this.state.addHistory(channelId, [sent], false);
+    });
+  }
+
+  /** Searches the instance's GIFs once typing pauses; an empty query shows the trending ones. */
+  private searchGifs(query: string): void {
+    if (!this.instance?.gifs || !this.rest) return;
+    const search = ++this.gifSearch;
+    const trimmed = query.trim().slice(0, 100);
+    this.gifResults = { query: trimmed, results: this.gifResults?.results ?? [], loading: true };
+    clearTimeout(this.gifTimer);
+    this.gifTimer = setTimeout(() => void this.loadGifs(trimmed, search), GIF_DEBOUNCE_MS);
+    this.render();
+  }
+
+  private async loadGifs(query: string, search: number): Promise<void> {
+    let results: NativeGifResults["results"] = [];
+    let error: string | undefined;
+    try {
+      results = (await this.rest!.gifs(query)).map((g) => ({ id: g.id, url: g.url, preview: g.preview, video: g.video, width: g.width, height: g.height, name: g.title }));
+    } catch (failure) {
+      error = `GIF search failed: ${messageOf(failure)}`;
+    }
+    if (search !== this.gifSearch) return; // a newer search has started
+    this.gifResults = error ? { query, results, loading: false, error } : { query, results, loading: false };
     this.render();
   }
 
@@ -852,12 +959,13 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       mime: a.contentType,
     }));
     for (const sticker of message.stickers) {
-      // Lottie stickers (format 3) cannot be drawn here; their name stands in.
+      // Lottie stickers (Discord's format 3) cannot be drawn here; their name stands in.
+      // Fluxer serves every other sticker as WebP; APNG and GIF ones (formats 2 and 4) animate.
       const lottie = sticker.format === 3;
       files.push({
         name: sticker.name,
         kind: "sticker",
-        url: lottie || !this.instance ? undefined : `${this.instance.media}/stickers/${sticker.id}.${sticker.format === 4 ? "gif" : "webp"}?size=160`,
+        url: lottie || !this.instance ? undefined : this.stickerUrl(sticker.id, sticker.animated || sticker.format === 2 || sticker.format === 4),
       });
     }
     for (const embed of message.embeds) {
@@ -937,6 +1045,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       case "chat": {
         const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
         const guild = this.selection.kind === "guild" ? this.state.guilds.get(this.selection.guildId) : undefined;
+        const expressionGuilds = this.expressionGuilds();
+        const gifs = this.instance!.gifs;
         return {
           screen: "chat",
           platform,
@@ -953,7 +1063,16 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                 typing: this.state.typingIn(channel.id).map((u) => displayName(u)),
                 pending: (this.pending.get(channel.id) ?? []).map((f) => ({ name: f.filename, size: f.size })),
                 uploading: this.uploading.has(channel.id),
-                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: true, members: false },
+                can: {
+                  reply: true,
+                  react: true,
+                  attach: this.deps.files !== undefined,
+                  typing: true,
+                  members: false,
+                  // Fluxer allows guild stickers in DMs only with global expressions.
+                  stickers: channel.guildId !== undefined || this.globalExpressions(),
+                  gifs,
+                },
                 posts: FORUM_TYPES.has(channel.type)
                   ? this.state.forumPosts(channel.id).map((p) => ({
                       id: p.id,
@@ -967,7 +1086,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
             : null,
           voice: this.voiceSession(),
           emojiBase: this.instance ? `${this.instance.media}/emojis` : undefined,
-          customEmoji: guild ? (this.state.emojis.get(guild.id) ?? []) : [],
+          customEmoji: this.customEmoji(expressionGuilds),
+          stickers: this.stickerPacks(expressionGuilds),
+          gifs: gifs ? this.gifResults : undefined,
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };
       }

@@ -1,6 +1,6 @@
 import type { FileSource } from "../../engine/runtime";
 import { captchaToken, isAltchaChallenge, solveAltcha, type AltchaChallenge } from "./captcha";
-import { isRecord, parseChannel, parseMessage, parseUser, type FluxerChannel, type FluxerMessage, type FluxerUser } from "./types";
+import { isRecord, parseChannel, parseGif, parseMessage, parseUser, type FluxerChannel, type FluxerGif, type FluxerMessage, type FluxerUser } from "./types";
 
 /** Error from the Fluxer API, carrying its error code (e.g. CAPTCHA_REQUIRED). */
 export class FluxerApiError extends Error {
@@ -131,11 +131,20 @@ export class FluxerRest {
     nonce: string,
     replyTo?: string,
     attachments: UploadedAttachment[] = [],
+    stickerIds: string[] = [],
   ): Promise<FluxerMessage | undefined> {
     const body: Record<string, unknown> = { content, nonce };
     if (replyTo) body.message_reference = { message_id: replyTo };
     if (attachments.length > 0) body.attachments = attachments;
+    if (stickerIds.length > 0) body.sticker_ids = stickerIds;
     return parseMessage(await this.request("POST", `/channels/${channelId}/messages`, body));
+  }
+
+  /** Searches the instance's GIF provider; an empty query asks for its trending GIFs. */
+  async gifs(query: string): Promise<FluxerGif[]> {
+    const path = query === "" ? "/gifs/trending" : `/gifs/search?${new URLSearchParams({ q: query })}`;
+    const data = await this.request("GET", path);
+    return (Array.isArray(data) ? data : []).flatMap((g) => parseGif(g) ?? []);
   }
 
   /**

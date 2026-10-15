@@ -72,11 +72,74 @@ export interface FluxerAttachment {
   size?: number;
 }
 
-/** A sticker sent with a message; format 1 PNG, 2 APNG, 3 Lottie, 4 GIF (as Discord numbers them). */
+/**
+ * A sticker sent with a message. Fluxer stores stickers as WebP, still or
+ * animated (`animated`); `format` is Discord's format_type where a payload
+ * carries one (3 is Lottie, which has no picture here), else 1.
+ */
 export interface FluxerSticker {
   id: string;
   name: string;
   format: number;
+  animated: boolean;
+}
+
+/** A guild's sticker, as READY, GUILD_CREATE and GUILD_STICKERS_UPDATE carry it. */
+export interface FluxerGuildSticker {
+  id: string;
+  name: string;
+  animated: boolean;
+}
+
+export function parseGuildSticker(value: unknown): FluxerGuildSticker | undefined {
+  if (!isRecord(value) || !isId(value.id) || typeof value.name !== "string" || value.name === "") return undefined;
+  return { id: value.id, name: value.name.slice(0, 100), animated: value.animated === true };
+}
+
+/** A result of Fluxer's GIF search (its proxy for the instance's provider, e.g. Klipy). */
+export interface FluxerGif {
+  id: string;
+  /** The provider's page, which Fluxer unfurls into the GIF when sent. */
+  url: string;
+  preview: string;
+  video: boolean;
+  width?: number;
+  height?: number;
+  title?: string;
+}
+
+/** Small formats first: a looping video where there is one, else a picture. */
+const GIF_PREVIEWS: [string, boolean][] = [
+  ["tinymp4", true],
+  ["mediummp4", true],
+  ["mp4", true],
+  ["tinywebp", false],
+  ["tinygif", false],
+  ["mediumwebp", false],
+  ["mediumgif", false],
+  ["webp", false],
+  ["gif", false],
+];
+
+const httpsUrl = (value: unknown): string | undefined => (typeof value === "string" && value.startsWith("https://") ? value : undefined);
+
+export function parseGif(value: unknown): FluxerGif | undefined {
+  if (!isRecord(value) || typeof value.id !== "string" || value.id === "") return undefined;
+  const url = httpsUrl(value.url);
+  if (!url) return undefined;
+  const media = isRecord(value.media) ? value.media : {};
+  for (const [key, video] of GIF_PREVIEWS) {
+    const format = media[key];
+    const preview = isRecord(format) ? (httpsUrl(format.proxy_src) ?? httpsUrl(format.src)) : undefined;
+    if (isRecord(format) && preview) return gif(value, url, preview, video, format);
+  }
+  // Without a known format, the best format the server picked; its path says whether it is a video.
+  const preview = httpsUrl(value.proxy_src) ?? httpsUrl(value.src);
+  return preview ? gif(value, url, preview, /\.(mp4|webm)([?#]|$)/i.test(preview), value) : undefined;
+}
+
+function gif(value: Record<string, unknown>, url: string, preview: string, video: boolean, size: Record<string, unknown>): FluxerGif {
+  return { id: String(value.id), url, preview, video, width: dimension(size.width), height: dimension(size.height), title: str(value.title) };
 }
 
 /** A link preview that is itself a picture, a GIF or a video. */
@@ -130,6 +193,14 @@ export interface FluxerGuildEmoji {
   id: string;
   name: string;
   animated: boolean;
+}
+
+/**
+ * Fluxer's own user object (READY, USER_UPDATE) carries `traits`, with
+ * "premium" while the account's premium (Plutonium) is active.
+ */
+export function parseTraits(user: unknown): string[] {
+  return isRecord(user) ? list(user.traits).filter((t): t is string => typeof t === "string" && t !== "") : [];
 }
 
 export function parseGuildEmoji(value: unknown): FluxerGuildEmoji | undefined {
@@ -230,7 +301,7 @@ export function parseMessage(value: unknown): FluxerMessage | undefined {
         : [],
     ),
     stickers: list(value.sticker_items ?? value.stickers).flatMap((s) =>
-      isRecord(s) && isId(s.id) && typeof s.name === "string" ? [{ id: s.id, name: s.name.slice(0, 100), format: typeof s.format_type === "number" ? s.format_type : 1 }] : [],
+      isRecord(s) && isId(s.id) && typeof s.name === "string" ? [{ id: s.id, name: s.name.slice(0, 100), format: typeof s.format_type === "number" ? s.format_type : 1, animated: s.animated === true }] : [],
     ),
     embeds: list(value.embeds).flatMap((e) => {
       const embed = isRecord(e) ? parseMediaEmbed(e) : undefined;

@@ -297,7 +297,7 @@ describe("FluxerAdapter chat", () => {
     ]);
     expect(state.sidebar[3]).toMatchObject({ unread: true, mentions: 2 });
     expect(state.channel).toMatchObject({ id: "113", name: "lobby", loading: false, hasOlder: false });
-    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false });
+    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, gifs: false });
     expect(state.channel!.messages[0]).toMatchObject({ id: "450", author: "Ana", content: "m450", mine: false });
     expect(calls.some((c) => c.url.includes("/channels/113/messages?limit=50"))).toBe(true);
 
@@ -478,6 +478,8 @@ describe("FluxerAdapter chat", () => {
                       { id: "50", name: "Wave", format_type: 1 },
                       { id: "51", name: "Dance", format_type: 4 },
                       { id: "52", name: "Lottie", format_type: 3 },
+                      { id: "53", name: "Blink", format_type: 2 },
+                      { id: "54", name: "Spin", animated: true },
                     ],
                     embeds: [
                       { type: "gifv", video: { url: "https://media.fx/g.mp4" } },
@@ -513,8 +515,10 @@ describe("FluxerAdapter chat", () => {
         { name: "clip.mp4", kind: "video", url: "https://media.fx/a/clip.mp4", width: 1280, height: 720, size: 99, mime: "video/mp4" },
         { name: "song.ogg", kind: "audio", url: "https://media.fx/a/song.ogg", width: undefined, height: undefined, size: undefined, mime: "audio/ogg" },
         { name: "Wave", kind: "sticker", url: "https://media.fx/stickers/50.webp?size=160" },
-        { name: "Dance", kind: "sticker", url: "https://media.fx/stickers/51.gif?size=160" },
+        { name: "Dance", kind: "sticker", url: "https://media.fx/stickers/51.webp?size=160&animated=true" },
         { name: "Lottie", kind: "sticker", url: undefined },
+        { name: "Blink", kind: "sticker", url: "https://media.fx/stickers/53.webp?size=160&animated=true" },
+        { name: "Spin", kind: "sticker", url: "https://media.fx/stickers/54.webp?size=160&animated=true" },
         { name: "GIF", kind: "video", url: "https://media.fx/g.mp4", previewUrl: undefined, width: undefined, height: undefined, loop: true },
         { name: "Video", kind: "video", url: "https://media.fx/v.mp4", previewUrl: undefined, width: undefined, height: undefined, loop: undefined },
         { name: "Image", kind: "image", url: "https://media.fx/i.png", previewUrl: undefined, width: undefined, height: undefined, loop: undefined },
@@ -1107,17 +1111,180 @@ describe("FluxerAdapter voice", () => {
   });
 });
 
-describe("FluxerAdapter emoji", () => {
-  it("gives the view the emoji base and the open server's custom emoji", async () => {
-    const ctx = setup({ token: "flx" });
+describe("FluxerAdapter emoji and stickers", () => {
+  const PARTY = { id: "55", name: "party", animated: false, url: "https://media.fx/emojis/55.webp?size=48", source: "Alpha" };
+  const DANCE = { id: "56", name: "dance", animated: true, url: "https://media.fx/emojis/56.webp?size=48&animated=true", source: "Beta" };
+  const ALPHA_PACK = { id: "100", name: "Alpha", stickers: [{ id: "70", name: "Wave", format: "webp", url: "https://media.fx/stickers/70.webp?size=160" }] };
+  const BETA_PACK = { id: "200", name: "Beta", stickers: [{ id: "71", name: "Spin", format: "webp", url: "https://media.fx/stickers/71.webp?size=160&animated=true" }] };
+
+  /** Online with emoji and stickers in both guilds; `discovery` replaces the instance's /.well-known/fluxer. */
+  async function online(options: { discovery?: unknown; premium?: boolean; routes?: Handler[] } = {}) {
+    const discovery = options.discovery;
+    const ctx = setup({
+      token: "flx",
+      routes: [...(options.routes ?? []), ...(discovery ? [(url: string) => (url.endsWith("/.well-known/fluxer") ? { status: 200, body: discovery } : undefined)] : [])],
+    });
     await ctx.adapter.start();
     await ctx.goOnline();
-    expect(ctx.chat()).toMatchObject({ emojiBase: "https://media.fx/emojis", customEmoji: [] });
-    ctx.adapter.state.apply("GUILD_EMOJIS_UPDATE", { guild_id: "100", emojis: [{ id: "55", name: "party" }] });
+    const state = ctx.adapter.state;
+    state.apply("GUILD_EMOJIS_UPDATE", { guild_id: "100", emojis: [{ id: "55", name: "party" }] });
+    state.apply("GUILD_EMOJIS_UPDATE", { guild_id: "200", emojis: [{ id: "56", name: "dance", animated: true }] });
+    state.apply("GUILD_STICKERS_UPDATE", { guild_id: "100", stickers: [{ id: "70", name: "Wave", tags: ["wave"] }, { name: "bad" }] });
+    state.apply("GUILD_STICKERS_UPDATE", { guild_id: "200", stickers: [{ id: "71", name: "Spin", animated: true }] });
+    if (options.premium) state.apply("USER_UPDATE", { ...ME, traits: ["premium", 7] });
+    await vi.advanceTimersByTimeAsync(100);
+    return ctx;
+  }
+
+  it("offers only the open guild's emoji and stickers without premium, and none in DMs", async () => {
+    const ctx = await online();
+    expect(ctx.chat()).toMatchObject({ emojiBase: "https://media.fx/emojis", customEmoji: [], stickers: [] });
     await ctx.adapter.openServer("100");
-    expect(ctx.chat().customEmoji).toEqual([{ id: "55", name: "party", animated: false }]);
+    expect(ctx.chat()).toMatchObject({ customEmoji: [PARTY], stickers: [ALPHA_PACK], channel: { can: { stickers: true } } });
     await ctx.adapter.openServer("200");
-    expect(ctx.chat().customEmoji).toEqual([]);
+    expect(ctx.chat()).toMatchObject({ customEmoji: [DANCE], stickers: [BETA_PACK] });
+    await ctx.adapter.openConversation("900");
+    expect(ctx.chat()).toMatchObject({ customEmoji: [], stickers: [], channel: { can: { stickers: false } } });
+    // A guild without a channel open still counts as the open guild.
+    ctx.adapter.state.apply("GUILD_CREATE", { id: "400", properties: { name: "Empty" }, channels: [], emojis: [{ id: "57", name: "x" }], stickers: [] });
+    await ctx.adapter.openServer("400");
+    expect(ctx.chat()).toMatchObject({ channel: null, customEmoji: [{ id: "57", source: "Empty" }], stickers: [] });
+  });
+
+  it("offers every guild's emoji and stickers with premium, the open guild's first", async () => {
+    const ctx = await online({ premium: true });
+    expect(ctx.adapter.state.traits).toEqual(["premium"]);
+    await ctx.adapter.openServer("200");
+    expect(ctx.chat()).toMatchObject({ customEmoji: [DANCE, PARTY], stickers: [BETA_PACK, ALPHA_PACK] });
+    await ctx.adapter.openConversation("900");
+    // In the rail's order: Beta's folder comes first.
+    expect(ctx.chat()).toMatchObject({ customEmoji: [DANCE, PARTY], stickers: [BETA_PACK, ALPHA_PACK], channel: { can: { stickers: true } } });
+    // A user update without traits keeps them; a guild that goes away takes its expressions along.
+    ctx.adapter.state.apply("USER_UPDATE", ME);
+    ctx.adapter.state.apply("GUILD_DELETE", { id: "200" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.chat()).toMatchObject({ customEmoji: [PARTY], stickers: [ALPHA_PACK] });
+    expect(ctx.adapter.state.stickers.has("200")).toBe(false);
+  });
+
+  it("follows the instance's published limits", async () => {
+    const limits = (rules: unknown[]) => ({ ...DISCOVERY, limits: { version: 2, traitDefinitions: ["premium"], rules, defaultsHash: "x" } });
+    const premiumRule = { id: "premium", filters: { traits: ["premium"] }, overrides: { feature_global_expressions: 1 } };
+    const free = await online({ discovery: limits([premiumRule, { id: "default", overrides: {} }]) });
+    await free.adapter.openConversation("900");
+    expect(free.chat().customEmoji).toEqual([]);
+    // A self-hosted instance that gives everyone global expressions.
+    const everyone = await online({ discovery: limits([{ id: "default", overrides: { feature_global_expressions: 1 } }]) });
+    await everyone.adapter.openConversation("900");
+    expect(everyone.chat().customEmoji).toEqual([DANCE, PARTY]);
+  });
+
+  it("sends offered stickers as stickers and ignores any other id", async () => {
+    const ctx = await online();
+    await ctx.adapter.handleAction({ type: "sendSticker", stickerId: "70" }); // no channel open
+    await ctx.adapter.openServer("100");
+    await ctx.adapter.handleAction({ type: "sendSticker", stickerId: "71" }); // Beta's: not usable in Alpha without premium
+    await ctx.adapter.handleAction({ type: "sendSticker", stickerId: "999" });
+    const posts = () => ctx.calls.filter((c) => c.init.method === "POST" && c.url.endsWith("/messages"));
+    expect(posts()).toHaveLength(0);
+    await ctx.adapter.handleAction({ type: "sendSticker", stickerId: "70", replyTo: "450" });
+    expect(JSON.parse(String(posts()[0]!.init.body))).toMatchObject({ content: "", sticker_ids: ["70"], message_reference: { message_id: "450" } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.chat().channel!.messages.map((m) => m.id)).toContain("990");
+  });
+
+  it("shows a sticker that could not be sent", async () => {
+    let posts = 0;
+    const answers = [{ status: 204 }, { status: 403, body: { code: "MISSING_PERMISSIONS", message: "Missing permissions" } }];
+    const ctx = await online({ routes: [(url, init) => (init.method === "POST" && url.endsWith("/messages") ? answers[posts++] : undefined)] });
+    await ctx.adapter.openServer("100");
+    await ctx.adapter.handleAction({ type: "sendSticker", stickerId: "70" }); // accepted without the message in the answer
+    expect(ctx.chat().error).toBeUndefined();
+    await ctx.adapter.handleAction({ type: "sendSticker", stickerId: "70" });
+    expect(ctx.chat().error).toBe("Sticker not sent: Missing permissions");
+  });
+});
+
+describe("FluxerAdapter GIF search", () => {
+  const WITH_GIFS = { ...DISCOVERY, gif: { provider: "klipy", display_name: "Klipy", attribution_required: false }, services: { gif_enabled: true } };
+  const GIF = {
+    id: "g1",
+    url: "https://klipy.com/gifs/cat",
+    title: "Cat",
+    proxy_src: "https://media.fx/proxy/cat.gif",
+    media: { tinymp4: { src: "https://static.klipy.com/cat.mp4", proxy_src: "https://media.fx/proxy/cat.mp4", width: 200, height: 150 } },
+  };
+
+  async function online(discovery: unknown, routes: Handler[] = []) {
+    const ctx = setup({
+      token: "flx",
+      routes: [...routes, (url) => (url.endsWith("/.well-known/fluxer") ? { status: 200, body: discovery } : undefined)],
+    });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openServer("100");
+    return ctx;
+  }
+
+  it("searches the instance's GIFs once typing pauses, trending for an empty query", async () => {
+    const ctx = await online(WITH_GIFS, [(url) => (url.includes("/gifs/") ? { status: 200, body: [GIF, { id: "bad" }] } : undefined)]);
+    expect(ctx.chat()).toMatchObject({ channel: { can: { gifs: true } } });
+    expect(ctx.chat().gifs).toBeUndefined();
+    await ctx.adapter.handleAction({ type: "searchGifs", query: "" });
+    expect(ctx.chat().gifs).toEqual({ query: "", results: [], loading: true });
+    await vi.advanceTimersByTimeAsync(300);
+    const cat = { id: "g1", url: "https://klipy.com/gifs/cat", preview: "https://media.fx/proxy/cat.mp4", video: true, width: 200, height: 150, name: "Cat" };
+    expect(ctx.chat().gifs).toEqual({ query: "", results: [cat], loading: false });
+
+    // Typing "c", "ca", "cat " quickly searches once, for the last; earlier results stay while it loads.
+    await ctx.adapter.handleAction({ type: "searchGifs", query: "c" });
+    await vi.advanceTimersByTimeAsync(100);
+    await ctx.adapter.handleAction({ type: "searchGifs", query: "cat " });
+    expect(ctx.chat().gifs).toEqual({ query: "cat", results: [cat], loading: true });
+    await vi.advanceTimersByTimeAsync(300);
+    const searches = ctx.calls.filter((c) => c.url.includes("/gifs/")).map((c) => c.url);
+    expect(searches).toEqual(["https://api.fx/v1/gifs/trending", "https://api.fx/v1/gifs/search?q=cat"]);
+    expect(ctx.chat().gifs).toMatchObject({ query: "cat", loading: false });
+  });
+
+  it("shows only the latest search's answer, and failures", async () => {
+    let fail = false;
+    const ctx = await online(WITH_GIFS, [(url) => (url.includes("/gifs/") ? (fail ? { status: 500, body: { message: "Provider down" } } : { status: 200, body: [GIF] }) : undefined)]);
+    const { FluxerRest } = await import("../../../src/modules/fluxer/rest");
+    let release!: (value: never[]) => void;
+    const slow = vi.spyOn(FluxerRest.prototype, "gifs").mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    await ctx.adapter.handleAction({ type: "searchGifs", query: "dog" });
+    await vi.advanceTimersByTimeAsync(300); // "dog" is now waiting on the server
+    await ctx.adapter.handleAction({ type: "searchGifs", query: "cat" });
+    await vi.advanceTimersByTimeAsync(300);
+    release([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.chat().gifs).toMatchObject({ query: "cat", results: [{ id: "g1" }], loading: false });
+    slow.mockRestore();
+
+    fail = true;
+    await ctx.adapter.handleAction({ type: "searchGifs", query: "cow" });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(ctx.chat().gifs).toEqual({ query: "cow", results: [], loading: false, error: "GIF search failed: Provider down" });
+
+    // Signing out forgets the search.
+    await ctx.adapter.handleAction({ type: "logout" });
+    expect(ctx.adapter.viewState()).toMatchObject({ screen: "login" });
+  });
+
+  it("offers no GIF search where the instance has none", async () => {
+    for (const discovery of [DISCOVERY, { ...WITH_GIFS, services: { gif_enabled: false } }]) {
+      const ctx = await online(discovery);
+      await ctx.adapter.handleAction({ type: "searchGifs", query: "cat" });
+      await vi.advanceTimersByTimeAsync(300);
+      expect(ctx.chat()).toMatchObject({ channel: { can: { gifs: false } } });
+      expect(ctx.chat().gifs).toBeUndefined();
+      expect(ctx.calls.some((c) => c.url.includes("/gifs/"))).toBe(false);
+    }
+    // Before signing in there is nothing to search with.
+    const signedOut = setup();
+    await signedOut.adapter.handleAction({ type: "searchGifs", query: "cat" });
+    expect(signedOut.calls).toHaveLength(0);
   });
 });
 

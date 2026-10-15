@@ -82,6 +82,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - replies, reactions (with quick reactions), and editing and deleting your own messages
   - typing indicators
   - attachment uploads, picked with the OS file dialog
+  - custom emoji, stickers and GIFs in the picker, by Fluxer's rules: a server's own emoji and stickers there, and every server's (also in DMs) only for accounts with global expressions, which Fluxer gives premium (Plutonium) accounts or whomever the instance's limits say. Stickers are WebP, still or animated, and go as stickers; Lottie stickers in messages show their name. GIF search uses the instance's own provider (Klipy on fluxer.app), with trending GIFs before you type, where the instance has one
   - threads under their channel, and forum channels with their posts and a form for new ones
   - voice channels with who is in them, and calls with microphone, camera and screen share (through LiveKit, as Fluxer uses)
   - desktop notifications that follow your Fluxer notification settings (mutes, server and channel levels, @everyone suppression)

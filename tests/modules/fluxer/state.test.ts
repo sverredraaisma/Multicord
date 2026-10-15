@@ -245,4 +245,16 @@ describe("custom emoji", () => {
     state.reset();
     expect(state.emojis.size).toBe(0);
   });
+
+  it("tracks each guild's stickers from guild objects and updates", () => {
+    const state = new FluxerState();
+    state.apply("GUILD_CREATE", { id: "100", properties: { name: "A" }, stickers: [{ id: "70", name: "Wave", animated: true }, { id: "x" }] });
+    expect(state.stickers.get("100")).toEqual([{ id: "70", name: "Wave", animated: true }]);
+    state.apply("GUILD_STICKERS_UPDATE", { guild_id: "100", stickers: "junk" });
+    expect(state.stickers.get("100")).toEqual([]);
+    state.apply("GUILD_STICKERS_UPDATE", { stickers: [{ id: "71", name: "Spin" }] }); // no guild
+    expect(state.stickers.size).toBe(1);
+    state.reset();
+    expect(state.stickers.size).toBe(0);
+  });
 });

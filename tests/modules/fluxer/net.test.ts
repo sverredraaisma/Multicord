@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { discoverInstance } from "../../../src/modules/fluxer/discovery";
+import { discoverInstance, globalExpressions, type LimitRule } from "../../../src/modules/fluxer/discovery";
 import { FluxerApiError, FluxerRest } from "../../../src/modules/fluxer/rest";
 
 type Reply = { status: number; body?: unknown };
@@ -42,6 +42,8 @@ describe("discoverInstance", () => {
       identity: "email",
       presignedUploads: true,
       voiceEnabled: true,
+      gifs: false,
+      expressionRules: undefined,
     });
     expect(calls[0]!.url).toBe("https://fluxer.app/.well-known/fluxer");
   });
@@ -70,6 +72,79 @@ describe("discoverInstance", () => {
     ]) {
       await expect(discoverInstance("https://x.example", fakeFetch({ status: 200, body }).fetch)).rejects.toThrow("incomplete");
     }
+  });
+
+  it("reads GIF search and the expression limits", async () => {
+    const discover = (extra: Record<string, unknown>) => discoverInstance("https://fluxer.app", fakeFetch({ status: 200, body: { ...OFFICIAL, ...extra } }).fetch);
+    const gif = { provider: "klipy", display_name: "Klipy", attribution_required: false };
+    expect(await discover({ gif })).toMatchObject({ gifs: true });
+    expect(await discover({ gif, services: { gif_enabled: false } })).toMatchObject({ gifs: false });
+    expect(await discover({ gif, services: { gif_enabled: true } })).toMatchObject({ gifs: true });
+    expect(await discover({ services: { gif_enabled: true }, features: "none" })).toMatchObject({ gifs: false, expressionRules: undefined, identity: "email" });
+    // As fluxer.app publishes them: the compact form, against defaults where global expressions are off.
+    const official = await discover({
+      limits: {
+        version: 2,
+        rules: [
+          { id: "premium", filters: { traits: ["premium"] }, overrides: { feature_global_expressions: 1, max_guilds: 200 } },
+          { id: "default", overrides: { max_guild_emojis: 500 } },
+          { id: "very_large_guild", filters: { guildFeatures: ["VERY_LARGE_GUILD"] }, overrides: { max_guild_members: 1e7 } },
+          "junk",
+        ],
+      },
+    });
+    expect(official.expressionRules).toEqual([
+      { traits: ["premium"], guildFeatures: [], value: 1 },
+      { traits: [], guildFeatures: [], value: 0 },
+      { traits: [], guildFeatures: ["VERY_LARGE_GUILD"], value: 0 },
+    ]);
+    // The full form: a rule that leaves the limit out leaves it alone.
+    const full = await discover({ limits: { rules: [{ id: "a", filters: { traits: [1, "x"] }, limits: { feature_global_expressions: -1 } }, { id: "b" }] } });
+    expect(full.expressionRules).toEqual([
+      { traits: ["x"], guildFeatures: [], value: undefined },
+      { traits: [], guildFeatures: [], value: undefined },
+    ]);
+    expect((await discover({ limits: { rules: "none" } })).expressionRules).toBeUndefined();
+  });
+});
+
+describe("FluxerRest expressions", () => {
+  it("sends stickers and searches GIFs", async () => {
+    const { client, calls } = rest(
+      { status: 200, body: { id: "4", channel_id: "9", author: { id: "1", username: "me" }, sticker_items: [{ id: "70", name: "Wave" }] } },
+      { status: 200, body: { unexpected: true } },
+      { status: 200, body: [{ id: "g", url: "https://klipy.com/g", src: "https://x/g.gif" }, null] },
+    );
+    expect((await client.sendMessage("9", "", "n1", "3", [], ["70"]))!.stickers).toEqual([{ id: "70", name: "Wave", format: 1, animated: false }]);
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({ content: "", nonce: "n1", message_reference: { message_id: "3" }, sticker_ids: ["70"] });
+    expect(await client.gifs("")).toEqual([]);
+    expect(calls[1]!.url).toBe("https://api.example/v1/gifs/trending");
+    expect(await client.gifs("cute cat")).toMatchObject([{ id: "g", preview: "https://x/g.gif" }]);
+    expect(calls[2]!.url).toBe("https://api.example/v1/gifs/search?q=cute+cat");
+  });
+});
+
+describe("globalExpressions", () => {
+  const instance = (expressionRules?: LimitRule[]) => ({ api: "", gateway: "", media: "", identity: "email" as const, presignedUploads: true, voiceEnabled: true, gifs: false, expressionRules });
+  const rule = (value: number | undefined, traits: string[] = [], guildFeatures: string[] = []): LimitRule => ({ traits, guildFeatures, value });
+
+  it("falls back to premium without published limits", () => {
+    expect(globalExpressions(instance(), ["premium"])).toBe(true);
+    expect(globalExpressions(instance(), [])).toBe(false);
+  });
+
+  it("resolves rules as Fluxer's server does", () => {
+    const official = instance([rule(1, ["premium"]), rule(0)]);
+    expect(globalExpressions(official, ["premium"])).toBe(true);
+    expect(globalExpressions(official, ["staff"])).toBe(false);
+    // An unfiltered rule sets the value, before filtered ones raise it, whatever their order.
+    expect(globalExpressions(instance([rule(0), rule(1)]), [])).toBe(true);
+    expect(globalExpressions(instance([rule(1, ["premium"]), rule(0, ["staff"])]), ["premium", "staff"])).toBe(true);
+    // Filtered rules cannot lower it; guild-feature rules never apply; rules without the limit leave it.
+    expect(globalExpressions(instance([rule(1), rule(0, ["premium"])]), ["premium"])).toBe(true);
+    expect(globalExpressions(instance([rule(1, [], ["VERY_LARGE_GUILD"])]), [])).toBe(false);
+    expect(globalExpressions(instance([rule(1), rule(undefined)]), [])).toBe(true);
+    expect(globalExpressions(instance([]), ["premium"])).toBe(false);
   });
 });
 

@@ -198,7 +198,7 @@ describe("Fluxer media", () => {
       channel_id: "10",
       author,
       attachments: [{ id: "7", filename: "a.png", content_type: "image/png", url: "https://p", width: 640, height: 480, size: 1000 }],
-      sticker_items: [{ id: "5", name: "Wave", format_type: 1 }, { id: "6", name: "x".repeat(150) }, { name: "no id" }],
+      sticker_items: [{ id: "5", name: "Wave", format_type: 1 }, { id: "6", name: "x".repeat(150), animated: true }, { name: "no id" }],
       embeds: [
         { type: "gifv", video: { proxy_url: "https://media/g.mp4", width: 320, height: 240 }, thumbnail: { url: "https://media/g.png" } },
         { type: "video", video: { url: "http://insecure/v.mp4" } },
@@ -210,12 +210,41 @@ describe("Fluxer media", () => {
       ],
     })!;
     expect(message.attachments[0]).toMatchObject({ width: 640, height: 480, size: 1000 });
-    expect(message.stickers).toEqual([{ id: "5", name: "Wave", format: 1 }, { id: "6", name: "x".repeat(100), format: 1 }]);
+    expect(message.stickers).toEqual([{ id: "5", name: "Wave", format: 1, animated: false }, { id: "6", name: "x".repeat(100), format: 1, animated: true }]);
     expect(message.embeds).toEqual([
       { kind: "gifv", url: "https://media/g.mp4", previewUrl: "https://media/g.png", width: 320, height: 240 },
       { kind: "image", url: "https://media/i.png", width: 10, height: undefined },
       { kind: "image", url: "https://media/t.png", width: undefined, height: undefined },
     ]);
-    expect(parseMessage({ id: "1", channel_id: "2", author, stickers: [{ id: "9", name: "Old", format_type: 4 }] })!.stickers).toEqual([{ id: "9", name: "Old", format: 4 }]);
+    expect(parseMessage({ id: "1", channel_id: "2", author, stickers: [{ id: "9", name: "Old", format_type: 4 }] })!.stickers).toEqual([{ id: "9", name: "Old", format: 4, animated: false }]);
+  });
+});
+
+describe("Fluxer expressions", () => {
+  it("parses guild stickers and our traits defensively", async () => {
+    const { parseGuildSticker, parseTraits } = await import("../../../src/modules/fluxer/types");
+    expect(parseGuildSticker({ id: "5", name: "Wave", animated: true, tags: ["hi"] })).toEqual({ id: "5", name: "Wave", animated: true });
+    expect(parseGuildSticker({ id: "6", name: "y".repeat(120) })).toEqual({ id: "6", name: "y".repeat(100), animated: false });
+    for (const bad of [null, { id: "x", name: "a" }, { id: "5", name: "" }, { id: "5" }]) expect(parseGuildSticker(bad)).toBeUndefined();
+    expect(parseTraits({ traits: ["premium", "", 3] })).toEqual(["premium"]);
+    expect(parseTraits({})).toEqual([]);
+    expect(parseTraits("me")).toEqual([]);
+  });
+
+  it("parses GIF results, preferring small looping videos", async () => {
+    const { parseGif } = await import("../../../src/modules/fluxer/types");
+    const base = { id: "g", url: "https://klipy.com/gifs/g", title: "G" };
+    const format = (src: string, extra: Record<string, unknown> = {}) => ({ src, proxy_src: "", width: 100, height: 80, ...extra });
+    expect(parseGif({ ...base, media: { gif: format("https://x/g.gif"), mediummp4: format("https://x/g.mp4", { proxy_src: "https://p/g.mp4" }) } })).toEqual({
+      id: "g", url: "https://klipy.com/gifs/g", preview: "https://p/g.mp4", video: true, width: 100, height: 80, title: "G",
+    });
+    // Insecure or malformed formats are skipped.
+    expect(parseGif({ ...base, title: "", media: { tinymp4: format("http://x/g.mp4"), tinywebp: "junk", tinygif: format("https://x/g.gif", { width: 0 }) } })).toEqual({
+      id: "g", url: "https://klipy.com/gifs/g", preview: "https://x/g.gif", video: false, width: undefined, height: 80, title: undefined,
+    });
+    // Without known formats: the server's pick, a video when its path says so.
+    expect(parseGif({ ...base, proxy_src: "https://p/g.webm?x=1", width: 10, height: 10 })).toMatchObject({ preview: "https://p/g.webm?x=1", video: true, width: 10 });
+    expect(parseGif({ ...base, media: null, src: "https://x/g.gif" })).toMatchObject({ preview: "https://x/g.gif", video: false });
+    for (const bad of [null, { ...base, id: "" }, { ...base, url: "http://klipy.com/g" }, base]) expect(parseGif(bad)).toBeUndefined();
   });
 });
