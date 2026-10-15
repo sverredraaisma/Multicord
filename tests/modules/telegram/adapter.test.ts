@@ -753,6 +753,18 @@ describe("chat view", () => {
       await ctx.act({ type: "archive", channelId: "1", archive: false });
       expect(ctx.chat().error).toBe("Could not move the chat out of the archive: PEER_ID_INVALID");
     });
+
+    it("keeps archived chats out of the home badge and the Messages page until Telegram moves them out", async () => {
+      const ctx = await signedIn({ dialogs: [...archivedDialogs(), dlg("-7", { kind: "group", date: 1, unreadCount: 1 })] });
+      expect(ctx.adapter.homeBadge()).toEqual({ unread: true, mentions: 0 });
+      expect(ctx.directs.at(-1)!.map((d) => d.key)).toEqual(["1", "9"]);
+      // An unmuted archived chat that gets a message: Telegram unarchives it and says so.
+      ctx.api.emit({ type: "archive", peers: [{ chatId: "2", archived: false }, { chatId: "-5", archived: false }] });
+      expect(ctx.directs.at(-1)!.map((d) => d.key)).toEqual(["1", "2", "9"]);
+      expect(ctx.adapter.homeBadge()).toEqual({ unread: true, mentions: 1 });
+      await ctx.act({ type: "archive", channelId: "1", archive: true });
+      expect(ctx.directs.at(-1)!.map((d) => d.key)).toEqual(["2", "9"]);
+    });
   });
 
   describe("folders", () => {

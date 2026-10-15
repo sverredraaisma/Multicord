@@ -404,10 +404,11 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   /**
    * Groups and channels, which live under home: unread where they would
    * notify, and every unread mention (Telegram counts those in muted chats
-   * too). One-to-one chats are DM bubbles with their own badges.
+   * too). One-to-one chats are DM bubbles with their own badges. Archived
+   * chats count only in the sidebar's Archive section (see directs()).
    */
   homeBadge(): HomeBadge {
-    const rooms = this.dialogs.filter((d) => d.kind !== "user");
+    const rooms = this.dialogs.filter((d) => d.kind !== "user" && !d.archived);
     return {
       unread: rooms.some((d) => d.unreadCount > 0 && !this.muted(d)),
       mentions: rooms.reduce((sum, d) => sum + d.unreadMentions, 0),
@@ -1284,7 +1285,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
           if (dialog && archived) dialog.archived = true;
           else if (dialog) delete dialog.archived;
         }
-        return this.render();
+        // Archived chats leave the DM bubbles and the Messages page; unarchived ones come back.
+        return this.publish();
       }
       case "loginToken":
         if (this.step === "qr") void this.exportQr();
@@ -1828,9 +1830,16 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
 
   // --- Output -------------------------------------------------------------------
 
+  /**
+   * One-to-one chats for DM bubbles and the Messages page, which add to the
+   * badges. Groups and channels are rooms, under home, as Matrix rooms are.
+   * Archived chats stay out, as Telegram keeps them out of its chat list:
+   * an unmuted one that gets a message is moved out of the archive by
+   * Telegram itself (unless the user keeps such chats archived), and the
+   * update that says so brings it back here. Muted ones stay archived.
+   */
   directs(): DirectConversation[] {
-    // Only one-to-one chats: groups and channels are rooms, under home, as Matrix rooms are.
-    return this.dialogs.filter((d) => d.kind === "user").map((d) => {
+    return this.dialogs.filter((d) => d.kind === "user" && !d.archived).map((d) => {
       const direct: DirectConversation = {
         key: d.chatId,
         account: this.account,
