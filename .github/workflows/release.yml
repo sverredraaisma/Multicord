@@ -1,5 +1,6 @@
 # Builds installers for a version tag (v1.2.3) and publishes them to the
-# GitHub release, where installed copies find updates.
+# GitHub release, where installed copies find updates. Linux also gets a
+# Flatpak bundle (not signed; it does not update itself).
 #
 # Signing happens when the repository has the secrets for it; without them
 # the installers are built unsigned:
@@ -34,6 +35,9 @@ jobs:
       # The keyboard hook (uiohook-napi) loads X11 libraries; its tests load it.
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxtst6 libxt6 libxinerama1 libxkbcommon-x11-0 libpipewire-0.3-0
+      # electron-builder rebuilds uiohook-napi from source for Electron; that needs the X11 headers.
+      - if: runner.os == 'Linux'
+        run: sudo apt-get install -y libx11-dev libx11-xcb-dev libxtst-dev libxt-dev libxrandr-dev libxinerama-dev libxkbfile-dev
       - run: npm ci
       - run: npm run check
       - run: npm run build
@@ -52,3 +56,16 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # Unsigned builds when no certificate is configured, instead of failing.
           CSC_IDENTITY_AUTO_DISCOVERY: false
+      # Flatpak: wraps the release/linux-unpacked build from the step above (build/flatpak/), and goes
+      # to the same release. flatpak-builder runs in bubblewrap, which needs unprivileged user namespaces.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y flatpak flatpak-builder
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          npm run dist:flatpak
+      - if: runner.os == 'Linux'
+        # electron-builder made the (draft) release for this tag above; the bundle joins it.
+        run: gh release upload "$GITHUB_REF_NAME" release/Multicord-*.flatpak --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

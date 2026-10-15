@@ -16,6 +16,7 @@
     "smoke": "node scripts/smoke.mjs",
     "live:media":"node scripts/live-media/run.mjs",
     "dist": "npm run build && electron-builder",
+    "dist:flatpak": "node scripts/flatpak.mjs",
     "icons": "electron scripts/icons.cjs"
   },
   "license": "AGPL-3.0-or-later",

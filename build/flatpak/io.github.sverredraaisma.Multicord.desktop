@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Multicord
+Comment=Discord and other chat platforms behind one server rail
+Exec=multicord %U
+Icon=io.github.sverredraaisma.Multicord
+Terminal=false
+Categories=Network;Chat;InstantMessaging;
+Keywords=Discord;Fluxer;Telegram;Matrix;Stoat;Spacebar;chat;
+StartupWMClass=Multicord
+StartupNotify=true

@@ -1,0 +1,60 @@
+# Flatpak manifest: wraps the Linux build electron-builder leaves in
+# release/linux-unpacked (run `npm run dist` on Linux first), so the Flatpak
+# carries the same app, native modules and fuses as the AppImage.
+# `npm run dist:flatpak` (scripts/flatpak.mjs) builds it and makes the bundle.
+# Why each permission is here: README, "Linux packages".
+id: io.github.sverredraaisma.Multicord
+
+runtime: org.freedesktop.Platform
+runtime-version: &runtime-version '26.08'
+sdk: org.freedesktop.Sdk
+# Electron's runtime libraries and zypak, which lets Chromium's sandbox run inside Flatpak's.
+base: org.electronjs.Electron2.BaseApp
+base-version: *runtime-version
+
+command: multicord
+separate-locales: false
+
+finish-args:
+  # Display: Wayland, or X11 only where there is no Wayland.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  # GPU and cameras: Chromium opens /dev/video* itself, and Flatpak has no narrower camera permission.
+  - --device=all
+  # Speakers and microphone.
+  - --socket=pulseaudio
+  # Screen-share sound (venmic) talks to PipeWire directly.
+  - --filesystem=xdg-run/pipewire-0
+  - --share=network
+  # Signed-in accounts: safeStorage keeps its key in the Secret Service (GNOME Keyring, KeePassXC) or KWallet.
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.kde.kwalletd5
+  - --talk-name=org.kde.kwalletd6
+  # Message notifications and the tray icon.
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # The host's cursor theme under Wayland.
+  - --env=XCURSOR_PATH=/run/host/user-share/icons:/run/host/share/icons
+
+modules:
+  - name: multicord
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: ../../release/linux-unpacked
+        dest: multicord
+      - type: file
+        path: multicord.sh
+      - type: file
+        path: io.github.sverredraaisma.Multicord.desktop
+      - type: file
+        path: io.github.sverredraaisma.Multicord.metainfo.xml
+      - type: file
+        path: ../../assets/icon.svg
+    build-commands:
+      - cp -a multicord /app/multicord
+      - install -Dm755 multicord.sh /app/bin/multicord
+      - install -Dm644 io.github.sverredraaisma.Multicord.desktop -t /app/share/applications
+      - install -Dm644 io.github.sverredraaisma.Multicord.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 icon.svg /app/share/icons/hicolor/scalable/apps/io.github.sverredraaisma.Multicord.svg

@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.sverredraaisma.Multicord</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+
+  <name>Multicord</name>
+  <summary>Discord and other chat platforms behind one server rail</summary>
+  <developer id="io.github.sverredraaisma">
+    <name>Sverre</name>
+  </developer>
+
+  <description>
+    <p>
+      Multicord shows Discord's own web client next to other chat platforms in one window,
+      with a single rail of servers and one place for settings, notifications and messages.
+    </p>
+    <p>
+      Fluxer, Telegram, Matrix and Stoat run as native modules, each isolated in its own
+      sandboxed engine; Spacebar and other web clients run as web views.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.sverredraaisma.Multicord.desktop</launchable>
+  <url type="homepage">https://github.com/sverredraaisma/Multicord</url>
+  <url type="bugtracker">https://github.com/sverredraaisma/Multicord/issues</url>
+  <url type="vcs-browser">https://github.com/sverredraaisma/Multicord</url>
+
+  <categories>
+    <category>Network</category>
+    <category>Chat</category>
+  </categories>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+    <content_attribute id="social-contacts">intense</content_attribute>
+    <content_attribute id="social-info">mild</content_attribute>
+  </content_rating>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-15"/>
+  </releases>
+</component>
