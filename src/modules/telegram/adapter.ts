@@ -253,10 +253,10 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly topicsByView = new Map<string, { chatId: string; topic: number }>();
   /** The view's member panel is open: the selected chat's members are fetched and shown. */
   private membersOpen = false;
-  /** The selected chat's pinned messages, while its pins panel is open. */
-  private pins: { chatId: string; list: NativeMessageList } | undefined;
-  /** The selected chat's search results, until the search ends; and a count that drops answers to earlier searches. */
-  private search: { chatId: string; results: NativeSearchResults } | undefined;
+  /** The open conversation's pinned messages (a chat's, or a forum topic's), while its pins panel is open. */
+  private pins: { key: string; list: NativeMessageList } | undefined;
+  /** The open conversation's search results, until the search ends; and a count that drops answers to earlier searches. */
+  private search: { key: string; results: NativeSearchResults } | undefined;
   private searchCount = 0;
   private readonly memberLists = new Map<string, MemberList>();
   /** Chats whose members Telegram turned out not to show the user. */
@@ -848,8 +848,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const dialog = this.dialog(chatId);
     if (!dialog || (topic !== undefined && !dialog.forum)) return;
     if (conversation(chatId, topic) !== this.current()) this.noteUnread(dialog, topic);
-    if (this.pins?.chatId !== chatId) this.pins = undefined;
-    if (this.search?.chatId !== chatId) this.search = undefined;
+    if (this.pins?.key !== conversation(chatId, topic)) this.pins = undefined;
+    if (this.search?.key !== conversation(chatId, topic)) this.search = undefined;
     this.selected = chatId;
     this.topic = topic;
     this.render();
@@ -882,25 +882,27 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     return first ? { firstId: String(first.id), count: at.count } : { count: at.count };
   }
 
-  /** Opens the selected chat's pins panel and fetches its pins, or closes it. Forums' pins are not listed. */
+  /** Opens the open conversation's pins panel and fetches its pins (a forum's within its open topic), or closes it. */
   private async showPins(open: boolean): Promise<void> {
-    const chatId = this.selected;
-    this.pins = open && chatId && !this.dialog(chatId)?.forum ? { chatId, list: { messages: [], loading: true } } : undefined;
+    const key = this.current();
+    // A forum's topic list has no pins of its own.
+    this.pins = open && key && !(this.dialog(this.selected!)?.forum && this.topic === undefined) ? { key, list: { messages: [], loading: true } } : undefined;
     this.render();
-    if (this.pins) await this.loadPins(this.pins.chatId);
+    if (this.pins) await this.loadPins(this.pins.key);
   }
 
-  /** Fetches the pins of a chat whose pins panel is open; a reply for a panel since closed is dropped. */
-  private async loadPins(chatId: string): Promise<void> {
+  /** Fetches the pins of a conversation whose pins panel is open; a reply for a panel since closed is dropped. */
+  private async loadPins(key: string): Promise<void> {
+    const [chatId, topic] = parseConversation(key);
     let list: NativeMessageList;
     try {
       const dialog = this.dialog(chatId)!;
-      list = { messages: (await this.api!.pinned(chatId, PINS_LIMIT)).map((m) => this.listedMessage(m, dialog)), loading: false };
+      list = { messages: (await this.api!.pinned(chatId, PINS_LIMIT, topic)).map((m) => this.listedMessage(m, dialog)), loading: false };
     } catch (error) {
       list = { messages: [], loading: false, error: `Could not load pinned messages: ${friendly(error)}` };
     }
-    if (this.pins?.chatId !== chatId) return;
-    this.pins = { chatId, list };
+    if (this.pins?.key !== key) return;
+    this.pins = { key, list };
     this.render();
   }
 
@@ -922,22 +924,24 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     }
   }
 
-  /** Searches the selected chat with Telegram's search, or ends the search with an empty query. Forums are not searched. */
+  /** Searches the open conversation (in a forum, its open topic) with Telegram's search, or ends the search with an empty query. */
   private async searchMessages(query: string): Promise<void> {
     const dialog = this.selected ? this.dialog(this.selected) : undefined;
+    const key = this.current();
+    const topic = this.topic;
     const count = ++this.searchCount;
     const trimmed = query.trim();
-    this.search = dialog && !dialog.forum && trimmed !== "" ? { chatId: dialog.chatId, results: { query: trimmed, messages: [], loading: true } } : undefined;
+    this.search = dialog && key && !(dialog.forum && topic === undefined) && trimmed !== "" ? { key, results: { query: trimmed, messages: [], loading: true } } : undefined;
     this.render();
     if (!this.search || !dialog) return;
     let results: NativeSearchResults;
     try {
-      results = { query: trimmed, messages: (await this.api!.search(dialog.chatId, trimmed, SEARCH_LIMIT)).map((m) => this.listedMessage(m, dialog)), loading: false };
+      results = { query: trimmed, messages: (await this.api!.search(dialog.chatId, trimmed, SEARCH_LIMIT, topic)).map((m) => this.listedMessage(m, dialog)), loading: false };
     } catch (error) {
       results = { query: trimmed, messages: [], loading: false, error: `Search failed: ${friendly(error)}` };
     }
-    if (count !== this.searchCount || this.search?.chatId !== dialog.chatId) return;
-    this.search = { chatId: dialog.chatId, results };
+    if (count !== this.searchCount || this.search?.key !== key) return;
+    this.search = { key, results };
     this.render();
   }
 
@@ -1272,7 +1276,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       case "pins": {
         const ids = new Set(update.ids);
         for (const list of this.loaded(update.chatId)) for (const [index, message] of list.entries()) if (ids.has(message.id)) list[index] = { ...message, pinned: update.pinned };
-        if (this.pins?.chatId === update.chatId) void this.loadPins(update.chatId);
+        if (this.pins && parseConversation(this.pins.key)[0] === update.chatId) void this.loadPins(this.pins.key);
         return this.render();
       }
       case "reactions": {
@@ -1835,8 +1839,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (native.canEdit) native.source = markdown;
     if (message.pinned) native.pinned = true;
     if (message.poll) native.poll = this.pollView(message.poll, dialog);
-    // Who may pin in a group is up to its admins, and Telegram refuses where the user may not; not in forums, whose pins are not listed here.
-    if (!dialog.readOnly && !dialog.forum) native.canPin = true;
+    // Who may pin in a group is up to its admins, and Telegram refuses where the user may not; in a forum, within the message's topic.
+    if (!dialog.readOnly) native.canPin = true;
     // Telegram's own flag: it mentions the user, or answers one of their messages.
     if (message.mentioned && !message.out) native.mentionsMe = true;
     // Telegram turns "@username" into a mention as it is sent; people without a username are mentioned by name, as plain text.
@@ -1987,9 +1991,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       uploading: this.uploading.has(key),
       ...shared,
       ...(this.unreadAt?.key === key ? { unread: this.unreadView(key, this.unreadAt) } : {}),
-      ...(this.pins && this.pins.chatId === dialog.chatId && !dialog.forum ? { pins: this.pins.list } : {}),
-      ...(this.search && this.search.chatId === dialog.chatId && !dialog.forum ? { search: this.search.results } : {}),
-      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: !dialog.forum, search: !dialog.forum, forward: true },
+      ...(this.pins?.key === key ? { pins: this.pins.list } : {}),
+      ...(this.search?.key === key ? { search: this.search.results } : {}),
+      can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog), pins: true, search: true, forward: true },
     };
   }
 

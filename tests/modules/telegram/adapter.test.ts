@@ -2568,6 +2568,31 @@ describe("forum topics", () => {
     await flush();
   };
 
+  it("lists a topic's pins and searches within it, each panel kept to its topic", async () => {
+    const ctx = await open();
+    expect(ctx.chat().channel!.can.pins).toBeUndefined();
+    await openTopic(ctx, "T10");
+    expect(ctx.chat().channel!.can).toMatchObject({ pins: true, search: true });
+    expect(ctx.chat().channel!.messages[0]!.canPin).toBe(true);
+    ctx.api.pinned.mockResolvedValueOnce([msg(FORUM, 12, { pinned: true, topicId: 10, sender: "Ana" })]);
+    await ctx.act({ type: "pins", open: true });
+    expect(ctx.api.pinned).toHaveBeenCalledWith(FORUM, 50, 10);
+    expect(ctx.chat().channel!.pins!.messages).toEqual([expect.objectContaining({ id: "12", author: "Ana" })]);
+    // A pin change in the forum fetches the open topic's pins again.
+    ctx.api.emit({ type: "pins", chatId: FORUM, ids: [12], pinned: false });
+    await flush();
+    expect(ctx.api.pinned).toHaveBeenLastCalledWith(FORUM, 50, 10);
+    await ctx.act({ type: "search", query: "hello" });
+    expect(ctx.api.search).toHaveBeenCalledWith(FORUM, "hello", 50, 10);
+    expect(ctx.chat().channel!.search).toMatchObject({ query: "hello", loading: false });
+    // Another topic of the same forum has panels of its own.
+    await openTopic(ctx, "General");
+    expect(ctx.chat().channel!.pins).toBeUndefined();
+    expect(ctx.chat().channel!.search).toBeUndefined();
+    await ctx.act({ type: "search", query: "x" });
+    expect(ctx.api.search).toHaveBeenLastCalledWith(FORUM, "x", 50, 1);
+  });
+
   it("marks where a topic's news began, and gives the topic list no marker of its own", async () => {
     const ctx = await signedIn({ dialogs: forum() });
     ctx.adapter.setVisible(true);
@@ -3089,7 +3114,7 @@ describe("pinned messages", () => {
     const pending = ctx.act({ type: "pins", open: true });
     expect(ctx.chat().channel!.pins).toEqual({ messages: [], loading: true });
     await pending;
-    expect(ctx.api.pinned).toHaveBeenCalledWith("1", 50);
+    expect(ctx.api.pinned).toHaveBeenCalledWith("1", 50, undefined);
     expect(ctx.chat().channel!.pins).toEqual({ messages: [{ id: "2", author: "User 1", content: "m2", timestamp: new Date(102_000).toISOString() }], loading: false });
     // Pinned elsewhere: the loaded message is marked, and the open list fetched again.
     ctx.api.pinned.mockResolvedValueOnce([msg("1", 1, { out: true, pinned: true })]);
@@ -3109,7 +3134,7 @@ describe("pinned messages", () => {
     expect(ctx.chat().channel!.pins).toBeUndefined();
   });
 
-  it("says when the pins cannot be loaded, drops answers for a closed panel, and lists none in forums", async () => {
+  it("says when the pins cannot be loaded, drops answers for a closed panel, and lists none for a forum's topic list", async () => {
     const ctx = await signedIn({ dialogs: [...defaultDialogs(), dlg("-5", { kind: "group", forum: true }), dlg("-6", { kind: "channel", readOnly: true })] });
     await ctx.act({ type: "pins", open: true });
     expect(ctx.api.pinned).not.toHaveBeenCalled();
@@ -3158,7 +3183,7 @@ describe("search", () => {
     const pending = ctx.act({ type: "search", query: " m1 " });
     expect(ctx.chat().channel!.search).toEqual({ query: "m1", messages: [], loading: true });
     await pending;
-    expect(ctx.api.search).toHaveBeenCalledWith("1", "m1", 50);
+    expect(ctx.api.search).toHaveBeenCalledWith("1", "m1", 50, undefined);
     expect(ctx.chat().channel!.search).toEqual({ query: "m1", messages: [{ id: "1", author: "User 1", content: "m1", timestamp: new Date(101_000).toISOString() }], loading: false });
     await ctx.act({ type: "search", query: "" });
     expect(ctx.chat().channel!.search).toBeUndefined();
@@ -3167,7 +3192,7 @@ describe("search", () => {
     expect(ctx.chat().channel!.search).toBeDefined();
     await ctx.act({ type: "select", channelId: "2" });
     expect(ctx.chat().channel!.search).toBeUndefined();
-    // Forums are not searched.
+    // A forum's topic list is not searched; its topics are.
     await ctx.act({ type: "select", channelId: "-5" });
     await ctx.act({ type: "search", query: "x" });
     expect(ctx.api.search).toHaveBeenCalledTimes(2);

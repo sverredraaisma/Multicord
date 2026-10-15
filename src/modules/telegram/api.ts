@@ -321,12 +321,12 @@ export interface TelegramApi {
   dialogs(limit: number, after?: TgDialogCursor): Promise<TgDialogPage>;
   /** Messages before `beforeId` (or the newest), oldest first; in a forum, of one topic. */
   history(chatId: string, beforeId: number | undefined, limit: number, topicId?: number): Promise<TgMessage[]>;
-  /** A chat's pinned messages, newest first. */
-  pinned(chatId: string, limit: number): Promise<TgMessage[]>;
+  /** A chat's pinned messages, newest first; in a forum, a topic's. */
+  pinned(chatId: string, limit: number, topicId?: number): Promise<TgMessage[]>;
   /** Forwards a message, as Telegram forwards (naming where it came from), into a chat or a forum's topic. */
   forward(fromChatId: string, id: number, toChatId: string, topicId?: number): Promise<void>;
-  /** A chat's messages that match a search, newest first (Telegram's own search). */
-  search(chatId: string, query: string, limit: number): Promise<TgMessage[]>;
+  /** A chat's messages that match a search, newest first (Telegram's own search); in a forum, a topic's. */
+  search(chatId: string, query: string, limit: number, topicId?: number): Promise<TgMessage[]>;
   /** Votes in a poll: the options (base64) chosen, replacing earlier ones; none takes the vote back. */
   vote(chatId: string, messageId: number, options: string[]): Promise<void>;
   /** Pins a message quietly (no notification), or unpins it. */

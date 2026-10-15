@@ -560,7 +560,8 @@ export function stickerSetsOf(sets: readonly unknown[]): { set: TgStickerSet; in
   });
 }
 
-export function toMessage(message: Api.Message, chatId: string): TgMessage {
+/** A message for the adapter; `senderEntity` is who sent it where GramJS has not attached it (raw requests). */
+export function toMessage(message: Api.Message, chatId: string, senderEntity: unknown = message.sender): TgMessage {
   const out: TgMessage = {
     id: message.id,
     chatId,
@@ -573,9 +574,9 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
   if (entities.length > 0) out.entities = entities;
   // In groups and channels each message says who wrote it; in a private chat the chat does.
   if (!(message.peerId instanceof Api.PeerUser)) {
-    const sender = entityName(message.sender) ?? (message.postAuthor || undefined);
+    const sender = entityName(senderEntity) ?? (message.postAuthor || undefined);
     if (sender) out.sender = sender;
-    const username = message.sender instanceof Api.User ? usernameOf(message.sender) : undefined;
+    const username = senderEntity instanceof Api.User ? usernameOf(senderEntity) : undefined;
     if (username) out.senderUsername = username;
   }
   // Who sent it, for their profile: the user named as sender, or in a private chat the other side.
@@ -629,6 +630,20 @@ export function dialogsOf(found: readonly Dialog[]): TgDialog[] {
     if (d.message) dialog.lastMessage = toMessage(d.message, chatId);
     return [dialog];
   });
+}
+
+/**
+ * The messages of a raw messages.search answer, with their senders' names
+ * from the users and chats it lists (GramJS attaches them only to messages
+ * it fetched itself).
+ */
+export function foundMessages(found: unknown, chatId: string): TgMessage[] {
+  const { messages, users, chats } = found as { messages?: unknown; users?: unknown; chats?: unknown };
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+  const entities = new Map<string, unknown>();
+  for (const user of list(users)) if (user instanceof Api.User) entities.set(user.id.toString(), user);
+  for (const chat of list(chats)) if (chat instanceof Api.Chat || chat instanceof Api.Channel) entities.set(chatIdOf(chat instanceof Api.Chat ? new Api.PeerChat({ chatId: chat.id }) : new Api.PeerChannel({ channelId: chat.id }))!, chat);
+  return list(messages).flatMap((m) => (m instanceof Api.Message ? [toMessage(m, chatId, entities.get(chatIdOf(m.fromId ?? m.peerId) ?? ""))] : []));
 }
 
 /** Downloaded bytes, or undefined for none (or a path, which is not asked for). */
@@ -702,6 +717,16 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
     }
   };
 
+  /**
+   * A forum topic's messages that match a search or a filter, newest first.
+   * GramJS's own search drops the topic (it lists the topic's replies
+   * instead), so Telegram's messages.search is asked directly.
+   */
+  const searchTopic = async (chatId: string, q: string, filter: Api.TypeMessagesFilter, limit: number, topMsgId: number): Promise<TgMessage[]> => {
+    const found = await client.invoke(new Api.messages.Search({ peer: peer(chatId), q, filter, topMsgId, minDate: 0, maxDate: 0, offsetId: 0, addOffset: 0, limit, maxId: 0, minId: 0, hash: returnBigInt(0) }));
+    return foundMessages(found, chatId);
+  };
+
   /** The password step after a sign-in Telegram accepted, with the account's hint where it has one. */
   const passwordStep = async (): Promise<{ password: true; hint?: string }> => {
     const password = await client.invoke(new Api.account.GetPassword());
@@ -764,7 +789,8 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       const page = await client.getMessages(peer(chatId), { limit, offsetId: beforeId ?? 0, ...(topicId === undefined ? {} : { replyTo: topicId }) });
       return page.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId)).reverse();
     },
-    pinned: async (chatId, limit) => {
+    pinned: async (chatId, limit, topicId) => {
+      if (topicId !== undefined) return searchTopic(chatId, "", new Api.InputMessagesFilterPinned(), limit, topicId);
       const found = await client.getMessages(peer(chatId), { limit, filter: new Api.InputMessagesFilterPinned() });
       return found.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId));
     },
@@ -775,7 +801,8 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
     vote: async (chatId, messageId, options) => {
       await client.invoke(new Api.messages.SendVote({ peer: peer(chatId), msgId: messageId, options: options.map((option) => Buffer.from(option, "base64")) }));
     },
-    search: async (chatId, query, limit) => {
+    search: async (chatId, query, limit, topicId) => {
+      if (topicId !== undefined) return searchTopic(chatId, query, new Api.InputMessagesFilterEmpty(), limit, topicId);
       const found = await client.getMessages(peer(chatId), { limit, search: query });
       return found.filter((m) => m instanceof Api.Message).map((m) => toMessage(m, chatId));
     },

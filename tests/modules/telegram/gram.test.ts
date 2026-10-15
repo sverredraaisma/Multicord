@@ -22,7 +22,7 @@ const h = vi.hoisted(() => {
     "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
     "InputFile", "InputFileBig", "InputMediaUploadedPhoto", "InputMediaUploadedDocument",
     "PhotoPathSize", "VideoSize", "StickerSet", "InputStickerSetID", "InputMediaDocument", "InputDocument",
-    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings", "InputFolderPeer", "FolderPeer", "UpdateFolderPeers", "DialogFilter", "DialogFilterChatlist", "DialogFilterDefault", "InputPeerUser", "InputPeerChat", "InputPeerChannel", "InputPeerSelf", "UpdateDialogFilter", "UpdateDialogFilters", "UpdateDialogFilterOrder", "UpdateLoginToken",
+    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings", "InputFolderPeer", "FolderPeer", "UpdateFolderPeers", "DialogFilter", "DialogFilterChatlist", "DialogFilterDefault", "InputPeerUser", "InputPeerChat", "InputPeerChannel", "InputPeerSelf", "UpdateDialogFilter", "UpdateDialogFilters", "UpdateDialogFilterOrder", "UpdateLoginToken", "InputMessagesFilterEmpty",
   ];
   const Api: Record<string, unknown> = {
     auth: {
@@ -57,6 +57,7 @@ const h = vi.hoisted(() => {
       ForwardMessages: class extends Base {},
       SendVote: class extends Base {},
       GetDialogFilters: class extends Base {},
+      Search: class extends Base {},
       DialogFilters: class extends Base {},
     },
     channels: {
@@ -128,7 +129,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { allowedOf, apiEntities, foldersOf, MAX_FOLDER_PEERS, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview, pollOf, pollResultsOf } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, foldersOf, foundMessages, MAX_FOLDER_PEERS, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview, pollOf, pollResultsOf } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -477,6 +478,39 @@ describe("createGramApi", () => {
     expect((await api.dialogs(2)).next).toBeUndefined();
     client.getDialogs.mockResolvedValue([{ ...row(1n, make(Api.Message, { id: 1, date: 1 })), id: undefined }]);
     expect((await api.dialogs(1)).next).toBeUndefined();
+  });
+
+  it("lists a forum topic's pins and search results through Telegram's own search, which GramJS's drops the topic from", async () => {
+    const ana = make(Api.User, { id: 4n, firstName: "Ana", username: "ana_b" });
+    client.invoke.mockResolvedValue({ messages: [make(Api.Message, { id: 7, date: 7, fromId: make(Api.PeerUser, { userId: 4n }), peerId: make(Api.PeerChannel, { channelId: 5n }) })], users: [ana], chats: [] });
+    const pinned = await api.pinned("-1005", 50, 10);
+    expect(pinned).toEqual([expect.objectContaining({ id: 7, sender: "Ana", senderUsername: "ana_b", senderId: "4" })]);
+    const request = client.invoke.mock.calls[0]![0] as Record<string, unknown>;
+    expect(request).toBeInstanceOf(Api.messages.Search);
+    expect(request).toMatchObject({ peer: -1005n, q: "", topMsgId: 10, limit: 50 });
+    expect(request.filter).toBeInstanceOf(Api.InputMessagesFilterPinned);
+    await api.search("-1005", "hi", 20, 1);
+    const search = client.invoke.mock.calls[1]![0] as Record<string, unknown>;
+    expect(search).toMatchObject({ q: "hi", topMsgId: 1, limit: 20 });
+    expect(search.filter).toBeInstanceOf(Api.InputMessagesFilterEmpty);
+    expect(client.getMessages).not.toHaveBeenCalled();
+  });
+
+  it("names the senders of raw search results from the users and chats listed with them", () => {
+    const peerChannel = make(Api.PeerChannel, { channelId: 5n });
+    const found = {
+      messages: [
+        make(Api.Message, { id: 1, date: 1, peerId: peerChannel }),
+        make(Api.Message, { id: 2, date: 2, fromId: make(Api.PeerChat, { chatId: 6n }), peerId: peerChannel }),
+        make(Api.Message, { id: 3, date: 3, fromId: make(Api.PeerUser, { userId: 9n }), peerId: peerChannel }),
+        make(Api.MessageService, { id: 4 }),
+        make(Api.Message, { id: 5, date: 5, peerId: {} }),
+      ],
+      users: [{}],
+      chats: [make(Api.Channel, { id: 5n, title: "News" }), make(Api.Chat, { id: 6n, title: "Old group" }), {}],
+    };
+    expect(foundMessages(found, "-1005").map((m) => [m.id, m.sender])).toEqual([[1, "News"], [2, "Old group"], [3, undefined], [5, undefined]]);
+    expect(foundMessages({}, "-1005")).toEqual([]);
   });
 
   it("lists pinned messages newest first, and pins and unpins quietly", async () => {
