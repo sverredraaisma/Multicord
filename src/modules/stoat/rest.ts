@@ -1,5 +1,5 @@
 import type { FileSource } from "../../engine/runtime";
-import { isRecord, parseMember, parseMessage, parseUnread, parseUser, type StoatMember, type StoatMessage, type StoatUnread, type StoatUser } from "./types";
+import { isRecord, parseChannel, parseMember, parseMessage, parseUnread, parseUser, type StoatChannel, type StoatMember, type StoatMessage, type StoatUnread, type StoatUser } from "./types";
 
 /** Most members of one server kept from its list; Stoat sends them all at once. */
 export const MAX_SERVER_MEMBERS = 5000;
@@ -204,6 +204,11 @@ export class StoatRest {
   /** One message, e.g. the original of a reply that is not loaded. */
   async message(channelId: string, messageId: string): Promise<StoatMessage | undefined> {
     return parseMessage(await this.request("GET", `/channels/${channelId}/messages/${messageId}`));
+  }
+
+  /** Opens a DM with someone; with the user's own id, their notes channel, which Stoat makes on first use. */
+  async openDm(userId: string): Promise<StoatChannel | undefined> {
+    return parseChannel(await this.request("GET", `/users/${userId}/dm`));
   }
 
   async user(userId: string): Promise<StoatUser | undefined> {

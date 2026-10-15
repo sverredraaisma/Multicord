@@ -467,6 +467,17 @@ export class StoatState {
     if (cleared(d, "StatusPresence")) user.presence = undefined;
   }
 
+  /** The user's own notes channel, once Stoat has made it. */
+  savedNotes(): StoatChannel | undefined {
+    return [...this.channels.values()].find((c) => c.type === ChannelType.SavedMessages);
+  }
+
+  /** A channel Stoat answered with, e.g. the notes channel it made on request. */
+  addFetchedChannel(channel: StoatChannel): void {
+    this.addChannel(channel);
+    this.changed.emit();
+  }
+
   /** Users fetched for a group's member list. */
   addUsers(users: StoatUser[]): void {
     for (const u of users) this.addUser(u);

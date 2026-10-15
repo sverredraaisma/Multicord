@@ -13,8 +13,8 @@ export const ChannelType = {
 } as const;
 export type ChannelKind = (typeof ChannelType)[keyof typeof ChannelType];
 
-/** Channels whose messages we show. */
-export const TEXT_CHANNEL_TYPES: ReadonlySet<string> = new Set([ChannelType.DirectMessage, ChannelType.Group, ChannelType.TextChannel]);
+/** Channels whose messages we show; SavedMessages is the user's own notes, shown as "Saved Notes". */
+export const TEXT_CHANNEL_TYPES: ReadonlySet<string> = new Set([ChannelType.SavedMessages, ChannelType.DirectMessage, ChannelType.Group, ChannelType.TextChannel]);
 
 /** Message flags (revolt_models MessageFlags). */
 export const MessageFlag = { SuppressNotifications: 1, MentionsEveryone: 2, MentionsOnline: 4 } as const;

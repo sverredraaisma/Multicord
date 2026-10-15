@@ -247,6 +247,7 @@ describe("StoatAdapter session", () => {
     expect(requests("/sync/unreads")).toHaveLength(0);
     expect(requests("/sync/settings/fetch")).toHaveLength(1);
     expect(chat().sidebar.map((s) => [s.name, s.kind, s.iconUrl])).toEqual([
+      ["Saved Notes", "dm", undefined],
       ["Ana", "dm", "https://cdn.test/avatars/av1"],
       ["Group", "dm", undefined],
     ]);
@@ -1196,6 +1197,61 @@ describe("StoatAdapter forwarding", () => {
     routes.unshift((url, init) => (init.method === "POST" && url.endsWith("/messages") ? { status: 403, body: { type: "MissingPermission" } } : undefined));
     await adapter.handleAction({ type: "forward", messageId: ulid(460), channelId: DM });
     expect(chat().error).toBe("Message not forwarded: You do not have permission to do that.");
+  });
+});
+
+describe("StoatAdapter Saved Notes", () => {
+  const NOTES = ulid(903);
+  const withoutNotes = () => readyPayload({ channels: readyPayload().channels.filter((c) => c.channel_type !== "SavedMessages") });
+
+  it("lists the user's notes first in the home sidebar, as a conversation with nobody else in it", async () => {
+    const { adapter, chat, online } = setup({ token: "saved" });
+    await online();
+    await adapter.openHome();
+    expect(chat().sidebar[0]).toEqual({ id: NOTES, name: "Saved Notes", kind: "dm", iconUrl: undefined, unread: false, mentions: 0, active: false, muted: false, canMute: false });
+    await adapter.handleAction({ type: "select", channelId: NOTES });
+    expect(chat().channel).toMatchObject({ id: NOTES, name: "Saved Notes" });
+    expect(chat().channel!.can).toMatchObject({ typing: false, members: false, reply: true, forward: true });
+    // Not a DM bubble.
+    expect((await adapter.listDirectConversations()).map((d) => d.key)).not.toContain(NOTES);
+  });
+
+  it("asks Stoat for the channel when it does not exist yet, on opening it or forwarding into it", async () => {
+    const opened = { _id: ulid(904), channel_type: "SavedMessages", user: ME_ID };
+    const { adapter, chat, goOnline, requests, routes } = setup({ token: "saved" });
+    routes.push(
+      (url) => (url.endsWith(`/users/${ME_ID}/dm`) ? { status: 200, body: opened } : undefined),
+      (url) => (url.includes(`/channels/${GENERAL}/messages?`) ? { status: 200, body: { messages: [message(460, GENERAL)], users: [ANA] } } : undefined),
+    );
+    await adapter.start();
+    await goOnline({ ...withoutNotes(), users: [{ ...readyPayload().users[0], avatar: { _id: "me1", tag: "avatars", filename: "m.png" } }, ...readyPayload().users.slice(1)] });
+    await adapter.openHome();
+    expect(chat().sidebar[0]).toEqual({ id: ME_ID, name: "Saved Notes", kind: "dm", iconUrl: "https://cdn.test/avatars/me1", unread: false, mentions: 0, active: false, canMute: false });
+    // Forwarding into it makes it.
+    await adapter.openConversation(GENERAL);
+    await adapter.handleAction({ type: "forward", messageId: ulid(460), channelId: ME_ID });
+    expect(requests(`/users/${ME_ID}/dm`)).toHaveLength(1);
+    expect(requests(`/channels/${ulid(904)}/messages`).filter((c) => c.init.method === "POST")).toHaveLength(1);
+    // Now known: opening it asks nothing more.
+    await adapter.handleAction({ type: "select", channelId: ME_ID });
+    await adapter.handleAction({ type: "select", channelId: ulid(904) });
+    expect(chat().channel).toMatchObject({ id: ulid(904), name: "Saved Notes" });
+    expect(requests(`/users/${ME_ID}/dm`)).toHaveLength(1);
+  });
+
+  it("opens it once made, and says when Stoat could not make it", async () => {
+    const answers: Reply[] = [{ status: 500 }, { status: 200, body: { _id: ulid(905), channel_type: "DirectMessage", recipients: [ME_ID] } }, { status: 200, body: { _id: ulid(904), channel_type: "SavedMessages", user: ME_ID } }];
+    const { adapter, chat, goOnline, routes } = setup({ token: "saved" });
+    routes.push((url) => (url.endsWith(`/users/${ME_ID}/dm`) ? answers.shift() : undefined));
+    await adapter.start();
+    await goOnline(withoutNotes());
+    await adapter.handleAction({ type: "select", channelId: ME_ID });
+    expect(chat().error).toBe("Could not open Saved Notes: Request failed (HTTP_500)");
+    // Not a notes channel: nothing opens.
+    await adapter.handleAction({ type: "select", channelId: ME_ID });
+    expect(chat().channel).toBeNull();
+    await adapter.handleAction({ type: "select", channelId: ME_ID });
+    expect(chat().channel).toMatchObject({ id: ulid(904), name: "Saved Notes" });
   });
 });
 

@@ -22,6 +22,8 @@ const TYPING_IDLE_MS = 5_000;
 /** Stoat's default message_attachments limit. */
 const MAX_FILES = Math.min(5, MAX_ATTACHMENTS);
 const ULID = "[0-9A-HJKMNP-TV-Z]{26}";
+/** What the user's own notes channel (Stoat's SavedMessages) is called here, as Stoat's apps call it. */
+export const SAVED_NOTES = "Saved Notes";
 /** Originals of replies fetched at most per page of messages, and kept at most. */
 export const ORIGINALS_PER_PAGE = 10;
 const MAX_ORIGINALS = 500;
@@ -388,6 +390,13 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   // --- Channels and messages -------------------------------------------------
 
   private async selectChannel(channelId: string): Promise<void> {
+    // The sidebar lists Saved Notes under the user's own id until Stoat has made the channel.
+    if (channelId === this.state.meId && !this.state.channels.has(channelId)) {
+      return this.attempt(`Could not open ${SAVED_NOTES}`, async () => {
+        const notes = await this.notesChannel();
+        if (notes) await this.selectChannel(notes.id);
+      });
+    }
     const channel = this.state.channels.get(channelId);
     if (!channel || !TEXT_CHANNEL_TYPES.has(channel.type)) return;
     // Noted before it is read: where its news began.
@@ -483,8 +492,13 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
    */
   private async forward(messageId: string, target: string): Promise<void> {
     const message = this.state.findMessage(this.selectedChannelId, messageId);
-    const to = this.state.channels.get(target);
-    if (!message || !to || !TEXT_CHANNEL_TYPES.has(to.type)) return;
+    if (!message) return;
+    let to = this.state.channels.get(target);
+    if (!to && target === this.state.meId) {
+      await this.attempt("Message not forwarded", async () => void (to = await this.notesChannel()));
+    }
+    if (!to || !TEXT_CHANNEL_TYPES.has(to.type)) return;
+    const into = to;
     const quiet = String.fromCharCode(0x200b);
     const text = this.renderContent(message.content)
       .replace(new RegExp(`<@(${ULID})>`, "g"), "@someone")
@@ -493,9 +507,19 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     const files = message.attachments.flatMap((a) => this.fileUrl(a) ?? []);
     const content = [`Forwarded from ${this.authorName(message)}:`, ...quoted, ...files].join("\n").slice(0, FORWARD_LENGTH);
     await this.attempt("Message not forwarded", async () => {
-      const sent = await this.rest!.sendMessage(to.id, content, `multicord-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
+      const sent = await this.rest!.sendMessage(into.id, content, `multicord-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
       if (sent) this.state.addSent(sent);
     });
+  }
+
+  /** The user's notes channel: known, or opened on Stoat, which makes it on first use. */
+  private async notesChannel(): Promise<StoatChannel | undefined> {
+    const known = this.state.savedNotes();
+    if (known) return known;
+    const opened = await this.rest!.openDm(this.state.meId!);
+    if (opened?.type !== ChannelType.SavedMessages) return undefined;
+    this.state.addFetchedChannel(opened);
+    return opened;
   }
 
   private async send(content: string, replyTo?: string): Promise<void> {
@@ -971,6 +995,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private channelTitle(channel: StoatChannel): string {
+    if (channel.type === ChannelType.SavedMessages) return SAVED_NOTES;
     const partner = this.dmPartner(channel);
     if (partner) return this.userName(partner);
     if (channel.type === ChannelType.Group) {
@@ -1102,7 +1127,18 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       muted: this.state.notifyLevel(channel) === "muted",
       canMute: true,
     });
-    if (this.selection.kind === "home") return this.state.privateChannels().map((c) => item(c, "dm"));
+    if (this.selection.kind === "home") {
+      // Saved Notes first, with the user's own picture; listed under their id until Stoat has made the channel.
+      const notes = this.state.savedNotes();
+      const me = this.state.meId;
+      const own = { iconUrl: this.fileUrl(this.state.me?.avatar), canMute: false };
+      const saved: NativeSidebarItem[] = notes
+        ? [{ ...item(notes, "dm"), ...own }]
+        : me
+          ? [{ id: me, name: SAVED_NOTES, kind: "dm", unread: false, mentions: 0, active: false, ...own }]
+          : [];
+      return [...saved, ...this.state.privateChannels().map((c) => item(c, "dm"))];
+    }
     return this.state.serverEntries(this.selection.serverId).map((entry) =>
       "channel" in entry
         ? item(entry.channel, "text")
@@ -1124,6 +1160,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         const server = this.selection.kind === "server" ? this.state.servers.get(this.selection.serverId) : undefined;
         const shown = new Set<string>();
         const members = channel ? this.memberView(channel) : undefined;
+        const others = channel?.type !== ChannelType.SavedMessages;
         return {
           screen: "chat",
           platform,
@@ -1145,7 +1182,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
                 ...(members ? { members } : {}),
                 // Files need the instance's file server (Autumn).
-                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: true, members: true, pins: true, search: true, forward: true },
+                // Saved Notes has nobody else in it: no one to type to or list.
+                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: others, members: others, pins: true, search: true, forward: true },
               }
             : null,
           customEmoji: channel ? this.customEmoji(channel) : [],

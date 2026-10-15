@@ -137,6 +137,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
 - **Stoat, native:** a built-in client for Stoat (formerly Revolt). It talks to the instance's API and events WebSocket from its sandboxed engine. You sign in with email and password, then an authenticator or recovery code. It covers:
   - servers in the rail with icons, unread state and mentions;
   - DMs and groups as DM bubbles and in the Messages page, with previews;
+  - your own notes (Stoat's saved messages) as "Saved Notes" at the top of the home sidebar, also as somewhere to forward to. Stoat makes the channel the first time it is opened or forwarded to;
   - channel history, sending, replies, reactions, and editing and deleting your own messages. A reply quotes the message it answers, fetched from the instance when it is not loaded (the latest ten per page), and clicking the quote goes to it;
   - typing indicators, read state, and attachments uploaded to the instance's file server;
   - link previews the instance made (sites, linked pictures, bots' text embeds) as cards; a site's picture loads only through the instance's own proxy (January), which joins the hosts the engine may reach, and is left out where there is none;
