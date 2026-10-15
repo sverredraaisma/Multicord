@@ -3749,3 +3749,57 @@ describe("custom emoji in messages", () => {
     expect(group.chat().error).toBe("This chat does not take this custom emoji as a reaction.");
   });
 });
+
+describe("sending custom emoji", () => {
+  const ce = (offset: number, documentId: string) => ({ type: "customEmoji" as const, offset, length: 2, documentId });
+  const settle = async () => {
+    await flush();
+    await vi.advanceTimersByTimeAsync(STICKER_RENDER_MS);
+    await flush();
+  };
+
+  /** Signed in, a chat open whose messages show custom emoji 77 (free) and 78, so Telegram described them. */
+  async function described(options: Options & { premium?: boolean } = {}, chatId = "1") {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true, ...options });
+    if (options.premium) ctx.api.me.mockResolvedValue({ id: "9", name: "Me", bot: false, premium: true });
+    ctx.api.customEmoji.mockImplementation(async (ids: string[]) => ids.map((id) => ({ id, emoji: "😀", format: "webp" as const, ...(id === "77" ? { free: true } : {}) })));
+    ctx.api.history.mockResolvedValue([msg(chatId, 1, { text: "😀😀", entities: [ce(0, "77"), ce(2, "78")] })]);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.act({ type: "select", channelId: viewId(chatId) });
+    await settle();
+    return ctx;
+  }
+  const emojiOf = (id: string, offset = 0) => ({ type: "customEmoji", offset, length: 2, documentId: id });
+
+  it("sends custom emoji Telegram described as its own, with Premium", async () => {
+    const ctx = await described({ premium: true });
+    await ctx.act({ type: "send", content: "<:😀:78> hi <:😀:99>" });
+    // One never described goes as its emoji.
+    expect(ctx.api.send).toHaveBeenCalledWith("1", { text: "😀 hi 😀", entities: [emojiOf("78")] }, undefined, undefined);
+    await ctx.act({ type: "edit", messageId: "1", content: "<:😀:77>" });
+    expect(ctx.api.edit).toHaveBeenCalledWith("1", 1, { text: "😀", entities: [emojiOf("77")] });
+  });
+
+  it("sends only free custom emoji without Premium, except in Saved Messages", async () => {
+    const ctx = await described();
+    await ctx.act({ type: "send", content: "<:😀:77><:😀:78>" });
+    expect(ctx.api.send).toHaveBeenLastCalledWith("1", { text: "😀😀", entities: [emojiOf("77")] }, undefined, undefined);
+    const saved = await described({ dialogs: [dlg("9", { title: "Saved Messages" })] }, "9");
+    await saved.act({ type: "send", content: "<:😀:77><:😀:78>" });
+    expect(saved.api.send).toHaveBeenLastCalledWith("9", { text: "😀😀", entities: [emojiOf("77"), emojiOf("78", 2)] }, undefined, undefined);
+  });
+
+  it("keeps custom emoji in what the user edits, before their pictures load", async () => {
+    vi.useFakeTimers();
+    const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true });
+    ctx.api.customEmojiFile.mockImplementation(() => new Promise(() => {}));
+    ctx.api.history.mockResolvedValue([msg("1", 1, { out: true, text: "a😀", entities: [{ type: "bold", offset: 0, length: 1 }, ce(1, "77")] })]);
+    await ctx.adapter.start();
+    await flush();
+    await ctx.adapter.openConversation("1");
+    await settle();
+    expect(ctx.chat().channel!.messages[0]).toMatchObject({ content: "**a**😀", source: "**a**<:😀:77>" });
+  });
+});

@@ -1131,10 +1131,23 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
-  /** The user's markdown as Telegram text; custom emoji go as the emoji they stand for. */
+  /**
+   * The user's markdown as Telegram text for the open chat. Custom emoji go
+   * as Telegram's own where the user may send them there; others as the
+   * emoji they stand for.
+   */
   private outgoing(content: string): TgText {
     const text = fromMarkdown(content);
-    return { text: text.text, entities: text.entities.filter((e) => e.type !== "customEmoji") };
+    return { text: text.text, entities: text.entities.filter((e) => e.type !== "customEmoji" || this.maySendEmoji(this.emojiInfo.get(e.documentId!))) };
+  }
+
+  /**
+   * Whether the user may send a custom emoji in the open chat: one Telegram
+   * described this session, with Premium, or a free one, or any in Saved
+   * Messages, where Telegram lets everyone try them.
+   */
+  private maySendEmoji(emoji: TgCustomEmoji | null | undefined): boolean {
+    return emoji !== undefined && emoji !== null && (this.me?.premium === true || emoji.free === true || this.selected === this.me?.id);
   }
 
   private async attempt(what: string, task: () => Promise<void>): Promise<void> {
@@ -2046,7 +2059,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       attachments: message.file ? [this.attachment(message, message.file)] : [],
     };
     // Edited as the markdown it shows, so formatting survives the edit.
-    if (native.canEdit) native.source = markdown;
+    // Custom emoji stay custom emoji in the edit, their pictures loaded or not.
+    if (native.canEdit) native.source = message.entities?.some((e) => e.type === "customEmoji") ? toMarkdown(message.text, message.entities, () => true) : markdown;
     if (message.pinned) native.pinned = true;
     if (message.poll) native.poll = this.pollView(message.poll, dialog, message.out);
     // Who may pin in a group is up to its admins, and Telegram refuses where the user may not; in a forum, within the message's topic.
