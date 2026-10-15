@@ -111,13 +111,14 @@ export class SettingsController {
     });
     const modules: ModuleInfo[] = this.deps.modules
       .filter((m) => m.manifest.configurable)
-      .map(({ manifest: { id, name, label, color, defaultUrl, fixedUrl } }) => ({
+      .map(({ manifest: { id, name, label, color, defaultUrl, fixedUrl, usesVoiceSettings } }) => ({
         id,
         name,
         label,
         color,
         defaultUrl,
         fixedUrl: fixedUrl === true,
+        calls: usesVoiceSettings === true,
       }));
     const state: SettingsViewState = {
       settings: this.deps.store.get(),

@@ -214,6 +214,8 @@ export class SettingsPage {
     diagnostics: HTMLElement;
     launchHint: HTMLElement;
     secretsNote: HTMLElement;
+    /** Where the text names the services whose calls use these settings. */
+    callServices: HTMLElement[];
     selects: Record<DeviceSlot, HTMLSelectElement>;
     processing: Record<"echoCancellation" | "noiseSuppression" | "autoGainControl" | "enhancedNoiseSuppression", HTMLInputElement>;
     meter: HTMLElement;
@@ -298,7 +300,16 @@ export class SettingsPage {
 
     // Voice and video
     const voice = sections.get("voice")!;
-    voice.append(el(doc, "p", "section-intro", "Used for Fluxer calls. Discord and web apps keep their own voice settings in their own settings screens."));
+    const callServices: HTMLElement[] = [];
+    /** A sentence naming the calling services, kept up to date by render. */
+    const callText = (cls: string, before: string, after: string, tag: "p" | "small" = "p"): HTMLElement => {
+      const p = el(doc, tag, cls, before);
+      const names = el(doc, "span", "call-services");
+      callServices.push(names);
+      p.append(names, after);
+      return p;
+    };
+    voice.append(callText("section-intro", "Used for ", " calls. Discord and web apps keep their own voice settings in their own settings screens."));
     const selects = {} as Record<DeviceSlot, HTMLSelectElement>;
     const deviceRow = (slot: DeviceSlot, title: string, extra: Node[]): HTMLElement => {
       const select = el(doc, "select");
@@ -342,6 +353,7 @@ export class SettingsPage {
       ["enhancedNoiseSuppression", "Enhanced noise suppression", "RNNoise also removes keyboard, fan and street noise in Fluxer calls. Discord uses its own."],
     ] as const) {
       const { row, input } = switchRow(doc, label, hint, (on) => this.update({ voice: { [key]: on } }));
+      if (key === "enhancedNoiseSuppression") row.querySelector(".hint")?.replaceWith(callText("hint", "RNNoise also removes keyboard, fan and street noise in ", " calls. Discord uses its own.", "small"));
       processing[key] = input;
       voice.append(row);
     }
@@ -349,7 +361,7 @@ export class SettingsPage {
 
     voice.append(
       el(doc, "h2", undefined, "Keybinds"),
-      el(doc, "p", "hint", "System-wide shortcuts work while Multicord is in the background. Mute and deafen act on Fluxer calls and send Discord its own shortcuts."),
+      callText("hint", "System-wide shortcuts work while Multicord is in the background. Mute and deafen act on ", " calls and send Discord its own shortcuts."),
     );
     const shortcut = (action: ShortcutAction, label: string) => {
       const field = keyField(
@@ -385,7 +397,7 @@ export class SettingsPage {
     voice.append(
       keys.pushToTalk.row,
       talkEverywhere.row,
-      el(doc, "p", "hint", "With a push-to-talk key set, hold it to talk in Fluxer calls. For Discord, set the same key in Discord's own voice settings; in the background, Multicord passes it on."),
+      callText("hint", "With a push-to-talk key set, hold it to talk in ", " calls. For Discord, set the same key in Discord's own voice settings; in the background, Multicord passes it on."),
     );
 
     // General
@@ -446,7 +458,7 @@ export class SettingsPage {
     general.append(grouping.row, links.row, autoUpdate.row, richPresence.row, el(doc, "h2", undefined, "Privacy"), streamerRow, el(doc, "h2", undefined, "Appearance"), zoomRow);
     const launchHint = el(doc, "p", "hint", "Starting with your computer is not available on this system.");
     launchHint.hidden = true;
-    const secretsNote = el(doc, "p", "notice", "This system has no secure storage for passwords, so you will need to sign in to Fluxer again after each restart.");
+    const secretsNote = el(doc, "p", "notice", "This system has no secure storage for passwords, so you will need to sign in to your services again after each restart.");
     secretsNote.hidden = true;
     general.append(launchHint, secretsNote);
 
@@ -514,6 +526,7 @@ export class SettingsPage {
       diagnostics,
       launchHint,
       secretsNote,
+      callServices,
       selects,
       processing,
       meter,
@@ -579,6 +592,9 @@ export class SettingsPage {
     parts.general.launchAtLogin.disabled = !state.launchAtLoginSupported;
     parts.launchHint.hidden = state.launchAtLoginSupported;
     parts.secretsNote.hidden = state.secretsPersistent;
+    const calling = state.modules.filter((m) => m.calls).map((m) => m.name);
+    const names = calling.length > 1 ? `${calling.slice(0, -1).join(", ")} and ${calling.at(-1)}` : (calling[0] ?? "Multicord's own");
+    for (const span of parts.callServices) span.textContent = names;
     for (const key of ["echoCancellation", "noiseSuppression", "autoGainControl", "enhancedNoiseSuppression"] as const) parts.processing[key].checked = voice[key];
     this.renderDevices(voice);
     parts.version.textContent = `Multicord ${state.version}`;

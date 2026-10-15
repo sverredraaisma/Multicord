@@ -312,6 +312,8 @@ export interface ModuleInfo {
   /** Prefilled address; with fixedUrl the module always uses it. */
   defaultUrl?: string;
   fixedUrl: boolean;
+  /** Its calls run in Multicord's own call view, with the voice settings here. */
+  calls: boolean;
 }
 
 export interface SettingsViewState {

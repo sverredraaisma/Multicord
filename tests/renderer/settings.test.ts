@@ -20,9 +20,9 @@ const service = (over: Partial<ServiceInfo> = {}): ServiceInfo => ({
 });
 
 const modules: ModuleInfo[] = [
-  { id: "discord", name: "Discord", label: "DC", color: "#5865f2", defaultUrl: "https://discord.com", fixedUrl: true },
-  { id: "fluxer", name: "Fluxer", label: "FX", color: "#4641d9", defaultUrl: "https://fluxer.app", fixedUrl: false },
-  { id: "web", name: "Web app", label: "WB", color: "#888888", fixedUrl: false },
+  { id: "discord", name: "Discord", label: "DC", color: "#5865f2", defaultUrl: "https://discord.com", fixedUrl: true, calls: false },
+  { id: "fluxer", name: "Fluxer", label: "FX", color: "#4641d9", defaultUrl: "https://fluxer.app", fixedUrl: false, calls: true },
+  { id: "web", name: "Web app", label: "WB", color: "#888888", fixedUrl: false, calls: false },
 ];
 
 const viewState = (over: Partial<SettingsViewState> = {}): SettingsViewState => ({
@@ -463,6 +463,21 @@ describe("general and about", () => {
     page.render(viewState());
     expect(switchFor("Start with").disabled).toBe(false);
     expect(hintNotAvailable().hidden).toBe(true);
+  });
+
+  it("names the services whose calls use the voice settings", () => {
+    const page = mount(viewState());
+    const named = () => [...document.querySelectorAll(".call-services")].map((s) => s.textContent);
+    expect(named()).toEqual(["Fluxer", "Fluxer", "Fluxer", "Fluxer"]);
+    expect(document.querySelector(".call-services")!.parentElement!.textContent).toBe("Used for Fluxer calls. Discord and web apps keep their own voice settings in their own settings screens.");
+    const matrix = { id: "matrix-native", name: "Matrix", label: "MX", color: "#0dbd8b", fixedUrl: false, calls: true };
+    const stoat = { id: "stoat-native", name: "Stoat", label: "ST", color: "#ff4655", fixedUrl: false, calls: true };
+    page.render(viewState({ modules: [...modules, matrix] }));
+    expect(new Set(named())).toEqual(new Set(["Fluxer and Matrix"]));
+    page.render(viewState({ modules: [...modules, matrix, stoat] }));
+    expect(new Set(named())).toEqual(new Set(["Fluxer, Matrix and Stoat"]));
+    page.render(viewState({ modules: [] }));
+    expect(new Set(named())).toEqual(new Set(["Multicord's own"]));
   });
 
   it("shows the secrets note only when secrets are not persistent", () => {
