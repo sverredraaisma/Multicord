@@ -80,6 +80,7 @@ describe("sliding sync requests", () => {
       ["m.room.create", ""],
       ["m.space.child", "*"],
       [CALL_MEMBER_TYPE, "*"],
+      ["im.ponies.room_emotes", "*"],
     ]) {
       expect(dms.required_state).toContainEqual(state);
       expect(rooms.required_state).toContainEqual(state);
@@ -292,6 +293,28 @@ describe("sliding sync responses", () => {
     expect(sync.directs).toEqual({ [BO]: ["!dm:x.org"] });
     expect(parseSlidingSync({ pos: "p", extensions: { account_data: { global: "no" } } }, { pos: "o" }, context()).directs).toBeUndefined();
     expect(parseSlidingSync({ pos: "p", extensions: { account_data: 5 } }, { pos: "o" }, context()).directs).toBeUndefined();
+  });
+
+  it("read image packs from global account data, and room packs from the required state", () => {
+    const sync = parseSlidingSync(
+      {
+        pos: "p",
+        rooms: { "!r:x.org": { required_state: [{ type: "im.ponies.room_emotes", state_key: "cats", content: { images: { cat: { url: "mxc://x.org/cat" } } } }], timeline: [] } },
+        extensions: {
+          account_data: {
+            global: [
+              { type: "im.ponies.user_emotes", content: { pack: { display_name: "Mine" }, images: {} } },
+              { type: "im.ponies.emote_rooms", content: { rooms: { "!r:x.org": { cats: {} } } } },
+            ],
+          },
+        },
+      },
+      { pos: "o" },
+      context(),
+    );
+    expect(sync.userPack).toEqual({ name: "Mine", images: [] });
+    expect(sync.packRooms).toEqual([{ roomId: "!r:x.org", stateKey: "cats" }]);
+    expect(sync.joined[0]!.state.packs!.get("cats")!.images).toHaveLength(1);
   });
 
   it("hand to-device messages and key changes to the crypto library with sliding sync's meaning, and continue after them", () => {

@@ -10,6 +10,9 @@ import {
   liveKitUrl,
   MAX_STICKY_MS,
   mimeType,
+  PACK_ROOMS_TYPE,
+  ROOM_PACK_TYPE,
+  USER_PACK_TYPE,
   parseEncryption,
   parseMembers,
   parseMxc,
@@ -37,20 +40,21 @@ const TIMELINE_TYPES = [
   "m.room.history_visibility",
   "m.room.member",
 ];
-/** Space structure: whether a room is a space, and which rooms it lists. */
-const SPACE_TYPES = ["m.room.create", "m.space.child"];
+/** Space structure: whether a room is a space, and which rooms it lists; and image packs. */
+const SPACE_TYPES = ["m.room.create", "m.space.child", ROOM_PACK_TYPE];
 /**
  * What /sync returns: members only as needed (lazy loading), no presence or
- * receipts but typing notices, and of the account data only the DM list. To-device
- * messages and device lists come unfiltered, for encryption. The timeline
- * also carries call memberships of both kinds as they change; sticky ones
- * also come in their own section, which no filter narrows. Space changes
- * come in the timeline too: the state section is not narrowed by type, but
+ * receipts but typing notices, and of the account data only the DM list and
+ * image packs. To-device messages and device lists come unfiltered, for
+ * encryption. The timeline also carries call memberships of both kinds as
+ * they change; sticky ones also come in their own section, which no filter
+ * narrows. Space and image pack changes come in the timeline too: the state
+ * section is not narrowed by type, but
  * a state change filtered out of the timeline would otherwise be missed.
  */
 export const SYNC_FILTER = JSON.stringify({
   presence: { not_types: ["*"] },
-  account_data: { types: ["m.direct"] },
+  account_data: { types: ["m.direct", USER_PACK_TYPE, PACK_ROOMS_TYPE] },
   room: {
     state: { lazy_load_members: true },
     timeline: { limit: TIMELINE_LIMIT, types: [...TIMELINE_TYPES, ...SPACE_TYPES, CALL_MEMBER_TYPE, RTC_MEMBER_TYPE], lazy_load_members: true },

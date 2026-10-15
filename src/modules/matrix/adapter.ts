@@ -7,10 +7,13 @@ import {
   MAX_ATTACHMENTS,
   type NativeAction,
   type NativeAttachment,
+  type NativeCustomEmoji,
   type NativeMessage,
   type NativePrompt,
   type NativeReaction,
   type NativeSidebarItem,
+  type NativeSticker,
+  type NativeStickerPack,
   type NativeViewState,
   type NativeVoiceMember,
   type NativeVoiceSession,
@@ -30,6 +33,9 @@ import {
   type MxMediaSource,
   type MxMember,
   type MxOAuthSession,
+  type MxPack,
+  type MxPackImage,
+  type MxPackRef,
   type MxPage,
   type MxRoomState,
   type MxRtcTransport,
@@ -40,8 +46,9 @@ import {
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_SPACE_CHILDREN, mimeType, parseContent, reactionKey, serviceUrl, userId } from "./events";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseMxc, reactionKey, serviceUrl, userId } from "./events";
 import { AttachmentError, decryptAttachment, encryptAttachment, imageSize } from "./media";
+import { emoticonHtml, HTML_FORMAT, packImageId, stickerFormat } from "./packs";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 import type { Verification, VerificationState } from "./verification";
 
@@ -95,6 +102,20 @@ export const MEDIA_CACHE_BYTES = 200 * 1024 * 1024;
 export const TOO_LARGE = "too large to show here; open it in Element";
 /** loadMedia keys: "mx:", the room's local id and the local id of the event whose content is shown. */
 const MEDIA_KEY = /^mx:(\d{1,12}):(\d{1,12})$/;
+/** loadMedia keys of pack stickers: "mxs:" and the local id of the sticker's mxc:// address. */
+const STICKER_KEY = /^mxs:(\d{1,12})$/;
+/** Largest sticker shown in the picker. */
+export const MAX_STICKER_BYTES = 1024 * 1024;
+/** Pack pictures offered in a room, all packs together; the first packs' go first. */
+export const MAX_OFFERED_IMAGES = 500;
+/** Custom emoji pictures fetched per session (pack emoji and reactions); beyond this the rest are not shown. */
+export const MAX_PICTURES = 2000;
+/** Pictures fetched between renders while a room's emoji load. */
+export const PICTURE_BATCH = 25;
+/** Custom emoji names learned from reactions. */
+const MAX_SHORTCODES = 2000;
+/** The name of the user's own pack when it has none. */
+export const USER_PACK_NAME = "Your pack";
 /** What a file is sent as, by the first part of its MIME type; anything else goes as m.file. */
 const MSGTYPES = ["image", "video", "audio"] as const;
 
@@ -255,6 +276,15 @@ interface Room {
   space: boolean;
   /** A space's children (m.space.child) by room id, joined or not; empty for other rooms. */
   children: Map<string, MxSpaceChild>;
+  /** The room's image packs with pictures, by state key. */
+  packs: Map<string, MxPack>;
+}
+
+/** The custom emoji and stickers usable in a room, from its packs, the user's and those the user enabled everywhere. */
+interface Offer {
+  /** Custom emoji by shortcode (the first pack's where two share one), with the name of their pack. */
+  emoticons: Map<string, { image: MxPackImage; source: string }>;
+  stickers: { id: string; name: string; images: MxPackImage[] }[];
 }
 
 /** What is stored under RTC_KEY. */
@@ -439,6 +469,15 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly mediaFailed = new Map<string, string>();
   private readonly mediaLoading = new Set<string>();
   private readonly loading = new Set<string>();
+  /** The user's own image pack, and the room packs enabled everywhere (account data). */
+  private userPack: MxPack | undefined;
+  private packRooms: MxPackRef[] = [];
+  /** Custom emoji pictures (pack emoji, and reactions with them) as data: URLs by mxc URI; failed ones are not asked for again. */
+  private readonly pictures = new Map<string, string>();
+  private readonly picturesTried = new Set<string>();
+  private loadingPictures = false;
+  /** Custom emoji names by mxc URI, as reactions with them gave them. */
+  private readonly shortcodes = new Map<string, string>();
   private selected: string | undefined;
   /** The open top-level space (a rail server), or undefined at home. */
   private openSpace: string | undefined;
@@ -760,6 +799,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.selected = undefined;
     this.openSpace = undefined;
     this.lastRoom.clear();
+    this.userPack = undefined;
+    this.packRooms = [];
     this.directsChanged.emit([]);
     this.publishServers();
   }
@@ -770,6 +811,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.mediaBytes = 0;
     this.mediaFailed.clear();
     this.mediaLoading.clear();
+    this.pictures.clear();
+    this.picturesTried.clear();
+    this.shortcodes.clear();
   }
 
   /** The server no longer accepts the token, e.g. after signing out elsewhere. */
@@ -855,6 +899,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.callNotice(action.message, action.off);
       case "loadMedia":
         return this.loadMedia(action.key);
+      case "sendSticker":
+        return this.sendSticker(action.stickerId, action.replyTo);
       default:
         // Forums are not offered for Matrix.
         return;
@@ -1504,6 +1550,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         stickyWaiting: [],
         space: false,
         children: new Map(),
+        packs: new Map(),
       };
       this.rooms.set(id, room);
     }
@@ -1523,6 +1570,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       if (!child) room.children.delete(id);
       else if (room.children.has(id) || room.children.size < MAX_SPACE_CHILDREN) room.children.set(id, child);
     }
+    for (const [key, pack] of state.packs ?? []) {
+      if (pack.images.length === 0) room.packs.delete(key);
+      else if (room.packs.has(key) || room.packs.size < MAX_ROOM_PACKS) room.packs.set(key, pack);
+    }
     for (const [user, member] of Object.entries(state.members)) {
       room.members.set(user, member);
       // Whoever joins or is invited gets the keys of the next encrypted message; whoever leaves does not.
@@ -1535,6 +1586,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (sync.directs) {
       this.dmUsers = new Map(Object.entries(sync.directs).flatMap(([user, ids]) => ids.map((id): [string, string] => [id, user])));
     }
+    if (sync.userPack) this.userPack = sync.userPack;
+    if (sync.packRooms) this.packRooms = sync.packRooms;
     for (const id of sync.left) {
       this.rooms.delete(id);
       if (this.selected === id) this.selected = undefined;
@@ -1635,6 +1688,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private addReaction(room: Room, event: Reaction): void {
     room.reactions.set(event.id, { target: event.target, key: event.key, sender: event.sender });
     if (room.reactions.size > MAX_REACTIONS) room.reactions.delete(room.reactions.keys().next().value!);
+    if (event.shortcode && this.shortcodes.size < MAX_SHORTCODES) this.shortcodes.set(event.key, event.shortcode);
   }
 
   private mentionsMe(room: Room, event: Shown): boolean {
@@ -1882,6 +1936,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   private async sendText(session: MxSession, room: Room, text: string, replied: Shown | undefined): Promise<void> {
     const content: Record<string, unknown> = { msgtype: "m.text", body: text, "m.mentions": {} };
+    const html = this.emoticonHtml(room, text);
+    if (html) Object.assign(content, { format: HTML_FORMAT, formatted_body: html });
     if (replied) content["m.relates_to"] = { "m.in_reply_to": { event_id: replied.id } };
     const id = await this.sendContent(session, room, content);
     const sent: Message = { kind: "message", id, sender: session.userId, ts: Date.now(), content: { msgtype: "m.text", text }, mentions: [] };
@@ -1980,13 +2036,20 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (!room || target?.kind !== "message" || target.sender !== session.userId || !EDITABLE.has(target.content.msgtype)) return;
     await this.attempt("Message not edited", async () => {
       const { msgtype } = target.content;
-      const id = await this.sendContent(session, room, {
+      const fresh: Record<string, unknown> = { msgtype, body: text, "m.mentions": {} };
+      const content: Record<string, unknown> = {
         msgtype,
         body: `* ${text}`,
-        "m.new_content": { msgtype, body: text, "m.mentions": {} },
+        "m.new_content": fresh,
         "m.relates_to": { rel_type: "m.replace", event_id: target.id },
         "m.mentions": {},
-      });
+      };
+      const html = this.emoticonHtml(room, text);
+      if (html) {
+        Object.assign(fresh, { format: HTML_FORMAT, formatted_body: html });
+        Object.assign(content, { format: HTML_FORMAT, formatted_body: `* ${html}` });
+      }
+      const id = await this.sendContent(session, room, content);
       this.addEvent(room, { kind: "message", id, sender: session.userId, ts: Date.now(), content: { msgtype, text }, mentions: [], replaces: target.id }, false);
       this.publish();
     });
@@ -2031,8 +2094,16 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         await this.deps.api.redact(session, room.id, mine);
         this.removeEvent(room, mine);
       } else {
-        const id = await this.deps.api.send(session, room.id, { "m.relates_to": { rel_type: "m.annotation", event_id: target.id, key } }, "m.reaction");
-        this.addReaction(room, { kind: "reaction", id, sender: session.userId, ts: Date.now(), target: target.id, key });
+        const content: Record<string, unknown> = { "m.relates_to": { rel_type: "m.annotation", event_id: target.id, key } };
+        const reaction: Reaction = { kind: "reaction", id: "", sender: session.userId, ts: Date.now(), target: target.id, key };
+        // A custom emoji's key is its mxc:// URI; its name goes along, as Beeper and Cinny send it.
+        const shortcode = [...this.offer(room).emoticons.values()].find((e) => e.image.url === key)?.image.shortcode;
+        if (shortcode) {
+          content["com.beeper.reaction.shortcode"] = `:${shortcode}:`;
+          reaction.shortcode = shortcode;
+        }
+        reaction.id = await this.deps.api.send(session, room.id, content, "m.reaction");
+        this.addReaction(room, reaction);
       }
       this.render();
     });
@@ -2109,13 +2180,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
    * never gets its ciphertext.
    */
   private async loadMedia(key: string): Promise<void> {
-    const match = MEDIA_KEY.exec(key);
     const session = this.session;
-    if (!match || !session || this.media.has(key) || this.mediaLoading.has(key) || this.mediaFailed.has(key)) return;
-    const room = this.rooms.get(this.byLocal.get(match[1]!) ?? "");
-    const id = this.byLocal.get(match[2]!);
-    const media = room && id ? this.mediaOf(room, id) : undefined;
-    const source = media && !media.problem ? this.mediaSource(media) : undefined;
+    if (!session || this.media.has(key) || this.mediaLoading.has(key) || this.mediaFailed.has(key)) return;
+    const sticker = STICKER_KEY.exec(key);
+    const source = sticker ? this.stickerSource(sticker[1]!) : this.messageSource(key);
     if (!source) return;
     const generation = this.generation;
     this.mediaLoading.add(key);
@@ -2123,7 +2191,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     let failure = TOO_LARGE;
     try {
       // A source has a file or a URL (events.ts sees to it).
-      const download = await this.deps.api.download(session, source.file?.url ?? source.url!, MAX_MEDIA_BYTES);
+      const download = await this.deps.api.download(session, source.file?.url ?? source.url!, sticker ? MAX_STICKER_BYTES : MAX_MEDIA_BYTES);
       if (download) {
         const bytes = source.file ? await decryptAttachment(download.bytes, source.file) : download.bytes;
         // An encrypted file's type is the sender's (inside the encrypted event); the server only sees ciphertext.
@@ -2142,6 +2210,23 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.render();
   }
 
+  /** What a message's media key names, when that message is shown. */
+  private messageSource(key: string): MxMediaSource | undefined {
+    const match = MEDIA_KEY.exec(key);
+    const room = match ? this.rooms.get(this.byLocal.get(match[1]!) ?? "") : undefined;
+    const id = match ? this.byLocal.get(match[2]!) : undefined;
+    const media = room && id ? this.mediaOf(room, id) : undefined;
+    return media && !media.problem ? this.mediaSource(media) : undefined;
+  }
+
+  /** A sticker's picture, when the open room offers it: stickers are not encrypted. */
+  private stickerSource(local: string): MxMediaSource | undefined {
+    const room = this.selectedRoom();
+    const url = this.byLocal.get(local);
+    const image = room ? this.offeredStickers(room).find((i) => i.url === url) : undefined;
+    return image ? { url: image.url, mime: image.info.mimetype as string | undefined } : undefined;
+  }
+
   /** Keeps a loaded file, dropping the oldest ones beyond the budget (never the newest). */
   private remember(key: string, url: string): void {
     this.media.set(key, url);
@@ -2151,6 +2236,151 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       this.media.delete(old);
       this.mediaBytes -= kept.length;
     }
+  }
+
+  // --- Custom emoji and stickers (image packs, MSC2545) -------------------------------
+
+  /**
+   * What a room offers: its own packs, the user's pack, then the room packs
+   * the user enabled everywhere (of rooms this account is in), at most
+   * MAX_OFFERED_IMAGES pictures in all. A shortcode two packs share is the
+   * first one's, so ":name:" in a message means one picture.
+   */
+  private offer(room: Room): Offer {
+    const packs = [...room.packs.values()].map((pack) => ({ name: pack.name ?? this.title(room), pack }));
+    if (this.userPack) packs.push({ name: this.userPack.name ?? USER_PACK_NAME, pack: this.userPack });
+    for (const ref of this.packRooms) {
+      const other = ref.roomId === room.id ? undefined : this.rooms.get(ref.roomId);
+      const pack = other?.packs.get(ref.stateKey);
+      if (pack) packs.push({ name: pack.name ?? this.title(other!), pack });
+    }
+    const offer: Offer = { emoticons: new Map(), stickers: [] };
+    let left = MAX_OFFERED_IMAGES;
+    for (const [index, { name, pack }] of packs.entries()) {
+      const images = pack.images.slice(0, left);
+      left -= images.length;
+      for (const image of images) if (image.emoticon && !offer.emoticons.has(image.shortcode)) offer.emoticons.set(image.shortcode, { image, source: name });
+      const stickers = images.filter((image) => image.sticker);
+      if (stickers.length) offer.stickers.push({ id: `p${index}`, name, images: stickers });
+    }
+    return offer;
+  }
+
+  private offeredStickers(room: Room): MxPackImage[] {
+    return this.offer(room).stickers.flatMap((pack) => pack.images);
+  }
+
+  /** A message's text as formatted_body with the room's custom emoji in it; undefined without any. */
+  private emoticonHtml(room: Room, text: string): string | undefined {
+    const { emoticons } = this.offer(room);
+    return emoticonHtml(text, (shortcode) => emoticons.get(shortcode)?.image);
+  }
+
+  /** The loadMedia key of a sticker's picture. */
+  private stickerKey(image: MxPackImage): string {
+    return `mxs:${this.local(image.url)}`;
+  }
+
+  /**
+   * Sends a sticker the open room offers as m.sticker, as Element does:
+   * encrypted in an encrypted room like any message, its picture's address
+   * the pack's own (pack pictures are not encrypted).
+   */
+  private async sendSticker(stickerId: string, replyTo?: string): Promise<void> {
+    const room = this.selectedRoom();
+    const image = room ? this.offeredStickers(room).find((i) => packImageId(i.url) === stickerId) : undefined;
+    if (!room || !image || this.lock(room)) return;
+    const session = this.session!;
+    const replied = replyTo ? this.findEvent(room, replyTo) : undefined;
+    this.stopTyping();
+    await this.attempt("Sticker not sent", async () => {
+      const content: Record<string, unknown> = { body: image.body ?? image.shortcode, url: image.url, info: image.info, "m.mentions": {} };
+      if (replied) content["m.relates_to"] = { "m.in_reply_to": { event_id: replied.id } };
+      const id = await this.sendContent(session, room, content, "m.sticker");
+      const sent: Message = { kind: "message", id, sender: session.userId, ts: Date.now(), content: parseContent(content, true)!, mentions: [] };
+      if (replied) sent.replyTo = replied.id;
+      this.addEvent(room, sent, false);
+      // Shown at once with the picture the picker loaded.
+      const picture = this.media.get(this.stickerKey(image));
+      if (picture) this.remember(`mx:${room.local}:${this.local(id)}`, picture);
+      this.publish();
+    });
+  }
+
+  /** The open room's custom emoji whose picture has loaded, for the pickers. */
+  private customEmoji(offer: Offer): NativeCustomEmoji[] {
+    return [...offer.emoticons.values()].flatMap(({ image, source }) => {
+      const url = this.pictures.get(image.url);
+      const id = packImageId(image.url);
+      // The reaction key is the mxc URI, as Element and Cinny react with custom emoji.
+      return url && id ? [{ id, name: image.shortcode, animated: false, url, source, text: `:${image.shortcode}:`, key: image.url }] : [];
+    });
+  }
+
+  /** The open room's stickers, each with its picture or the key to load it by; those that could not load are left out. */
+  private stickerPacks(offer: Offer): NativeStickerPack[] {
+    return offer.stickers.flatMap((pack) => {
+      const stickers = pack.images.flatMap((image): NativeSticker[] => {
+        const id = packImageId(image.url);
+        const key = this.stickerKey(image);
+        if (!id || this.mediaFailed.has(key)) return [];
+        const sticker: NativeSticker = { id, name: image.body ?? image.shortcode, format: stickerFormat(image) };
+        const url = this.media.get(key);
+        if (url) sticker.url = url;
+        else sticker.mediaKey = key;
+        return [sticker];
+      });
+      return stickers.length ? [{ id: pack.id, name: pack.name, stickers }] : [];
+    });
+  }
+
+  /** A reaction as shown: a custom emoji's (an mxc URI key) with its picture and name, when known. */
+  private reaction(key: string, senders: Set<string>): NativeReaction {
+    const reaction: NativeReaction = { key, label: key, count: senders.size, me: senders.has(this.session!.userId) };
+    const picture = this.pictures.get(key);
+    const shortcode = this.shortcodes.get(key);
+    if (picture) reaction.imageUrl = picture;
+    if (shortcode) reaction.label = `:${shortcode}:`;
+    return reaction;
+  }
+
+  /** The next custom emoji picture the open room wants: its packs' emoji, then reactions with custom emoji. */
+  private nextPicture(): string | undefined {
+    const room = this.selectedRoom();
+    if (!room || this.picturesTried.size >= MAX_PICTURES) return undefined;
+    const wanted = [...this.offer(room).emoticons.values()].map((e) => e.image.url);
+    for (const { key } of room.reactions.values()) if (parseMxc(key)) wanted.push(key);
+    return wanted.find((url) => !this.picturesTried.has(url));
+  }
+
+  /**
+   * Loads the open room's custom emoji pictures in the background, small
+   * thumbnails through authenticated media, each once per session; the view
+   * gets them in batches.
+   */
+  private async loadPictures(): Promise<void> {
+    if (this.loadingPictures || this.step !== "chat") return;
+    this.loadingPictures = true;
+    const generation = this.generation;
+    const session = this.session!;
+    let unshown = 0;
+    try {
+      for (let url = this.nextPicture(); url; url = this.nextPicture()) {
+        this.picturesTried.add(url);
+        const picture = await this.deps.api.thumbnail(session, url).catch(() => undefined);
+        // Signed out meanwhile: they belong to the previous account.
+        if (generation !== this.generation) return;
+        if (!picture) continue;
+        this.pictures.set(url, picture);
+        if (++unshown >= PICTURE_BATCH) {
+          unshown = 0;
+          this.render();
+        }
+      }
+    } finally {
+      this.loadingPictures = false;
+    }
+    if (unshown) this.render();
   }
 
   // --- Calls --------------------------------------------------------------------------
@@ -2618,7 +2848,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       mine,
       canEdit: false,
       canDelete: mine,
-      reactions: [...(reactions.get(event.id) ?? [])].map(([key, senders]): NativeReaction => ({ key, label: key, count: senders.size, me: senders.has(me) })),
+      reactions: [...(reactions.get(event.id) ?? [])].map(([key, senders]) => this.reaction(key, senders)),
       attachments: [],
     };
     if (event.kind !== "message") return native;
@@ -2695,6 +2925,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const userId = this.session!.userId;
     const locked = room ? this.lock(room)?.notice : undefined;
     const reactions = room ? this.reactionIndex(room) : new Map<string, Map<string, Set<string>>>();
+    const offer = room ? this.offer(room) : undefined;
+    const customEmoji = offer ? this.customEmoji(offer) : [];
+    const stickers = offer ? this.stickerPacks(offer) : [];
     return {
       screen: "chat",
       platform,
@@ -2713,9 +2946,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             uploading: this.uploading.has(room.id),
             ...(locked ? { locked } : {}),
             // A locked room takes nothing from here; typing notices follow the user's setting.
-            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false },
+            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false, stickers: !locked },
           }
         : null,
+      ...(customEmoji.length ? { customEmoji } : {}),
+      ...(stickers.length ? { stickers } : {}),
       voice: this.voiceSession(),
       error: this.error ?? this.ringText(),
     };
@@ -2723,5 +2958,6 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
 
   private render(): void {
     this.deps.render(this.viewState());
+    void this.loadPictures();
   }
 }

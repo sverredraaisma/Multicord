@@ -36,6 +36,15 @@ import {
   roomId,
   stripReplyFallback,
   userId,
+  MAX_PACK_IMAGES,
+  MAX_PACK_ROOMS,
+  MAX_ROOM_PACKS,
+  PACK_ROOMS_TYPE,
+  parsePack,
+  parsePackRooms,
+  ROOM_PACK_TYPE,
+  shortcode,
+  USER_PACK_TYPE,
 } from "../../../src/modules/matrix/events";
 
 const ev = (extra: Record<string, unknown> = {}) => ({
@@ -822,5 +831,100 @@ describe("media", () => {
       ev({ content: { msgtype: "m.image", body: "> <@a:x> hi\n\nthis", filename: "c.png", url: "mxc://x.org/c", "m.relates_to": { "m.in_reply_to": { event_id: "$q" } } } }),
     );
     expect(reply).toMatchObject({ replyTo: "$q", content: { text: "this", attachment: { name: "c.png" } } });
+  });
+});
+
+describe("image packs (MSC2545)", () => {
+  it("reads shortcodes with or without their colons", () => {
+    expect(shortcode("blob")).toBe("blob");
+    expect(shortcode(":blob_cat:")).toBe("blob_cat");
+    expect(shortcode("k".repeat(64))).toBe("k".repeat(64));
+    for (const bad of ["k".repeat(65), "", "::", "a b", "a:b", "<a>", "a‮b", "a\u0007b", 5, undefined]) expect(shortcode(bad)).toBeUndefined();
+  });
+
+  it("parses a pack's name, usage and pictures, dropping what does not fit", () => {
+    const pack = parsePack({
+      pack: { display_name: " Cats ", usage: ["emoticon"], avatar_url: "mxc://x.org/av" },
+      images: {
+        cat: { url: "mxc://x.org/cat", body: "A cat", info: { mimetype: "image/PNG", w: 64, h: 64, size: 1200 } },
+        both: { url: "mxc://x.org/both", usage: ["sticker", "emoticon"], info: { w: 64, size: -1, mimetype: "nope" } },
+        wave: { url: "mxc://x.org/wave", usage: ["sticker"], body: "" },
+        odd: { url: "mxc://x.org/odd", usage: ["other"], info: "x" },
+        "bad code": { url: "mxc://x.org/x" },
+        ":colons:": { url: "mxc://x.org/x" },
+        nourl: { url: "https://x.org/x" },
+        notrecord: "mxc://x.org/x",
+      },
+    });
+    expect(pack).toEqual({
+      name: "Cats",
+      images: [
+        { shortcode: "cat", url: "mxc://x.org/cat", body: "A cat", info: { mimetype: "image/png", w: 64, h: 64, size: 1200 }, emoticon: true, sticker: false },
+        { shortcode: "both", url: "mxc://x.org/both", info: {}, emoticon: true, sticker: true },
+        { shortcode: "wave", url: "mxc://x.org/wave", info: {}, emoticon: false, sticker: true },
+        { shortcode: "odd", url: "mxc://x.org/odd", info: {}, emoticon: true, sticker: false },
+      ],
+    });
+    // Without a usage (or an empty one), pictures are both.
+    expect(parsePack({ pack: { usage: [] }, images: { a: { url: "mxc://x.org/a" } } })).toEqual({ images: [{ shortcode: "a", url: "mxc://x.org/a", info: {}, emoticon: true, sticker: true }] });
+    expect(parsePack({ pack: "x", images: [] })).toEqual({ images: [] });
+    expect(parsePack({})).toEqual({ images: [] });
+    const many = Object.fromEntries(Array.from({ length: MAX_PACK_IMAGES + 5 }, (_, i) => [`e${i}`, { url: `mxc://x.org/e${i}` }]));
+    expect(parsePack({ images: many }).images).toHaveLength(MAX_PACK_IMAGES);
+  });
+
+  it("parses the room packs enabled everywhere", () => {
+    expect(
+      parsePackRooms({ rooms: { "!a:x.org": { "": {}, cats: {}, ["k".repeat(256)]: {} }, nope: { "": {} }, "!b:x.org": "x" } }),
+    ).toEqual([
+      { roomId: "!a:x.org", stateKey: "" },
+      { roomId: "!a:x.org", stateKey: "cats" },
+    ]);
+    expect(parsePackRooms({ rooms: "x" })).toEqual([]);
+    expect(parsePackRooms("x")).toEqual([]);
+    const keys = Object.fromEntries(Array.from({ length: MAX_ROOM_PACKS + 5 }, (_, i) => [`k${i}`, {}]));
+    const rooms = Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`!r${i}:x.org`, keys]));
+    expect(parsePackRooms({ rooms })).toHaveLength(MAX_PACK_ROOMS);
+  });
+
+  it("keeps a room's packs by state key, up to a limit", () => {
+    const state = emptyState();
+    applyState(state, st(ROOM_PACK_TYPE, { images: { a: { url: "mxc://x.org/a" } } }));
+    applyState(state, st(ROOM_PACK_TYPE, "junk", "cleared"));
+    applyState(state, st(ROOM_PACK_TYPE, {}, "k".repeat(256)));
+    expect(state.packs).toEqual(
+      new Map([
+        ["", { images: [{ shortcode: "a", url: "mxc://x.org/a", info: {}, emoticon: true, sticker: true }] }],
+        ["cleared", { images: [] }],
+      ]),
+    );
+    for (let i = 0; i < MAX_ROOM_PACKS + 2; i++) applyState(state, st(ROOM_PACK_TYPE, {}, `p${i}`));
+    expect(state.packs!.size).toBe(MAX_ROOM_PACKS);
+    // A pack it has may still change.
+    applyState(state, st(ROOM_PACK_TYPE, { pack: { display_name: "New" } }, ""));
+    expect(state.packs!.get("")).toEqual({ name: "New", images: [] });
+  });
+
+  it("reads the user's pack and enabled rooms from a sync's account data", () => {
+    const sync = parseSync({
+      next_batch: "s",
+      account_data: {
+        events: ["junk", { type: USER_PACK_TYPE, content: { images: { me: { url: "mxc://x.org/me" } } } }, { type: PACK_ROOMS_TYPE, content: { rooms: { "!a:x.org": { "": {} } } } }],
+      },
+    });
+    expect(sync.userPack).toEqual({ images: [{ shortcode: "me", url: "mxc://x.org/me", info: {}, emoticon: true, sticker: true }] });
+    expect(sync.packRooms).toEqual([{ roomId: "!a:x.org", stateKey: "" }]);
+    expect(parseSync({ next_batch: "s", account_data: { events: [{ type: USER_PACK_TYPE, content: "x" }] } }).userPack).toEqual({ images: [] });
+    expect(parseSync({ next_batch: "s" })).not.toHaveProperty("userPack");
+  });
+
+  it("keeps the name of a custom emoji reaction", () => {
+    const reaction = (key: string, content: Record<string, unknown>) =>
+      parseEvent(ev({ type: "m.reaction", content: { "m.relates_to": { rel_type: "m.annotation", event_id: "$msg", key }, ...content } }));
+    expect(reaction("mxc://x.org/cat", { "com.beeper.reaction.shortcode": ":cat:" })).toMatchObject({ key: "mxc://x.org/cat", shortcode: "cat" });
+    expect(reaction("mxc://x.org/cat", { shortcode: "cat" })).toMatchObject({ shortcode: "cat" });
+    expect(reaction("mxc://x.org/cat", { shortcode: "a b" })).not.toHaveProperty("shortcode");
+    // Only custom emoji have one.
+    expect(reaction("👍", { shortcode: "thumbsup" })).not.toHaveProperty("shortcode");
   });
 });

@@ -90,6 +90,34 @@ export interface MxRoomState {
   space?: boolean;
   /** m.space.child events seen, by child room id; null for a child that was removed (no via). */
   children?: Map<string, MxSpaceChild | null>;
+  /** Image packs (im.ponies.room_emotes) seen, by state key; one without images was emptied. */
+  packs?: Map<string, MxPack>;
+}
+
+/** One picture of an image pack (MSC2545): a custom emoji, a sticker, or both. */
+export interface MxPackImage {
+  /** Without the colons; no spaces, colons or angle brackets. */
+  shortcode: string;
+  /** mxc:// URI of the picture. */
+  url: string;
+  /** What it shows, in words. */
+  body?: string;
+  /** The ImageInfo it goes with (mimetype, w, h, size), only what checked out. */
+  info: Record<string, unknown>;
+  emoticon: boolean;
+  sticker: boolean;
+}
+
+/** An image pack: a room's (state) or the user's own (account data). */
+export interface MxPack {
+  name?: string;
+  images: MxPackImage[];
+}
+
+/** A room pack the user enabled everywhere (im.ponies.emote_rooms). */
+export interface MxPackRef {
+  roomId: string;
+  stateKey: string;
 }
 
 /** One room a space lists (m.space.child), as the space orders it. */
@@ -193,8 +221,12 @@ export type MxEvent =
       problem?: string;
     })
   | (MxEventBase & { kind: "redaction"; redacts: string })
-  /** A reaction (m.reaction, an m.annotation relation): `key`, usually an emoji, on the event `target`; taken back by redacting it. */
-  | (MxEventBase & { kind: "reaction"; target: string; key: string })
+  /**
+   * A reaction (m.reaction, an m.annotation relation): `key`, usually an
+   * emoji, on the event `target`; taken back by redacting it. A custom
+   * emoji's key is its mxc:// URI, with its `shortcode` alongside.
+   */
+  | (MxEventBase & { kind: "reaction"; target: string; key: string; shortcode?: string })
   /** An event whose content was removed; it is dropped from view. */
   | (MxEventBase & { kind: "redacted" })
   /** A call membership as a sticky m.rtc.member event (MSC4143 with MSC4354); never shown, it changes the room's call. */
@@ -310,6 +342,10 @@ export interface MxSync {
   nextBatch: string;
   /** m.direct account data, when it changed: user id -> their DM room ids. */
   directs?: Record<string, string[]>;
+  /** The user's own image pack (im.ponies.user_emotes), when it changed. */
+  userPack?: MxPack;
+  /** Room packs the user enabled everywhere (im.ponies.emote_rooms), when that changed. */
+  packRooms?: MxPackRef[];
   joined: MxRoomUpdate[];
   /** Rooms the user left or was removed from. */
   left: string[];

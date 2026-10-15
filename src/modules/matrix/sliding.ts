@@ -10,7 +10,7 @@
 // the crypto library has them, as with classic sync's next_batch.
 
 import type { MxRoomUpdate, MxSync } from "./api";
-import { CALL_MEMBER_TYPE, eventId, isRecord, MAX_EVENTS, MAX_ROOMS, MAX_TOKEN, parseCryptoSync, parseDirects, parseRoom, roomId } from "./events";
+import { accountPacks, CALL_MEMBER_TYPE, eventId, isRecord, MAX_EVENTS, MAX_ROOMS, MAX_TOKEN, parseCryptoSync, parseDirects, parseRoom, ROOM_PACK_TYPE, roomId } from "./events";
 
 /** What /versions lists (unstable_features) when the homeserver has simplified sliding sync. */
 export const SLIDING_SYNC_FEATURE = "org.matrix.simplified_msc3575";
@@ -27,7 +27,7 @@ export const FULL_WINDOW = MAX_ROOMS / 2;
 export const CONNECTION_ID = "multicord";
 /** To-device messages and sticky events per response, as matrix-js-sdk asks; the rest come with the next. */
 export const EXTENSION_LIMIT = 100;
-/** Global account data events looked through for m.direct (sliding sync cannot narrow them by type). */
+/** Global account data events looked through for m.direct and image packs (sliding sync cannot narrow them by type). */
 const MAX_ACCOUNT_DATA = 1000;
 
 /**
@@ -45,6 +45,8 @@ const ROOM_STATE = [
   ["m.room.create", ""],
   ["m.space.child", "*"],
   [CALL_MEMBER_TYPE, "*"],
+  // Image packs: the room's emoji and stickers, and those of rooms the user enabled everywhere.
+  [ROOM_PACK_TYPE, "*"],
 ];
 const DM_MEMBERS = [["m.room.member", "*"]];
 const LAZY_MEMBERS = [
@@ -103,7 +105,7 @@ export function slidingRequest(position: SlidingPosition, options: SlidingReques
     required_state: [...ROOM_STATE, ...(dm ? DM_MEMBERS : LAZY_MEMBERS)],
     filters: { is_dm: dm, is_invite: false },
   });
-  // Global account data only (the DM list); room account data is not used.
+  // Global account data only (the DM list, image packs); room account data is not used.
   // Receipts for our own read receipts: unread counts are left to the client.
   const extensions: Record<string, unknown> = { account_data: { enabled: true, lists: [], rooms: [] }, typing: { enabled: true }, receipts: { enabled: true } };
   if (options.encryption) {
@@ -220,8 +222,10 @@ export function parseSlidingSync(raw: unknown, position: SlidingPosition, contex
   }
 
   const accountData = isRecord(extensions.account_data) ? extensions.account_data : {};
-  const direct = (Array.isArray(accountData.global) ? accountData.global.slice(0, MAX_ACCOUNT_DATA) : []).find((e) => isRecord(e) && e.type === "m.direct");
+  const global = Array.isArray(accountData.global) ? accountData.global.slice(0, MAX_ACCOUNT_DATA) : [];
+  const direct = global.find((e) => isRecord(e) && e.type === "m.direct");
   if (isRecord(direct)) sync.directs = parseDirects(direct.content);
+  accountPacks(global, sync);
 
   const next: SlidingPosition & { pos: string } = { pos: raw.pos };
   if (context.encryption) {

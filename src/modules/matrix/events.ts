@@ -13,6 +13,9 @@ import type {
   MxMediaKind,
   MxMediaSource,
   MxMember,
+  MxPack,
+  MxPackImage,
+  MxPackRef,
   MxPage,
   MxRoomState,
   MxRoomUpdate,
@@ -238,7 +241,12 @@ export function parseEvent(raw: unknown): MxEvent | undefined {
       const relates = isRecord(content["m.relates_to"]) ? content["m.relates_to"] : {};
       const target = eventId(relates.event_id);
       const key = reactionKey(relates.key);
-      return relates.rel_type === "m.annotation" && target && key ? { kind: "reaction", ...base, target, key } : undefined;
+      if (relates.rel_type !== "m.annotation" || !target || !key) return undefined;
+      const reaction: MxEvent = { kind: "reaction", ...base, target, key };
+      // A custom emoji's name, as Beeper and Cinny send it (":name:").
+      const named = shortcode(content["com.beeper.reaction.shortcode"] ?? content.shortcode);
+      if (named && parseMxc(key)) reaction.shortcode = named;
+      return reaction;
     }
     case "m.room.redaction": {
       // Room version 11 moved `redacts` into the content.
@@ -332,6 +340,13 @@ export function applyState(state: MxRoomState, raw: unknown): void {
     case "m.room.create":
       if (global && content.type === "m.space") state.space = true;
       return;
+    case ROOM_PACK_TYPE: {
+      if (raw.state_key.length > MAX_ID) return;
+      const packs = (state.packs ??= new Map());
+      if (!packs.has(raw.state_key) && packs.size >= MAX_ROOM_PACKS) return;
+      packs.set(raw.state_key, parsePack(content));
+      return;
+    }
     case "m.space.child": {
       const child = roomId(raw.state_key);
       if (!child) return;
@@ -350,6 +365,84 @@ export function applyState(state: MxRoomState, raw: unknown): void {
       state.members[user] = member;
       return;
     }
+  }
+}
+
+// --- Image packs (MSC2545) --------------------------------------------------------
+
+/** A room's image packs, one per state key (the unstable names Element, Cinny and FluffyChat use). */
+export const ROOM_PACK_TYPE = "im.ponies.room_emotes";
+/** The user's own pack, in account data. */
+export const USER_PACK_TYPE = "im.ponies.user_emotes";
+/** Room packs the user enabled in every room, in account data: { rooms: { roomId: { stateKey: {} } } }. */
+export const PACK_ROOMS_TYPE = "im.ponies.emote_rooms";
+/** Pictures read per pack. */
+export const MAX_PACK_IMAGES = 500;
+/** Packs kept per room. */
+export const MAX_ROOM_PACKS = 20;
+/** Room packs enabled everywhere that are read. */
+export const MAX_PACK_ROOMS = 50;
+const SHORTCODE = /^[^\s:<>]{1,64}$/;
+
+/** A pack picture's shortcode, with or without its colons, when usable: no spaces, colons, angle brackets or control characters. */
+export function shortcode(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const code = value.replace(/^:(.*):$/, "$1");
+  return SHORTCODE.test(code) && cleanName(code, 64) === code ? code : undefined;
+}
+
+/** What a pack or picture is for (its usage); undefined when it does not say, which means both. */
+function packUsage(value: unknown): { emoticon: boolean; sticker: boolean } | undefined {
+  const usage = list(value, 10);
+  const emoticon = usage.includes("emoticon");
+  const sticker = usage.includes("sticker");
+  return emoticon || sticker ? { emoticon, sticker } : undefined;
+}
+
+/** An image pack's content: its name, and its pictures with a usable shortcode and mxc:// address, at most MAX_PACK_IMAGES. */
+export function parsePack(content: Record<string, unknown>): MxPack {
+  const meta = isRecord(content.pack) ? content.pack : {};
+  const usage = packUsage(meta.usage) ?? { emoticon: true, sticker: true };
+  const pack: MxPack = { images: [] };
+  const name = cleanName(meta.display_name);
+  if (name) pack.name = name;
+  const images = isRecord(content.images) ? content.images : {};
+  for (const [code, raw] of Object.entries(images).slice(0, MAX_PACK_IMAGES)) {
+    if (shortcode(code) !== code || !isRecord(raw) || !parseMxc(raw.url)) continue;
+    const info = isRecord(raw.info) ? raw.info : {};
+    const kept: Record<string, unknown> = {};
+    const mime = mimeType(info.mimetype);
+    if (mime) kept.mimetype = mime;
+    const width = dimension(info.w);
+    const height = dimension(info.h);
+    if (width && height) Object.assign(kept, { w: width, h: height });
+    const bytes = size(info.size);
+    if (bytes !== undefined) kept.size = bytes;
+    const image: MxPackImage = { shortcode: code, url: raw.url as string, info: kept, ...(packUsage(raw.usage) ?? usage) };
+    const body = cleanName(raw.body);
+    if (body) image.body = body;
+    pack.images.push(image);
+  }
+  return pack;
+}
+
+/** The room packs in im.ponies.emote_rooms, at most MAX_PACK_ROOMS. */
+export function parsePackRooms(content: unknown): MxPackRef[] {
+  const rooms = isRecord(content) && isRecord(content.rooms) ? content.rooms : {};
+  const refs: MxPackRef[] = [];
+  for (const [id, keys] of Object.entries(rooms).slice(0, MAX_PACK_ROOMS)) {
+    if (!roomId(id) || !isRecord(keys)) continue;
+    for (const stateKey of Object.keys(keys).slice(0, MAX_ROOM_PACKS)) if (stateKey.length <= MAX_ID) refs.push({ roomId: id, stateKey });
+  }
+  return refs.slice(0, MAX_PACK_ROOMS);
+}
+
+/** The user's pack and enabled room packs among a sync's global account data. */
+export function accountPacks(events: unknown[], sync: MxSync): void {
+  for (const event of events) {
+    if (!isRecord(event)) continue;
+    if (event.type === USER_PACK_TYPE) sync.userPack = parsePack(isRecord(event.content) ? event.content : {});
+    else if (event.type === PACK_ROOMS_TYPE) sync.packRooms = parsePackRooms(event.content);
   }
 }
 
@@ -615,8 +708,10 @@ export function parseSync(raw: unknown): MxSync {
     throw new Error("The homeserver sent an unreadable sync response");
   }
   const sync: MxSync = { nextBatch: raw.next_batch, joined: [], left: [] };
-  const direct = list(isRecord(raw.account_data) ? raw.account_data.events : undefined, 100).find((e) => isRecord(e) && e.type === "m.direct");
+  const accountData = list(isRecord(raw.account_data) ? raw.account_data.events : undefined, 100);
+  const direct = accountData.find((e) => isRecord(e) && e.type === "m.direct");
   if (isRecord(direct)) sync.directs = parseDirects(direct.content);
+  accountPacks(accountData, sync);
   const rooms = isRecord(raw.rooms) ? raw.rooms : {};
   const join = isRecord(rooms.join) ? rooms.join : {};
   for (const [id, room] of Object.entries(join).slice(0, MAX_ROOMS)) {

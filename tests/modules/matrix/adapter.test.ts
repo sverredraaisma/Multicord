@@ -15,6 +15,8 @@ import {
   type MxRtcTransport,
   type MxOAuthSession,
   type MxOpenIdToken,
+  type MxPack,
+  type MxPackImage,
   type MxPage,
   type MxRoomState,
   type MxRoomUpdate,
@@ -50,12 +52,17 @@ import {
   TOO_LARGE,
   UNVERIFIED_LABEL,
   SETTING,
+  MAX_OFFERED_IMAGES,
+  MAX_PICTURES,
+  MAX_STICKER_BYTES,
+  PICTURE_BATCH,
+  USER_PACK_NAME,
 } from "../../../src/modules/matrix/adapter";
 import { MAX_STATUS_TEXT } from "../../../src/shared/settings";
 import type { DeviceRef, E2ee, E2eeOptions, E2eeStatus, RecoveryResult, RoomEncryption, SecureToDevice } from "../../../src/modules/matrix/crypto";
 import type { Verification, VerificationState } from "../../../src/modules/matrix/verification";
 import { OAuthError, type DeviceGrant, type DevicePoll, type OAuthServer, type OAuthTokens } from "../../../src/modules/matrix/oauth";
-import { MAX_SPACE_CHILDREN, parseEncryptedFile, parseEvent } from "../../../src/modules/matrix/events";
+import { MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, parseEncryptedFile, parseEvent } from "../../../src/modules/matrix/events";
 import { decryptAttachment } from "../../../src/modules/matrix/media";
 import { MAX_DIRECTS, MAX_HTTP_BODY, MAX_READ } from "../../../src/shared/engine";
 import type { FileSource } from "../../../src/engine/runtime";
@@ -706,7 +713,7 @@ describe("conversations", () => {
     const { channel } = ctx.chat();
     expect(channel).toMatchObject({ id: ctx.item("Bo").id, name: "Bo", loading: false, hasOlder: true, typing: [], pending: [], uploading: false });
     expect(channel).not.toHaveProperty("locked");
-    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false });
+    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true });
     expect(ctx.item("Bo").active).toBe(true);
     expect(ctx.messages()).toEqual([
       {
@@ -864,7 +871,7 @@ describe("conversations", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     expect(ctx.chat().channel!.locked).toBe(ENCRYPTED_NOTICE);
-    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: false });
+    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: false, stickers: false });
     expect(ctx.messages()).toEqual([
       expect.objectContaining({ content: ENCRYPTED_TEXT.replace("—", "—"), author: ANA, canEdit: false, canDelete: false }),
       expect.objectContaining({ content: "before encryption", mine: true, canEdit: false, canDelete: true }),
@@ -4135,5 +4142,302 @@ describe("spaces", () => {
     const ctx = await withSpaces();
     await ctx.adapter.signOut();
     expect(ctx.servers.at(-1)).toEqual([]);
+  });
+});
+
+const packImage = (shortcode: string, extra: Partial<MxPackImage> = {}): MxPackImage => ({ shortcode, url: `mxc://x.org/${shortcode}`, info: {}, emoticon: true, sticker: true, ...extra });
+const picture = (mxc: string) => `data:image/png;base64,${btoa(mxc)}`;
+const CAT = packImage("cat", { emoticon: true, sticker: false });
+const WAVE = packImage("wave", { emoticon: false, body: "Waving", info: { mimetype: "image/webp" } });
+const EXTRA = packImage("extra", { emoticon: false, info: { mimetype: "image/gif" } });
+const ME_IMAGE = packImage("me");
+const CAT2 = packImage("cat", { url: "mxc://x.org/cat2" });
+const DOG = packImage("dog");
+
+/** Lounge with two packs (one emptied), Bo's DM with one enabled everywhere, and the user's own pack. */
+async function withPacks(extra: Partial<MxSync> = {}) {
+  const ctx = await signedIn();
+  ctx.api.thumbnail.mockImplementation(async (_s, mxc) => {
+    if (mxc.endsWith("dog")) throw new Error("not found");
+    return mxc.endsWith("cat2") ? undefined : picture(mxc);
+  });
+  await ctx.live(
+    sync({
+      userPack: { images: [CAT2, ME_IMAGE] },
+      packRooms: [
+        { roomId: "!dm:x.org", stateKey: "dmpack" },
+        { roomId: "!lounge:x.org", stateKey: "" },
+        { roomId: "!gone:x.org", stateKey: "" },
+        { roomId: "!dm:x.org", stateKey: "missing" },
+      ],
+      joined: [
+        room("!lounge:x.org", {
+          state: {
+            members: {},
+            packs: new Map([
+              ["", { images: [CAT, WAVE] }],
+              ["named", { name: "Extra", images: [EXTRA] }],
+              ["empty", { images: [] }],
+            ]),
+          },
+        }),
+        room("!dm:x.org", { state: { members: {}, packs: new Map([["dmpack", { images: [DOG] }]]) } }),
+      ],
+      ...extra,
+    }),
+  );
+  return ctx;
+}
+
+describe("custom emoji and stickers from image packs", () => {
+  it("offers the open room's packs, the user's and those enabled everywhere", async () => {
+    const ctx = await withPacks();
+    await ctx.open("Lounge");
+    // The emoji whose pictures loaded; a shortcode two packs share is the first pack's.
+    expect(ctx.chat().customEmoji).toEqual([
+      { id: "x.org/cat", name: "cat", animated: false, url: picture("mxc://x.org/cat"), source: "Lounge", text: ":cat:", key: "mxc://x.org/cat" },
+      { id: "x.org/me", name: "me", animated: false, url: picture("mxc://x.org/me"), source: USER_PACK_NAME, text: ":me:", key: "mxc://x.org/me" },
+    ]);
+    expect(ctx.api.thumbnail.mock.calls.map(([, mxc]) => mxc)).toEqual(expect.arrayContaining(["mxc://x.org/cat", "mxc://x.org/me", "mxc://x.org/dog"]));
+    expect(ctx.api.thumbnail.mock.calls.map(([, mxc]) => mxc)).not.toContain("mxc://x.org/cat2");
+    const key = expect.stringMatching(/^mxs:\d+$/);
+    expect(ctx.chat().stickers).toEqual([
+      { id: "p0", name: "Lounge", stickers: [{ id: "x.org/wave", name: "Waving", format: "webp", mediaKey: key }] },
+      { id: "p1", name: "Extra", stickers: [{ id: "x.org/extra", name: "extra", format: "gif", mediaKey: key }] },
+      {
+        id: "p2",
+        name: USER_PACK_NAME,
+        stickers: [
+          { id: "x.org/cat2", name: "cat", format: "png", mediaKey: key },
+          { id: "x.org/me", name: "me", format: "png", mediaKey: key },
+        ],
+      },
+      { id: "p3", name: "Bo", stickers: [{ id: "x.org/dog", name: "dog", format: "png", mediaKey: key }] },
+    ]);
+    expect(ctx.chat().channel!.can.stickers).toBe(true);
+    // In Bo's DM, ":cat:" is the user's pack's (its own pack comes first, then the user's, then Lounge's), whose picture did not load.
+    await ctx.open("Bo");
+    expect(ctx.api.thumbnail).toHaveBeenCalledWith(SESSION, "mxc://x.org/cat2");
+    expect(ctx.chat().customEmoji!.map((e) => e.name)).toEqual(["me"]);
+    // Pictures are fetched once a session.
+    const fetched = ctx.api.thumbnail.mock.calls.length;
+    await ctx.open("Lounge");
+    await ctx.open("Bo");
+    expect(ctx.api.thumbnail).toHaveBeenCalledTimes(fetched);
+  });
+
+  it("names the user's pack and enabled packs as they name themselves, and offers nothing without packs", async () => {
+    const ctx = await withPacks({ userPack: { name: "Mine", images: [ME_IMAGE] } });
+    await ctx.live(sync({ joined: [room("!dm:x.org", { state: { members: {}, packs: new Map([["dmpack", { name: "Dogs", images: [DOG] }]]) } })] }));
+    await ctx.open("Lounge");
+    expect(ctx.chat().stickers!.map((p) => p.name)).toEqual(["Lounge", "Extra", "Mine", "Dogs"]);
+    const plain = await signedIn();
+    await plain.open("Lounge");
+    expect(plain.chat()).not.toHaveProperty("customEmoji");
+    expect(plain.chat()).not.toHaveProperty("stickers");
+  });
+
+  it("keeps room packs up to date", async () => {
+    const ctx = await withPacks();
+    // An emptied pack goes; packs beyond the limit are not kept.
+    const many = new Map<string, MxPack>(Array.from({ length: MAX_ROOM_PACKS + 2 }, (_, i) => [`k${i}`, { images: [packImage(`k${i}`, { emoticon: false })] }]));
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { state: { members: {}, packs: new Map([["", { images: [] }]]) } })] }));
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { state: { members: {}, packs: many } })] }));
+    await ctx.open("Lounge");
+    const lounge = ctx.chat().stickers!.filter((p) => p.name === "Lounge");
+    expect(lounge).toHaveLength(MAX_ROOM_PACKS - 1);
+    expect(ctx.chat().stickers!.find((p) => p.name === "Extra")).toBeDefined();
+    // A pack it has may still change.
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { state: { members: {}, packs: new Map([["named", { name: "Renamed", images: [EXTRA] }]]) } })] }));
+    expect(ctx.chat().stickers!.find((p) => p.name === "Renamed")).toBeDefined();
+  });
+
+  it("offers at most MAX_OFFERED_IMAGES pictures, the first packs' first", async () => {
+    const big = Array.from({ length: MAX_OFFERED_IMAGES - 1 }, (_, i) => packImage(`s${i}`, { emoticon: false }));
+    const ctx = await withPacks({ userPack: { images: [ME_IMAGE, DOG] } });
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { state: { members: {}, packs: new Map([["", { images: big }], ["named", { images: [] }]]) } })] }));
+    await ctx.open("Lounge");
+    expect(ctx.chat().stickers!.map((p) => [p.name, p.stickers.length])).toEqual([
+      ["Lounge", MAX_OFFERED_IMAGES - 1],
+      [USER_PACK_NAME, 1],
+    ]);
+  });
+
+  it("leaves out pictures whose address cannot be passed to the view", async () => {
+    const odd = packImage("odd", { url: "mxc://[::1]/odd" });
+    const ctx = await withPacks({ userPack: { images: [odd] } });
+    await ctx.open("Lounge");
+    expect(ctx.api.thumbnail).toHaveBeenCalledWith(SESSION, "mxc://[::1]/odd");
+    expect(ctx.chat().customEmoji!.map((e) => e.name)).toEqual(["cat"]);
+    expect(ctx.chat().stickers!.map((p) => p.name)).toEqual(["Lounge", "Extra", "Bo"]);
+  });
+
+  it("loads sticker pictures on request, only for stickers the open room offers", async () => {
+    const ctx = await withPacks();
+    await ctx.open("Lounge");
+    const sticker = (id: string) => ctx.chat().stickers!.flatMap((p) => p.stickers).find((s) => s.id === id)!;
+    const waveKey = sticker("x.org/wave").mediaKey!;
+    const extraKey = sticker("x.org/extra").mediaKey!;
+    ctx.api.download.mockResolvedValueOnce({ bytes: new Uint8Array([1, 2, 3]), type: "image/png" });
+    await ctx.act({ type: "loadMedia", key: waveKey });
+    expect(ctx.api.download).toHaveBeenCalledWith(SESSION, "mxc://x.org/wave", MAX_STICKER_BYTES);
+    // The pack's type, over the server's.
+    expect(sticker("x.org/wave")).toEqual({ id: "x.org/wave", name: "Waving", format: "webp", url: "data:image/webp;base64,AQID" });
+    // Too large: left out.
+    const meKey = sticker("x.org/me").mediaKey!;
+    await ctx.act({ type: "loadMedia", key: meKey });
+    expect(sticker("x.org/me")).toBeUndefined();
+    ctx.api.download.mockClear();
+    await ctx.act({ type: "loadMedia", key: "mxs:99999" });
+    // Not offered in Bo's DM.
+    await ctx.open("Bo");
+    await ctx.act({ type: "loadMedia", key: extraKey });
+    // Nor anywhere once no room is open.
+    await ctx.live(sync({ left: ["!dm:x.org"] }));
+    await ctx.act({ type: "loadMedia", key: extraKey });
+    expect(ctx.api.download).not.toHaveBeenCalled();
+  });
+
+  it("sends stickers as m.sticker, with a reply, and shows them at once", async () => {
+    const ctx = await withPacks();
+    await ctx.open("Lounge");
+    const waveKey = ctx.chat().stickers![0]!.stickers[0]!.mediaKey!;
+    ctx.api.download.mockResolvedValueOnce({ bytes: new Uint8Array([1, 2, 3]) });
+    await ctx.act({ type: "loadMedia", key: waveKey });
+    const replyTo = ctx.messages()[0]!.id;
+    await ctx.act({ type: "sendSticker", stickerId: "x.org/wave", replyTo });
+    expect(ctx.api.encryption).toHaveBeenCalledWith(SESSION, "!lounge:x.org");
+    expect(ctx.api.send).toHaveBeenLastCalledWith(
+      SESSION,
+      "!lounge:x.org",
+      { body: "Waving", url: "mxc://x.org/wave", info: { mimetype: "image/webp" }, "m.mentions": {}, "m.relates_to": { "m.in_reply_to": { event_id: "$l1" } } },
+      "m.sticker",
+    );
+    expect(ctx.messages().at(-1)).toMatchObject({
+      mine: true,
+      content: "",
+      reply: { author: "Ana", content: "welcome" },
+      attachments: [{ kind: "sticker", name: "Waving", mime: "image/webp", url: "data:image/webp;base64,AQID" }],
+    });
+    // A sticker without a description goes by its shortcode; one not loaded yet loads like any other.
+    await ctx.act({ type: "sendSticker", stickerId: "x.org/me" });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", { body: "me", url: "mxc://x.org/me", info: {}, "m.mentions": {} }, "m.sticker");
+    expect(ctx.messages().at(-1)!.attachments[0]).toMatchObject({ kind: "sticker", name: "me", mediaKey: expect.stringMatching(/^mx:/) });
+    expect(ctx.messages().at(-1)!.reply).toBeUndefined();
+  });
+
+  it("sends only stickers the open room offers, where it may send", async () => {
+    const ctx = await withPacks();
+    await ctx.act({ type: "sendSticker", stickerId: "x.org/me" });
+    await ctx.open("Lounge");
+    await ctx.act({ type: "sendSticker", stickerId: "x.org/nope" });
+    await ctx.open("Secret");
+    expect(ctx.chat().channel!.can.stickers).toBe(false);
+    await ctx.act({ type: "sendSticker", stickerId: "x.org/me" });
+    expect(ctx.api.send).not.toHaveBeenCalled();
+    await ctx.open("Lounge");
+    ctx.api.send.mockRejectedValueOnce(new Error("forbidden"));
+    await ctx.act({ type: "sendSticker", stickerId: "x.org/me" });
+    expect(ctx.chat().error).toBe("Sticker not sent: forbidden");
+  });
+
+  it("encrypts stickers in encrypted rooms, the pack picture's address as it is", async () => {
+    const ctx = await withCrypto();
+    await ctx.live(sync({ userPack: { images: [ME_IMAGE] } }));
+    await ctx.open("Bo");
+    await ctx.act({ type: "sendSticker", stickerId: "x.org/me" });
+    expect(ctx.e2ee.encrypt).toHaveBeenCalledWith("!dm:x.org", expect.anything(), [ME, BO], "m.sticker", { body: "me", url: "mxc://x.org/me", info: {}, "m.mentions": {} });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", { algorithm: "m.megolm.v1.aes-sha2", ciphertext: "secret" }, "m.room.encrypted");
+  });
+
+  it("sends custom emoji in text as pictures in formatted_body, keeping the plain body", async () => {
+    const ctx = await withPacks();
+    await ctx.open("Lounge");
+    const tag = '<img data-mx-emoticon src="mxc://x.org/cat" alt=":cat:" title=":cat:" height="32" />';
+    await ctx.act({ type: "send", content: "hi :cat: & :nope:" });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", {
+      msgtype: "m.text",
+      body: "hi :cat: & :nope:",
+      "m.mentions": {},
+      format: "org.matrix.custom.html",
+      formatted_body: `hi ${tag} &amp; :nope:`,
+    });
+    await ctx.act({ type: "send", content: "no emoji :nope:" });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", { msgtype: "m.text", body: "no emoji :nope:", "m.mentions": {} });
+    const mine = ctx.messages().at(-1)!.id;
+    await ctx.act({ type: "edit", messageId: mine, content: ":cat:" });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", {
+      msgtype: "m.text",
+      body: "* :cat:",
+      "m.new_content": { msgtype: "m.text", body: ":cat:", "m.mentions": {}, format: "org.matrix.custom.html", formatted_body: tag },
+      "m.relates_to": { rel_type: "m.replace", event_id: "$sent2" },
+      "m.mentions": {},
+      format: "org.matrix.custom.html",
+      formatted_body: `* ${tag}`,
+    });
+  });
+
+  it("reacts with custom emoji by their mxc URI, and shows such reactions with their picture and name", async () => {
+    const ctx = await withPacks();
+    await ctx.open("Lounge");
+    const target = ctx.messages()[0]!.id;
+    await ctx.act({ type: "react", messageId: target, emoji: "mxc://x.org/cat", add: true });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(
+      SESSION,
+      "!lounge:x.org",
+      { "m.relates_to": { rel_type: "m.annotation", event_id: "$l1", key: "mxc://x.org/cat" }, "com.beeper.reaction.shortcode": ":cat:" },
+      "m.reaction",
+    );
+    expect(ctx.messages()[0]!.reactions).toEqual([{ key: "mxc://x.org/cat", label: ":cat:", imageUrl: picture("mxc://x.org/cat"), count: 1, me: true }]);
+    // Others' custom emoji: named as they sent them, pictures fetched when they can be.
+    await ctx.live(
+      sync({
+        joined: [
+          room("!lounge:x.org", {
+            timeline: [
+              { kind: "reaction", id: "$o1", sender: ANA, ts: 6000, target: "$l1", key: "mxc://y.org/party", shortcode: "party" },
+              { kind: "reaction", id: "$o2", sender: ANA, ts: 6000, target: "$l1", key: "mxc://x.org/dog" },
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(ctx.api.thumbnail).toHaveBeenCalledWith(SESSION, "mxc://y.org/party");
+    expect(ctx.messages()[0]!.reactions).toEqual([
+      { key: "mxc://x.org/cat", label: ":cat:", imageUrl: picture("mxc://x.org/cat"), count: 1, me: true },
+      { key: "mxc://y.org/party", label: ":party:", imageUrl: picture("mxc://y.org/party"), count: 1, me: false },
+      { key: "mxc://x.org/dog", label: "mxc://x.org/dog", count: 1, me: false },
+    ]);
+  });
+
+  it("loads pictures in batches, a bounded number per session, and forgets them on signing out", async () => {
+    const ctx = await signedIn();
+    ctx.api.thumbnail.mockReset();
+    ctx.api.thumbnail.mockImplementation(async (_s, mxc) => picture(mxc));
+    const timeline = Array.from({ length: MAX_PICTURES + 5 }, (_, i): MxEvent => ({ kind: "reaction", id: `$x${i}`, sender: ANA, ts: 6000, target: "$l1", key: `mxc://x.org/r${i}`, shortcode: `r${i}` }));
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { timeline })] }));
+    const renders = ctx.renders.length;
+    await ctx.open("Lounge");
+    for (let i = 0; i < 40; i++) await flush();
+    expect(ctx.api.thumbnail).toHaveBeenCalledTimes(MAX_PICTURES);
+    // A render per batch, and one for the rest.
+    expect(ctx.renders.length - renders).toBeGreaterThanOrEqual(Math.ceil(MAX_PICTURES / PICTURE_BATCH));
+    const shown = ctx.messages()[0]!.reactions;
+    expect(shown.filter((r) => r.imageUrl)).toHaveLength(MAX_PICTURES);
+    // Names are learned up to a limit too.
+    expect(shown.filter((r) => r.label.startsWith(":"))).toHaveLength(2000);
+  });
+
+  it("drops pictures that arrive after signing out", async () => {
+    const ctx = await withPacks();
+    let finish: (url: string | undefined) => void = () => {};
+    ctx.api.thumbnail.mockReset();
+    ctx.api.thumbnail.mockImplementation(() => new Promise((resolve) => (finish = resolve)));
+    await ctx.open("Lounge");
+    await ctx.adapter.signOut();
+    finish(picture("mxc://x.org/cat"));
+    await flush();
+    expect(ctx.api.thumbnail).toHaveBeenCalledTimes(1);
+    expect(ctx.prompt().prompt.id).toBe("login");
   });
 });

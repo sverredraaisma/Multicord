@@ -123,6 +123,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
   - spaces as servers in the rail: each top-level space you have joined gets an entry with its picture and unread/mention badge, and opening it lists its rooms, with each subspace's rooms under the subspace's name. Only rooms you have joined are listed; direct messages, and rooms in no space, stay under Home;
   - history, sending, replying, and editing and deleting your own messages;
   - reactions, typing indicators, files and pictures (one message per file, up to the homeserver's upload limit and at most 50 MB);
+  - custom emoji and stickers from image packs (MSC2545, as Element, Cinny and FluffyChat make them): the open room's own packs, your personal pack, and the room packs you enabled for every room (from rooms you have joined). The picker offers up to 500 pictures per room. Custom emoji go into messages as `:name:` with the picture for other apps, and most can be used as reactions. Stickers go as Matrix stickers, encrypted in encrypted rooms. Custom emoji in other people's messages show as `:name:`, and in reactions with their picture. There is no GIF search, as Matrix has none of its own;
   - notifications for DMs and mentions.
 
   **End-to-end encryption.** On devices of its own, Multicord encrypts and decrypts with the Matrix Rust crypto library (WebAssembly) in its engine:

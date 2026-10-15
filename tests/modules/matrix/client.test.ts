@@ -529,6 +529,12 @@ describe("calls", () => {
     expect(room.state).toEqual({ lazy_load_members: true });
   });
 
+  it("asks for image packs: room packs in the timeline, the user's own and enabled rooms in account data", () => {
+    const filter = JSON.parse(SYNC_FILTER);
+    expect(filter.room.timeline.types).toContain("im.ponies.room_emotes");
+    expect(filter.account_data).toEqual({ types: ["m.direct", "im.ponies.user_emotes", "im.ponies.emote_rooms"] });
+  });
+
   it("asks for call memberships of both kinds in the sync timeline", () => {
     expect(JSON.parse(SYNC_FILTER).room.timeline.types).toEqual(expect.arrayContaining(["org.matrix.msc3401.call.member", "org.matrix.msc4143.rtc.member"]));
   });
