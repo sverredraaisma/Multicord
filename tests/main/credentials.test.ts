@@ -14,6 +14,7 @@ function fakeBox(available = true): SecretBox {
       if (text.startsWith("!")) throw new Error("not ours");
       return [...text].reverse().join("");
     },
+    getSelectedStorageBackend: () => "gnome_libsecret",
   };
 }
 
@@ -44,6 +45,22 @@ describe("CredentialStore", () => {
     expect(store.load("k")).toBe("v");
     expect(fs.existsSync(file)).toBe(false);
     expect(new CredentialStore(file, fakeBox(false)).load("k")).toBeUndefined();
+  });
+
+  it("on Linux, writes nothing under Chromium's built-in fallback key", () => {
+    const box = (backend?: string): SecretBox => ({ ...fakeBox(), getSelectedStorageBackend: backend ? () => backend : undefined });
+    for (const backend of ["basic_text", "unknown", undefined]) {
+      const store = new CredentialStore(file, box(backend), "linux");
+      expect(store.persistent).toBe(false);
+      store.save("k", "v");
+      expect(store.load("k")).toBe("v");
+      expect(fs.existsSync(file)).toBe(false);
+    }
+    for (const backend of ["gnome_libsecret", "kwallet5", "kwallet6"]) expect(new CredentialStore(file, box(backend), "linux").persistent).toBe(true);
+    // Elsewhere the backend is not asked: DPAPI and the keychain are real stores.
+    const asked = { ...fakeBox(), getSelectedStorageBackend: () => { throw new Error("Linux only"); } };
+    expect(new CredentialStore(file, asked, "win32").persistent).toBe(true);
+    expect(new CredentialStore(file, asked, "darwin").persistent).toBe(true);
   });
 
   it("gives each service instance only its own keys", () => {

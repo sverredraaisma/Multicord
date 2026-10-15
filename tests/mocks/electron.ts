@@ -169,6 +169,7 @@ export const safeStorage = {
   isEncryptionAvailable: vi.fn(() => true),
   encryptString: (plain: string) => Buffer.from(plain).reverse(),
   decryptString: (encrypted: Buffer) => Buffer.from(encrypted).reverse().toString(),
+  getSelectedStorageBackend: vi.fn(() => "gnome_libsecret"),
 };
 
 class FakeIpcMain extends EventEmitter {

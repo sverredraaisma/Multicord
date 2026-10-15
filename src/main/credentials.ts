@@ -18,12 +18,21 @@ export interface SecretBox {
   isEncryptionAvailable(): boolean;
   encryptString(plain: string): Buffer;
   decryptString(encrypted: Buffer): string;
+  /** Linux only: which store the key comes from. */
+  getSelectedStorageBackend?(): string;
 }
 
 /**
+ * Linux backends that are no secret store: without a keyring Chromium falls
+ * back to a key built into every copy of it, and anyone could decrypt.
+ */
+const INSECURE_LINUX_BACKENDS = new Set(["basic_text", "unknown"]);
+
+/**
  * Persists native adapters' tokens, encrypted with the OS secret store. When
- * encryption is unavailable (e.g. no keyring on Linux), secrets are kept in
- * memory only and never written in plain text.
+ * encryption is unavailable (e.g. no keyring on Linux, where Chromium's
+ * fallback key is the same everywhere), secrets are kept in memory only and
+ * never written in plain text or under that key.
  */
 export class CredentialStore {
   private readonly memory = new Map<string, string>();
@@ -31,10 +40,14 @@ export class CredentialStore {
   constructor(
     private readonly file: string,
     private readonly box: SecretBox,
+    private readonly platform: NodeJS.Platform = process.platform,
   ) {}
 
   get persistent(): boolean {
-    return this.box.isEncryptionAvailable();
+    if (!this.box.isEncryptionAvailable()) return false;
+    if (this.platform !== "linux") return true;
+    const backend = this.box.getSelectedStorageBackend?.() ?? "unknown";
+    return !INSECURE_LINUX_BACKENDS.has(backend);
   }
 
   load(key: string): string | undefined {
