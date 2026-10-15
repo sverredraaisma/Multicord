@@ -533,6 +533,39 @@ describe("syncing", () => {
     expect(ctx.notifications.map((n) => n.body)).toEqual(["@me:x.org fresh"]);
   });
 
+  it("marks the messages that mention the user: by m.mentions, the whole room, or (from older clients) by name in the text", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Lounge");
+    await ctx.live(
+      sync({
+        joined: [
+          room("!lounge:x.org", {
+            state: { members: { [ME]: { name: "Me", membership: "join" } } },
+            timeline: [
+              msg("m1", ANA, "for you", 1000, { mentions: [ME] }),
+              msg("m2", ANA, "everyone", 1100, { mentions: [], mentionsRoom: true }),
+              msg("m3", ANA, "someone else, though Me is named", 1200, { mentions: ["@bo:x.org"] }),
+              msg("m4", ANA, "hey @room", 1300),
+              msg("m5", ANA, "welcome back, me", 1400),
+              msg("m6", ANA, "nothing", 1500),
+              msg("m7", ME, "@room myself", 1600),
+            ],
+          }),
+        ],
+      }),
+    );
+    expect(ctx.messages().map((m) => [m.content, m.mentionsMe === true])).toEqual([
+      ["welcome", false],
+      ["for you", true],
+      ["everyone", true],
+      ["someone else, though Me is named", false],
+      ["hey @room", true],
+      ["welcome back, me", true],
+      ["nothing", false],
+      ["@room myself", false],
+    ]);
+  });
+
   it("counts unread messages itself when the sync leaves that to it (sliding sync), from our read receipts", async () => {
     const counted = (extra: Partial<MxSync>) => sync({ countUnread: true, ...extra });
     const ctx = await signedIn(

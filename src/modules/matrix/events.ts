@@ -211,10 +211,12 @@ export function parseContent(content: Record<string, unknown>, sticker = false):
   }
 }
 
-function mentionsOf(content: Record<string, unknown>): string[] | undefined {
+/** Whom a message says it mentions (m.mentions): users, and the whole room; nothing when it does not say. */
+function mentionsOf(content: Record<string, unknown>): { mentions?: string[]; mentionsRoom?: true } {
   const mentions = content["m.mentions"];
-  if (!isRecord(mentions)) return undefined;
-  return list(mentions.user_ids, MAX_MENTIONS).flatMap((id) => userId(id) ?? []);
+  if (!isRecord(mentions)) return {};
+  const users = list(mentions.user_ids, MAX_MENTIONS).flatMap((id) => userId(id) ?? []);
+  return mentions.room === true ? { mentions: users, mentionsRoom: true } : { mentions: users };
 }
 
 /** A timeline event, or undefined for state events and types not shown. */
@@ -267,12 +269,12 @@ export function parseEvent(raw: unknown): MxEvent | undefined {
         const fresh = isRecord(content["m.new_content"]) ? content["m.new_content"] : undefined;
         const parsed = fresh && parseContent(fresh, sticker);
         if (!target || !parsed) return undefined;
-        return { kind: "message", ...base, content: parsed, mentions: mentionsOf(fresh), replaces: target };
+        return { kind: "message", ...base, content: parsed, ...mentionsOf(fresh), replaces: target };
       }
       const parsed = parseContent(content, sticker);
       // A message without a body has had its content removed.
       if (!parsed) return { kind: "redacted", ...base };
-      const event: MxEvent = { kind: "message", ...base, content: parsed, mentions: mentionsOf(content) };
+      const event: MxEvent = { kind: "message", ...base, content: parsed, ...mentionsOf(content) };
       const replyTo = isRecord(relates["m.in_reply_to"]) ? eventId(relates["m.in_reply_to"].event_id) : undefined;
       if (replyTo) {
         event.replyTo = replyTo;

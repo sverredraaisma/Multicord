@@ -210,6 +210,8 @@ export type MxEvent =
       content: MxContent;
       /** Who the message mentions, from m.mentions (undefined when the sender did not say). */
       mentions?: string[];
+      /** It mentions the whole room (m.mentions.room). */
+      mentionsRoom?: boolean;
       replyTo?: string;
       /** Set on edits: the event this one replaces, with the new content. */
       replaces?: string;

@@ -213,6 +213,17 @@ export const TYPING_IDLE_MS = 10_000;
 export const MAX_SPACES = 100;
 
 /** Rooms' badge together: unread if any is, with all their mentions. */
+/** Whether a text has a word or phrase as a whole ("me" is not in "welcome"). */
+function hasWord(text: string, word: string): boolean {
+  let at = text.indexOf(word);
+  const letter = (char: string | undefined) => char !== undefined && /[\p{L}\p{N}_]/u.test(char);
+  while (at >= 0) {
+    if (!letter(text[at - 1]) && !letter(text[at + word.length])) return true;
+    at = text.indexOf(word, at + 1);
+  }
+  return false;
+}
+
 const badge = (rooms: Room[]): HomeBadge => ({ unread: rooms.some((r) => r.notifications > 0), mentions: rooms.reduce((sum, r) => sum + r.highlights, 0) });
 
 const compareText = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
@@ -1708,11 +1719,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private mentionsMe(room: Room, event: Shown): boolean {
     if (event.kind !== "message") return false;
     const me = this.session!.userId;
-    if (event.mentions) return event.mentions.includes(me);
-    // Older clients do not say whom they mention: look for our name in the text.
+    if (event.mentions) return event.mentionsRoom === true || event.mentions.includes(me);
+    // Older clients do not say whom they mention: look for our name, or the whole room's, in the text.
     const text = event.content.text.toLowerCase();
     const name = room.members.get(me)?.name?.toLowerCase();
-    return text.includes(me.toLowerCase()) || (name !== undefined && text.includes(name));
+    return text.includes(me.toLowerCase()) || text.includes("@room") || (name !== undefined && hasWord(text, name));
   }
 
   /**
@@ -2885,6 +2896,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       attachments: [],
     };
     if (event.kind !== "message") return native;
+    if (!mine && this.mentionsMe(room, event)) native.mentionsMe = true;
     // A quiet note on the author line: the message decrypted, but from a device its owner has not verified.
     if (event.unverified) native.author = `${native.author} · ${UNVERIFIED_LABEL}`;
     const { content, edited, id } = this.shownContent(room, event);

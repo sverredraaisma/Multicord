@@ -140,6 +140,8 @@ describe("timeline events", () => {
     );
     expect(reply).toMatchObject({ kind: "message", replyTo: "$q", mentions: ["@bo:x.org"], content: { text: "answer" } });
     expect(parseEvent(ev({ content: { msgtype: "m.text", body: "> not a reply", "m.mentions": {} } }))).toMatchObject({ content: { text: "> not a reply" }, mentions: [] });
+    expect(parseEvent(ev({ content: { msgtype: "m.text", body: "x", "m.mentions": {} } }))).not.toHaveProperty("mentionsRoom");
+    expect(parseEvent(ev({ content: { msgtype: "m.text", body: "all", "m.mentions": { room: true } } }))).toMatchObject({ mentions: [], mentionsRoom: true });
     expect(parseEvent(ev({ content: { msgtype: "m.text", body: "x", "m.relates_to": { "m.in_reply_to": { event_id: 5 } } } }))!).not.toHaveProperty("replyTo");
     expect(parseEvent(ev({ type: "m.sticker", content: { body: "s" } }))).toMatchObject({ kind: "message", content: { media: "🙂 Sticker" } });
   });
