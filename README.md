@@ -157,11 +157,12 @@ tests/                   Vitest; tests/mocks/electron.ts fakes the Electron API
 
 Coverage is enforced at **95%** for lines, statements, functions and branches (`vitest.config.mts`). `npm run coverage` fails below that. The only files excluded are the one-line bundle entries and the types-only adapter contract. Keep Electron glue thin and put logic in modules that can be tested.
 
-**Live tests against real servers.** `tests/live/` holds two suites that `npm run check` and CI skip. Each runs only when its environment variable names a server:
+**Live tests against real servers.** `tests/live/` holds three suites that `npm run check` and CI skip. Each runs only when its environment variable names a server:
 - `matrix.live.test.ts` drives the Matrix module against a real Synapse, with matrix-js-sdk as the other user. It covers sign-in, encrypted DMs, recovery from Element's key backup, emoji verification, encrypted and plain media, edits, deletions, read markers, paging, delayed events and sign-out.
+- `matrix-calls.live.test.ts` drives Matrix calls against a real Synapse, a LiveKit server and Element's lk-jwt-service, with matrix-js-sdk's MatrixRTC as the other caller. It covers finding the call service, the LiveKit grant (LiveKit itself admits Multicord), call memberships both sides read, the E2EE key exchange both ways, the delayed leave being pushed back, leaving, and a client vanishing mid-call. Sound and video themselves run only in the browser view and are not part of it.
 - `stoat.live.test.ts` drives the Stoat module against a self-hosted Stoat. It covers sign-in with authenticator and recovery codes, servers, DMs, messages, reactions, typing, read state, mentions, notification settings, attachments, resuming, paging and logout.
 
-Each file's header says how to run it; both servers run in Docker on this machine. Both suites pass, and they found two Stoat bugs, since fixed. Not covered live: Matrix calls (they need a LiveKit server), Matrix's browser sign-in (it needs the Matrix Authentication Service), and the Electron shell around the modules.
+Each file's header says how to run it; the servers run in Docker on this machine. All three suites pass. They found two Stoat bugs and two Matrix bugs, since fixed. Not covered live: call sound and video, Matrix's browser sign-in (it needs the Matrix Authentication Service), and the Electron shell around the modules.
 
 ## Known limitations / next steps
 - Rich Presence game detection goes by process name only, so names several games share are skipped. The WebSocket transport some browser-based apps use is not offered.
