@@ -22,7 +22,7 @@ const h = vi.hoisted(() => {
     "SendMessageRecordRoundAction", "SendMessageUploadRoundAction", "SendMessageChooseStickerAction", "SendMessageEmojiInteraction",
     "InputFile", "InputFileBig", "InputMediaUploadedPhoto", "InputMediaUploadedDocument",
     "PhotoPathSize", "VideoSize", "StickerSet", "InputStickerSetID", "InputMediaDocument", "InputDocument",
-    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings", "InputFolderPeer", "FolderPeer", "UpdateFolderPeers",
+    "ForumTopic", "ForumTopicDeleted", "MessageService", "Updates", "UpdatesCombined", "UpdateNewChannelMessage", "UpdateNewMessage", "MessageActionTopicCreate", "InputNotifyPeer", "InputPeerNotifySettings", "InputFolderPeer", "FolderPeer", "UpdateFolderPeers", "DialogFilter", "DialogFilterChatlist", "DialogFilterDefault", "InputPeerUser", "InputPeerChat", "InputPeerChannel", "InputPeerSelf", "UpdateDialogFilter", "UpdateDialogFilters", "UpdateDialogFilterOrder",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
@@ -46,6 +46,8 @@ const h = vi.hoisted(() => {
       UpdatePinnedMessage: class extends Base {},
       ForwardMessages: class extends Base {},
       SendVote: class extends Base {},
+      GetDialogFilters: class extends Base {},
+      DialogFilters: class extends Base {},
     },
     channels: {
       GetFullChannel: class extends Base {},
@@ -115,7 +117,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { allowedOf, apiEntities, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview, pollOf, pollResultsOf } from "../../../src/modules/telegram/gram";
+import { allowedOf, apiEntities, foldersOf, MAX_FOLDER_PEERS, chatIdOf, createGramApi, describeChat, entitiesOf, fileName, forumOf, mediaBanned, topicReply, topicsOf, UPLOAD_PART, uploadMedia, mediaFile, mediaLabel, membersOf, presenceOf, reactionsOf, SAVED_MESSAGES, stickerOf, stickersBanned, stickerSetsOf, thumbIndex, toMessage, typingOf, webPreview, pollOf, pollResultsOf } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -528,9 +530,26 @@ describe("createGramApi", () => {
     expect(requests.map((r) => r.folderPeers.map((p) => ({ ...p })))).toEqual([[{ peer: { input: -7n }, folderId: 1 }], [{ peer: { input: 7n }, folderId: 0 }]]);
   });
 
-  it("marks archived dialogs", async () => {
-    client.getDialogs.mockResolvedValue([{ dialog: {}, id: 1n, archived: true, unreadCount: 0, unreadMentionsCount: 0, date: 1, entity: make(Api.User, { firstName: "A" }) }]);
-    expect((await api.dialogs(5)).dialogs[0]!.archived).toBe(true);
+  it("marks archived dialogs, and chats with contacts or the user themselves", async () => {
+    const row = (id: bigint, entity: unknown, extra: object = {}) => ({ dialog: {}, id, unreadCount: 0, unreadMentionsCount: 0, date: 1, entity, ...extra });
+    client.getDialogs.mockResolvedValue([row(1n, make(Api.User, { firstName: "A" }), { archived: true }), row(2n, make(Api.User, { contact: true })), row(3n, make(Api.User, { self: true })), row(-4n, make(Api.Chat, { title: "G" }))]);
+    const { dialogs } = await api.dialogs(5);
+    expect(dialogs.map((d) => [d.archived, d.contact])).toEqual([[true, undefined], [undefined, true], [undefined, true], [undefined, undefined]]);
+  });
+
+  it("lists the user's folders, naming their own chat by their id", async () => {
+    const user = make(Api.InputPeerUser, { userId: 5n });
+    client.invoke.mockResolvedValue(make(Api.messages.DialogFilters, { filters: [make(Api.DialogFilter, { id: 2, title: { text: "Work" }, pinnedPeers: [make(Api.InputPeerSelf)], includePeers: [user], excludePeers: [] })] }));
+    client.getMe.mockResolvedValue({ id: 9n });
+    expect(await api.folders()).toEqual([{ id: 2, title: "Work", include: ["9", "5"], exclude: [] }]);
+    expect(client.invoke.mock.calls[0]![0]).toBeInstanceOf(Api.messages.GetDialogFilters);
+    // Without the user's own chat in any folder, they are not asked for; an answer of another kind has no folders.
+    client.getMe.mockClear();
+    client.invoke.mockResolvedValue(make(Api.messages.DialogFilters, { filters: [make(Api.DialogFilterChatlist, { id: 3, title: "Shared", pinnedPeers: [], includePeers: [user] }), make(Api.DialogFilterDefault)] }));
+    expect(await api.folders()).toEqual([{ id: 3, title: "Shared", include: ["5"], exclude: [] }, { id: 0, title: "All chats", include: [], exclude: [] }]);
+    expect(client.getMe).not.toHaveBeenCalled();
+    client.invoke.mockResolvedValue([]);
+    expect(await api.folders()).toEqual([]);
   });
 
   describe("avatar", () => {
@@ -571,6 +590,9 @@ describe("createGramApi", () => {
         Api.UpdatePinnedChannelMessages,
         Api.UpdateMessagePoll,
         Api.UpdateFolderPeers,
+        Api.UpdateDialogFilter,
+        Api.UpdateDialogFilters,
+        Api.UpdateDialogFilterOrder,
       ]);
     });
 
@@ -594,6 +616,10 @@ describe("createGramApi", () => {
       rawH(make(Api.UpdateFolderPeers, { folderPeers: [folderPeer(make(Api.PeerUser, { userId: 8n }), 1), folderPeer(make(Api.PeerChat, { chatId: 2n }), 0), folderPeer({}, 1), {}] }));
       rawH(make(Api.UpdateFolderPeers, { folderPeers: [{}] }));
       expect(cb.mock.calls.splice(-1)).toEqual([[{ type: "archive", peers: [{ chatId: "8", archived: true }, { chatId: "-2", archived: false }] }]]);
+      rawH(make(Api.UpdateDialogFilter, { id: 2 }));
+      rawH(make(Api.UpdateDialogFilters));
+      rawH(make(Api.UpdateDialogFilterOrder, { order: [2] }));
+      expect(cb.mock.calls.splice(-3)).toEqual([[{ type: "folders" }], [{ type: "folders" }], [{ type: "folders" }]]);
       rawH(make(Api.UpdateUserTyping, { userId: 8n, action: make(Api.SendMessageTypingAction) }));
       expect(cb.mock.calls.at(-1)).toEqual([{ type: "typing", chatId: "8", userId: "8", active: true }]);
       cb.mock.calls.pop();
@@ -983,6 +1009,20 @@ describe("reactions", () => {
       client.getMe.mockResolvedValue({ id: 1n, firstName: "A", premium: true });
       await expect(api.me()).resolves.toEqual({ id: "1", name: "A", bot: false, premium: true });
     });
+  });
+});
+
+describe("foldersOf", () => {
+  it("reads folders' chats, kinds and exclusions, leaving out what is not a folder", () => {
+    const peers = [make(Api.InputPeerUser, { userId: 1n }), make(Api.InputPeerChat, { chatId: 2n }), make(Api.InputPeerChannel, { channelId: 3n }), make(Api.InputPeerSelf), {}];
+    const filter = make(Api.DialogFilter, { id: 4, title: "  ", contacts: true, groups: true, bots: false, excludeMuted: true, excludeRead: true, excludeArchived: true, nonContacts: true, broadcasts: true, pinnedPeers: [peers[0]], includePeers: peers, excludePeers: [peers[1]] });
+    expect(foldersOf([filter, make(Api.DialogFilter, { id: 0, title: "x" }), make(Api.DialogFilter, { id: 1.5, title: "x" }), {}], undefined)).toEqual([
+      { id: 4, title: "Folder", include: ["1", "-2", "-1003"], exclude: ["-2"], contacts: true, nonContacts: true, groups: true, broadcasts: true, excludeMuted: true, excludeRead: true, excludeArchived: true },
+    ]);
+    expect(foldersOf([make(Api.DialogFilter, { id: 5, title: { text: "x".repeat(80) }, pinnedPeers: [], includePeers: [make(Api.InputPeerSelf)], excludePeers: [] })], "9")).toEqual([{ id: 5, title: "x".repeat(64), include: ["9"], exclude: [] }]);
+    const many = Array.from({ length: MAX_FOLDER_PEERS + 5 }, (_, i) => make(Api.InputPeerUser, { userId: BigInt(i + 1) }));
+    expect(foldersOf([make(Api.DialogFilterChatlist, { id: 6, title: "L", pinnedPeers: [], includePeers: many })], undefined)[0]!.include).toHaveLength(MAX_FOLDER_PEERS);
+    expect(foldersOf(Array.from({ length: 40 }, (_, i) => make(Api.DialogFilter, { id: i + 2, title: "F", pinnedPeers: [], includePeers: [], excludePeers: [] })), undefined)).toHaveLength(31);
   });
 });
 

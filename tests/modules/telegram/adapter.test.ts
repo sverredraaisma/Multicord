@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
-import type { TelegramApi, TelegramCredentials, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
+import type { TelegramApi, TelegramCredentials, TgPoll, TgAllowedReactions, TgDialog, TgDialogCursor, TgDialogPage, TgFolder, TgMember, TgMemberPage, TgMessage, TgProfile, TgSignIn, TgSticker, TgStickerSet, TgText, TgTopic, TgUpdate, TgUser } from "../../../src/modules/telegram/api";
 import { MAX_STICKER_BYTES, PACK_STICKER_LIMIT, STICKER_LIMIT, STICKER_RENDER_MS, STICKER_SET_LIMIT } from "../../../src/modules/telegram/adapter";
 import { AVATAR_LIMIT, CAPTION_LIMIT, DIALOG_LIMIT, DIALOG_PAGE, DIALOG_PAGE_MS, TOPIC_LIMIT, MAX_UPLOAD_BYTES, PREMIUM_REACTIONS, TYPING_REPEAT_MS, TYPING_SHOWN_MS, withChosen, FORGET_API_ID, MEMBER_AVATAR_LIMIT, MEMBER_LIMIT, MEMBER_PAGE, MUTE_FOREVER, PAGE_SIZE, TelegramAdapter, chatIdOfView, messageText, parseCredentials, viewId } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
@@ -46,6 +46,7 @@ class FakeTelegramApi implements TelegramApi {
   markRead = vi.fn(async (_chatId: string, _maxId: number) => {});
   mute = vi.fn(async (_chatId: string, _until: number) => {});
   archive = vi.fn(async (_chatId: string, _archived: boolean) => {});
+  folders = vi.fn(async (): Promise<TgFolder[]> => []);
   avatar = vi.fn(async (_chatId: string): Promise<string | undefined> => undefined);
   members = vi.fn(async (_chatId: string, _offset: number, _limit: number): Promise<TgMemberPage> => ({ members: [], total: 0 }));
   profile = vi.fn(async (userId: string): Promise<TgProfile> => ({ id: userId, name: `User ${userId}`, bot: false, presence: "offline" }));
@@ -609,6 +610,105 @@ describe("chat view", () => {
       ctx.api.archive.mockRejectedValueOnce(tgError("PEER_ID_INVALID"));
       await ctx.act({ type: "archive", channelId: "1", archive: false });
       expect(ctx.chat().error).toBe("Could not move the chat out of the archive: PEER_ID_INVALID");
+    });
+  });
+
+  describe("folders", () => {
+    const folderDialogs = () => [
+      dlg("1", { date: 90, contact: true, unreadCount: 1 }),
+      dlg("2", { date: 80, unreadCount: 2 }),
+      dlg("3", { date: 70, bot: true }),
+      dlg("-4", { kind: "group", date: 60, unreadCount: 3, unreadMentions: 2 }),
+      dlg("-1005", { kind: "channel", date: 50, mutedUntil: MUTE_FOREVER, unreadCount: 1 }),
+      dlg("6", { date: 40, contact: true, archived: true }),
+    ];
+    const work: TgFolder = { id: 2, title: "Work", include: ["3"], exclude: ["2"], contacts: true, nonContacts: true, groups: true, broadcasts: true, excludeMuted: true };
+    const ids = (ctx: Awaited<ReturnType<typeof signedIn>>) => ctx.rows().map((r) => chatIdOfView(r.id));
+
+    async function withFolders(folders: TgFolder[]) {
+      const ctx = setup({ secrets: { api: CREDS_JSON, session: "old" }, authorized: true, dialogs: folderDialogs() });
+      ctx.api.folders.mockResolvedValue(folders);
+      await ctx.adapter.start();
+      await flush();
+      return ctx;
+    }
+
+    it("offers no tabs until the user has a folder", async () => {
+      const ctx = await withFolders([{ id: 0, title: "All chats", include: [], exclude: [] }]);
+      expect(ctx.chat().folders).toBeUndefined();
+      ctx.api.folders.mockRejectedValue(new Error("down"));
+      ctx.api.emit({ type: "folders" });
+      await flush();
+      expect(ctx.chat().folders).toBeUndefined();
+    });
+
+    it("shows tabs with All chats first, each with the unread state and mentions of its chats", async () => {
+      const ctx = await withFolders([work]);
+      expect(ctx.chat().folders).toEqual([
+        { id: "all", name: "All chats", active: true, unread: true, mentions: 5 },
+        { id: "f2", name: "Work", active: false, unread: true, mentions: 3 },
+      ]);
+      await ctx.act({ type: "folder", id: "f2" });
+      expect(ctx.chat().folders!.map((f) => f.active)).toEqual([false, true]);
+      // Named chats are in it, left-out ones not, muted ones not where it leaves them out; archived ones show by kind.
+      expect(ids(ctx)).toEqual(["1", "3", "6", "-4"]);
+      expect(ctx.chat().sidebar.some((i) => i.id === "section-archive")).toBe(false);
+      // Unknown tabs change nothing.
+      await ctx.act({ type: "folder", id: "f9" });
+      await ctx.act({ type: "folder", id: "x" });
+      expect(ctx.chat().folders!.map((f) => f.active)).toEqual([false, true]);
+      await ctx.act({ type: "folder", id: "all" });
+      expect(ids(ctx)).toEqual(["1", "2", "3", "-4", "-1005", "6"]);
+    });
+
+    it("follows Telegram's rules for the kinds of chat a folder takes", async () => {
+      const folder = (extra: Partial<TgFolder>): TgFolder => ({ id: 3, title: "F", include: [], exclude: [], ...extra });
+      const cases: [Partial<TgFolder>, string[]][] = [
+        [{ contacts: true }, ["1", "6"]],
+        [{ nonContacts: true }, ["2"]],
+        [{ bots: true }, ["3"]],
+        [{ groups: true }, ["-4"]],
+        [{ broadcasts: true }, ["-1005"]],
+        [{ contacts: true, nonContacts: true, excludeRead: true }, ["1", "2"]],
+        [{ contacts: true, excludeArchived: true }, ["1"]],
+        [{}, []],
+      ];
+      for (const [extra, expected] of cases) {
+        const ctx = await withFolders([folder(extra), { id: 0, title: "All chats", include: [], exclude: [] }]);
+        await ctx.act({ type: "folder", id: "f3" });
+        expect(ids(ctx)).toEqual(expected);
+        // The user's order, with All chats where they placed it.
+        expect(ctx.chat().folders!.map((f) => f.id)).toEqual(["f3", "all"]);
+      }
+    });
+
+    it("fetches folders afresh when they change, showing all chats when the shown one is gone, and forgets them on signing out", async () => {
+      const ctx = await withFolders([work]);
+      await ctx.act({ type: "folder", id: "f2" });
+      ctx.api.folders.mockResolvedValue([{ ...work, title: "Job" }]);
+      ctx.api.emit({ type: "folders" });
+      await flush();
+      expect(ctx.chat().folders!.map((f) => [f.name, f.active])).toEqual([["All chats", false], ["Job", true]]);
+      ctx.api.folders.mockResolvedValue([{ ...work, id: 7 }]);
+      ctx.api.emit({ type: "folders" });
+      await flush();
+      expect(ctx.chat().folders!.map((f) => [f.id, f.active])).toEqual([["all", true], ["f7", false]]);
+
+      await ctx.act({ type: "folder", id: "f7" });
+      let release: (folders: TgFolder[]) => void = () => {};
+      ctx.api.folders.mockImplementation(() => new Promise((resolve) => (release = resolve)));
+      ctx.api.emit({ type: "folders" });
+      ctx.api.isAuthorized = false;
+      await ctx.act({ type: "logout" });
+      release([work]);
+      await flush();
+      ctx.api.isAuthorized = true;
+      ctx.api.folders.mockResolvedValue([]);
+      await ctx.answer("phone", { phone: "+31612345678" });
+      await ctx.answer("code", { code: "1" });
+      await flush();
+      expect(ctx.chat().folders).toBeUndefined();
+      expect(ids(ctx)).toEqual(["1", "2", "3", "-4", "-1005", "6"]);
     });
   });
 

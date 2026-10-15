@@ -14,6 +14,7 @@ import { computeCheck } from "telegram/Password";
 import { StringSession } from "telegram/sessions/StringSession";
 import type { Dialog } from "telegram/tl/custom/dialog";
 import {
+  ALL_CHATS,
   FAVED_STICKERS,
   GENERAL_TOPIC,
   isChannelPeer,
@@ -27,6 +28,7 @@ import {
   type TgDialogPage,
   type TgEntity,
   type TgFile,
+  type TgFolder,
   type TgMember,
   type TgMemberPage,
   type TgMessage,
@@ -403,6 +405,40 @@ export function pinsOf(update: unknown): Extract<TgUpdate, { type: "pins" }> | u
   return { type: "pins", chatId, ids: messages.filter((id) => Number.isInteger(id) && id > 0), pinned: pinned === true };
 }
 
+/** A chat a folder names, as a chat id; the user's own chat by the id given for it. */
+function inputPeerId(peer: unknown, self: string | undefined): string | undefined {
+  if (peer instanceof Api.InputPeerUser) return peer.userId.toString();
+  if (peer instanceof Api.InputPeerChat) return `-${peer.chatId.toString()}`;
+  if (peer instanceof Api.InputPeerChannel) return `-100${peer.channelId.toString()}`;
+  return peer instanceof Api.InputPeerSelf ? self : undefined;
+}
+
+/** Most folders read, and chats read per list of a folder (Telegram allows 30 and 200, with Premium). */
+const MAX_FOLDERS = 31;
+export const MAX_FOLDER_PEERS = 200;
+const FOLDER_FLAGS = ["contacts", "nonContacts", "groups", "broadcasts", "bots", "excludeMuted", "excludeRead", "excludeArchived"] as const;
+
+/** The chats a folder's lists name. */
+function folderPeers(filter: unknown): unknown[] {
+  if (!(filter instanceof Api.DialogFilter || filter instanceof Api.DialogFilterChatlist)) return [];
+  return [...filter.pinnedPeers, ...filter.includePeers, ...(filter instanceof Api.DialogFilter ? filter.excludePeers : [])];
+}
+
+/** The user's folders as Telegram lists them, with "All chats" where they placed it; shared folders (chat lists) take only the chats they name. */
+export function foldersOf(filters: readonly unknown[], self: string | undefined): TgFolder[] {
+  return filters.slice(0, MAX_FOLDERS).flatMap((f): TgFolder[] => {
+    if (f instanceof Api.DialogFilterDefault) return [{ id: ALL_CHATS, title: "All chats", include: [], exclude: [] }];
+    if (!(f instanceof Api.DialogFilter || f instanceof Api.DialogFilterChatlist) || !Number.isInteger(f.id) || f.id <= 0) return [];
+    const ids = (peers: readonly unknown[]) => peers.slice(0, MAX_FOLDER_PEERS).flatMap((p) => inputPeerId(p, self) ?? []);
+    const folder: TgFolder = { id: f.id, title: plainText(f.title).trim().slice(0, 64) || "Folder", include: [...new Set([...ids(f.pinnedPeers), ...ids(f.includePeers)])], exclude: [] };
+    if (f instanceof Api.DialogFilter) {
+      folder.exclude = ids(f.excludePeers);
+      for (const flag of FOLDER_FLAGS) if (f[flag] === true) folder[flag] = true;
+    }
+    return [folder];
+  });
+}
+
 /** Telegram's folder for archived chats; the main list is folder 0. */
 const ARCHIVE_FOLDER = 1;
 
@@ -577,6 +613,7 @@ export function dialogsOf(found: readonly Dialog[]): TgDialog[] {
     if (chat.members) dialog.members = true;
     if (chat.left) dialog.left = true;
     if (d.archived === true) dialog.archived = true;
+    if (d.entity instanceof Api.User && (d.entity.contact === true || d.entity.self === true)) dialog.contact = true;
     if (mediaBanned(d.entity)) dialog.noMedia = true;
     if (stickersBanned(d.entity)) dialog.noStickers = true;
     const forum = forumOf(d.entity);
@@ -744,6 +781,13 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       // Reading a group also reads the mentions in it, as Telegram's apps do once they are seen.
       if (chatId.startsWith("-")) await client.invoke(new Api.messages.ReadMentions({ peer: await client.getInputEntity(peer(chatId)) }));
     },
+    folders: async () => {
+      const found = await client.invoke(new Api.messages.GetDialogFilters());
+      const filters = found instanceof Api.messages.DialogFilters ? found.filters : [];
+      // A folder may name the user's own chat (Saved Messages) as themselves.
+      const self = filters.some((f) => folderPeers(f).some((p) => p instanceof Api.InputPeerSelf)) ? (await client.getMe()).id.toString() : undefined;
+      return foldersOf(filters, self);
+    },
     archive: async (chatId, archived) => {
       const folderPeer = new Api.InputFolderPeer({ peer: await client.getInputEntity(peer(chatId)), folderId: archived ? ARCHIVE_FOLDER : 0 });
       await client.invoke(new Api.folders.EditPeerFolders({ folderPeers: [folderPeer] }));
@@ -890,13 +934,14 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         }
         const pins = pinsOf(update);
         if (pins) return cb(pins);
+        if (update instanceof Api.UpdateDialogFilter || update instanceof Api.UpdateDialogFilters || update instanceof Api.UpdateDialogFilterOrder) return cb({ type: "folders" });
         const archive = archiveOf(update);
         if (archive) return cb(archive);
         if (!(update instanceof Api.UpdateMessageReactions)) return;
         const chatId = chatIdOf(update.peer);
         if (!chatId || !Number.isInteger(update.msgId) || update.msgId <= 0) return;
         cb({ type: "reactions", chatId, id: update.msgId, ...reactionsOf(update.reactions) });
-      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages, Api.UpdateMessagePoll, Api.UpdateFolderPeers] }));
+      }, new Raw({ types: [Api.UpdateMessageReactions, Api.UpdateUserTyping, Api.UpdateChatUserTyping, Api.UpdateChannelUserTyping, Api.UpdatePinnedMessages, Api.UpdatePinnedChannelMessages, Api.UpdateMessagePoll, Api.UpdateFolderPeers, Api.UpdateDialogFilter, Api.UpdateDialogFilters, Api.UpdateDialogFilterOrder] }));
     },
     session: () => (client.session as StringSession).save(),
     logOut: async () => void (await client.invoke(new Api.auth.LogOut())),

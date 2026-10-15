@@ -2,11 +2,11 @@ import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/run
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
-import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativePoll, NativePollOption, NativeSearchResults, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeChannelView, NativeEmbed, NativeFolder, NativeForumPost, NativeListedMessage, NativeMember, NativeMemberList, NativeMessage, NativeMessageList, NativePoll, NativePollOption, NativeSearchResults, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
-import { MAX_ATTACHMENTS } from "../../shared/native";
+import { MAX_ATTACHMENTS, MAX_FOLDERS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
-import { FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgMember, type TgMessage, type TgPoll, type TgPreview, type TgProfile, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
+import { ALL_CHATS, FAVED_STICKERS, GENERAL_TOPIC, isChannelPeer, RECENT_STICKERS, reactionEmoji, telegramError, viewEmoji, type TelegramApi, type TelegramCredentials, type TgAllowedReactions, type TgChatKind, type TgDialog, type TgDialogCursor, type TgFile, type TgFolder, type TgMember, type TgMessage, type TgPoll, type TgPreview, type TgProfile, type TgReaction, type TgSticker, type TgTopic, type TgUpdate, type TgUser } from "./api";
 
 /**
  * Chats listed: one-to-one chats, groups and channels together, most recent
@@ -286,6 +286,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private stickerRenderTimer: ReturnType<typeof setTimeout> | undefined;
   /** The profile card the view asked for last. */
   private profile: NativeProfile | undefined;
+  /** The user's chat folders as last fetched, and the one the sidebar shows. */
+  private folders: TgFolder[] = [];
+  private folder = ALL_CHATS;
   private visible = false;
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
   /** Counts sign-outs, so work started for one account stops for the next. */
@@ -339,6 +342,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.error = undefined;
     await this.refreshDialogs(true);
     void this.loadAvatars();
+    void this.loadFolders();
   }
 
   private async forgetSession(): Promise<void> {
@@ -428,6 +432,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     this.membersHidden.clear();
     this.membersOpen = false;
     this.profile = undefined;
+    this.folders = [];
+    this.folder = ALL_CHATS;
     this.allowed.clear();
     this.allowedAsked.clear();
     this.reactionList = undefined;
@@ -520,6 +526,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         return this.react(action.messageId, action.emoji, action.add);
       case "mute":
         return this.mute(chatIdOfView(action.channelId), action.mute);
+      case "folder":
+        return this.showFolder(action.id);
       case "archive":
         return this.archive(chatIdOfView(action.channelId), action.archive);
       case "typing":
@@ -1162,6 +1170,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
         }
         return this.render();
       }
+      case "folders":
+        return void this.loadFolders();
       case "pins": {
         const ids = new Set(update.ids);
         for (const list of this.loaded(update.chatId)) for (const [index, message] of list.entries()) if (ids.has(message.id)) list[index] = { ...message, pinned: update.pinned };
@@ -1886,6 +1896,49 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     };
   }
 
+  // --- Folders ------------------------------------------------------------------
+
+  /** Fetches the user's chat folders; the sidebar goes back to all chats if the one it shows is gone. */
+  private async loadFolders(): Promise<void> {
+    const session = this.session;
+    const folders = await this.api!.folders().catch(() => undefined);
+    // Kept as they were when Telegram does not answer.
+    if (session !== this.session || !folders) return;
+    this.folders = folders;
+    if (!folders.some((f) => f.id === this.folder)) this.folder = ALL_CHATS;
+    this.render();
+  }
+
+  /** Shows a folder in the sidebar, by its tab's id. */
+  private showFolder(id: string): void {
+    const found = id === "all" ? ALL_CHATS : /^f\d{1,9}$/.test(id) ? this.folders.find((f) => `f${f.id}` === id)?.id : undefined;
+    if (found === undefined) return;
+    this.folder = found;
+    this.render();
+  }
+
+  /** Whether a folder takes a chat, by Telegram's rules: named in it, else not left out, of a kind it takes, and not muted, read or archived where it leaves those out. */
+  private inFolder(folder: TgFolder, d: TgDialog): boolean {
+    if (folder.include.includes(d.chatId)) return true;
+    if (folder.exclude.includes(d.chatId)) return false;
+    const user = d.bot ? folder.bots : d.contact ? folder.contacts : folder.nonContacts;
+    const kind = d.kind === "user" ? user : d.kind === "group" ? folder.groups : folder.broadcasts;
+    if (kind !== true) return false;
+    if (folder.excludeMuted && this.muted(d)) return false;
+    if (folder.excludeRead && d.unreadCount === 0) return false;
+    return !(folder.excludeArchived && d.archived);
+  }
+
+  /** The folder tabs, in the user's order, with "All chats" where they placed it; none until they have a folder. */
+  private folderTabs(): NativeFolder[] | undefined {
+    if (!this.folders.some((f) => f.id !== ALL_CHATS)) return undefined;
+    const list = this.folders.some((f) => f.id === ALL_CHATS) ? this.folders : [{ id: ALL_CHATS, title: "All chats", include: [], exclude: [] }, ...this.folders];
+    return list.slice(0, MAX_FOLDERS).map((f) => {
+      const badges = this.dialogs.filter((d) => (f.id === ALL_CHATS ? true : this.inFolder(f, d))).map((d) => this.badge(d));
+      return { id: f.id === ALL_CHATS ? "all" : `f${f.id}`, name: f.title, active: f.id === this.folder, unread: badges.some((b) => b.unread), mentions: badges.reduce((sum, b) => sum + b.mentions, 0) };
+    });
+  }
+
   /** A chat's row in the sidebar; an open forum lists its topics under it. */
   private sidebarRows(d: TgDialog): NativeSidebarItem[] {
     // Every chat shows its picture, so all are "dm" rows.
@@ -1908,7 +1961,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (this.step === "connecting") return { screen: "connecting", platform, status: this.status ?? "Connecting…" };
     if (this.step !== "chat") return { screen: "prompt", platform, prompt: this.prompt(), busy: this.busy, status: this.status, error: this.error };
     const sidebar: NativeSidebarItem[] = [];
-    const listed = this.dialogs.filter((d) => !d.archived);
+    const folder = this.folders.find((f) => f.id === this.folder && f.id !== ALL_CHATS);
+    // A folder lists its chats by kind, archived ones among them; all chats keep the archive apart.
+    const listed = this.dialogs.filter((d) => (folder ? this.inFolder(folder, d) : !d.archived));
     for (const [kind, heading] of SECTIONS) {
       const dialogs = listed.filter((d) => d.kind === kind);
       if (dialogs.length === 0) continue;
@@ -1916,7 +1971,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       for (const d of dialogs) sidebar.push(...this.sidebarRows(d));
     }
     // Archived chats of every kind, in a section of their own that starts folded, as in Telegram's apps.
-    const archived = this.dialogs.filter((d) => d.archived);
+    const archived = folder ? [] : this.dialogs.filter((d) => d.archived);
+    const folders = this.folderTabs();
     if (archived.length > 0) {
       const badges = archived.map((d) => this.badge(d));
       sidebar.push({ id: "section-archive", name: "Archive", kind: "category", unread: badges.some((b) => b.unread), mentions: badges.reduce((sum, b) => sum + b.mentions, 0), active: false, collapsible: true, collapsed: true });
@@ -1935,6 +1991,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       voice: null,
       ...(stickers.length > 0 ? { stickers } : {}),
       ...(this.profile ? { profile: this.profile } : {}),
+      ...(folders ? { folders } : {}),
       error: this.error,
     };
   }

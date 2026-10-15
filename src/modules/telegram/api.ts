@@ -151,6 +151,8 @@ export interface TgDialog {
   left?: boolean;
   /** It is in the user's archive (Telegram's folder 1). */
   archived?: boolean;
+  /** A one-to-one chat with one of the user's contacts, or with themselves. */
+  contact?: boolean;
   lastMessage?: TgMessage;
   date: number;
 }
@@ -168,6 +170,32 @@ export interface TgDialogPage {
   dialogs: TgDialog[];
   /** Where the next page starts; absent after the last. */
   next?: TgDialogCursor;
+}
+
+/** "All chats", which Telegram lists among the user's folders (DialogFilterDefault) where they placed it. */
+export const ALL_CHATS = 0;
+
+/**
+ * One of the user's chat folders (a dialog filter), or ALL_CHATS. A chat is
+ * in it if the folder names it, else if the folder does not leave it out
+ * and takes its kind, unless it is muted, read or archived where the folder
+ * leaves those out.
+ */
+export interface TgFolder {
+  id: number;
+  title: string;
+  /** Chats always in it, its pinned ones first. */
+  include: string[];
+  /** Chats never in it, unless it names them in `include`. */
+  exclude: string[];
+  contacts?: boolean;
+  nonContacts?: boolean;
+  groups?: boolean;
+  broadcasts?: boolean;
+  bots?: boolean;
+  excludeMuted?: boolean;
+  excludeRead?: boolean;
+  excludeArchived?: boolean;
 }
 
 /** The topic every forum has, holding the messages posted in none other. */
@@ -267,7 +295,9 @@ export type TgUpdate =
   /** A poll's results changed, or it closed; Telegram names only the poll. */
   | { type: "poll"; pollId: string; results: TgPollResults; closed?: boolean }
   /** Chats moved into the archive or out of it (here or in another app, or by Telegram when an archived chat gets news). */
-  | { type: "archive"; peers: { chatId: string; archived: boolean }[] };
+  | { type: "archive"; peers: { chatId: string; archived: boolean }[] }
+  /** The user's folders changed: they are fetched afresh. */
+  | { type: "folders" };
 
 export interface TelegramApi {
   connect(): Promise<void>;
@@ -302,6 +332,8 @@ export interface TelegramApi {
   mute(chatId: string, until: number): Promise<void>;
   /** Moves a chat into the archive, or out of it. */
   archive(chatId: string, archived: boolean): Promise<void>;
+  /** The user's chat folders in their order, with ALL_CHATS where they placed it. */
+  folders(): Promise<TgFolder[]>;
   /** A forum's topics, most recently active first. */
   topics(chatId: string, limit: number): Promise<TgTopic[]>;
   /** Starts a topic in a forum; its id. */
