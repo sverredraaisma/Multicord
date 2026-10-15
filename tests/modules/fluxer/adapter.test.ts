@@ -297,7 +297,7 @@ describe("FluxerAdapter chat", () => {
     ]);
     expect(state.sidebar[3]).toMatchObject({ unread: true, mentions: 2 });
     expect(state.channel).toMatchObject({ id: "113", name: "lobby", loading: false, hasOlder: false });
-    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, gifs: false });
+    expect(state.channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, gifs: false, pins: true });
     expect(state.channel!.messages[0]).toMatchObject({ id: "450", author: "Ana", content: "m450", mine: false });
     expect(calls.some((c) => c.url.includes("/channels/113/messages?limit=50"))).toBe(true);
 
@@ -544,6 +544,7 @@ describe("FluxerAdapter chat", () => {
       mine: false,
       canEdit: false,
       canDelete: false,
+      canPin: true,
       source: undefined,
       authorId: "2",
       authorMention: "<@2>",
@@ -1403,5 +1404,101 @@ describe("DM preview upkeep", () => {
     adapter.state.apply("MESSAGE_CREATE", message("960", "900", { content: "again" }));
     adapter.state.apply("MESSAGE_DELETE", { id: "960", channel_id: "900" });
     expect(preview()).toBeUndefined();
+  });
+});
+
+describe("FluxerAdapter pins", () => {
+  async function opened(routes: Handler[] = []) {
+    const ctx = setup({ token: "flx_saved", routes });
+    await ctx.adapter.start();
+    await ctx.goOnline();
+    await ctx.adapter.openServer("100");
+    return ctx;
+  }
+  const pinsOf = (ctx: Awaited<ReturnType<typeof opened>>) => ctx.chat().channel!.pins;
+
+  it("lists the open channel's pins while the panel is open, following pin changes", async () => {
+    let page: unknown = { items: [{ message: message("440", "113", { content: "<@2> said", pinned: true }), pinned_at: "t" }, { message: message("441", "113", { content: "", attachments: [{ id: "1", filename: "a.png" }] }) }, { message: message("442", "113", { content: "", sticker_items: [{ id: "5", name: "Wave" }] }) }, { message: message("443", "113", { content: "" }) }, "junk"], has_more: false };
+    const ctx = await opened([(url) => (url.endsWith("/channels/113/messages/pins?limit=50") ? { status: 200, body: page } : undefined)]);
+    expect(ctx.chat().channel!.can.pins).toBe(true);
+    expect(pinsOf(ctx)).toBeUndefined();
+    const pending = ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(pinsOf(ctx)).toEqual({ messages: [], loading: true });
+    await pending;
+    expect(pinsOf(ctx)).toEqual({
+      messages: [
+        { id: "440", author: "Ana", avatarUrl: "https://media.fx/avatars/2/av.png?size=64", content: "@Ana said", timestamp: "2026-10-14T12:00:00Z" },
+        expect.objectContaining({ id: "441", content: "📎 a.png" }),
+        expect.objectContaining({ id: "442", content: "Wave (sticker)" }),
+        expect.objectContaining({ id: "443", content: "" }),
+      ],
+      loading: false,
+    });
+    // Someone pins elsewhere: nothing; here: the list is fetched again.
+    page = { items: [] };
+    ctx.sockets[0]!.receive({ op: 0, s: 2, t: "CHANNEL_PINS_UPDATE", d: { channel_id: "999" } });
+    ctx.sockets[0]!.receive({ op: 0, s: 3, t: "CHANNEL_PINS_UPDATE", d: null });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(pinsOf(ctx)!.messages).toHaveLength(4);
+    ctx.sockets[0]!.receive({ op: 0, s: 4, t: "CHANNEL_PINS_UPDATE", d: { channel_id: "113" } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(pinsOf(ctx)!.messages).toEqual([]);
+    await ctx.adapter.handleAction({ type: "pins", open: false });
+    expect(pinsOf(ctx)).toBeUndefined();
+    ctx.sockets[0]!.receive({ op: 0, s: 5, t: "CHANNEL_PINS_UPDATE", d: { channel_id: "113" } });
+    // Another channel drops the panel; reopening the same one keeps it.
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    await ctx.adapter.handleAction({ type: "select", channelId: "113" });
+    expect(pinsOf(ctx)).toBeDefined();
+    await ctx.adapter.handleAction({ type: "select", channelId: "111" });
+    expect(ctx.chat().channel!.pins).toBeUndefined();
+  });
+
+  it("says when the pins cannot be loaded, and drops answers for a closed panel", async () => {
+    let fail = true;
+    let release: () => void = () => {};
+    const ctx = await opened([
+      (url) => (url.includes("/messages/pins") && fail ? { status: 403, body: { code: "MISSING_ACCESS", message: "Missing access" } } : undefined),
+    ]);
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(pinsOf(ctx)).toEqual({ messages: [], loading: false, error: "Could not load pinned messages: Missing access" });
+    fail = false;
+    ctx.routes.unshift((url) => (url.includes("/messages/pins") ? (release(), { status: 200, body: { items: [] } }) : undefined));
+    const reopening = ctx.adapter.handleAction({ type: "pins", open: true });
+    await ctx.adapter.handleAction({ type: "pins", open: false });
+    await reopening;
+    expect(pinsOf(ctx)).toBeUndefined();
+    // With no open channel there is nothing to list.
+    await ctx.adapter.openHome();
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    expect(ctx.calls.filter((c) => c.url.includes("/messages/pins"))).toHaveLength(2);
+  });
+
+  it("pins and unpins messages, refreshing the open list, and shows a refusal", async () => {
+    let refuse = false;
+    const ctx = await opened([
+      (url, init) => (url.endsWith("/channels/113/pins/450") ? (refuse ? { status: 403, body: { code: "MISSING_PERMISSIONS", message: "Missing permissions" } } : { status: 204 }) : init.method === "GET" && url.includes("/messages/pins") ? { status: 200, body: { items: [] } } : undefined),
+    ]);
+    expect(ctx.chat().channel!.messages[0]).toMatchObject({ id: "450", canPin: true });
+    expect(ctx.chat().channel!.messages[0]!.pinned).toBeUndefined();
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
+    expect(ctx.calls.at(-1)).toMatchObject({ url: "https://api.fx/v1/channels/113/pins/450", init: { method: "PUT" } });
+    expect(ctx.chat().channel!.messages[0]!.pinned).toBe(true);
+    await ctx.adapter.handleAction({ type: "pins", open: true });
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: false });
+    expect(ctx.calls.at(-2)).toMatchObject({ init: { method: "DELETE" } });
+    expect(ctx.calls.at(-1)!.url).toContain("/messages/pins");
+    expect(ctx.chat().channel!.messages[0]!.pinned).toBeUndefined();
+    // A message not loaded here is still sent to the server.
+    await ctx.adapter.handleAction({ type: "pin", messageId: "451", pin: true });
+    refuse = true;
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
+    expect(ctx.chat().error).toBe("Message not pinned: Missing permissions");
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: false });
+    expect(ctx.chat().error).toBe("Message not unpinned: Missing permissions");
+    await ctx.adapter.openHome();
+    const before = ctx.calls.length;
+    await ctx.adapter.handleAction({ type: "pin", messageId: "450", pin: true });
+    expect(ctx.calls.length).toBe(before);
   });
 });

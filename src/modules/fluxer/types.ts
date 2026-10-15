@@ -181,6 +181,7 @@ export interface FluxerMessage {
   /** The message this one replies to; null when it no longer exists. */
   replyTo?: FluxerReplyPreview | null;
   reactions?: FluxerReaction[];
+  pinned?: boolean;
 }
 
 export interface FluxerReplyPreview {
@@ -331,6 +332,7 @@ export function parseMessage(value: unknown): FluxerMessage | undefined {
       const count = isRecord(r) && typeof r.count === "number" && r.count > 0 ? r.count : 0;
       return emoji && count ? [{ emoji, count, me: (r as Record<string, unknown>).me === true }] : [];
     }),
+    ...(value.pinned === true ? { pinned: true } : {}),
   };
 }
 

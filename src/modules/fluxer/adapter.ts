@@ -5,7 +5,9 @@ import {
   type NativeAttachment,
   type NativeCustomEmoji,
   type NativeGifResults,
+  type NativeListedMessage,
   type NativeMessage,
+  type NativeMessageList,
   type NativeStickerPack,
   type NativeUnread,
   type NativeSidebarItem,
@@ -146,6 +148,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   private gifResults: NativeGifResults | undefined;
   private gifTimer: ReturnType<typeof setTimeout> | undefined;
   private gifSearch = 0;
+  /** The open channel's pinned messages, while its pins panel is open. */
+  private pins: { channelId: string; list: NativeMessageList } | undefined;
 
   constructor(private readonly deps: FluxerAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -225,6 +229,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       case "removeAttachment":
         this.pending.get(this.selectedChannelId ?? "")?.splice(action.index, 1);
         return this.render();
+      case "pins":
+        return this.showPins(action.open);
+      case "pin":
+        return this.pin(action.messageId, action.pin);
       case "logout":
         return this.logout();
     }
@@ -376,6 +384,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         dispatch: (event, data) => {
           this.state.apply(event, data);
           if (event === "VOICE_SERVER_UPDATE") this.onVoiceServer(data);
+          // Someone pinned or unpinned in the channel whose pins are listed.
+          if (event === "CHANNEL_PINS_UPDATE" && this.pins && typeof data === "object" && data !== null && (data as { channel_id?: unknown }).channel_id === this.pins.channelId) void this.loadPins(this.pins.channelId);
           if (event === "READY") {
             // A fresh session has no voice connection of ours.
             if (this.voice) this.dropVoice("Voice disconnected when the connection was reset.");
@@ -437,6 +447,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     if (!channel || (!forum && !TEXT_CHANNEL_TYPES.has(channel.type))) return;
     // Noted before it is read: where its news began.
     if (channelId !== this.selectedChannelId) this.unreadAt = !forum && this.state.isUnread(channel) ? { channelId, after: this.state.readStates.get(channelId)?.lastMessageId } : undefined;
+    if (this.pins?.channelId !== channelId) this.pins = undefined;
     this.selectedChannelId = channelId;
     this.lastChannel.set(channel.guildId ?? "home", channelId);
     this.error = undefined;
@@ -788,6 +799,40 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
+  /** Opens the open channel's pins panel and fetches its pins, or closes it. */
+  private async showPins(open: boolean): Promise<void> {
+    const channelId = this.selectedChannelId;
+    this.pins = open && channelId ? { channelId, list: { messages: [], loading: true } } : undefined;
+    this.render();
+    if (this.pins) await this.loadPins(this.pins.channelId);
+  }
+
+  /** Fetches the pins of a channel whose pins panel is open; a reply for a panel since closed is dropped. */
+  private async loadPins(channelId: string): Promise<void> {
+    let list: NativeMessageList;
+    try {
+      list = { messages: (await this.rest!.pins(channelId)).map((m) => this.listedMessage(m)), loading: false };
+    } catch (error) {
+      list = { messages: [], loading: false, error: `Could not load pinned messages: ${messageOf(error)}` };
+    }
+    if (this.pins?.channelId !== channelId) return;
+    this.pins = { channelId, list };
+    this.render();
+  }
+
+  /** Pins or unpins a message; Fluxer decides whether the user may. */
+  private async pin(messageId: string, pin: boolean): Promise<void> {
+    const channelId = this.selectedChannelId;
+    if (!channelId || !this.rest) return;
+    await this.attempt(pin ? "Message not pinned" : "Message not unpinned", async () => {
+      await this.rest!.pin(channelId, messageId, pin);
+      const message = this.state.findMessage(channelId, messageId);
+      if (message) message.pinned = pin;
+      this.render();
+      if (this.pins?.channelId === channelId) await this.loadPins(channelId);
+    });
+  }
+
   /** Tells others we are typing; Fluxer shows it for ~10 s, so once per 8 s is enough. */
   private async sendTyping(now: number = Date.now()): Promise<void> {
     const channelId = this.selectedChannelId;
@@ -938,6 +983,18 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       });
   }
 
+  /** A message as the pins list shows it: its text, or what it carries when it has none. */
+  private listedMessage(message: FluxerMessage): NativeListedMessage {
+    const carried = message.attachments.length > 0 ? `📎 ${message.attachments[0]!.filename}` : message.stickers.length > 0 ? `${message.stickers[0]!.name} (sticker)` : "";
+    return {
+      id: message.id,
+      author: displayName(this.state.users.get(message.author.id) ?? message.author),
+      avatarUrl: this.iconUrl("avatars", message.author.id, message.author.avatar, 64),
+      content: this.renderContent(message.content) || carried,
+      timestamp: message.timestamp,
+    };
+  }
+
   private viewMessage(message: FluxerMessage): NativeMessage {
     const mine = message.author.id === this.state.me?.id;
     const editable = message.type === undefined || message.type === MessageType.Default || message.type === MessageType.Reply;
@@ -954,6 +1011,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       source: mine && editable ? message.content : undefined,
       canDelete: mine,
       ...(!mine && this.state.mentionsMe(message) ? { mentionsMe: true } : {}),
+      ...(message.pinned ? { pinned: true } : {}),
+      // Fluxer pins ordinary messages and replies; whether this user may is the server's to say.
+      canPin: editable,
       // Who wrote it, and Fluxer's syntax for mentioning them (shown as @name).
       authorId: message.author.id,
       authorMention: `<@${message.author.id}>`,
@@ -1092,7 +1152,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
                 pending: (this.pending.get(channel.id) ?? []).map((f) => ({ name: f.filename, size: f.size })),
                 uploading: this.uploading.has(channel.id),
                 ...(this.unreadAt?.channelId === channel.id ? { unread: this.unreadView(channel.id, this.unreadAt) } : {}),
+                ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
                 can: {
+                  pins: !FORUM_TYPES.has(channel.type),
                   reply: true,
                   react: true,
                   attach: this.deps.files !== undefined,

@@ -241,7 +241,7 @@ export class FluxerState {
     this.changed.emit();
   }
 
-  private findMessage(channelId: unknown, messageId: unknown): FluxerMessage | undefined {
+  findMessage(channelId: unknown, messageId: unknown): FluxerMessage | undefined {
     return isId(channelId) && isId(messageId) ? this.messages.get(channelId)?.find((m) => m.id === messageId) : undefined;
   }
 

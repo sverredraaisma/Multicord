@@ -217,6 +217,17 @@ export class FluxerRest {
     await this.request(add ? "PUT" : "DELETE", path);
   }
 
+  /** A channel's pinned messages, newest pin first (the first page of up to 50). */
+  async pins(channelId: string): Promise<FluxerMessage[]> {
+    const data = await this.request("GET", `/channels/${channelId}/messages/pins?limit=50`);
+    const items = isRecord(data) && Array.isArray(data.items) ? data.items : [];
+    return items.flatMap((item) => (isRecord(item) ? (parseMessage(item.message) ?? []) : []));
+  }
+
+  async pin(channelId: string, messageId: string, pin: boolean): Promise<void> {
+    await this.request(pin ? "PUT" : "DELETE", `/channels/${channelId}/pins/${messageId}`);
+  }
+
   async ack(channelId: string, messageId: string): Promise<void> {
     await this.request("POST", "/read-states/ack", { read_states: [{ channel_id: channelId, message_id: messageId }] });
   }
