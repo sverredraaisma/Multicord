@@ -13,6 +13,7 @@ import {
   type NativeMemberSection,
   type NativeMessage,
   type NativeMessageList,
+  type NativePoll,
   type NativeSearchResults,
   type NativeProfile,
   type NativePrompt,
@@ -45,6 +46,7 @@ import {
   type MxPackImage,
   type MxPackRef,
   type MxPage,
+  type MxPoll,
   type MxRoomState,
   type MxRtcTransport,
   type MxSession,
@@ -54,7 +56,7 @@ import {
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseEmotes, parseEvent, parseFormatting, parseJoinedMembers, parseMxc, parsePowerLevels, parsePresence, parseProfile, reactionKey, serviceUrl, userId, type MxProfile } from "./events";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseEmotes, parseEvent, parseFormatting, parseJoinedMembers, parseMxc, parsePowerLevels, parsePresence, parseProfile, POLL_TYPES, reactionKey, serviceUrl, userId, type MxProfile } from "./events";
 import { AttachmentError, decryptAttachment, encryptAttachment, imageSize } from "./media";
 import { markdownHtml, richMarkdown } from "./format";
 import { emoticonHtml, emoticonMarkdown, escapeHtml, HTML_FORMAT, packImageId, stickerFormat, textMentions } from "./packs";
@@ -219,10 +221,13 @@ type Shown = Extract<MxEvent, { kind: "message" | "encrypted" }>;
 type Message = Extract<MxEvent, { kind: "message" }>;
 type RtcEvent = Extract<MxEvent, { kind: "rtc" }>;
 type Reaction = Extract<MxEvent, { kind: "reaction" }>;
+type PollEvent = { target: string; sender: string; ts: number; answers?: string[] };
 /** Encrypted sticky events kept per room until their keys arrive. */
 const MAX_STICKY_WAITING = 100;
 /** Reactions kept per room; beyond this the oldest go. */
 export const MAX_REACTIONS = 5000;
+/** Poll votes and ends kept per room; beyond this the oldest go. */
+export const MAX_POLL_EVENTS = 5000;
 /** How long the server shows us typing unless renewed; renewed this often while typing goes on, and ended after this long idle (as Element does). */
 export const TYPING_TIMEOUT_MS = 30_000;
 export const TYPING_REPEAT_MS = 20_000;
@@ -282,6 +287,8 @@ interface Room {
   edits: Map<string, Message>;
   /** Reactions by their own event id (redacting that id takes one back), in the order they arrived. */
   reactions: Map<string, { target: string; key: string; sender: string }>;
+  /** Poll votes (with the answers chosen) and ends (without) by their own event id, in the order they arrived. */
+  polls: Map<string, PollEvent>;
   /** Who is typing, as the server last said (it ends typing that is not renewed). */
   typing: string[];
   prevBatch?: string;
@@ -984,6 +991,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.searchMessages(action.query);
       case "pin":
         return this.pin(action.messageId, action.pin);
+      case "vote":
+        return this.vote(action.messageId, action.options);
       case "members":
         return this.setMembersOpen(action.open);
       case "profile":
@@ -1628,6 +1637,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         events: [],
         edits: new Map(),
         reactions: new Map(),
+        polls: new Map(),
         typing: [],
         notifications: 0,
         highlights: 0,
@@ -1724,6 +1734,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         if (!fresh) {
           room.events = [];
           room.reactions.clear();
+          room.polls.clear();
         }
         room.prevBatch = update.prevBatch;
         // Membership changes may be in the gap too.
@@ -1748,6 +1759,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private removeEvent(room: Room, id: string): void {
     room.events = room.events.filter((e) => e.id !== id);
     room.reactions.delete(id);
+    room.polls.delete(id);
     // A redacted sticky membership no longer counts (as matrix-js-sdk has it).
     for (const [key, entry] of room.rtc) if (entry.id === id) room.rtc.set(key, { ...entry, member: null });
     for (const [key, edit] of room.edits) if (edit.id === id || key.endsWith(`|${id}`)) room.edits.delete(key);
@@ -1762,6 +1774,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.removeEvent(room, event.redacts);
       case "reaction":
         return this.addReaction(room, event);
+      case "pollResponse":
+      case "pollEnd":
+        room.polls.set(event.id, { target: event.target, sender: event.sender, ts: event.ts, ...(event.kind === "pollResponse" ? { answers: event.answers } : {}) });
+        if (room.polls.size > MAX_POLL_EVENTS) room.polls.delete(room.polls.keys().next().value!);
+        return;
     }
     if (event.kind === "message" && event.replaces) {
       const key = `${event.sender}|${event.replaces}`;
@@ -1769,8 +1786,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       if (!known || known.ts <= event.ts) room.edits.set(key, event);
       return;
     }
-    // An edit or a reaction that cannot be read changes nothing that can be shown.
-    if (event.kind === "encrypted" && (event.replaces || event.annotates)) return;
+    // An edit, a reaction or a poll's vote that cannot be read changes nothing that can be shown.
+    if (event.kind === "encrypted" && (event.replaces || event.annotates || event.references)) return;
     if (room.events.some((e) => e.id === event.id)) return;
     room.events.push(event);
     room.lastActivity = Math.max(room.lastActivity, event.ts);
@@ -1944,9 +1961,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       const known = new Set(room.events.map((e) => e.id));
       const older: Shown[] = [];
       for (const event of page.events) {
-        if ((event.kind === "message" && event.replaces) || event.kind === "reaction") this.addEvent(room, event, false);
+        if ((event.kind === "message" && event.replaces) || event.kind === "reaction" || event.kind === "pollResponse" || event.kind === "pollEnd") this.addEvent(room, event, false);
         else if (event.kind === "redaction") this.removeEvent(room, event.redacts);
-        else if ((event.kind === "message" || (event.kind === "encrypted" && !event.replaces && !event.annotates)) && !known.has(event.id)) older.push(event);
+        else if ((event.kind === "message" || (event.kind === "encrypted" && !event.replaces && !event.annotates && !event.references)) && !known.has(event.id)) older.push(event);
       }
       // Redactions in this page may also remove events from it.
       const redacted = new Set(page.events.flatMap((e) => (e.kind === "redaction" ? [e.redacts] : [])));
@@ -2191,6 +2208,73 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     }
     delete profile.loading;
     this.render();
+  }
+
+  /** When a poll ended, by its end from whoever started it (the earliest); undefined while it is open. */
+  private pollEnd(room: Room, poll: Message): number | undefined {
+    let end: number | undefined;
+    for (const e of room.polls.values()) if (e.target === poll.id && !e.answers && e.sender === poll.sender && (end === undefined || e.ts < end)) end = e.ts;
+    return end;
+  }
+
+  /**
+   * A poll as the view shows it, from the votes in the loaded timeline: each
+   * person's latest vote counts if it came before the poll ended; answers the
+   * poll does not offer are ignored, and only the first maxSelections count.
+   * Votes show once it ended, or at once where it is disclosed; the user's own
+   * choice always.
+   */
+  private pollView(room: Room, event: Message, poll: MxPoll, locked: boolean): NativePoll {
+    const end = this.pollEnd(room, event);
+    const latest = new Map<string, PollEvent>();
+    for (const vote of room.polls.values()) {
+      if (vote.target !== event.id || !vote.answers || (end !== undefined && vote.ts > end)) continue;
+      if (vote.ts >= (latest.get(vote.sender)?.ts ?? -1)) latest.set(vote.sender, vote);
+    }
+    const offered = new Set(poll.answers.map((a) => a.id));
+    const counts = new Map<string, number>();
+    let total = 0;
+    let mine: string[] = [];
+    for (const [sender, vote] of latest) {
+      const chosen = [...new Set(vote.answers!.filter((a) => offered.has(a)))].slice(0, poll.maxSelections);
+      if (chosen.length === 0) continue;
+      total++;
+      for (const answer of chosen) counts.set(answer, (counts.get(answer) ?? 0) + 1);
+      if (sender === this.session!.userId) mine = chosen;
+    }
+    const closed = end !== undefined;
+    const shown = poll.disclosed || closed;
+    const view: NativePoll = {
+      question: poll.question,
+      options: poll.answers.map((answer, i) => ({ id: `a${i}`, text: answer.text, ...(shown ? { votes: counts.get(answer.id) ?? 0 } : {}), ...(mine.includes(answer.id) ? { chosen: true } : {}) })),
+      multiple: poll.maxSelections > 1,
+      closed,
+    };
+    if (shown) view.total = total;
+    if (!closed && !locked) view.canVote = true;
+    return view;
+  }
+
+  /**
+   * Votes in a poll of the open room: a poll response naming the answers
+   * chosen (none takes the vote back), in the poll's own form (stable or
+   * MSC3381's unstable one), encrypted where the room is.
+   */
+  private async vote(local: string, options: string[]): Promise<void> {
+    const room = this.selectedRoom();
+    const event = room ? this.findEvent(room, local) : undefined;
+    const poll = event?.kind === "message" ? event.content.poll : undefined;
+    if (!room || !poll || this.lock(room) || this.pollEnd(room, event as Message) !== undefined) return;
+    const target = event!.id;
+    const answers = [...new Set(options.flatMap((option) => poll.answers[Number(/^a(\d{1,2})$/.exec(option)?.[1] ?? NaN)]?.id ?? []))].slice(0, poll.maxSelections);
+    const session = this.session!;
+    const relation = { rel_type: "m.reference", event_id: target };
+    const content = poll.stable ? { "m.relates_to": relation, "m.selections": answers } : { "m.relates_to": relation, [POLL_TYPES.response[1]]: { answers } };
+    await this.attempt("Vote not sent", async () => {
+      const id = await this.sendContent(session, room, content, POLL_TYPES.response[poll.stable ? 0 : 1]);
+      this.addEvent(room, { kind: "pollResponse", id, sender: session.userId, ts: Date.now(), target, answers }, false);
+      this.render();
+    });
   }
 
   /** Pins or unpins a message in the open room's m.room.pinned_events; the homeserver decides whether the user may. */
@@ -3248,7 +3332,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     // A quiet note on the author line: the message decrypted, but from a device its owner has not verified.
     if (event.unverified) native.author = `${native.author} · ${UNVERIFIED_LABEL}`;
     const { content, edited, id } = this.shownContent(room, event);
-    if (content.attachment) {
+    if (content.poll) {
+      // The poll card shows the question; the label stays for previews and notifications.
+      native.content = "";
+      native.poll = this.pollView(room, event, content.poll, locked);
+    } else if (content.attachment) {
       // Shown media speaks for itself: only its caption stays as text (the label remains for notifications and previews).
       native.content = escapeMarkdown(content.text);
       native.attachments = [this.attachment(room, id, content.attachment)];

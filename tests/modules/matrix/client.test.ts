@@ -224,6 +224,11 @@ describe("syncing and history", () => {
     await client.messages(SESSION, "!r:x.org", "t2", 50);
     expect(JSON.parse(callOf(fetchFn).url.searchParams.get("filter")!).types).toContain("m.reaction");
   });
+
+  it("asks for polls, their votes and ends, in both forms", () => {
+    const polls = ["m.poll.start", "m.poll.response", "m.poll.end", "org.matrix.msc3381.poll.start", "org.matrix.msc3381.poll.response", "org.matrix.msc3381.poll.end"];
+    expect(JSON.parse(SYNC_FILTER).room.timeline.types).toEqual(expect.arrayContaining(polls));
+  });
 });
 
 describe("encryption check", () => {

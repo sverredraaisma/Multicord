@@ -11,6 +11,7 @@ import {
   MAX_STICKY_MS,
   mimeType,
   PACK_ROOMS_TYPE,
+  POLL_TYPES,
   ROOM_PACK_TYPE,
   PUSH_RULES_TYPE,
   USER_PACK_TYPE,
@@ -40,6 +41,9 @@ const TIMELINE_TYPES = [
   "m.room.encryption",
   "m.room.history_visibility",
   "m.room.member",
+  ...POLL_TYPES.start,
+  ...POLL_TYPES.response,
+  ...POLL_TYPES.end,
 ];
 /** Space structure: whether a room is a space, and which rooms it lists; and image packs. */
 const SPACE_TYPES = ["m.room.create", "m.space.child", ROOM_PACK_TYPE];

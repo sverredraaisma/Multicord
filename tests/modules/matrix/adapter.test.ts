@@ -19,6 +19,7 @@ import {
   type MxPack,
   type MxPackImage,
   type MxPage,
+  type MxPoll,
   type MxRoomState,
   type MxRoomUpdate,
   type MxSession,
@@ -41,6 +42,7 @@ import {
   messageText,
   MAX_MEDIA_BYTES,
   MAX_REACTIONS,
+  MAX_POLL_EVENTS,
   MAX_SPACES,
   PAGE_SIZE,
   TYPING_IDLE_MS,
@@ -4804,6 +4806,87 @@ describe("search", () => {
     await ctx.act({ type: "search", query: "" });
     await ending;
     expect(ctx.chat().channel!.search).toBeUndefined();
+  });
+});
+
+describe("polls", () => {
+  const poll = (id: string, sender: string, ts: number, extra: Partial<MxPoll> = {}): MxEvent => ({
+    kind: "message",
+    id: `$${id}`,
+    sender,
+    ts,
+    content: { msgtype: "m.poll", text: "", media: "📊 Lunch?", poll: { question: "Lunch?", answers: [{ id: "p", text: "Pizza" }, { id: "s", text: "Soup" }], maxSelections: 1, disclosed: true, stable: false, ...extra } },
+  });
+  const vote = (id: string, sender: string, ts: number, target: string, answers: string[]): MxEvent => ({ kind: "pollResponse", id: `$${id}`, sender, ts, target, answers });
+  const end = (id: string, sender: string, ts: number, target: string): MxEvent => ({ kind: "pollEnd", id: `$${id}`, sender, ts, target });
+  const LATE = Number.MAX_SAFE_INTEGER - 10;
+
+  it("counts each person's latest vote until the poll's starter ends it, and votes", async () => {
+    const ctx = await signedIn();
+    const timeline = [poll("p1", ANA, 3000), vote("v1", ANA, 3001, "$p1", ["p"]), vote("v2", BO, 3002, "$p1", ["s"]), vote("v3", BO, 3003, "$p1", ["p", "s", "x"]), vote("v4", ME, 3004, "$p1", ["nope"]), vote("v0", ANA, 2990, "$p1", ["s"])];
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { timeline })] }));
+    await ctx.open("Lounge");
+    const shown = ctx.messages().at(-1)!;
+    expect(shown.content).toBe("");
+    expect(shown.poll).toEqual({ question: "Lunch?", options: [{ id: "a0", text: "Pizza", votes: 2 }, { id: "a1", text: "Soup", votes: 0 }], multiple: false, closed: false, total: 2, canVote: true });
+    await ctx.act({ type: "vote", messageId: shown.id, options: ["a1", "a1", "a9", "zz"] });
+    const relation = { rel_type: "m.reference", event_id: "$p1" };
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", { "m.relates_to": relation, "org.matrix.msc3381.poll.response": { answers: ["s"] } }, "org.matrix.msc3381.poll.response");
+    expect(ctx.messages().at(-1)!.poll!.options).toEqual([{ id: "a0", text: "Pizza", votes: 2 }, { id: "a1", text: "Soup", votes: 1, chosen: true }]);
+    // Only the starter's end counts, and votes after it do not.
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { timeline: [end("e1", BO, 3005, "$p1"), end("e2", ANA, LATE, "$p1"), end("e3", ANA, LATE + 1, "$p1"), vote("v5", BO, LATE + 2, "$p1", ["s"])] })] }));
+    expect(ctx.messages().at(-1)!.poll).toEqual({ question: "Lunch?", options: [{ id: "a0", text: "Pizza", votes: 2 }, { id: "a1", text: "Soup", votes: 1, chosen: true }], multiple: false, closed: true, total: 3 });
+    const sends = ctx.api.send.mock.calls.length;
+    await ctx.act({ type: "vote", messageId: shown.id, options: ["a0"] });
+    // Not a poll, or not here: nothing goes.
+    await ctx.act({ type: "vote", messageId: ctx.messages()[0]!.id, options: ["a0"] });
+    await ctx.act({ type: "vote", messageId: "99999", options: ["a0"] });
+    expect(ctx.api.send).toHaveBeenCalledTimes(sends);
+  });
+
+  it("keeps undisclosed results hidden until the end, and votes in the stable form", async () => {
+    const ctx = await signedIn();
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { timeline: [poll("p2", BO, 3000, { disclosed: false, stable: true, maxSelections: 2 }), vote("w1", ANA, 3001, "$p2", ["p"])] })] }));
+    await ctx.open("Lounge");
+    const shown = ctx.messages().at(-1)!;
+    expect(shown.poll).toEqual({ question: "Lunch?", options: [{ id: "a0", text: "Pizza" }, { id: "a1", text: "Soup" }], multiple: true, closed: false, canVote: true });
+    await ctx.act({ type: "vote", messageId: shown.id, options: ["a0", "a1"] });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", { "m.relates_to": { rel_type: "m.reference", event_id: "$p2" }, "m.selections": ["p", "s"] }, "m.poll.response");
+    expect(ctx.messages().at(-1)!.poll!.options).toEqual([{ id: "a0", text: "Pizza", chosen: true }, { id: "a1", text: "Soup", chosen: true }]);
+    // A redacted vote no longer counts.
+    const mine = await ctx.api.send.mock.results.at(-1)!.value;
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { timeline: [{ kind: "redaction", id: "$r1", sender: ME, ts: 3002, redacts: mine }] })] }));
+    expect(ctx.messages().at(-1)!.poll!.options).toEqual([{ id: "a0", text: "Pizza" }, { id: "a1", text: "Soup" }]);
+  });
+
+  it("offers no vote where nothing may be sent", async () => {
+    const ctx = await signedIn();
+    await ctx.live(sync({ joined: [room("!sec:x.org", { timeline: [poll("p3", ANA, 3000)] })] }));
+    // Nothing open yet.
+    await ctx.act({ type: "vote", messageId: "1", options: [] });
+    await ctx.open("Secret");
+    const shown = ctx.messages().at(-1)!;
+    expect(shown.poll).not.toHaveProperty("canVote");
+    await ctx.act({ type: "vote", messageId: shown.id, options: ["a0"] });
+    expect(ctx.api.send).not.toHaveBeenCalled();
+  });
+
+  it("keeps votes out of the timeline, from history too, and within bounds", async () => {
+    const ctx = await signedIn();
+    ctx.api.messages.mockResolvedValueOnce({
+      events: [poll("h1", ANA, 100), vote("hv", ANA, 101, "$h1", ["p"]), end("he", ANA, 102, "$h1"), { kind: "encrypted", id: "$hx", sender: ANA, ts: 103, references: "$h1" }],
+      state: { members: {} },
+    });
+    await ctx.live(sync({ joined: [room("!hist:x.org", { state: { name: "Hist", members: {} }, prevBatch: "p-h" })] }));
+    await ctx.open("Hist");
+    expect(ctx.messages()).toHaveLength(1);
+    expect(ctx.messages()[0]!.poll).toMatchObject({ closed: true, total: 1 });
+    await ctx.live(sync({ joined: [room("!hist:x.org", { timeline: [{ kind: "encrypted", id: "$lx", sender: ANA, ts: 104, references: "$h1" }] })] }));
+    expect(ctx.messages()).toHaveLength(1);
+    // A gap starts over; the oldest votes go beyond the bound.
+    const votes = Array.from({ length: MAX_POLL_EVENTS + 1 }, (_, i) => vote(`m${i}`, `@u${i}:x.org`, 300 + i, "$h2", ["p"]));
+    await ctx.live(sync({ joined: [room("!hist:x.org", { limited: true, prevBatch: "p-2", timeline: [poll("h2", ANA, 200), ...votes] })] }));
+    expect(ctx.messages().map((m) => m.poll?.total)).toEqual([MAX_POLL_EVENTS]);
   });
 });
 

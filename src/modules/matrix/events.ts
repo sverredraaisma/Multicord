@@ -17,6 +17,7 @@ import type {
   MxPack,
   MxPackImage,
   MxPackRef,
+  MxPoll,
   MxRich,
   MxPage,
   MxRoomState,
@@ -102,6 +103,62 @@ export const MAX_REACTION_KEY = 64;
 /** A reaction's key (usually an emoji) when it can be shown as it is: no control or reordering characters, nothing to trim. */
 export function reactionKey(value: unknown): string | undefined {
   return typeof value === "string" && value.length <= MAX_REACTION_KEY && cleanName(value, MAX_REACTION_KEY) === value ? value : undefined;
+}
+
+// --- Polls (MSC3381) --------------------------------------------------------------
+
+/** A poll's event types, stable first: its start, a vote (response) and its end. */
+export const POLL_TYPES = {
+  start: ["m.poll.start", "org.matrix.msc3381.poll.start"],
+  response: ["m.poll.response", "org.matrix.msc3381.poll.response"],
+  end: ["m.poll.end", "org.matrix.msc3381.poll.end"],
+} as const;
+/** The unstable form of extensible events' text (MSC1767), as Element still sends polls. */
+const UNSTABLE_TEXT = "org.matrix.msc1767.text";
+/** Answers read per poll; MSC3381 allows 20. */
+export const MAX_POLL_ANSWERS = 20;
+const MAX_POLL_TEXT = 300;
+
+/** Text in either of MSC1767's forms: a plain string (unstable), or a list of representations, of which the plain one counts. */
+function extensibleText(value: unknown): string | undefined {
+  if (typeof value === "string") return cleanName(value, MAX_POLL_TEXT);
+  const plain = list(value, 10).find((r) => isRecord(r) && (r.mimetype === undefined || r.mimetype === "text/plain"));
+  return isRecord(plain) ? cleanName(plain.body, MAX_POLL_TEXT) : undefined;
+}
+
+/** The event a poll's vote or end refers to (an m.reference relation). */
+function referenced(content: Record<string, unknown>): string | undefined {
+  const relates = content["m.relates_to"];
+  return isRecord(relates) && relates.rel_type === "m.reference" ? eventId(relates.event_id) : undefined;
+}
+
+/**
+ * A poll start's content (m.poll, or MSC3381's unstable form): its question,
+ * its answers with an id and text (each id once, at most MAX_POLL_ANSWERS),
+ * how many one vote may choose, and whether votes show before it ends.
+ * Undefined when it has no question or no answers.
+ */
+export function parsePoll(content: Record<string, unknown>, stable: boolean): MxPoll | undefined {
+  const poll = content[stable ? "m.poll" : POLL_TYPES.start[1]];
+  if (!isRecord(poll)) return undefined;
+  const text = (value: unknown) => (isRecord(value) ? extensibleText(stable ? value["m.text"] : (value[UNSTABLE_TEXT] ?? value.body)) : undefined);
+  const question = text(poll.question);
+  const answers: MxPoll["answers"] = [];
+  for (const raw of list(poll.answers, MAX_POLL_ANSWERS)) {
+    const id = isRecord(raw) ? raw[stable ? "m.id" : "id"] : undefined;
+    const answer = text(raw);
+    if (idText(id) && answer && !answers.some((a) => a.id === id)) answers.push({ id, text: answer });
+  }
+  if (!question || answers.length === 0) return undefined;
+  const max = poll.max_selections;
+  return {
+    question,
+    answers,
+    maxSelections: typeof max === "number" && Number.isSafeInteger(max) && max > 0 ? Math.min(max, answers.length) : 1,
+    // Kinds it does not know are undisclosed, as MSC3381 says.
+    disclosed: poll.kind === (stable ? "m.disclosed" : "org.matrix.msc3381.poll.disclosed"),
+    stable,
+  };
 }
 
 // --- Media ------------------------------------------------------------------------
@@ -251,7 +308,29 @@ export function parseEvent(raw: unknown): MxEvent | undefined {
       const target = eventId(relates.event_id);
       if (target && relates.rel_type === "m.replace") event.replaces = target;
       if (target && relates.rel_type === "m.annotation") event.annotates = target;
+      if (target && relates.rel_type === "m.reference") event.references = target;
       return event;
+    }
+    case POLL_TYPES.start[0]:
+    case POLL_TYPES.start[1]: {
+      const poll = parsePoll(content, raw.type === POLL_TYPES.start[0]);
+      if (poll) return { kind: "message", ...base, content: { msgtype: "m.poll", text: "", media: `📊 ${poll.question}`, poll } };
+      // A poll that cannot be read shows its fallback text, where it has one.
+      const fallback = extensibleText(content["m.text"]) ?? extensibleText(content[UNSTABLE_TEXT]) ?? cleanName(content.body, MAX_POLL_TEXT);
+      return fallback ? { kind: "message", ...base, content: { msgtype: "m.text", text: fallback } } : undefined;
+    }
+    case POLL_TYPES.response[0]:
+    case POLL_TYPES.response[1]: {
+      const target = referenced(content);
+      const unstable = content[POLL_TYPES.response[1]];
+      const answers = raw.type === POLL_TYPES.response[0] ? content["m.selections"] : isRecord(unstable) ? unstable.answers : undefined;
+      // A vote naming no answers (or not as a list) withdraws the sender's vote.
+      return target ? { kind: "pollResponse", ...base, target, answers: list(answers, MAX_POLL_ANSWERS).filter(idText) } : undefined;
+    }
+    case POLL_TYPES.end[0]:
+    case POLL_TYPES.end[1]: {
+      const target = referenced(content);
+      return target ? { kind: "pollEnd", ...base, target } : undefined;
     }
     case "m.reaction": {
       const relates = isRecord(content["m.relates_to"]) ? content["m.relates_to"] : {};

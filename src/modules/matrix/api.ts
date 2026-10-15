@@ -193,6 +193,21 @@ export interface MxContent {
   emotes?: MxEmote[];
   /** Its formatted_body, read into the parts the view can show (format.ts); only when it has formatting beyond plain text. */
   html?: MxRich;
+  /** Set for a poll's start (MSC3381); its votes and end are events of their own. */
+  poll?: MxPoll;
+}
+
+/** A poll as its start event (m.poll.start, or MSC3381's unstable form) asks it. */
+export interface MxPoll {
+  question: string;
+  /** Its answers, each with its id (which votes name) and text; ids are unique. */
+  answers: { id: string; text: string }[];
+  /** How many answers one vote may choose. */
+  maxSelections: number;
+  /** Votes show before the poll ends (kind disclosed). */
+  disclosed: boolean;
+  /** The stable event types (m.poll.*), which votes go out in too; else the unstable org.matrix.msc3381.poll.* ones. */
+  stable: boolean;
 }
 
 /**
@@ -252,6 +267,8 @@ export type MxEvent =
       replaces?: string;
       /** Set when it is an encrypted reaction: the event it reacts to (the relation stays unencrypted). */
       annotates?: string;
+      /** Set when it refers to another event (m.reference), as a poll's votes and end do: never a message of its own. */
+      references?: string;
       /** Why it could not be decrypted, once that was tried. */
       problem?: string;
     })
@@ -264,6 +281,10 @@ export type MxEvent =
   | (MxEventBase & { kind: "reaction"; target: string; key: string; shortcode?: string })
   /** An event whose content was removed; it is dropped from view. */
   | (MxEventBase & { kind: "redacted" })
+  /** A vote in the poll `target` (a poll response): the answer ids chosen; none (or none valid) withdraws the vote. */
+  | (MxEventBase & { kind: "pollResponse"; target: string; answers: string[] })
+  /** The end of the poll `target`: votes sent after it do not count. */
+  | (MxEventBase & { kind: "pollEnd"; target: string })
   /** A call membership as a sticky m.rtc.member event (MSC4143 with MSC4354); never shown, it changes the room's call. */
   | (MxEventBase & {
       kind: "rtc";

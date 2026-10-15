@@ -45,6 +45,8 @@ import {
   userId,
   MAX_EMOTES,
   parseEmotes,
+  parsePoll,
+  MAX_POLL_ANSWERS,
   MAX_PACK_IMAGES,
   MAX_PACK_ROOMS,
   MAX_ROOM_PACKS,
@@ -199,9 +201,61 @@ describe("timeline events", () => {
     expect(encrypted({ rel_type: "m.annotation", event_id: "$msg" })).not.toHaveProperty("replaces");
   });
 
+  it("reads polls in both forms, and shows the fallback text of one that cannot be read", () => {
+    const unstable = {
+      "org.matrix.msc3381.poll.start": {
+        question: { "org.matrix.msc1767.text": "Lunch?", body: "ignored" },
+        kind: "org.matrix.msc3381.poll.disclosed",
+        max_selections: 5,
+        answers: [{ id: "p", "org.matrix.msc1767.text": "Pizza" }, { id: "s", "org.matrix.msc1767.text": "Soup" }, { id: "p", "org.matrix.msc1767.text": "Again" }, { id: "", "org.matrix.msc1767.text": "No id" }, { id: "x" }, "bad"],
+      },
+    };
+    expect(parseEvent(ev({ type: "org.matrix.msc3381.poll.start", content: unstable }))).toEqual({
+      kind: "message",
+      id: "$e1",
+      sender: "@ana:x.org",
+      ts: 1000,
+      content: { msgtype: "m.poll", text: "", media: "📊 Lunch?", poll: { question: "Lunch?", answers: [{ id: "p", text: "Pizza" }, { id: "s", text: "Soup" }], maxSelections: 2, disclosed: true, stable: false } },
+    });
+    const stable = {
+      "m.poll": {
+        question: { "m.text": [{ mimetype: "text/html", body: "<b>Q</b>" }, { body: "Q" }] },
+        kind: "m.undisclosed",
+        max_selections: 0,
+        answers: [{ "m.id": "a", "m.text": [{ mimetype: "text/plain", body: "A" }] }],
+      },
+    };
+    expect(parseEvent(ev({ type: "m.poll.start", content: stable }))).toMatchObject({ content: { poll: { question: "Q", answers: [{ id: "a", text: "A" }], maxSelections: 1, disclosed: false, stable: true } } });
+    expect(parsePoll({ "org.matrix.msc3381.poll.start": { question: { body: "Plain body" }, answers: [{ id: "a", body: "A" }], kind: "other" } }, false)).toMatchObject({ question: "Plain body", disclosed: false });
+    expect(parsePoll({ "m.poll": { question: "not text", answers: [{ "m.id": "a", "m.text": [{ body: "A" }] }] } }, true)).toBeUndefined();
+    expect(parsePoll({ "m.poll": { question: { "m.text": "Q" }, answers: [] } }, true)).toBeUndefined();
+    expect(parsePoll({}, true)).toBeUndefined();
+    const many = Array.from({ length: MAX_POLL_ANSWERS + 5 }, (_, i) => ({ id: `a${i}`, "org.matrix.msc1767.text": `A${i}` }));
+    expect(parsePoll({ "org.matrix.msc3381.poll.start": { question: { "org.matrix.msc1767.text": "Q" }, answers: many } }, false)!.answers).toHaveLength(MAX_POLL_ANSWERS);
+    // Unreadable: the fallback, in any of its forms, or nothing.
+    expect(parseEvent(ev({ type: "m.poll.start", content: { "m.text": [{ body: "Poll: Q" }] } }))).toMatchObject({ kind: "message", content: { msgtype: "m.text", text: "Poll: Q" } });
+    expect(parseEvent(ev({ type: "org.matrix.msc3381.poll.start", content: { "org.matrix.msc1767.text": "Old poll" } }))).toMatchObject({ content: { text: "Old poll" } });
+    expect(parseEvent(ev({ type: "m.poll.start", content: { "m.text": [{ mimetype: "text/html", body: "x" }] } }))).toBeUndefined();
+    expect(parseEvent(ev({ type: "m.poll.start", content: {} }))).toBeUndefined();
+  });
+
+  it("reads poll votes and ends, which refer to their poll", () => {
+    const ref = { rel_type: "m.reference", event_id: "$poll" };
+    expect(parseEvent(ev({ type: "m.poll.response", content: { "m.relates_to": ref, "m.selections": ["a", 5, "b"] } }))).toEqual({ kind: "pollResponse", id: "$e1", sender: "@ana:x.org", ts: 1000, target: "$poll", answers: ["a", "b"] });
+    expect(parseEvent(ev({ type: "org.matrix.msc3381.poll.response", content: { "m.relates_to": ref, "org.matrix.msc3381.poll.response": { answers: ["c"] } } }))).toMatchObject({ answers: ["c"] });
+    // Not a list: a vote for nothing, which withdraws one.
+    expect(parseEvent(ev({ type: "org.matrix.msc3381.poll.response", content: { "m.relates_to": ref } }))).toMatchObject({ kind: "pollResponse", answers: [] });
+    expect(parseEvent(ev({ type: "m.poll.response", content: { "m.relates_to": { rel_type: "m.annotation", event_id: "$poll" } } }))).toBeUndefined();
+    expect(parseEvent(ev({ type: "m.poll.response", content: {} }))).toBeUndefined();
+    expect(parseEvent(ev({ type: "m.poll.end", content: { "m.relates_to": ref } }))).toEqual({ kind: "pollEnd", id: "$e1", sender: "@ana:x.org", ts: 1000, target: "$poll" });
+    expect(parseEvent(ev({ type: "org.matrix.msc3381.poll.end", content: { "m.relates_to": { rel_type: "m.reference", event_id: "poll" } } }))).toBeUndefined();
+    // Encrypted votes are known by their readable relation.
+    expect(parseEvent(ev({ type: "m.room.encrypted", content: { ciphertext: "…", "m.relates_to": ref } }))).toMatchObject({ kind: "encrypted", references: "$poll" });
+  });
+
   it("drops state events, unknown types and malformed events", () => {
     expect(parseEvent(ev({ state_key: "" }))).toBeUndefined();
-    expect(parseEvent(ev({ type: "m.poll.start" }))).toBeUndefined();
+    expect(parseEvent(ev({ type: "m.call.invite" }))).toBeUndefined();
     expect(parseEvent(ev({ event_id: "e1" }))).toBeUndefined();
     expect(parseEvent(ev({ sender: "ana" }))).toBeUndefined();
     expect(parseEvent(ev({ origin_server_ts: "1" }))).toBeUndefined();
