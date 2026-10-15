@@ -666,6 +666,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       canEdit: editable,
       source: editable ? message.content : undefined,
       canDelete: mine,
+      ...(!mine && this.state.mentionsMe(message) ? { mentionsMe: true } : {}),
       // Only replies to loaded messages can be previewed; others show none rather than "deleted".
       reply: reply ? { author: this.authorName(reply), content: this.renderContent(reply.system ?? reply.content) } : undefined,
       reactions: message.reactions.map((r) => {

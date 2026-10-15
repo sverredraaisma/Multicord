@@ -464,6 +464,7 @@ describe("StoatAdapter messages", () => {
                 message(460, GENERAL, {
                   content: `hi <@${ME_ID}> <@${ulid(77)}> see <#${LOBBY}> <#${ulid(78)}> :${EMOJI}: :${ulid(79)}:`,
                   replies: [ulid(450)],
+                  mentions: [ME_ID],
                   reactions: { "👍": [ME_ID, ANA_ID], [EMOJI]: [ANA_ID], [ulid(79)]: [ME_ID] },
                   attachments: [
                     { _id: "f1", tag: "attachments", filename: "cat.png", content_type: "image/png", metadata: { type: "Image" } },
@@ -471,7 +472,7 @@ describe("StoatAdapter messages", () => {
                   ],
                   edited: "2026-10-14T12:00:00Z",
                 }),
-                message(455, GENERAL, { author: ME_ID, content: "mine" }),
+                message(455, GENERAL, { author: ME_ID, content: "mine", mentions: [ME_ID] }),
                 message(452, GENERAL, { author: ulid(88), masquerade: { name: "Bridged" }, replies: [ulid(1)] }),
                 message(451, GENERAL, { author: ulid(89) }),
                 message(450, GENERAL, { author: "00000000000000000000000000", system: { type: "user_joined", id: ANA_ID } }),
@@ -490,6 +491,7 @@ describe("StoatAdapter messages", () => {
     expect(unknown).toMatchObject({ author: "Unknown user", avatarUrl: undefined });
     expect(bridged).toMatchObject({ author: "Bridged", avatarUrl: undefined, reply: undefined });
     expect(mine).toMatchObject({ author: "me", mine: true, canEdit: true, canDelete: true, source: "mine" });
+    expect([system, unknown, bridged, mine].some((m) => m!.mentionsMe)).toBe(false);
     expect(rich).toEqual({
       id: ulid(460),
       author: "Ana",
@@ -501,6 +503,7 @@ describe("StoatAdapter messages", () => {
       canEdit: false,
       source: undefined,
       canDelete: false,
+      mentionsMe: true,
       reply: { author: "System", content: "@Ana joined" },
       reactions: [
         { key: "👍", label: "👍", imageUrl: undefined, count: 2, me: true },
