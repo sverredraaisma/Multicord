@@ -5200,6 +5200,34 @@ describe("threads", () => {
     expect(closed.api.send).not.toHaveBeenCalled();
   });
 
+  it("answers a message within a thread as a real reply, shown with its quote, and edits, reacts to and deletes replies there", async () => {
+    const ctx = await withThreads();
+    const root = rootOf(ctx, "root").id;
+    await ctx.act({ type: "thread", rootId: root });
+    const [, answered] = ctx.chat().channel!.thread!.messages;
+    await ctx.act({ type: "send", content: "agreed", thread: root, replyTo: answered!.id });
+    expect(ctx.api.send.mock.calls.at(-1)![2]).toEqual({ msgtype: "m.text", body: "agreed", "m.mentions": {}, "m.relates_to": { rel_type: "m.thread", event_id: "$t0", "m.in_reply_to": { event_id: "$t1" } } });
+    const sent = ctx.chat().channel!.thread!.messages.at(-1)!;
+    expect(sent.reply).toEqual({ author: BO, content: "reply" });
+    // The root is answered too; a message outside the thread is not, which goes as the usual thread reply.
+    await ctx.act({ type: "send", content: "to the root", thread: root, replyTo: rootOf(ctx, "root").id });
+    expect(ctx.api.send.mock.calls.at(-1)![2]).toMatchObject({ "m.relates_to": { rel_type: "m.thread", event_id: "$t0", "m.in_reply_to": { event_id: "$t0" } } });
+    expect(ctx.chat().channel!.thread!.messages.at(-1)!.reply).toEqual({ author: "Ana", content: "root" });
+    await ctx.act({ type: "send", content: "elsewhere", thread: root, replyTo: rootOf(ctx, "other root").id });
+    expect(ctx.api.send.mock.calls.at(-1)![2]).toMatchObject({ "m.relates_to": { is_falling_back: true } });
+    await ctx.act({ type: "send", content: "unknown", thread: root, replyTo: "99999" });
+    expect(ctx.api.send.mock.calls.at(-1)![2]).toMatchObject({ "m.relates_to": { is_falling_back: true } });
+    // The user's own reply in the thread: edited, reacted to and deleted from the panel.
+    expect(sent).toMatchObject({ canEdit: true, canDelete: true });
+    await ctx.act({ type: "edit", messageId: sent.id, content: "agreed!" });
+    expect(ctx.api.send.mock.calls.at(-1)![2]).toMatchObject({ "m.new_content": { body: "agreed!" }, "m.relates_to": { rel_type: "m.replace" } });
+    await ctx.act({ type: "react", messageId: sent.id, emoji: "👍", add: true });
+    expect(ctx.api.send.mock.calls.at(-1)![2]).toMatchObject({ "m.relates_to": { rel_type: "m.annotation", key: "👍" } });
+    await ctx.act({ type: "delete", messageId: sent.id });
+    expect(ctx.api.redact).toHaveBeenCalled();
+    expect(ctx.chat().channel!.thread!.messages.map((m) => m.id)).not.toContain(sent.id);
+  });
+
   it("says when a thread could not be loaded, drops an answer for a thread since closed, and drops threads with the room or a gap", async () => {
     const ctx = await withThreads();
     ctx.api.request.mockRejectedValueOnce(new MatrixError(500, "M_UNKNOWN", "Try later"));

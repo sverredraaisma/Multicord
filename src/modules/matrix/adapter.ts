@@ -2686,7 +2686,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
    */
   private async send(text: string, replyTo?: string, thread?: string): Promise<void> {
     const room = this.selectedRoom();
-    if (thread) return this.sendToThread(room, thread, text);
+    if (thread) return this.sendToThread(room, thread, text, replyTo);
     const files = room ? (this.pending.get(room.id) ?? []) : [];
     if (!room || this.uploading.has(room.id) || (text.trim() === "" && files.length === 0)) return;
     const session = this.session!;
@@ -2714,33 +2714,41 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   /**
-   * Sends text, as a reply or into a thread. A thread's reply points at the
-   * thread's latest message as a fallback reply (is_falling_back), as the
-   * spec has it, for clients without threads.
+   * Sends text, as a reply or into a thread. A thread's message answers the
+   * message it replies to there (a reply without is_falling_back), else
+   * points at the thread's latest message as a fallback reply
+   * (is_falling_back), as the spec has it, for clients without threads.
    */
   private async sendText(session: MxSession, room: Room, text: string, replied: Shown | undefined, root?: Shown): Promise<void> {
     const mentioned = this.mentioned(session, text);
     const content: Record<string, unknown> = { msgtype: "m.text", body: text, "m.mentions": mentioned.length > 0 ? { user_ids: mentioned } : {} };
     const html = this.messageHtml(room, text, mentioned);
     if (html) Object.assign(content, { format: HTML_FORMAT, formatted_body: html });
-    if (root) {
+    if (root && replied) content["m.relates_to"] = { rel_type: "m.thread", event_id: root.id, "m.in_reply_to": { event_id: replied.id } };
+    else if (root) {
       const latest = room.threads.get(root.id)?.at(-1) ?? root;
       content["m.relates_to"] = { rel_type: "m.thread", event_id: root.id, is_falling_back: true, "m.in_reply_to": { event_id: latest.id } };
     } else if (replied) content["m.relates_to"] = { "m.in_reply_to": { event_id: replied.id } };
     const id = await this.sendContent(session, room, content);
     const sent: Message = { kind: "message", id, sender: session.userId, ts: Date.now(), content: sentContent("m.text", text, content), mentions: mentioned };
     if (root) sent.thread = root.id;
-    else if (replied) sent.replyTo = replied.id;
+    if (replied) sent.replyTo = replied.id;
     this.addEvent(room, sent, false);
   }
 
-  /** Sends text into a thread of the open room; picked files wait for the conversation's composer. */
-  private async sendToThread(room: Room | undefined, local: string, text: string): Promise<void> {
+  /**
+   * Sends text into a thread of the open room, answering one of its
+   * messages (the root or a reply) where `replyTo` names one; picked files
+   * wait for the conversation's composer.
+   */
+  private async sendToThread(room: Room | undefined, local: string, text: string, replyTo: string | undefined): Promise<void> {
     const root = room ? this.findEvent(room, local) : undefined;
     if (!room || !root || text.trim() === "") return;
+    const target = replyTo ? this.findEvent(room, replyTo) : undefined;
+    const replied = target && (target.id === root.id || target.thread === root.id) ? target : undefined;
     this.stopTyping();
     await this.attempt("Message not sent", async () => {
-      await this.sendText(this.session!, room, text, undefined, root);
+      await this.sendText(this.session!, room, text, replied, root);
       this.publish();
     });
   }
@@ -3747,7 +3755,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     native.edited = edited;
     native.canEdit = mine && !locked && EDITABLE.has(event.content.msgtype);
     if (native.canEdit) native.source = content.text;
-    const replied = event.replyTo ? room.events.find((e) => e.id === event.replyTo) : undefined;
+    // A reply within a thread may answer another of its replies.
+    const replied = event.replyTo ? (room.events.find((e) => e.id === event.replyTo) ?? (event.thread ? room.threads.get(event.thread)?.find((e) => e.id === event.replyTo) : undefined)) : undefined;
     // Reply previews are plain text in the view.
     if (replied) native.reply = { author: this.memberName(room, replied.sender), content: this.eventText(room, replied).slice(0, 100) };
     return native;
