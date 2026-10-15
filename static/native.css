@@ -5,6 +5,7 @@
   --border: #3f4147;
   --accent: #5865f2;
   --danger: #f23f43;
+  --mention: #f0b232;
 }
 
 .native-body, #app { height: 100%; }
@@ -172,6 +173,10 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
   cursor: pointer;
 }
 .message-actions button:hover { background: var(--surface); color: var(--text); }
+/* Messages that mention the user: a bar and a tint, and the "@" marker, which says it without colour. */
+.message.mentions-me { margin-left: -16px; padding-left: 13px; border-left: 3px solid var(--mention); background: color-mix(in srgb, var(--mention) 10%, transparent); }
+.message.mentions-me:hover { background: color-mix(in srgb, var(--mention) 16%, transparent); }
+.mention-marker { padding: 0 5px; border-radius: 8px; background: var(--mention); color: #1e1f22; font-size: 11px; font-weight: 700; }
 .reply { overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .reply.missing { font-style: italic; }
 .reactions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }

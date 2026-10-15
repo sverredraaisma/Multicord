@@ -114,7 +114,7 @@ export const SAMPLE_MESSAGES: NativeMessage[] = [
       { key: "party:55", label: ":party:", imageUrl: placeholderImage("#f1c40f", "P"), count: 1, me: false },
     ],
   },
-  { ...base, id: "3", author: "Cy", content: "This replies to a deleted message", reply: null, edited: true },
+  { ...base, id: "3", author: "Cy", content: "This replies to a deleted message, and mentions you", reply: null, edited: true, mentionsMe: true },
   {
     ...base,
     id: "4",

@@ -222,6 +222,15 @@ export function messageItem(doc: Document, message: NativeMessage, handlers: Mes
   }
   const meta = el(doc, "div", "meta");
   meta.append(author, el(doc, "time", undefined, formatTime(message.timestamp)));
+  // Highlighted, and said in words too, not by colour alone.
+  if (message.mentionsMe === true) {
+    li.classList.add("mentions-me");
+    const marker = el(doc, "span", "mention-marker", "@");
+    marker.title = "Mentions you";
+    marker.setAttribute("role", "img");
+    marker.setAttribute("aria-label", "Mentions you");
+    meta.append(marker);
+  }
   if (message.edited) meta.append(el(doc, "span", "edited", "(edited)"));
   body.append(meta);
 

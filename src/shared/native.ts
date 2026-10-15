@@ -185,6 +185,8 @@ export interface NativeMessage {
   reply?: { author: string; content: string } | null;
   reactions: NativeReaction[];
   attachments: NativeAttachment[];
+  /** It mentions the user (by name, a role they have, or everyone), as the platform says; the view highlights it. */
+  mentionsMe?: boolean;
 }
 
 export interface NativeForumPost {

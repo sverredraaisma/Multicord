@@ -107,6 +107,16 @@ describe("messages", () => {
     expect(item.querySelector(".content span.emoji")!.textContent).toBe("😂");
   });
 
+  it("highlights messages that mention the user, in words as well as colour", () => {
+    expect(messageItem(document, message, handlers()).classList.contains("mentions-me")).toBe(false);
+    expect(messageItem(document, { ...message, mentionsMe: "yes" as unknown as boolean }, handlers()).querySelector(".mention-marker")).toBeNull();
+    const item = messageItem(document, { ...message, mentionsMe: true }, handlers());
+    expect(item.classList.contains("mentions-me")).toBe(true);
+    const marker = item.querySelector(".meta .mention-marker")!;
+    expect(marker.textContent).toBe("@");
+    expect(marker.getAttribute("aria-label")).toBe("Mentions you");
+  });
+
   it("offers the full picker from the quick palette when supported", () => {
     const h = { ...handlers(), onMoreReactions: vi.fn() };
     const item = messageItem(document, message, h, { reacting: true });
