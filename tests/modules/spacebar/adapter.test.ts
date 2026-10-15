@@ -547,6 +547,22 @@ describe("SpacebarAdapter messages", () => {
     expect(mediaKind(undefined)).toBe("file");
   });
 
+  it("shows link previews, with pictures only from the instance's own hosts", async () => {
+    const embeds = [
+      { type: "link", url: "https://example.org/a", title: "Proxied", thumbnail: { url: "https://example.org/t.png", proxy_url: "https://cdn.sb/proxy/t.png", width: 8, height: 6 } },
+      { type: "link", url: "https://example.org/b", title: "Direct", image: { url: "https://example.org/i.png" } },
+      { type: "rich", image: { url: "https://example.org/only.png" } },
+    ];
+    const ctx = await opened({ routes: [(url) => (url === `${API}/channels/111/messages?limit=50` ? { status: 200, body: [message("450", "111", { embeds })] } : undefined)] });
+    expect(ctx.channel().messages[0]!.embeds).toEqual([
+      { url: "https://example.org/a", title: "Proxied", image: { url: "https://cdn.sb/proxy/t.png", width: 8, height: 6, thumbnail: true } },
+      { url: "https://example.org/b", title: "Direct" },
+    ]);
+    // Embeds the instance adds later arrive as an update of the whole message.
+    await ctx.dispatch("MESSAGE_UPDATE", message("450", "111", { embeds: [] }));
+    expect(ctx.channel().messages[0]).not.toHaveProperty("embeds");
+  });
+
   it("sends, replies, edits and deletes", async () => {
     const ctx = await opened({ routes: [(url, init) => (url === `${API}/channels/111/messages/450` && init.method === "PATCH" ? { status: 200, body: message("450", "111", { content: "edited" }) } : undefined)] });
     await ctx.adapter.handleAction({ type: "send", content: "  " });

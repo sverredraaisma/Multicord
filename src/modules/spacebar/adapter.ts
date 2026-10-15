@@ -4,6 +4,7 @@ import {
   type NativeAction,
   type NativeAttachment,
   type NativeCustomEmoji,
+  type NativeEmbed,
   type NativeMember,
   type NativeMemberList,
   type NativeMessage,
@@ -31,6 +32,7 @@ import {
   timestampOf,
   type ReactionEmoji,
   type SpacebarChannel,
+  type SpacebarLinkEmbed,
   type SpacebarMember,
   type SpacebarMessage,
   type SpacebarUser,
@@ -837,6 +839,8 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
       })),
       attachments: message.attachments.map((a) => ({ name: a.filename, kind: mediaKind(a.contentType), url: a.url, width: a.width, height: a.height, size: a.size, mime: a.contentType })),
     };
+    const embeds = this.linkPreviews(message.links);
+    if (embeds.length > 0) view.embeds = embeds;
     const avatar = this.avatarUrl(message.author);
     if (avatar) view.avatarUrl = avatar;
     if (editable) view.source = message.content;
@@ -844,6 +848,21 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
     if (reply !== undefined)
       view.reply = reply && { id: reply.id, author: this.nameOf(reply.author), content: this.renderContent(reply.content), ...(reply.timestamp ? { timestamp: reply.timestamp } : {}) };
     return view;
+  }
+
+  /**
+   * Link previews the instance made. A picture shows only from the
+   * instance's own hosts (its CDN, or an image proxy it serves there), so
+   * looking at a message never reaches the linked site; a card left with
+   * nothing to show is dropped.
+   */
+  private linkPreviews(links: SpacebarLinkEmbed[]): NativeEmbed[] {
+    const hosts = instanceHosts(this.instance!);
+    return links.flatMap(({ image, ...card }) => {
+      const embed: NativeEmbed = card;
+      if (image && hosts.includes(new URL(image.url).hostname)) embed.image = image;
+      return embed.title || embed.description || embed.image ? [embed] : [];
+    });
   }
 
   /** The open guild's custom emoji, for messages and reactions there; none in DMs, where using a guild's emoji is not offered. */

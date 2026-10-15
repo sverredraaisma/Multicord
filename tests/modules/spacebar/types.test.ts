@@ -105,6 +105,35 @@ describe("Spacebar types", () => {
     expect(parseMessage({ id: "10" })).toBeUndefined();
   });
 
+  it("reads link previews with words, leaving media embeds out", () => {
+    const links = parseMessage(
+      message("10", "5", {
+        embeds: [
+          {
+            type: "link",
+            url: "https://example.org/a",
+            provider: { name: "Example" },
+            title: "A page",
+            description: "About it",
+            color: 0x00ff00,
+            thumbnail: { url: "https://example.org/t.png", proxy_url: "https://img.sb/t.png", width: 80, height: 60 },
+          },
+          { type: "rich", url: "http://example.org", author: { name: "Bot" }, title: "T".repeat(300), color: 0x1000000, image: { url: "https://example.org/i.png" } },
+          { type: "article", provider: { name: " " }, description: "words" },
+          { type: "image", url: "https://example.org/p.png", thumbnail: { url: "https://example.org/p.png" } },
+          { type: "link", url: "https://example.org/empty", image: { url: "javascript:x" } },
+          "bad",
+        ],
+      }),
+    )!.links;
+    expect(links).toEqual([
+      { url: "https://example.org/a", site: "Example", title: "A page", description: "About it", color: "#00ff00", image: { url: "https://img.sb/t.png", width: 80, height: 60, thumbnail: true } },
+      { site: "Bot", title: "T".repeat(256), image: { url: "https://example.org/i.png", width: undefined, height: undefined, thumbnail: false } },
+      { description: "words" },
+    ]);
+    expect(parseMessage(message("10", "5"))!.links).toEqual([]);
+  });
+
   it("reads read states and members", () => {
     expect(parseReadState({ id: "5", last_message_id: "9", mention_count: 2 })).toEqual({ channelId: "5", lastMessageId: "9", mentionCount: 2 });
     expect(parseReadState({ channel_id: "5", message_id: "9", mention_count: -1 })).toEqual({ channelId: "5", lastMessageId: "9", mentionCount: 0 });

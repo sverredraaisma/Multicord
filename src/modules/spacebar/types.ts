@@ -81,6 +81,18 @@ export interface SpacebarReaction {
   me: boolean;
 }
 
+/** A link preview with words: an article, a site's card, or a rich embed a bot made. */
+export interface SpacebarLinkEmbed {
+  url?: string;
+  site?: string;
+  title?: string;
+  description?: string;
+  /** "#rrggbb". */
+  color?: string;
+  /** Its picture as the instance names it (its proxy where it has one); the adapter decides whether it may be shown. */
+  image?: { url: string; width?: number; height?: number; thumbnail: boolean };
+}
+
 export interface SpacebarMessage {
   id: string;
   channelId: string;
@@ -92,6 +104,7 @@ export interface SpacebarMessage {
   mentionEveryone: boolean;
   roleMentionIds: string[];
   attachments: SpacebarAttachment[];
+  links: SpacebarLinkEmbed[];
   /** 0 DEFAULT, 19 REPLY; only these can be edited. */
   type: number;
   /** The message this one replies to; null when it no longer exists. */
@@ -229,6 +242,7 @@ export function parseMessage(value: unknown): SpacebarMessage | undefined {
     mentionEveryone: value.mention_everyone === true,
     roleMentionIds: list(value.mention_roles).filter(isId),
     attachments: parseAttachments(value.attachments),
+    links: list(value.embeds).flatMap((e) => parseLinkEmbed(e) ?? []),
     type: typeof value.type === "number" ? value.type : MessageType.Default,
     ...("referenced_message" in value ? { replyTo: parseReplyTo(value.referenced_message) } : {}),
     reactions: list(value.reactions).flatMap((r) => {
@@ -237,6 +251,37 @@ export function parseMessage(value: unknown): SpacebarMessage | undefined {
       return emoji && count ? [{ emoji, count, me: (r as Json).me === true }] : [];
     }),
   };
+}
+
+const https = (value: unknown): string | undefined => (typeof value === "string" && value.length <= 2048 && value.startsWith("https://") ? value : undefined);
+
+/**
+ * Embeds with words (articles, link cards, rich embeds); media embeds
+ * (image, gifv, video) are left out. A picture is named by its proxy_url,
+ * which is the instance's image proxy where it runs one and else the
+ * linked site's own address.
+ */
+function parseLinkEmbed(e: unknown): SpacebarLinkEmbed | undefined {
+  if (!isRecord(e) || e.type === "image" || e.type === "gifv" || e.type === "video") return undefined;
+  const text = (value: unknown, max: number): string | undefined => (typeof value === "string" && value.trim() !== "" ? value.slice(0, max) : undefined);
+  const embed: SpacebarLinkEmbed = {};
+  const url = https(e.url);
+  if (url) embed.url = url;
+  const site = text(isRecord(e.provider) ? e.provider.name : undefined, 100) ?? text(isRecord(e.author) ? e.author.name : undefined, 100);
+  if (site) embed.site = site;
+  const title = text(e.title, 256);
+  if (title) embed.title = title;
+  const description = text(e.description, 1000);
+  if (description) embed.description = description;
+  if (typeof e.color === "number" && Number.isInteger(e.color) && e.color >= 0 && e.color <= 0xffffff) embed.color = `#${e.color.toString(16).padStart(6, "0")}`;
+  const picture = (key: string, thumbnail: boolean): SpacebarLinkEmbed["image"] => {
+    const media = isRecord(e[key]) ? (e[key] as Json) : {};
+    const shown = https(media.proxy_url) ?? https(media.url);
+    return shown ? { url: shown, width: dimension(media.width), height: dimension(media.height), thumbnail } : undefined;
+  };
+  const image = picture("image", false) ?? picture("thumbnail", true);
+  if (image) embed.image = image;
+  return title || description || image ? embed : undefined;
 }
 
 /** referenced_message: absent for non-replies, null when the original is gone. */
