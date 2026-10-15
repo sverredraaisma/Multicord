@@ -94,6 +94,8 @@ export class NativeView {
   private jumpedId: string | undefined;
   /** Why the last jump did not arrive, shown in the side panel. */
   private jumpNote: string | undefined;
+  /** The message being forwarded, while the choice of where is open. */
+  private forwardFor: NativeMessage | undefined;
   /** The search panel is open in this conversation. */
   private searchOpen = false;
   /** A search was sent since it opened, so the module has results to drop when it closes. */
@@ -428,7 +430,15 @@ export class NativeView {
     profile.addEventListener("keydown", (event) => {
       if (event.key === "Escape") this.closeProfile();
     });
-    area.append(main, messagePanel, members, profile);
+    // Where to forward a message: this module's other conversations.
+    const forward = el(doc, "section", "profile-card forward-dialog");
+    forward.setAttribute("role", "dialog");
+    forward.setAttribute("aria-labelledby", "forward-title");
+    forward.hidden = true;
+    forward.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") this.closeForward();
+    });
+    area.append(main, messagePanel, members, profile, forward);
 
     const layout = el(doc, "div", "chat");
     layout.append(sidebar, area);
@@ -446,6 +456,7 @@ export class NativeView {
       searchInput,
       messagePanel,
       profile,
+      forward,
       banner,
       unreadBar,
       unreadText,
@@ -850,6 +861,12 @@ export class NativeView {
       if (!win?.confirm || win.confirm("Delete this message?")) this.api.act({ type: "delete", messageId: message.id });
     },
     onPin: (message, pin) => this.api.act({ type: "pin", messageId: message.id, pin }),
+    onForward: (message) => {
+      this.forwardFor = message;
+      this.updateForward(true);
+    },
+    // The shell's clipboard, not the module: copied text goes wherever the user pastes it.
+    onCopy: (message) => void this.doc.defaultView!.navigator.clipboard?.writeText(message.content).catch(() => undefined),
     onOpenProfile: (message) => this.openProfile({ id: message.authorId!, name: message.author, avatarUrl: message.avatarUrl }),
     isFavourite: (file) => this.favourites?.items.some((i) => i.origin === file.url) === true,
     onFavourite: (file, kind) => {
@@ -911,6 +928,54 @@ export class NativeView {
     );
     if (focusKey === undefined) return;
     [...panel.querySelectorAll<HTMLButtonElement>("button")].find((b) => (b.dataset.id ?? b.className) === focusKey && !b.disabled)?.focus();
+  }
+
+  private closeForward(): void {
+    this.forwardFor = undefined;
+    this.updateForward();
+  }
+
+  /**
+   * The choice of where to forward a message: the other conversations in
+   * this module's sidebar. Only within the module: another module's engine
+   * never gets this one's messages; Copy text takes it anywhere instead.
+   * Closed once the message or the conversation's forwarding is gone.
+   */
+  private updateForward(focus = false): void {
+    const doc = this.doc;
+    const dialog = this.parts.forward!;
+    const channel = this.lastState?.channel;
+    const message = this.forwardFor && channel && this.can.forward ? channel.messages.find((m) => m.id === this.forwardFor!.id) : undefined;
+    this.forwardFor = message;
+    dialog.hidden = !message;
+    if (!message) return dialog.replaceChildren();
+    const close = el(doc, "button", "profile-close", "×");
+    close.type = "button";
+    close.setAttribute("aria-label", "Close");
+    close.addEventListener("click", () => this.closeForward());
+    const title = el(doc, "h3", "profile-name", "Forward to");
+    title.id = "forward-title";
+    const what = el(doc, "p", "forward-what", `${message.author}: ${message.content.slice(0, 100) || "(attachments)"}`);
+    const targets = this.lastState!.sidebar.filter((item) => (item.kind === "text" || item.kind === "dm" || item.kind === "thread") && item.id !== channel!.id);
+    const list = el(doc, "ul", "forward-targets");
+    for (const target of targets) {
+      const li = el(doc, "li");
+      const button = el(doc, "button", "forward-target", target.name);
+      button.type = "button";
+      button.addEventListener("click", () => {
+        this.api.act({ type: "forward", messageId: message.id, channelId: target.id });
+        this.closeForward();
+      });
+      li.append(button);
+      list.append(li);
+    }
+    const note = el(doc, "p", "member-note", targets.length > 0 ? "Only conversations of this service are listed; Copy text takes a message anywhere." : "No other conversation is listed here to forward to.");
+    // Rebuilt on every update: give focus back to the button that had it.
+    const focused = doc.activeElement;
+    const kept = focused instanceof HTMLButtonElement && dialog.contains(focused) ? `${focused.className}|${focused.textContent}` : undefined;
+    dialog.replaceChildren(close, title, what, list, note);
+    const again = kept === undefined ? undefined : [...dialog.querySelectorAll("button")].find((b) => `${b.className}|${b.textContent}` === kept);
+    if (focus || kept !== undefined) (again ?? dialog.querySelector<HTMLButtonElement>(".forward-target") ?? close).focus();
   }
 
   /** Opens the search panel with its field in focus, or ends the search. */
@@ -1012,6 +1077,7 @@ export class NativeView {
       this.jumpedId = undefined;
       this.jumpNote = undefined;
       // The module drops a search when another conversation opens.
+      this.forwardFor = undefined;
       this.searchOpen = false;
       this.searched = false;
       (this.parts.searchInput as HTMLInputElement).value = "";
@@ -1032,6 +1098,7 @@ export class NativeView {
     heading!.textContent = channel ? channel.name : "Select a conversation";
     this.updateMembers();
     this.updateMessagePanel();
+    this.updateForward();
     this.updateProfile();
     this.parts.typing!.textContent = typingText(channel?.typing ?? []);
 

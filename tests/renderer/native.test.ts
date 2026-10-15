@@ -340,8 +340,8 @@ describe("message actions", () => {
   it("offers edit and delete only where allowed", () => {
     view.update(withMessages(ownMessage, msg("11")));
     const [own, other] = root.querySelectorAll(".message");
-    expect([...own!.querySelectorAll(".message-actions button")].map((b) => b.textContent)).toEqual(["Reply", "React", "Edit", "Delete"]);
-    expect([...other!.querySelectorAll(".message-actions button")].map((b) => b.textContent)).toEqual(["Reply", "React"]);
+    expect([...own!.querySelectorAll(".message-actions button")].map((b) => b.textContent)).toEqual(["Reply", "React", "Edit", "Delete", "Copy text"]);
+    expect([...other!.querySelectorAll(".message-actions button")].map((b) => b.textContent)).toEqual(["Reply", "React", "Copy text"]);
   });
 
   it("replies through a bar above the composer", () => {
@@ -458,7 +458,7 @@ describe("message actions", () => {
     expect(root.querySelector(".quick-reactions")).not.toBeNull();
     view.update(state(none));
     // The open palette closes; others' reactions still show but cannot be toggled.
-    expect(root.querySelectorAll(".message-actions button")).toHaveLength(0);
+    expect([...root.querySelectorAll(".message-actions button")].map((b) => b.textContent)).toEqual(["Copy text"]);
     expect(root.querySelector(".quick-reactions")).toBeNull();
     const chip = root.querySelector<HTMLButtonElement>(".reactions .reaction")!;
     expect(chip.disabled).toBe(true);
@@ -472,7 +472,7 @@ describe("message actions", () => {
     expect(act).not.toHaveBeenCalledWith({ type: "typing" });
     // A malformed flag counts as off.
     view.update(state({ ...ALL, reply: "yes", attach: 1 }));
-    expect([...root.querySelectorAll(".message-actions button")].map((b) => b.textContent)).toEqual(["React"]);
+    expect([...root.querySelectorAll(".message-actions button")].map((b) => b.textContent)).toEqual(["React", "Copy text"]);
     expect(attach.hidden).toBe(true);
     view.update(state(ALL));
     expect(attach.hidden).toBe(false);
@@ -1506,6 +1506,79 @@ describe("searching a conversation", () => {
     view.update(chat({ channel: { ...state(WITH_SEARCH).channel!, id: "3" } }));
     expect(toggle().getAttribute("aria-pressed")).toBe("false");
     expect(input().value).toBe("");
+  });
+});
+
+describe("forwarding and copying", () => {
+  const WITH_FORWARD = { ...ALL, forward: true };
+  const state = (can: unknown, messages = [msg("10"), msg("11", { content: "" })], sidebar?: Chat["sidebar"]) =>
+    chat({ channel: { ...chat().channel!, can: can as typeof ALL, messages }, ...(sidebar ? { sidebar } : {}) });
+  const actions = (id: string) => [...root.querySelectorAll<HTMLButtonElement>(`li.message[data-id="${id}"] .message-actions button`)];
+  const dialog = () => root.querySelector<HTMLElement>(".forward-dialog")!;
+
+  it("offers forwarding only where the conversation can, to its module's other conversations", () => {
+    view.update(state(ALL));
+    expect(actions("10").map((b) => b.textContent)).not.toContain("Forward");
+    view.update(state(WITH_FORWARD));
+    expect(dialog().hidden).toBe(true);
+    actions("11").find((b) => b.textContent === "Forward")!.click();
+    expect(dialog().hidden).toBe(false);
+    expect(dialog().getAttribute("role")).toBe("dialog");
+    expect(dialog().querySelector(".forward-what")!.textContent).toBe("Ana: (attachments)");
+    // Categories and the open conversation are no targets.
+    const targets = [...dialog().querySelectorAll<HTMLButtonElement>(".forward-target")];
+    expect(targets.map((b) => b.textContent)).toEqual(["Ana", "Bo"]);
+    expect(document.activeElement).toBe(targets[0]);
+    // Focus stays on its button across updates.
+    targets[1]!.focus();
+    view.update(state(WITH_FORWARD));
+    expect(document.activeElement!.textContent).toBe("Bo");
+    (document.activeElement as HTMLButtonElement).click();
+    expect(act).toHaveBeenLastCalledWith({ type: "forward", messageId: "11", channelId: "4" });
+    expect(dialog().hidden).toBe(true);
+  });
+
+  it("closes with Escape, its button, or when the message or forwarding goes", () => {
+    view.update(state(WITH_FORWARD));
+    actions("10").find((b) => b.textContent === "Forward")!.click();
+    expect(dialog().querySelector(".forward-what")!.textContent).toBe("Ana: text 10");
+    dialog().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(dialog().hidden).toBe(true);
+    actions("10").find((b) => b.textContent === "Forward")!.click();
+    dialog().dispatchEvent(new KeyboardEvent("keydown", { key: "Tab" }));
+    dialog().querySelector<HTMLButtonElement>(".profile-close")!.click();
+    expect(dialog().hidden).toBe(true);
+    actions("10").find((b) => b.textContent === "Forward")!.click();
+    view.update(state(WITH_FORWARD, [msg("11")]));
+    expect(dialog().hidden).toBe(true);
+    actions("11").find((b) => b.textContent === "Forward")!.click();
+    view.update(state(ALL, [msg("11")]));
+    expect(dialog().hidden).toBe(true);
+    view.update(state(WITH_FORWARD, [msg("11")]));
+    actions("11").find((b) => b.textContent === "Forward")!.click();
+    view.update(chat({ channel: { ...state(WITH_FORWARD, [msg("11")]).channel!, id: "3" } }));
+    expect(dialog().hidden).toBe(true);
+  });
+
+  it("says when there is nowhere to forward to, focusing its close button", () => {
+    view.update(state(WITH_FORWARD, [msg("10")], [{ id: "2", name: "general", kind: "text", unread: false, mentions: 0, active: true }]));
+    actions("10").find((b) => b.textContent === "Forward")!.click();
+    expect(dialog().textContent).toContain("No other conversation is listed here to forward to.");
+    expect(document.activeElement).toBe(dialog().querySelector(".profile-close"));
+  });
+
+  it("copies a message's text to the clipboard, where it has any", async () => {
+    const writeText = vi.fn(async (_text: string) => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    view.update(state(ALL));
+    expect(actions("11").map((b) => b.textContent)).not.toContain("Copy text");
+    actions("10").find((b) => b.textContent === "Copy text")!.click();
+    expect(writeText).toHaveBeenCalledWith("text 10");
+    writeText.mockRejectedValueOnce(new Error("denied"));
+    actions("10").find((b) => b.textContent === "Copy text")!.click();
+    await Promise.resolve();
+    Object.defineProperty(navigator, "clipboard", { value: undefined, configurable: true });
+    actions("10").find((b) => b.textContent === "Copy text")!.click();
   });
 });
 

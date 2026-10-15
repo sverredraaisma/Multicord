@@ -200,6 +200,10 @@ export interface MessageHandlers {
   onDelete(message: NativeMessage): void;
   /** Pins or unpins it, where the message says it may be (canPin); without it no message offers pinning. */
   onPin?(message: NativeMessage, pin: boolean): void;
+  /** Opens the choice of where to forward it, where the conversation can (can.forward). */
+  onForward?(message: NativeMessage): void;
+  /** Puts its text on the clipboard; the way to take it to another module, which a forward never does. */
+  onCopy?(message: NativeMessage): void;
   /** Opens the author's profile (messages with an authorId); without it the author is plain text. */
   onOpenProfile?(message: NativeMessage): void;
   /** Stars or unstars a GIF, sticker or picture; without it media has no star. */
@@ -216,7 +220,7 @@ export interface MessageOptions extends MarkdownOptions {
   /** Whether the quick reaction palette is open. */
   reacting?: boolean;
   /** What the conversation allows (NativeChannelView.can); everything when left out. */
-  can?: Pick<NativeChannelCan, "reply" | "react">;
+  can?: Pick<NativeChannelCan, "reply" | "react"> & Partial<Pick<NativeChannelCan, "forward">>;
   /** The message just jumped to (from the pins or search results), marked until the next jump. */
   highlighted?: boolean;
 }
@@ -233,6 +237,8 @@ function messageActions(doc: Document, message: NativeMessage, handlers: Message
   if (message.canEdit) action("Edit", () => handlers.onEdit(message));
   if (message.canDelete) action("Delete", () => handlers.onDelete(message));
   if (message.canPin === true && handlers.onPin) action(message.pinned === true ? "Unpin" : "Pin", () => handlers.onPin!(message, message.pinned !== true));
+  if (can?.forward === true && handlers.onForward) action("Forward", () => handlers.onForward!(message));
+  if (message.content.trim() !== "" && handlers.onCopy) action("Copy text", () => handlers.onCopy!(message));
   return bar;
 }
 

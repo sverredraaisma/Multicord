@@ -580,6 +580,12 @@ button.member:hover, button.member:focus-visible { background: var(--surface); c
 .profile-role { padding: 2px 8px; border: 1px solid var(--role-color, var(--border)); border-radius: 10px; font-size: 12px; }
 .profile-about { margin: 8px 0 0; overflow-wrap: anywhere; white-space: pre-wrap; }
 .profile-card .member-note { margin: 4px 0 0; }
+/* Where to forward a message. */
+.forward-dialog { align-items: stretch; }
+.forward-what { margin: 0 0 4px; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.forward-targets { display: flex; flex-direction: column; gap: 2px; max-height: 240px; margin: 0; padding: 0; overflow-y: auto; list-style: none; }
+.forward-target { width: 100%; padding: 6px 8px; border: 0; border-radius: 4px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.forward-target:hover, .forward-target:focus-visible { background: var(--surface); }
 
 /* Emoji, sticker, GIF and favourites picker */
 .media-picker {

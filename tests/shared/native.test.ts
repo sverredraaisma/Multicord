@@ -179,8 +179,8 @@ describe("media requests", () => {
 
 describe("conversation capability flags", () => {
   it("turns a flag on only when it is exactly true", () => {
-    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false, pins: false, search: false };
-    expect(channelCan({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true })).toEqual({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true });
+    const none = { reply: false, react: false, attach: false, typing: false, members: false, stickers: false, gifs: false, pins: false, search: false, forward: false };
+    expect(channelCan({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true, forward: true })).toEqual({ reply: true, react: true, attach: true, typing: true, members: true, stickers: true, gifs: true, pins: true, search: true, forward: true });
     expect(channelCan({ reply: true, react: "yes", attach: 1, members: "true", stickers: "yes", extra: true })).toEqual({ ...none, reply: true });
     for (const value of [undefined, null, "all", 5]) expect(channelCan(value)).toEqual(none);
   });
@@ -525,5 +525,13 @@ describe("search", () => {
       loading: false,
     });
     expect(searchResults({ query: 5, loading: true })).toEqual({ query: "", messages: [], loading: true });
+  });
+});
+
+describe("forwarding", () => {
+  it("takes a message and a conversation of the same module", () => {
+    expect(isNativeAction({ type: "forward", messageId: "5", channelId: "6" })).toBe(true);
+    expect(isNativeAction({ type: "forward", messageId: "5", channelId: "!room:x.org" })).toBe(false);
+    expect(isNativeAction({ type: "forward", messageId: "$e", channelId: "6" })).toBe(false);
   });
 });

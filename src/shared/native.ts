@@ -498,9 +498,11 @@ export interface NativeChannelCan {
   pins?: boolean;
   /** Search the conversation's messages (`search` actions, NativeChannelView.search). */
   search?: boolean;
+  /** Forward its messages into another of this module's conversations (`forward` actions). */
+  forward?: boolean;
 }
 
-export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins", "search"] as const satisfies readonly (keyof NativeChannelCan)[];
+export const CHANNEL_CAN_FLAGS = ["reply", "react", "attach", "typing", "members", "stickers", "gifs", "pins", "search", "forward"] as const satisfies readonly (keyof NativeChannelCan)[];
 
 /** A conversation's flags as the view trusts them: each on only when it is exactly `true`. */
 export function channelCan(value: unknown): Required<NativeChannelCan> {
@@ -859,6 +861,12 @@ export type NativeAction =
   | { type: "pin"; messageId: string; pin: boolean }
   /** Searches the open conversation's messages (can.search); an empty query ends the search. */
   | { type: "search"; query: string }
+  /**
+   * Forwards a message of the open conversation into another conversation
+   * of the same module (can.forward): natively where the platform can, else
+   * as a new message saying where it came from. Never across modules.
+   */
+  | { type: "forward"; messageId: string; channelId: string }
   | { type: "logout" };
 
 export const MAX_MESSAGE_LENGTH = 4000;
@@ -910,6 +918,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return id(v.channelId) && typeof v.mute === "boolean";
     case "pins":
       return typeof v.open === "boolean";
+    case "forward":
+      return id(v.messageId) && id(v.channelId);
     case "search":
       return text(v.query, 0, MAX_SEARCH_QUERY);
     case "pin":
