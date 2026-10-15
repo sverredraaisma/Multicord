@@ -22,8 +22,8 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 
 ## What v0.1 does
 
-- **Platform modules:** every platform is a module with a manifest in `src/main/modules` (id, label, colour, which view it uses, whether users may add instances, and for native modules its engine, hosts and capabilities). The shell knows platforms only through this interface; a new platform is a new module, with no changes to the shell. The built-in modules are `discord`, `fluxer`, `telegram` and `web`.
-- **Isolated module engines:** a native module's logic (Fluxer, Telegram) does not run in the main process. It runs in an *engine*: a hidden renderer with Chromium's sandbox, no Node, its own session (in memory, or on disk for modules that keep encryption keys, separate per instance and cleared when the instance is removed), and a page on its own origin (`multicord-engine://<module>`) with a strict CSP. The engine reaches the shell only through a bridge the main process validates and binds to that one engine:
+- **Platform modules:** every platform is a module with a manifest in `src/main/modules` (id, label, colour, which view it uses, whether users may add instances, and for native modules its engine, hosts and capabilities). The shell knows platforms only through this interface; a new platform is a new module, with no changes to the shell. The built-in modules are `discord`, `fluxer`, `telegram`, `matrix-native` and `stoat-native` (native), and the web-client modules `fluxer-web`, `matrix` (Element), `stoat`, `spacebar`, `nerimity`, `mumble` and `web`.
+- **Isolated module engines:** a native module's logic (Fluxer, Telegram, Matrix, Stoat) does not run in the main process. It runs in an *engine*: a hidden renderer with Chromium's sandbox, no Node, its own session (in memory, or on disk for modules that keep encryption keys, separate per instance and cleared when the instance is removed), and a page on its own origin (`multicord-engine://<module>`) with a strict CSP. The engine reaches the shell only through a bridge the main process validates and binds to that one engine:
   - its own secrets (stored encrypted with `safeStorage`, under its instance id; it cannot name another instance's keys),
   - HTTP through the main process with the engine's own cookie-less session: https only, never local or private addresses, only the module's declared hosts if it declares any (an engine may lock itself to its instance's hosts once it has discovered them, and a lock can only narrow. Stoat and Matrix do this. Fluxer doesn't, since its presigned uploads go to storage hosts it cannot know in advance), each redirect checked again,
   - WebSockets only to the same allowed hosts,
@@ -138,13 +138,15 @@ src/
   shared/settings.ts     app settings, services list and settings actions, with validators
   main/settings*.ts      settings store and the controller behind the settings page
   main/services.ts       edits to platforms.json
-  main/modules/          platform module manifests (discord, fluxer, telegram, web) and their registry
+  main/modules/          platform module manifests (discord, fluxer, telegram, matrix, stoat, web clients) and their registry
   main/engineHost.ts     runs module engines: sandboxed views, the validated bridge, session lockdown
   main/netPolicy.ts      what engines may contact, and the HTTP bridge
   shared/engine.ts       the engine protocol and its validators
   engine/runtime.ts      engine-side helpers: bridged fetch, secrets, files; serving an adapter
   modules/fluxer/        Fluxer client (engine): discovery, captcha, REST, gateway, state, adapter
   modules/telegram/      Telegram client (engine): GramJS glue and adapter
+  modules/matrix/        Matrix client (engine): Client-Server API, Rust crypto, MatrixRTC calls, adapter
+  modules/stoat/         Stoat client (engine): REST, events socket, state, adapter
   preload/engine.ts      the engine bridge
   renderer/components/   the component library: server icons, channel lists, messages,
                          markdown, reactions, emoji picker, forums, voice panel, forms
@@ -170,7 +172,6 @@ Each file's header says how to run it; the servers run in Docker on this machine
 ## Known limitations / next steps
 - Rich Presence game detection goes by process name only, so names several games share are skipped. The WebSocket transport some browser-based apps use is not offered.
 - Guild selectors (`dom.ts`) and store names (`storeBridge.ts`) follow Discord's current client. Settings > Diagnostics checks them against the running client (each hook, and what breaks if it fails). The running app rechecks every minute: once startup has settled, a check that fails (after working, or at all while signed in) brings one notification pointing there. For repairs, "Copy report" puts the checks, with what each breaks and the versions, on the clipboard, for an issue or an AI assistant to propose a fix. Multicord itself calls no AI service. Guilds could later move to store reads too.
-- Rich Presence (arRPC) is not started.
 - Linux screen-share sound goes through venmic, which installs on Linux only. Its main-process part was verified on real PipeWire: another app's sound reaches the virtual microphone, Multicord's own does not, and stopping unlinks it. The page side also ran in a Linux Electron (WSLg, PipeWire 1.0.5): the share carried the other app's tone and not the page's own, and ending the share released the microphone. A real "stop sharing" click and Discord's own page were not part of that run. venmic captures sound going to real output devices, not bare virtual sinks.
 - Fluxer (native) does not support:
   - **Security keys (WebAuthn):** they are bound to Fluxer's own web origin, and Multicord won't impersonate it. Accounts protected only by a security key can sign in with a backup code.
