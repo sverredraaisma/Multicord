@@ -8,6 +8,20 @@ export interface TgUser {
   bot: boolean;
 }
 
+/** A message's photo, video, sound, sticker or file, as far as the view needs to know it. */
+export interface TgFile {
+  kind: "image" | "video" | "audio" | "sticker" | "file";
+  name: string;
+  mime?: string;
+  size?: number;
+  width?: number;
+  height?: number;
+  /** Plays silently on a loop: GIFs, which Telegram sends as video. */
+  loop?: boolean;
+  /** Only a still thumbnail can be shown (animated vector stickers). */
+  thumbnailOnly?: boolean;
+}
+
 export interface TgMessage {
   id: number;
   chatId: string;
@@ -17,6 +31,8 @@ export interface TgMessage {
   text: string;
   /** A short label for media, e.g. "📷 Photo". */
   media?: string;
+  /** The media itself, when it is something to show or play. */
+  file?: TgFile;
   date: number;
   edited: boolean;
   replyToId?: number;
@@ -55,6 +71,8 @@ export interface TelegramApi {
   markRead(chatId: string, maxId: number): Promise<void>;
   /** A small profile picture as a data: URL. */
   avatar(chatId: string): Promise<string | undefined>;
+  /** A message's media (or its thumbnail), as bytes; undefined when there is none. */
+  download(chatId: string, messageId: number, thumbnail: boolean): Promise<Uint8Array | undefined>;
   onUpdate(cb: (update: TgUpdate) => void): void;
   /** The session to store, so the next start skips signing in. */
   session(): string;

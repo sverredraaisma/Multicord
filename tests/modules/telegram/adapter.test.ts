@@ -36,6 +36,7 @@ class FakeTelegramApi implements TelegramApi {
   remove = vi.fn(async (_chatId: string, _ids: number[]) => {});
   markRead = vi.fn(async (_chatId: string, _maxId: number) => {});
   avatar = vi.fn(async (_chatId: string): Promise<string | undefined> => undefined);
+  download = vi.fn(async (_chatId: string, _id: number, _thumbnail: boolean): Promise<Uint8Array | undefined> => new Uint8Array([104, 105]));
   onUpdate = vi.fn((cb: (update: TgUpdate) => void) => void (this.listener = cb));
   session = vi.fn(() => "sess");
   logOut = vi.fn(async () => {});
@@ -47,6 +48,7 @@ class FakeTelegramApi implements TelegramApi {
 }
 
 interface Options {
+  mediaBudget?: number;
   secrets?: Record<string, string>;
   builtIn?: TelegramCredentials;
   dialogs?: TgDialog[];
@@ -72,6 +74,7 @@ function setup(options: Options = {}) {
     render: (state) => renders.push(state),
     builtInCredentials: options.builtIn,
     createApi,
+    mediaBudget: options.mediaBudget,
   });
   adapter.onDirectsChanged((d) => directs.push(d));
   adapter.onNotification((n) => notifications.push(n));
@@ -927,5 +930,86 @@ describe("messageText", () => {
     expect(messageText(msg("1", 1, { text: "hi" }))).toBe("hi");
     expect(messageText(msg("1", 1, { text: "", media: "📷 Photo" }))).toBe("📷 Photo");
     expect(messageText(msg("1", 1, { text: "" }))).toBe("");
+  });
+});
+
+describe("media", () => {
+  const photo = { kind: "image" as const, name: "Photo", mime: "image/jpeg", size: 2, width: 4, height: 3 };
+
+  it("offers media to load, and loads it once into the view", async () => {
+    const ctx = await signedIn();
+    ctx.api.history.mockResolvedValueOnce([
+      msg("1", 1, { text: "look", media: "📷 Photo", file: photo }),
+      msg("1", 2, { text: "", media: "📍 Location" }),
+      msg("1", 3, { text: "", media: "🎉 Sticker", file: { kind: "sticker", name: "🎉 Sticker", mime: "image/webp", thumbnailOnly: true } }),
+      msg("1", 4, { text: "", media: "GIF", file: { kind: "video", name: "GIF", mime: "video/mp4", loop: true } }),
+    ]);
+    await ctx.act({ type: "select", channelId: "1" });
+    const [first, second, , gif] = ctx.chat().channel!.messages;
+    expect(first!.content).toBe("look"); // the picture shows; no label needed
+    expect(first!.attachments).toEqual([{ ...photo, mediaKey: "tg:1:1" }]);
+    expect(second!.content).toBe("📍 Location");
+    expect(gif!.attachments[0]).toMatchObject({ loop: true, mediaKey: "tg:1:4" });
+
+    await ctx.act({ type: "loadMedia", key: "tg:1:1" });
+    expect(ctx.api.download).toHaveBeenCalledWith("1", 1, false);
+    expect(ctx.chat().channel!.messages[0]!.attachments[0]).toMatchObject({ url: "data:image/jpeg;base64,aGk=" });
+    await ctx.act({ type: "loadMedia", key: "tg:1:1" }); // already here
+    await ctx.act({ type: "loadMedia", key: "tg:1:3" });
+    expect(ctx.api.download).toHaveBeenLastCalledWith("1", 3, true); // the still of an animated sticker
+    expect(ctx.api.download).toHaveBeenCalledTimes(2);
+  });
+
+  it("says when media is too large, gone or failed, and ignores keys it did not give", async () => {
+    const { MAX_MEDIA_BYTES } = await import("../../../src/modules/telegram/adapter");
+    const ctx = await signedIn();
+    ctx.api.history.mockResolvedValueOnce([
+      msg("1", 1, { file: { ...photo, size: MAX_MEDIA_BYTES + 1 } }),
+      msg("1", 2, { file: photo }),
+      msg("1", 3, { file: { kind: "file", name: "a.bin" } }),
+      msg("1", 4, { file: { kind: "video", name: "v" } }),
+      msg("1", 5, { file: { kind: "audio", name: "a" } }),
+    ]);
+    await ctx.act({ type: "select", channelId: "1" });
+    const attachment = (i: number) => ctx.chat().channel!.messages[i]!.attachments[0]!;
+    expect(attachment(0)).toMatchObject({ unavailable: "too large to show here; open it in Telegram" });
+    expect(attachment(0)).not.toHaveProperty("mediaKey");
+
+    ctx.api.download.mockResolvedValueOnce(undefined);
+    await ctx.act({ type: "loadMedia", key: "tg:1:2" });
+    expect(attachment(1)).toMatchObject({ unavailable: "not available" });
+    ctx.api.download.mockResolvedValueOnce(new Uint8Array(MAX_MEDIA_BYTES + 1));
+    await ctx.act({ type: "loadMedia", key: "tg:1:3" });
+    expect(attachment(2)).toMatchObject({ unavailable: "too large to show here; open it in Telegram" });
+    ctx.api.download.mockRejectedValueOnce({ errorMessage: "FILE_REFERENCE_EXPIRED" });
+    await ctx.act({ type: "loadMedia", key: "tg:1:4" });
+    expect(attachment(3)).toMatchObject({ unavailable: "could not load: FILE_REFERENCE_EXPIRED" });
+    // A file of unknown type travels as plain bytes.
+    await ctx.act({ type: "loadMedia", key: "tg:1:5" });
+    expect(attachment(4)).toMatchObject({ url: "data:application/octet-stream;base64,aGk=" });
+
+    ctx.api.download.mockClear();
+    for (const key of ["tg:1:99", "tg:9:1", "other:1:1", "tg:x:1"]) await ctx.act({ type: "loadMedia", key });
+    expect(ctx.api.download).not.toHaveBeenCalled();
+  });
+
+  it("keeps loaded media within its budget, forgetting the oldest first", async () => {
+    const ctx = await signedIn({ mediaBudget: 1000 });
+    ctx.api.history.mockResolvedValueOnce([msg("1", 1, { file: photo }), msg("1", 2, { file: photo })]);
+    await ctx.act({ type: "select", channelId: "1" });
+    // Each download takes more than half the budget once encoded.
+    ctx.api.download.mockResolvedValue(new Uint8Array(400));
+    await ctx.act({ type: "loadMedia", key: "tg:1:1" });
+    await ctx.act({ type: "loadMedia", key: "tg:1:2" });
+    const [first, second] = ctx.chat().channel!.messages;
+    expect(first!.attachments[0]).toMatchObject({ mediaKey: "tg:1:1" });
+    expect(first!.attachments[0]).not.toHaveProperty("url");
+    expect(second!.attachments[0]!.url).toMatch(/^data:image\/jpeg;base64,/);
+  });
+
+  it("encodes large files to base64 in pieces", async () => {
+    const { toBase64 } = await import("../../../src/modules/telegram/adapter");
+    const bytes = new Uint8Array(100_000).map((_, i) => i % 256);
+    expect(toBase64(bytes)).toBe(Buffer.from(bytes).toString("base64"));
   });
 });

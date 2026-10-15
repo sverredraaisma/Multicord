@@ -11,6 +11,7 @@ const h = vi.hoisted(() => {
     "DocumentAttributeSticker", "DocumentAttributeAudio", "DocumentAttributeVideo", "DocumentAttributeFilename",
     "MessageMediaGeo", "MessageMediaGeoLive", "MessageMediaVenue", "MessageMediaContact", "MessageMediaPoll",
     "PeerUser", "PeerChat", "Message", "MessageReplyHeader", "User",
+    "Photo", "PhotoSize", "PhotoSizeProgressive", "DocumentAttributeImageSize", "DocumentAttributeAnimated",
   ];
   const Api: Record<string, unknown> = {
     auth: { SignIn: class extends Base {}, AuthorizationSignUpRequired: class extends Base {}, CheckPassword: class extends Base {}, LogOut: class extends Base {} },
@@ -32,6 +33,7 @@ const h = vi.hoisted(() => {
     deleteMessages = vi.fn(async () => []);
     markAsRead = vi.fn(async () => true);
     downloadProfilePhoto = vi.fn();
+    downloadMedia = vi.fn();
     addEventHandler = vi.fn();
     setLogLevel = vi.fn();
     destroy = vi.fn(async () => undefined);
@@ -64,7 +66,7 @@ vi.mock("telegram/sessions/StringSession", () => ({
   },
 }));
 
-import { createGramApi, mediaLabel, toMessage, userChatId } from "../../../src/modules/telegram/gram";
+import { createGramApi, mediaFile, mediaLabel, toMessage, userChatId } from "../../../src/modules/telegram/gram";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const Api = h.Api as any;
@@ -335,5 +337,66 @@ describe("createGramApi", () => {
     expect(client.invoke.mock.calls[0]![0]).toBeInstanceOf(Api.auth.LogOut);
     await expect(api.disconnect()).resolves.toBeUndefined();
     expect(client.destroy).toHaveBeenCalled();
+  });
+});
+
+describe("mediaFile", () => {
+  const doc = (props: Record<string, unknown>, ...attributes: unknown[]) => make(Api.MessageMediaDocument, { document: make(Api.Document, { attributes, ...props }) });
+
+  it("describes photos by their largest size", () => {
+    const photo = make(Api.Photo, { sizes: [make(Api.PhotoSize, { w: 90, h: 60, size: 900 }), make(Api.PhotoSizeProgressive, { w: 1280, h: 853, sizes: [100, 5000, 90000] })] });
+    expect(mediaFile(make(Api.MessageMediaPhoto, { photo }))).toEqual({ kind: "image", name: "Photo", mime: "image/jpeg", width: 1280, height: 853, size: 90000 });
+    expect(mediaFile(make(Api.MessageMediaPhoto, { photo: undefined }))).toEqual({ kind: "image", name: "Photo", mime: "image/jpeg", width: undefined, height: undefined, size: undefined });
+  });
+
+  it("describes documents by their attributes", () => {
+    expect(mediaFile(doc({ mimeType: "image/webp", size: 5000 }, make(Api.DocumentAttributeSticker, { alt: "😀" }), make(Api.DocumentAttributeImageSize, { w: 512, h: 512 })))).toEqual({
+      kind: "sticker", name: "😀 Sticker", mime: "image/webp", size: 5000, width: 512, height: 512,
+    });
+    expect(mediaFile(doc({ mimeType: "application/x-tgsticker" }, make(Api.DocumentAttributeSticker, { alt: "" })))).toMatchObject({ kind: "sticker", name: "🙂 Sticker", mime: "image/webp", thumbnailOnly: true });
+    expect(mediaFile(doc({ mimeType: "video/webm" }, make(Api.DocumentAttributeSticker, { alt: "🎉" }), make(Api.DocumentAttributeVideo, { w: 512, h: 512 })))).toMatchObject({ kind: "sticker", mime: "video/webm", width: 512 });
+    expect(mediaFile(doc({ mimeType: "audio/ogg", size: BigInt(4000) }, make(Api.DocumentAttributeAudio, { voice: true })))).toEqual({ kind: "audio", name: "Voice message", mime: "audio/ogg", size: 4000 });
+    expect(mediaFile(doc({ mimeType: "audio/mpeg", size: { toJSNumber: () => 7 } }, make(Api.DocumentAttributeAudio, { performer: "Band", title: "Song" })))).toMatchObject({ name: "Band – Song", size: 7 });
+    expect(mediaFile(doc({}, make(Api.DocumentAttributeAudio), make(Api.DocumentAttributeFilename, { fileName: "a.mp3" })))).toMatchObject({ name: "a.mp3" });
+    expect(mediaFile(doc({}, make(Api.DocumentAttributeAudio)))).toMatchObject({ name: "Audio" });
+    expect(mediaFile(doc({ mimeType: "video/mp4" }, make(Api.DocumentAttributeAnimated), make(Api.DocumentAttributeVideo, { w: 320, h: 240 })))).toMatchObject({ kind: "video", name: "GIF", loop: true, width: 320 });
+    expect(mediaFile(doc({ mimeType: "video/mp4", size: -1 }, make(Api.DocumentAttributeVideo, { w: 1920, h: 1080, roundMessage: true })))).toEqual({ kind: "video", name: "Video message", mime: "video/mp4", size: undefined, width: 1920, height: 1080 });
+    expect(mediaFile(doc({}, make(Api.DocumentAttributeVideo), make(Api.DocumentAttributeFilename, { fileName: "clip.mp4" })))).toMatchObject({ name: "clip.mp4" });
+    expect(mediaFile(doc({}, make(Api.DocumentAttributeVideo)))).toMatchObject({ name: "Video" });
+    expect(mediaFile(doc({ mimeType: "image/png" }, make(Api.DocumentAttributeFilename, { fileName: "s.png" })))).toMatchObject({ kind: "image", name: "s.png" });
+    expect(mediaFile(doc({ mimeType: "image/png" }))).toMatchObject({ kind: "image", name: "Image" });
+    expect(mediaFile(doc({ mimeType: "application/pdf", size: 10 }, make(Api.DocumentAttributeFilename, { fileName: "a.pdf" })))).toEqual({ kind: "file", name: "a.pdf", mime: "application/pdf", size: 10 });
+    expect(mediaFile(doc({ mimeType: "" }))).toEqual({ kind: "file", name: "File", mime: undefined, size: undefined });
+  });
+
+  it("has nothing to show for other media", () => {
+    expect(mediaFile(undefined)).toBeUndefined();
+    expect(mediaFile(make(Api.MessageMediaGeo))).toBeUndefined();
+    expect(mediaFile(make(Api.MessageMediaDocument, { document: undefined }))).toBeUndefined();
+  });
+});
+
+describe("downloads", () => {
+  it("downloads a message's media, or its largest thumbnail", async () => {
+    const api = createGramApi({ apiId: 1, apiHash: "h" }, "", { os: "linux", appVersion: "1" });
+    const client = h.FakeClient.instances.at(-1)!;
+    const message = make(Api.Message, { id: 5, media: make(Api.MessageMediaDocument, { document: make(Api.Document, { attributes: [], thumbs: [{}, {}] }) }) });
+    client.getMessages.mockResolvedValue([message]);
+    client.downloadMedia.mockResolvedValue(new Uint8Array([1, 2]));
+    expect(await api.download("42", 5, false)).toEqual(new Uint8Array([1, 2]));
+    expect(client.downloadMedia).toHaveBeenLastCalledWith(message, {});
+    await api.download("42", 5, true);
+    expect(client.downloadMedia).toHaveBeenLastCalledWith(message, { thumb: 1 });
+    client.getMessages.mockResolvedValue([make(Api.Message, { id: 6, media: make(Api.MessageMediaPhoto) })]);
+    await api.download("42", 6, true);
+    expect(client.downloadMedia).toHaveBeenLastCalledWith(expect.anything(), { thumb: 0 });
+    client.downloadMedia.mockResolvedValue("a path");
+    expect(await api.download("42", 6, false)).toBeUndefined();
+    client.downloadMedia.mockResolvedValue(new Uint8Array());
+    expect(await api.download("42", 6, false)).toBeUndefined();
+    client.getMessages.mockResolvedValue([make(Api.Message, { id: 7 })]);
+    expect(await api.download("42", 7, false)).toBeUndefined();
+    client.getMessages.mockResolvedValue([undefined]);
+    expect(await api.download("42", 8, false)).toBeUndefined();
   });
 });

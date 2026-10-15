@@ -10,7 +10,7 @@ import { LogLevel } from "telegram/extensions/Logger";
 import { returnBigInt } from "telegram/Helpers";
 import { computeCheck } from "telegram/Password";
 import { StringSession } from "telegram/sessions/StringSession";
-import { telegramError, type TelegramApi, type TelegramCredentials, type TgDialog, type TgMessage, type TgSignIn, type TgUpdate, type TgUser } from "./api";
+import { telegramError, type TelegramApi, type TelegramCredentials, type TgDialog, type TgFile, type TgMessage, type TgSignIn, type TgUpdate, type TgUser } from "./api";
 
 /** Largest profile picture passed on (as a data: URL); bigger ones show initials. */
 const MAX_AVATAR_BYTES = 140_000;
@@ -41,6 +41,48 @@ export function mediaLabel(media: Api.TypeMessageMedia | undefined): string | un
   return "Attachment";
 }
 
+const count = (value: unknown): number | undefined => {
+  const n = typeof value === "number" ? value : typeof value === "bigint" ? Number(value) : typeof (value as { toJSNumber?: unknown })?.toJSNumber === "function" ? (value as { toJSNumber(): number }).toJSNumber() : undefined;
+  return n !== undefined && Number.isFinite(n) && n > 0 ? n : undefined;
+};
+
+/** The photo, video, sound, sticker or file in a message, described for the view. */
+export function mediaFile(media: Api.TypeMessageMedia | undefined): TgFile | undefined {
+  if (media instanceof Api.MessageMediaPhoto) {
+    const photo = media.photo instanceof Api.Photo ? media.photo : undefined;
+    // The largest size is what downloads.
+    let best: { w: number; h: number; size?: number } | undefined;
+    for (const size of photo?.sizes ?? []) {
+      if (size instanceof Api.PhotoSize) best = { w: size.w, h: size.h, size: size.size };
+      else if (size instanceof Api.PhotoSizeProgressive) best = { w: size.w, h: size.h, size: size.sizes.at(-1) };
+    }
+    return { kind: "image", name: "Photo", mime: "image/jpeg", width: best?.w, height: best?.h, size: best?.size };
+  }
+  if (!(media instanceof Api.MessageMediaDocument) || !(media.document instanceof Api.Document)) return undefined;
+  const document = media.document;
+  const attributes = document.attributes;
+  const find = <T>(type: new (...args: never[]) => T): T | undefined => attributes.find((a): a is never => a instanceof type) as T | undefined;
+  const mime = document.mimeType || undefined;
+  const size = count(document.size);
+  const video = find(Api.DocumentAttributeVideo);
+  const image = find(Api.DocumentAttributeImageSize);
+  const dims = { width: video?.w ?? image?.w, height: video?.h ?? image?.h };
+  const filename = find(Api.DocumentAttributeFilename)?.fileName;
+  const sticker = find(Api.DocumentAttributeSticker);
+  if (sticker) {
+    const name = `${sticker.alt || "🙂"} Sticker`;
+    // Animated vector stickers (.tgs) cannot be drawn here: their still thumbnail is.
+    if (mime === "application/x-tgsticker") return { kind: "sticker", name, mime: "image/webp", thumbnailOnly: true, ...dims };
+    return { kind: "sticker", name, mime, size, ...dims };
+  }
+  const audio = find(Api.DocumentAttributeAudio);
+  if (audio) return { kind: "audio", name: audio.voice ? "Voice message" : [audio.performer, audio.title].filter(Boolean).join(" – ") || filename || "Audio", mime, size };
+  if (find(Api.DocumentAttributeAnimated)) return { kind: "video", name: "GIF", mime, size, loop: true, ...dims };
+  if (video) return { kind: "video", name: filename ?? (video.roundMessage ? "Video message" : "Video"), mime, size, ...dims };
+  if (mime?.startsWith("image/")) return { kind: "image", name: filename ?? "Image", mime, size, ...dims };
+  return { kind: "file", name: filename ?? "File", mime, size };
+}
+
 /** The other user of a one-to-one chat, or undefined for groups and channels. */
 export function userChatId(peer: Api.TypePeer | undefined): string | undefined {
   return peer instanceof Api.PeerUser ? peer.userId.toString() : undefined;
@@ -57,6 +99,8 @@ export function toMessage(message: Api.Message, chatId: string): TgMessage {
   };
   const media = mediaLabel(message.media);
   if (media) out.media = media;
+  const file = mediaFile(message.media);
+  if (file) out.file = file;
   const reply = message.replyTo instanceof Api.MessageReplyHeader ? message.replyTo.replyToMsgId : undefined;
   if (reply) out.replyToId = reply;
   return out;
@@ -130,6 +174,15 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
       const photo = await client.downloadProfilePhoto(peer(chatId), { isBig: false });
       if (!photo || typeof photo === "string" || photo.length === 0 || photo.length > MAX_AVATAR_BYTES) return undefined;
       return `data:image/jpeg;base64,${photo.toString("base64")}`;
+    },
+    download: async (chatId, messageId, thumbnail) => {
+      const [message] = await client.getMessages(peer(chatId), { ids: [messageId] });
+      if (!(message instanceof Api.Message) || !message.media) return undefined;
+      const document = message.media instanceof Api.MessageMediaDocument && message.media.document instanceof Api.Document ? message.media.document : undefined;
+      // The largest thumbnail, for media that can only be shown as one.
+      const thumb = thumbnail ? Math.max(0, (document?.thumbs?.length ?? 1) - 1) : undefined;
+      const data = await client.downloadMedia(message, thumb === undefined ? {} : { thumb });
+      return data instanceof Uint8Array && data.length > 0 ? new Uint8Array(data) : undefined;
     },
     onUpdate: (cb: (update: TgUpdate) => void) => {
       client.addEventHandler((event: NewMessageEvent) => {
