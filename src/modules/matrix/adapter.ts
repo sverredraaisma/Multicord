@@ -54,9 +54,10 @@ import {
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseEmotes, parseEvent, parseJoinedMembers, parseMxc, parsePowerLevels, parsePresence, parseProfile, reactionKey, serviceUrl, userId, type MxProfile } from "./events";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseEmotes, parseEvent, parseFormatting, parseJoinedMembers, parseMxc, parsePowerLevels, parsePresence, parseProfile, reactionKey, serviceUrl, userId, type MxProfile } from "./events";
 import { AttachmentError, decryptAttachment, encryptAttachment, imageSize } from "./media";
-import { emoticonHtml, emoticonMarkdown, HTML_FORMAT, packImageId, stickerFormat, textMentions } from "./packs";
+import { markdownHtml, richMarkdown } from "./format";
+import { emoticonHtml, emoticonMarkdown, escapeHtml, HTML_FORMAT, packImageId, stickerFormat, textMentions } from "./packs";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 import type { Verification, VerificationState } from "./verification";
 
@@ -385,6 +386,8 @@ function sentContent(msgtype: string, text: string, content: Record<string, unkn
   const shown: MxContent = { msgtype, text };
   const emotes = parseEmotes(content);
   if (emotes) shown.emotes = emotes;
+  const html = parseFormatting(content);
+  if (html) shown.html = html;
   return shown;
 }
 
@@ -2634,10 +2637,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return textMentions(text).filter((user) => user !== session.userId);
   }
 
-  /** formatted_body for a message: its custom emoji as pictures and the users it mentions as pills; undefined for plain text. */
+  /** formatted_body for a message: its markdown as HTML, its custom emoji as pictures and the users it mentions as pills; undefined for plain text. */
   private messageHtml(room: Room, text: string, mentioned: string[]): string | undefined {
     const { emoticons } = this.offer(room);
-    return emoticonHtml(text, (shortcode) => emoticons.get(shortcode)?.image, (user) => (mentioned.includes(user) ? this.memberName(room, user) : undefined));
+    const pill = (user: string) => (mentioned.includes(user) ? this.memberName(room, user) : undefined);
+    return markdownHtml(text, (run) => emoticonHtml(run, (shortcode) => emoticons.get(shortcode)?.image, pill) ?? escapeHtml(run));
   }
 
   /** The loadMedia key of a sticker's picture. */
@@ -3248,8 +3252,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       // Shown media speaks for itself: only its caption stays as text (the label remains for notifications and previews).
       native.content = escapeMarkdown(content.text);
       native.attachments = [this.attachment(room, id, content.attachment)];
-    } else if (content.emotes) {
-      native.content = this.emoteMarkdown(messageText(content), content.emotes, emojiUrls);
+    } else if (content.html || content.emotes) {
+      const { emotes } = content;
+      const escape = emotes ? (text: string) => this.emoteMarkdown(text, emotes, emojiUrls) : escapeMarkdown;
+      // Formatting the view cannot show as it was meant shows as the plain body.
+      const formatted = content.html && richMarkdown(content.html, escape);
+      native.content = formatted ? `${content.msgtype === "m.emote" ? "\\* " : ""}${formatted}` : escape(messageText(content));
     }
     native.edited = edited;
     native.canEdit = mine && !locked && EDITABLE.has(event.content.msgtype);

@@ -17,6 +17,7 @@ import type {
   MxPack,
   MxPackImage,
   MxPackRef,
+  MxRich,
   MxPage,
   MxRoomState,
   MxRoomUpdate,
@@ -24,6 +25,7 @@ import type {
   MxSpaceChild,
   MxSync,
 } from "./api";
+import { parseHtml } from "./format";
 import { sha256 } from "./sha256";
 
 /** Room ids are used in rail keys (at most 200 characters with the instance prefix). */
@@ -206,9 +208,16 @@ export function parseContent(content: Record<string, unknown>, sticker = false):
       const parsed: MxContent = { msgtype, text: body };
       const emotes = parseEmotes(content);
       if (emotes) parsed.emotes = emotes;
+      const html = parseFormatting(content);
+      if (html) parsed.html = html;
       return parsed;
     }
   }
+}
+
+/** A text message's formatting, from its formatted_body (format.ts); undefined without any beyond plain text. */
+export function parseFormatting(content: Record<string, unknown>): MxRich | undefined {
+  return content.format === "org.matrix.custom.html" && typeof content.formatted_body === "string" ? parseHtml(content.formatted_body) : undefined;
 }
 
 /** Whom a message says it mentions (m.mentions): users, and the whole room; nothing when it does not say. */

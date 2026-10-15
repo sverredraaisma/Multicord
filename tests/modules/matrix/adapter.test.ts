@@ -8,6 +8,7 @@ import {
   type MxEncryptedFile,
   type MxEncryption,
   type MxCallMember,
+  type MxContent,
   type MxDownload,
   type MxEvent,
   type MxLiveKitGrant,
@@ -69,6 +70,7 @@ import { MAX_DIRECTS, MAX_HTTP_BODY, MAX_READ } from "../../../src/shared/engine
 import type { FileSource } from "../../../src/engine/runtime";
 import { encryptAttachment } from "./attachments";
 import { MAX_ATTACHMENTS, type NativeAction, type NativeViewState } from "../../../src/shared/native";
+import { parseHtml } from "../../../src/modules/matrix/format";
 
 const ME = "@me:x.org";
 const BO = "@bo:x.org";
@@ -1018,8 +1020,8 @@ describe("sending", () => {
     await ctx.open("Bo");
     await ctx.act({ type: "send", content: "hey *you*" });
     expect(ctx.api.encryption).toHaveBeenCalledWith(SESSION, "!dm:x.org");
-    expect(ctx.api.send).toHaveBeenCalledWith(SESSION, "!dm:x.org", { msgtype: "m.text", body: "hey *you*", "m.mentions": {} });
-    expect(ctx.messages().at(-1)).toMatchObject({ content: "hey \\*you\\*", mine: true, canEdit: true });
+    expect(ctx.api.send).toHaveBeenCalledWith(SESSION, "!dm:x.org", { msgtype: "m.text", body: "hey *you*", "m.mentions": {}, format: "org.matrix.custom.html", formatted_body: "hey <em>you</em>" });
+    expect(ctx.messages().at(-1)).toMatchObject({ content: "hey *you*", mine: true, canEdit: true });
     expect(ctx.directs.at(-1)![0]!.preview).toBe("hey *you*");
     // The sync echo of the same event is not shown twice.
     await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [msg("sent1", ME, "hey *you*", 9000)] })] }));
@@ -1121,6 +1123,32 @@ describe("sending", () => {
       format: "org.matrix.custom.html",
       formatted_body: `* bye ${pill(BO, "Bo")}`,
     });
+  });
+
+  it("shows formatted messages as markdown, falling back to the body, and sends markdown as formatted_body", async () => {
+    const ctx = await signedIn();
+    const formatted = (html: string, content: Partial<MxContent> = {}): Partial<Extract<MxEvent, { kind: "message" }>> => ({ content: { msgtype: "m.text", text: "plain", html: parseHtml(html)!, ...content } });
+    const cat = '<img data-mx-emoticon src="mxc://x.org/cat" alt=":cat:">';
+    await ctx.live(
+      sync({
+        joined: [
+          room("!dm:x.org", {
+            timeline: [
+              msg("f1", BO, "", 3000, formatted("<b>bold</b> and <a href='https://x.org'>link</a>")),
+              msg("f2", BO, "", 3001, formatted("<i>waves</i>", { msgtype: "m.emote", text: "waves" })),
+              msg("f3", BO, "", 3002, formatted("<i>a</i><i>b</i>", { text: "a*b" })),
+              msg("f4", BO, "", 3003, formatted(`<b>x</b> ${cat}`, { text: "x :cat:", emotes: [{ shortcode: "cat", url: "mxc://x.org/cat" }] })),
+              msg("f5", BO, "", 3004, formatted("<i>a</i><i>b</i>", { text: "a* :cat:", emotes: [{ shortcode: "cat", url: "mxc://x.org/cat" }] })),
+            ],
+          }),
+        ],
+      }),
+    );
+    await ctx.open("Bo");
+    expect(ctx.messages().slice(-5).map((m) => m.content)).toEqual(["**bold** and [link](<https://x.org>)", "\\* *waves*", "a\\*b", "**x** :cat:", "a\\* :cat:"]);
+    await ctx.act({ type: "send", content: "**hi** there" });
+    expect(ctx.api.send).toHaveBeenLastCalledWith(SESSION, "!dm:x.org", { msgtype: "m.text", body: "**hi** there", "m.mentions": {}, format: "org.matrix.custom.html", formatted_body: "<strong>hi</strong> there" });
+    expect(ctx.messages().at(-1)!.content).toBe("**hi** there");
   });
 
   it("keeps an emote an emote when editing", async () => {

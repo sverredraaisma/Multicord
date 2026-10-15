@@ -191,7 +191,29 @@ export interface MxContent {
   attachment?: MxMedia;
   /** Custom emoji its formatted_body shows as pictures (data-mx-emoticon), which its text names as ":shortcode:". */
   emotes?: MxEmote[];
+  /** Its formatted_body, read into the parts the view can show (format.ts); only when it has formatting beyond plain text. */
+  html?: MxRich;
 }
+
+/**
+ * A message's formatting as format.ts reads it from HTML: only what the view
+ * can show, every link https, nothing of the HTML itself.
+ */
+export type MxRich = MxRichNode[];
+
+export type MxRichNode =
+  | { t: "text"; text: string }
+  | { t: "br" }
+  /** A custom emoji (img data-mx-emoticon), by its shortcode. */
+  | { t: "emote"; shortcode: string }
+  | { t: "b" | "i" | "u" | "s" | "spoiler"; c: MxRich }
+  | { t: "code"; text: string }
+  | { t: "a"; href: string; c: MxRich }
+  | { t: "p"; c: MxRich }
+  | { t: "h"; level: 1 | 2 | 3; c: MxRich }
+  | { t: "pre"; lang?: string; text: string }
+  | { t: "quote"; c: MxRich }
+  | { t: "list"; ordered: boolean; start: number; items: MxRich[] };
 
 /** A custom emoji in a message: its shortcode (without colons) and picture. */
 export interface MxEmote {

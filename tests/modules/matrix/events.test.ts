@@ -1026,6 +1026,13 @@ describe("image packs (MSC2545)", () => {
     expect(parseContent({ msgtype: "m.text", body: "hi" })).toEqual({ msgtype: "m.text", text: "hi" });
   });
 
+  it("reads a text message's formatting, when it has any", () => {
+    expect(parseContent({ msgtype: "m.notice", body: "b", format: "org.matrix.custom.html", formatted_body: "<b>b</b>" })).toEqual({ msgtype: "m.notice", text: "b", html: [{ t: "b", c: [{ t: "text", text: "b" }] }] });
+    expect(parseContent({ msgtype: "m.text", body: "b", format: "org.matrix.custom.html", formatted_body: "b" })).toEqual({ msgtype: "m.text", text: "b" });
+    expect(parseContent({ msgtype: "m.text", body: "b", format: "other", formatted_body: "<b>b</b>" })).toEqual({ msgtype: "m.text", text: "b" });
+    expect(parseContent({ msgtype: "m.text", body: "b", format: "org.matrix.custom.html", formatted_body: 5 })).toEqual({ msgtype: "m.text", text: "b" });
+  });
+
   it("keeps the name of a custom emoji reaction", () => {
     const reaction = (key: string, content: Record<string, unknown>) =>
       parseEvent(ev({ type: "m.reaction", content: { "m.relates_to": { rel_type: "m.annotation", event_id: "$msg", key }, ...content } }));
