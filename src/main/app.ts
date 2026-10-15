@@ -35,7 +35,7 @@ import {
 import type { ActivityUpdate, HealthCheck, PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
 import { FAVOURITES_IPC, isFavouritesAction, MEDIA_SCHEME, type FavouritesState } from "../shared/favourites";
-import { isSettingsAction, serviceSettings, serviceSettingValues, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
+import { isSettingsAction, mediaAutoLoadLimit, serviceSettings,serviceSettingValues, SETTINGS_IPC, stepZoom, zoomShortcut, type SettingsViewState } from "../shared/settings";
 import { CredentialStore } from "./credentials";
 import { EngineHub, engineStoragePartition } from "./engineHost";
 import { downloadMedia, FavouritesStore } from "./favourites";
@@ -407,6 +407,14 @@ export async function createShell(
       view.webContents.on("did-finish-load", sendVoice);
       settingsStore.changed.on(({ patch }) => {
         if (patch.voice) sendVoice();
+      });
+    }
+    // Only this service's own limit reaches its view; the engine never sees settings of other services.
+    if (module.manifest.holdsMedia) {
+      const sendLimit = (): void => view.webContents.send(SETTINGS_IPC.mediaAutoLoad, mediaAutoLoadLimit(settingsStore.get(), def.id));
+      view.webContents.on("did-finish-load", sendLimit);
+      settingsStore.changed.on(({ patch }) => {
+        if (patch.general?.mediaAutoLoad !== undefined || (patch.services && Object.hasOwn(patch.services, def.id))) sendLimit();
       });
     }
     start();

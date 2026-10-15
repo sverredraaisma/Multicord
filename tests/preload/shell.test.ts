@@ -81,6 +81,15 @@ describe("settings", () => {
     listeners.get(SETTINGS_IPC.voice)!(null, { echoCancellation: false });
     expect(onVoice).toHaveBeenCalledWith({ echoCancellation: false });
   });
+
+  it("hands the native view its limit for media that loads by itself, if it is one", () => {
+    const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
+    const api = createNativeApi({ send: vi.fn(), on: (c, l) => void listeners.set(c, l) });
+    const onLimit = vi.fn();
+    api.onMediaAutoLoad(onLimit);
+    for (const limit of [0, 5 * 1024 * 1024, Number.POSITIVE_INFINITY, -1, Number.NaN, "5mb", null]) listeners.get(SETTINGS_IPC.mediaAutoLoad)!(null, limit);
+    expect(onLimit.mock.calls).toEqual([[0], [5 * 1024 * 1024], [Number.POSITIVE_INFINITY]]);
+  });
 });
 
 describe("messages", () => {

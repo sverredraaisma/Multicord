@@ -23,6 +23,8 @@ export const matrixNativeModule: PlatformModule = {
     storage: true,
     home: true,
     screenShare: true,
+    // Media is downloaded (and decrypted) in the engine when the view asks.
+    holdsMedia: true,
     capabilities: { directMessages: true, messagePreviews: true, voice: true, screenShare: true },
     // Keys as SETTING in src/modules/matrix/adapter.ts names them (tested).
     settings: [

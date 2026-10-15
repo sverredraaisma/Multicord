@@ -43,6 +43,12 @@ describe("module registry", () => {
     }
   });
 
+  it("lets only native modules hold media back, those whose adapters use loadMedia keys", async () => {
+    const holding = MODULES.filter((m) => m.manifest.holdsMedia);
+    expect(holding.map((m) => m.manifest.id)).toEqual(["telegram", "matrix-native"]);
+    for (const { manifest } of holding) expect(manifest.preload, manifest.id).toBe("preload-native.js");
+  });
+
   it("declares the same capabilities in each native module's manifest as its adapter has", async () => {
     // The shell reads the manifest's, the engine's adapter reports its own: they must agree.
     const { templateModule } = await import("../../src/main/modules/_template");

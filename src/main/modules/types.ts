@@ -47,6 +47,12 @@ export interface ModuleManifest {
   home?: boolean;
   /** Engines only: route screen sharing in the module's view through the shell's picker. */
   screenShare?: boolean;
+  /**
+   * Engines only: the engine holds media back until its view asks
+   * (NativeAttachment.mediaKey). The view gets the service's limit for media
+   * that loads by itself, and Settings offers a per-service choice of it.
+   */
+  holdsMedia?: boolean;
   /** Engines only: what the module supports. */
   capabilities?: PlatformAdapter["capabilities"];
   /**

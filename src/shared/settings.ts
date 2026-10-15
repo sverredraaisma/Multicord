@@ -12,7 +12,12 @@ export const SETTINGS_IPC = {
   voice: "settings:voice",
   /** Main -> native views: a voice shortcut was pressed, or the background push-to-talk key went down or up (VoiceCommand). */
   voiceCommand: "settings:voice-command",
+  /** Main -> native views of modules that hold media back: that service's limit for media that loads by itself, in bytes. */
+  mediaAutoLoad: "settings:media-auto-load",
 } as const;
+
+/** A limit in bytes as a view takes it: 0 or more, Infinity for any size. */
+export const isAutoLoadLimit = (value: unknown): value is number => typeof value === "number" && value >= 0;
 
 /**
  * A chosen media device. Chromium salts device ids per site, so a view other

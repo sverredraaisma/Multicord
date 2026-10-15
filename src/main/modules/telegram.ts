@@ -19,6 +19,8 @@ export const telegramModule: PlatformModule = {
     engine: "telegram",
     hosts: ["*.web.telegram.org"],
     home: true,
+    // Media is downloaded over MTProto in the engine when the view asks.
+    holdsMedia: true,
     capabilities: { directMessages: true, messagePreviews: true, voice: false, screenShare: false },
     settings: [
       {

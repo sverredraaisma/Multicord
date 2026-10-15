@@ -933,6 +933,24 @@ describe("settings", () => {
     expect(electron.Notification.instances).toHaveLength(0);
   });
 
+  it("sends a module that holds media back only its own service's limit for media that loads by itself", async () => {
+    const { handle } = await shellWith();
+    const telegramView = handle.views.get("telegram") as unknown as InstanceType<typeof WebContentsView>;
+    const fluxerView = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    const limits = () => telegramView.webContents.send.mock.calls.filter(([channel]) => channel === SETTINGS_IPC.mediaAutoLoad).map(([, limit]) => limit);
+    telegramView.webContents.emit("did-finish-load");
+    fluxerView.webContents.emit("did-finish-load");
+    expect(limits()).toEqual([5 * 1024 * 1024]);
+    handle.settingsStore.update({ general: { closeToTray: true } });
+    handle.settingsStore.update({ services: { fluxer: { mediaAutoLoad: "off" } } });
+    expect(limits()).toHaveLength(1);
+    handle.settingsStore.update({ general: { mediaAutoLoad: "all" } });
+    handle.settingsStore.update({ services: { telegram: { mediaAutoLoad: "1mb" } } });
+    expect(limits()).toEqual([5 * 1024 * 1024, Number.POSITIVE_INFINITY, 1024 * 1024]);
+    // Fluxer shows media from its own servers and holds none back.
+    expect(fluxerView.webContents.send).not.toHaveBeenCalledWith(SETTINGS_IPC.mediaAutoLoad, expect.anything());
+  });
+
   it("sends voice settings to modules that run calls", async () => {
     const { handle, discordView } = await shellWith();
     const fluxerView = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;

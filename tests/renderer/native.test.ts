@@ -270,6 +270,7 @@ describe("helpers", () => {
       onState: (cb) => (push = cb),
       act: vi.fn(),
       onVoiceSettings: (cb) => (pushVoice = cb),
+      onMediaAutoLoad: vi.fn(),
       onCompact: (cb) => (pushCompact = cb),
       onVoiceCommand: (cb) => (voiceCommand = cb),
       screenAudioEnded: vi.fn(),
