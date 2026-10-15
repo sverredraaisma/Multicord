@@ -1241,6 +1241,13 @@ describe("groups and channels", () => {
     expect(ctx.adapter.homeBadge().mentions).toBe(5);
   });
 
+  it("marks messages that mention or answer the user, as Telegram flags them", async () => {
+    const ctx = await signedIn({ dialogs: rooms() });
+    ctx.api.history.mockResolvedValueOnce([msg(GROUP, 1, { mentioned: true }), msg(GROUP, 2), msg(GROUP, 3, { out: true, mentioned: true })]);
+    await ctx.adapter.openConversation(GROUP);
+    expect(ctx.chat().channel!.messages.map((m) => m.mentionsMe === true)).toEqual([true, false, false]);
+  });
+
   it("clears a group's mentions once read", async () => {
     const ctx = await signedIn({ dialogs: rooms() });
     ctx.adapter.setVisible(true);

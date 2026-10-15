@@ -1503,6 +1503,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     };
     // Edited as the markdown it shows, so formatting survives the edit.
     if (native.canEdit) native.source = markdown;
+    // Telegram's own flag: it mentions the user, or answers one of their messages.
+    if (message.mentioned && !message.out) native.mentionsMe = true;
     const authorId = message.out ? this.me?.id : message.senderId;
     if (authorId) native.authorId = authorId;
     if (replied) native.reply = { author: replied.out ? (this.me?.name ?? "You") : (replied.sender ?? dialog.title), content: messageText(replied).slice(0, 100) };
