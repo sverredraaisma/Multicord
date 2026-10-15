@@ -164,6 +164,8 @@ describe("discordActivityBridge", () => {
     const chunks: unknown[] & { push(...items: unknown[]): number } = [] as never;
     chunks.push = (chunk: any) => {
       chunk[2]({ c: { a: { exports: null }, b: { exports: { other: { dispatch() {} } } }, c: { exports: { Z: dispatcher } } } });
+      // Discord's other webpack runtimes see the chunk too; the small one comes last.
+      chunk[2]({ c: { x: { exports: {} } } });
       return Array.prototype.push.call(chunks, chunk);
     };
     (window as any).webpackChunkdiscord_app = chunks;

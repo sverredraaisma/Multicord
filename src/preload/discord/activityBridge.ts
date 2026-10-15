@@ -14,10 +14,13 @@ export function discordActivityBridge(eventName: string): void {
   const findDispatcher = (): any => {
     const chunks = w.webpackChunkdiscord_app;
     if (!chunks || typeof chunks.push !== "function") return undefined;
-    let req: any;
+    // Several webpack runtimes share the chunk list; the app's is the one with the most modules.
+    const found: any[] = [];
     const marker = [Symbol("multicord")];
-    chunks.push([marker, {}, (r: any) => (req = r)]);
+    chunks.push([marker, {}, (r: any) => void found.push(r)]);
     if (chunks[chunks.length - 1]?.[0] === marker) chunks.pop();
+    const size = (r: any): number => Object.keys(r?.c ?? {}).length;
+    const req = found.reduce((best, r) => (size(r) > size(best) ? r : best), undefined);
     for (const mod of Object.values<any>(req?.c ?? {})) {
       const exports = mod?.exports;
       if (!exports || typeof exports !== "object") continue;

@@ -16,14 +16,18 @@ export function discordStoreBridge(eventName: string, retryMs: number, maxAttemp
   let stores: Record<string, any> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
 
+  // Discord runs several webpack runtimes on one chunk list; each hands a
+  // pushed chunk its own require. The app's stores live in the one that has
+  // loaded the most modules.
   const getRequire = (): any => {
     const chunks = w.webpackChunkdiscord_app;
     if (!chunks || typeof chunks.push !== "function") return undefined;
-    let req: any;
+    const found: any[] = [];
     const marker = [Symbol("multicord")];
-    chunks.push([marker, {}, (r: any) => (req = r)]);
+    chunks.push([marker, {}, (r: any) => void found.push(r)]);
     if (chunks[chunks.length - 1]?.[0] === marker) chunks.pop();
-    return req;
+    const size = (r: any): number => Object.keys(r?.c ?? {}).length;
+    return found.reduce((best, r) => (size(r) > size(best) ? r : best), undefined);
   };
 
   const findStores = (required: string[], optional: string[]): Record<string, any> | undefined => {

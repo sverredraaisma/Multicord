@@ -43,7 +43,11 @@ function discordStores() {
   };
 }
 
-/** Installs a fake webpack chunk global whose module cache exports the given values. */
+/**
+ * Installs a fake webpack chunk global whose module cache exports the given
+ * values. Like Discord's, it has several runtimes: a pushed chunk also
+ * reaches a small one, last, which holds none of the app's modules.
+ */
 function installWebpack(exportsList: unknown[]) {
   const cache: Record<string, { exports: unknown }> = {};
   exportsList.forEach((exports, i) => (cache[i] = { exports }));
@@ -51,6 +55,7 @@ function installWebpack(exportsList: unknown[]) {
   const push = Array.prototype.push;
   chunks.push = function (chunk: unknown) {
     (chunk as [unknown, unknown, (r: unknown) => void])[2]({ c: cache });
+    (chunk as [unknown, unknown, (r: unknown) => void])[2]({ c: { overlay: { exports: {} } } });
     return push.call(this, chunk);
   };
   (window as unknown as Record<string, unknown>).webpackChunkdiscord_app = chunks;
