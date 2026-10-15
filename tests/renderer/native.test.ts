@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("livekit-client", () => import("../mocks/livekit"));
 
-import { AUTO_LOAD_TIMEOUT_MS, formatSize, formatTime, insertAtCursor, NativeView, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
+import { AUTO_LOAD_TIMEOUT_MS, formatSize, formatTime, insertAtCursor, MAX_UNREAD_PAGES, NativeView, newMessagesText, QUICK_REACTIONS, startNative, typingText } from "../../src/renderer/native";
 import type { NativeApi } from "../../src/preload/native";
 import type { FavouritesState } from "../../src/shared/favourites";
 import type { NativeMessage, NativeViewState } from "../../src/shared/native";
@@ -519,6 +519,112 @@ describe("typing", () => {
     expect(act).toHaveBeenCalledWith({ type: "typing" });
     view.update(chat({ channel: null }));
     expect(root.querySelector(".typing")!.textContent).toBe("");
+  });
+});
+
+describe("unread messages", () => {
+  const withUnread = (unread: unknown, extra: Partial<NonNullable<Chat["channel"]>> = {}) =>
+    chat({ channel: { id: "2", name: "general", messages: [msg("10"), msg("11"), msg("12")], loading: false, hasOlder: true, typing: [], pending: [], uploading: false, can: ALL, unread: unread as never, ...extra } });
+  const scroller = () => root.querySelector<HTMLElement>(".messages")!;
+  const bar = () => root.querySelector<HTMLElement>(".unread-bar")!;
+  /** Gives the messages list a layout: its heights and where it is scrolled. */
+  const layout = (scrollHeight: number, clientHeight: number, scrollTop: number) => {
+    const list = scroller();
+    Object.defineProperty(list, "scrollHeight", { value: scrollHeight, configurable: true });
+    Object.defineProperty(list, "clientHeight", { value: clientHeight, configurable: true });
+    Object.defineProperty(list, "scrollTop", { value: scrollTop, writable: true, configurable: true });
+  };
+
+  it("phrases how many messages are new", () => {
+    expect(newMessagesText(undefined)).toBe("New messages");
+    expect(newMessagesText(1)).toBe("1 new message");
+    expect(newMessagesText(12)).toBe("12 new messages");
+  });
+
+  it("marks where the news starts and brings it into sight on opening", () => {
+    vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("unread-divider") ? 300 : 0;
+    });
+    view.update(chat({ channel: null }));
+    layout(2000, 500, 0);
+    view.update(withUnread({ firstId: "11", count: 2 }));
+    const divider = scroller().querySelector(".unread-divider")!;
+    expect(divider.getAttribute("role")).toBe("separator");
+    expect(divider.textContent).toBe("2 new messages");
+    expect(divider.nextElementSibling!.getAttribute("data-id")).toBe("11");
+    expect(scroller().scrollTop).toBe(292);
+    expect(bar().hidden).toBe(true);
+    // Scrolled back above it, the bar does not come back; scrolled on past it, it offers the way back.
+    layout(2000, 500, 900);
+    scroller().dispatchEvent(new Event("scroll"));
+    expect(bar().hidden).toBe(false);
+    expect(bar().querySelector(".unread-text")!.textContent).toBe("2 new messages");
+    bar().querySelector<HTMLButtonElement>(".jump-unread")!.click();
+    expect(scroller().scrollTop).toBe(292);
+    expect(bar().hidden).toBe(true);
+    // Read on to the latest messages: the bar stays away.
+    layout(2000, 500, 1500);
+    scroller().dispatchEvent(new Event("scroll"));
+    layout(2000, 500, 900);
+    scroller().dispatchEvent(new Event("scroll"));
+    expect(bar().hidden).toBe(true);
+    // A marker the view cannot place, or none: no divider.
+    view.update(withUnread({ firstId: "99" }));
+    expect(scroller().querySelector(".unread-divider")).toBeNull();
+    view.update(withUnread("junk"));
+    expect(scroller().querySelector(".unread-divider")).toBeNull();
+    vi.restoreAllMocks();
+  });
+
+  it("loads older messages to find where the news starts, a page at a time and within a limit", () => {
+    view.update(chat({ channel: null }));
+    layout(2000, 500, 1500);
+    view.update(withUnread({ count: 40 }));
+    expect(bar().hidden).toBe(false);
+    expect(bar().textContent).toContain("40 new messages");
+    bar().querySelector<HTMLButtonElement>(".jump-unread")!.click();
+    expect(act.mock.calls.filter(([a]) => a.type === "loadOlder")).toHaveLength(1);
+    // Not again until the page has arrived.
+    view.update(withUnread({ count: 40 }, { loading: true }));
+    view.update(withUnread({ count: 40 }));
+    expect(act.mock.calls.filter(([a]) => a.type === "loadOlder")).toHaveLength(1);
+    view.update(withUnread({ count: 40 }, { messages: [msg("5"), msg("10"), msg("11"), msg("12")] }));
+    expect(act.mock.calls.filter(([a]) => a.type === "loadOlder")).toHaveLength(2);
+    // Found: brought into sight, and the search ends.
+    view.update(withUnread({ firstId: "5", count: 40 }, { messages: [msg("4"), msg("5"), msg("10"), msg("11"), msg("12")] }));
+    expect(scroller().querySelector(".unread-divider")).not.toBeNull();
+    expect(bar().hidden).toBe(true);
+    view.update(withUnread({ firstId: "5", count: 40 }, { messages: [msg("3"), msg("4"), msg("5"), msg("10"), msg("11"), msg("12")] }));
+    expect(act.mock.calls.filter(([a]) => a.type === "loadOlder")).toHaveLength(2);
+  });
+
+  it("stops looking when there is nothing older or after enough pages, and can be dismissed", () => {
+    view.update(chat({ channel: null }));
+    layout(2000, 500, 1500);
+    view.update(withUnread({}, { hasOlder: false }));
+    expect(bar().textContent).toContain("New messages");
+    bar().querySelector<HTMLButtonElement>(".jump-unread")!.click();
+    expect(act).not.toHaveBeenCalledWith({ type: "loadOlder" });
+    view.update(withUnread({}));
+    bar().querySelector<HTMLButtonElement>(".jump-unread")!.click();
+    for (let page = 1; page <= MAX_UNREAD_PAGES + 2; page++) view.update(withUnread({}, { messages: [msg(String(100 - page)), msg("10")] }));
+    expect(act.mock.calls.filter(([a]) => a.type === "loadOlder")).toHaveLength(MAX_UNREAD_PAGES);
+    bar().querySelector<HTMLButtonElement>(".dismiss-unread")!.click();
+    expect(bar().hidden).toBe(true);
+    // Another conversation without news: no bar.
+    view.update(chat());
+    expect(bar().hidden).toBe(true);
+  });
+
+  it("offers a way back to the latest messages while scrolled up", () => {
+    view.update(chat());
+    const present = root.querySelector<HTMLButtonElement>(".jump-present")!;
+    layout(3000, 500, 1000);
+    scroller().dispatchEvent(new Event("scroll"));
+    expect(present.hidden).toBe(false);
+    present.click();
+    expect(scroller().scrollTop).toBe(3000);
+    expect(present.hidden).toBe(true);
   });
 });
 

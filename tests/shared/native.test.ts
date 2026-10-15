@@ -13,7 +13,7 @@ import {
   MAX_STICKERS,
   stickerPacks,
 } from "../../src/shared/native";
-import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, memberList, memberProfile, mentionText, NATIVE_IPC } from "../../src/shared/native";
+import { channelCan, isNativeAction, MAX_ABOUT_LENGTH, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, memberList, memberProfile, mentionText, NATIVE_IPC, unreadMarker } from "../../src/shared/native";
 
 describe("isNativeAction", () => {
   it("accepts well-formed actions", () => {
@@ -96,6 +96,18 @@ describe("forum post validation", () => {
     expect(isNativeAction({ type: "createPost", name: " ", content: "body" })).toBe(false);
     expect(isNativeAction({ type: "createPost", name: "x".repeat(101), content: "body" })).toBe(false);
     expect(isNativeAction({ type: "createPost", name: "Idea", content: "" })).toBe(false);
+  });
+});
+
+describe("unreadMarker", () => {
+  const messages = [{ id: "1" }, { id: "2" }];
+  it("places the first unread message only among the loaded ones, and takes sane counts", () => {
+    expect(unreadMarker(undefined, messages)).toBeUndefined();
+    expect(unreadMarker("x", messages)).toBeUndefined();
+    expect(unreadMarker({ firstId: "2", count: 3 }, messages)).toEqual({ firstId: "2", count: 3 });
+    expect(unreadMarker({ firstId: "9", count: 0 }, messages)).toEqual({});
+    expect(unreadMarker({ firstId: 2, count: 1.5 }, messages)).toEqual({});
+    expect(unreadMarker({ count: 5_000_000 }, messages)).toEqual({ count: 1_000_000 });
   });
 });
 

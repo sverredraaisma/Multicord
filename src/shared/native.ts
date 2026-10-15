@@ -221,11 +221,37 @@ export interface NativeChannelView {
   /** What this conversation takes from here besides text; the view offers only these. */
   can: NativeChannelCan;
   /**
+   * Messages that were new when the conversation was opened: the first of
+   * them (its firstUnreadId), once it is among the loaded messages, and how
+   * many there were, where the platform says. Without `firstId` they begin
+   * above the loaded ones. Read by the view through unreadMarker().
+   */
+  unread?: NativeUnread;
+  /**
    * Who is here, while the member panel is open (after a `members` action
    * with open: true) and `can.members` is on. Read by the view through
    * memberList(), which bounds what it shows.
    */
   members?: NativeMemberList;
+}
+
+export interface NativeUnread {
+  firstId?: string;
+  count?: number;
+}
+
+/**
+ * The unread marker as the view trusts it: the first unread message only
+ * when it is among `messages`, a count only when it is a positive whole
+ * number (capped); undefined when nothing was new.
+ */
+export function unreadMarker(value: unknown, messages: readonly { id: string }[]): NativeUnread | undefined {
+  const v = record(value);
+  if (!v) return undefined;
+  const marker: NativeUnread = {};
+  if (typeof v.firstId === "string" && messages.some((m) => m.id === v.firstId)) marker.firstId = v.firstId;
+  if (count(v.count) > 0) marker.count = Math.min(count(v.count), 1_000_000);
+  return marker;
 }
 
 /** How present someone is, where the platform says. */

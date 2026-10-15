@@ -3,7 +3,7 @@ import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_MESSAGE_LENGTH, memberList, memberProfile, stickerPacks } from "../shared/native";
+import { channelCan, customEmojiList, emojiUrls, gifResults, MAX_MESSAGE_LENGTH, memberList, memberProfile, stickerPacks, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, type LoginForm } from "./components/auth";
 import { channelList } from "./components/channels";
@@ -29,6 +29,14 @@ export const MAX_RECENT_GIFS = 24;
 export const MAX_AUTO_LOADS = 3;
 /** An automatic load the engine has not answered in this long frees its place; it is not asked again. */
 export const AUTO_LOAD_TIMEOUT_MS = 60_000;
+/** Pages of older messages "Jump to unread" loads at most, looking for the first unread one. */
+export const MAX_UNREAD_PAGES = 10;
+
+/** What the unread bar and divider say: how many messages are new, where the module knows. */
+export function newMessagesText(count: number | undefined): string {
+  if (count === undefined) return "New messages";
+  return count === 1 ? "1 new message" : `${count} new messages`;
+}
 
 /** Inserts text at the cursor of a text field, replacing any selection. */
 export function insertAtCursor(field: HTMLTextAreaElement, text: string): void {
@@ -66,6 +74,16 @@ export class NativeView {
   private favourites: FavouritesState | undefined;
   /** The composer's picker, while open. */
   private picker: MediaPicker | undefined;
+  /** The open conversation's unread marker, as last rendered. */
+  private unread: NativeUnread | undefined;
+  /** The view still has to bring the open conversation's first unread message into sight, once it is loaded. */
+  private unreadPending = false;
+  /** Where the news starts has been in sight. */
+  private dividerSeen = false;
+  /** The user dismissed the unread bar, or read on to the latest messages after the news started: it stays away. */
+  private unreadDone = true;
+  /** "Jump to unread" is loading older pages to find the first unread message: how many it asked for, and the first message when it last asked. */
+  private seeking: { pages: number; from: string | undefined } | undefined;
   /** The mention being typed in the composer, while it has suggestions: where its "@" is, who fits, and the highlighted one. */
   private mention: { start: number; options: MentionCandidate[]; active: number } | undefined;
 
@@ -237,7 +255,34 @@ export class NativeView {
     membersToggle.addEventListener("click", () => this.api.act({ type: "members", open: membersToggle.getAttribute("aria-pressed") !== "true" }));
     header.append(heading, membersToggle);
     const banner = el(doc, "div", "banner");
+    // Where the news starts, while it is out of sight: a bar above the messages.
+    const unreadBar = el(doc, "div", "unread-bar");
+    unreadBar.hidden = true;
+    const unreadText = el(doc, "span", "unread-text");
+    const jumpUnread = el(doc, "button", "jump-unread", "Jump to unread");
+    jumpUnread.type = "button";
+    jumpUnread.addEventListener("click", () => this.jumpToUnread());
+    const dismissUnread = el(doc, "button", "dismiss-unread", "×");
+    dismissUnread.type = "button";
+    dismissUnread.title = "Dismiss";
+    dismissUnread.setAttribute("aria-label", "Dismiss");
+    dismissUnread.addEventListener("click", () => {
+      this.unreadDone = true;
+      this.updateJumps();
+    });
+    unreadBar.append(unreadText, jumpUnread, dismissUnread);
     const messages = el(doc, "ol", "messages");
+    messages.addEventListener("scroll", () => this.updateJumps());
+    // Back to the latest messages, while scrolled up.
+    const jumpPresent = el(doc, "button", "jump-present", "Jump to present");
+    jumpPresent.type = "button";
+    jumpPresent.hidden = true;
+    jumpPresent.addEventListener("click", () => {
+      messages.scrollTop = messages.scrollHeight;
+      this.updateJumps();
+    });
+    const messageArea = el(doc, "div", "message-area");
+    messageArea.append(unreadBar, messages, jumpPresent);
     const stage = el(doc, "div", "voice-stage");
     stage.hidden = true;
     const speakers = el(doc, "div", "voice-speakers");
@@ -300,7 +345,7 @@ export class NativeView {
     // Why the composer is off in a conversation that takes no messages from here.
     const notice = el(doc, "div", "locked-notice");
     notice.hidden = true;
-    main.append(header, banner, stage, messages, typing, reply, pending, notice, composerRow, speakers);
+    main.append(header, banner, stage, messageArea, typing, reply, pending, notice, composerRow, speakers);
 
     // One edit box, reused across renders so an edit in progress survives updates.
     const editBox = el(doc, "textarea", "edit-box");
@@ -342,6 +387,9 @@ export class NativeView {
       members,
       profile,
       banner,
+      unreadBar,
+      unreadText,
+      jumpPresent,
       messages,
       typing,
       reply,
@@ -550,6 +598,58 @@ export class NativeView {
     }
     event.preventDefault();
     return true;
+  }
+
+  /** The divider before the first unread message, where it is rendered. */
+  private get unreadDivider(): HTMLElement | null {
+    return this.parts.messages!.querySelector<HTMLElement>(".unread-divider");
+  }
+
+  /** Brings the first unread message into sight, loading older messages until it is there (up to MAX_UNREAD_PAGES). */
+  private jumpToUnread(): void {
+    const divider = this.unreadDivider;
+    if (divider) return this.showUnread(divider);
+    this.seeking = { pages: 0, from: undefined };
+    this.seekUnread();
+  }
+
+  private showUnread(divider: HTMLElement): void {
+    this.seeking = undefined;
+    this.parts.messages!.scrollTop = Math.max(0, divider.offsetTop - 8);
+    this.updateJumps();
+  }
+
+  /** One more page while seeking the first unread message: asked once the last one has arrived, until there are none older or enough were asked. */
+  private seekUnread(): void {
+    const seeking = this.seeking!;
+    const channel = this.lastState?.channel;
+    const first = channel?.messages[0]?.id;
+    if (!channel?.hasOlder || seeking.pages >= MAX_UNREAD_PAGES) {
+      this.seeking = undefined;
+      return;
+    }
+    if (channel.loading || (seeking.pages > 0 && first === seeking.from)) return;
+    seeking.pages++;
+    seeking.from = first;
+    this.api.act({ type: "loadOlder" });
+  }
+
+  /**
+   * The unread bar shows while where the news starts is above what is in
+   * sight (or not loaded yet), until dismissed or read on from there to the
+   * latest messages; "Jump to present" while the latest messages are more
+   * than a screen below.
+   */
+  private updateJumps(): void {
+    const scroller = this.parts.messages!;
+    const below = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+    const divider = this.unreadDivider;
+    const inSight = divider !== null && divider.offsetTop + divider.offsetHeight >= scroller.scrollTop;
+    if (inSight) this.dividerSeen = true;
+    if (this.dividerSeen && below < 40) this.unreadDone = true;
+    this.parts.unreadBar!.hidden = !this.unread || this.unreadDone || inSight;
+    this.parts.unreadText!.textContent = newMessagesText(this.unread?.count);
+    this.parts.jumpPresent!.hidden = below <= scroller.clientHeight;
   }
 
   private setReply(target: { id: string; author: string } | undefined): void {
@@ -839,17 +939,45 @@ export class NativeView {
       formRow.append(this.parts.postForm);
       items.push(formRow, ...forumPosts(this.doc, channel.posts, (postId) => this.api.act({ type: "select", channelId: postId })));
     }
-    items.push(...(channel?.messages ?? []).map((m) => this.messageItem(m)));
+    const unread = channel ? unreadMarker(channel.unread, channel.messages) : undefined;
+    for (const message of channel?.messages ?? []) {
+      // Where the news started when the conversation was opened.
+      if (message.id === unread?.firstId) {
+        const divider = el(this.doc, "li", "unread-divider", newMessagesText(unread.count));
+        divider.setAttribute("role", "separator");
+        items.push(divider);
+      }
+      items.push(this.messageItem(message));
+    }
     scroller.replaceChildren(...items);
     this.watchAutoLoads(scroller, channel);
 
     const first = channel?.messages[0]?.id;
     const switched = channel?.id !== this.channelId;
     const prepended = !switched && first !== this.firstMessageId;
-    if (switched || atBottom) scroller.scrollTop = scroller.scrollHeight;
+    if (switched) {
+      // A conversation opened with news: its first unread message comes into sight once loaded.
+      this.unreadPending = unread !== undefined;
+      this.unreadDone = unread === undefined;
+      this.dividerSeen = false;
+      this.seeking = undefined;
+    }
+    this.unread = unread;
+    const divider = this.unreadDivider;
+    if (this.unreadPending && divider) {
+      this.unreadPending = false;
+      this.showUnread(divider);
+    } else if (switched || atBottom) scroller.scrollTop = scroller.scrollHeight;
     else if (prepended) scroller.scrollTop = scroller.scrollHeight - fromBottom;
+    // Loaded without it: it is above, and the bar offers to go there.
+    if (channel && !channel.loading && channel.messages.length > 0) this.unreadPending = false;
     this.channelId = channel?.id;
     this.firstMessageId = first;
+    if (this.seeking) {
+      if (divider) this.showUnread(divider);
+      else this.seekUnread();
+    }
+    this.updateJumps();
   }
 }
 
