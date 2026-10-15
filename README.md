@@ -103,7 +103,7 @@ If `npm start` reports that Electron failed to install, run `node node_modules/e
 
   Telegram gives API credentials per app (my.telegram.org, "API development tools"). Builds can include them via the `MULTICORD_TELEGRAM_API_ID` and `MULTICORD_TELEGRAM_API_HASH` environment variables; otherwise Multicord asks for an API ID and hash on first sign-in and stores them encrypted.
 - **Component gallery:** `npm run gallery` opens `dist/gallery.html`, which shows every component with sample data. Use it to check designs without signing in anywhere.
-- **Extra platforms** as web views (shallow tier: one rail icon, unread state from the page title). Settings offers the open-source platforms from the study by name, each with its own label and colour and its public instance prefilled (self-hosted instances take their own address): Matrix (through Element web), Stoat, Spacebar and Nerimity, and Mumble through its web client (mumble-web, at your server's address; Mumble's own protocol needs raw sockets no module may open), plus any other web chat app. Settings writes them to `platforms.json` in the app's user-data folder (`%APPDATA%\Multicord` on Windows), which can also be edited by hand:
+- **Extra platforms** as web views (shallow tier: one rail icon, unread state from the page title). Settings offers the open-source platforms from the study by name, each with its own label and colour and its public instance prefilled (self-hosted instances take their own address): Fluxer's own web client (for what the native client refuses: encrypted voice, DM calls, security keys), Matrix (through Element web), Stoat, Spacebar and Nerimity, and Mumble through its web client (mumble-web, at your server's address; Mumble's own protocol needs raw sockets no module may open), plus any other web chat app. Settings writes them to `platforms.json` in the app's user-data folder (`%APPDATA%\Multicord` on Windows), which can also be edited by hand:
 
   ```json
   [
@@ -176,6 +176,8 @@ Each file's header says how to run it; the servers run in Docker on this machine
   - **Security keys (WebAuthn):** they are bound to Fluxer's own web origin, and Multicord won't impersonate it. Accounts protected only by a security key can sign in with a backup code.
   - **End-to-end encrypted voice channels:** Fluxer's scheme is undocumented, so Multicord refuses them rather than joining unencrypted.
   - **Calls in DMs:** voice works in server voice channels only.
+
+  For these, add "Fluxer (web)", Fluxer's own web client, in Settings.
   - **Archived threads:** only open threads and forum posts are listed.
   - **Instances without presigned uploads:** attachments need the presigned upload flow, which fluxer.app supports.
 - Fluxer's docs don't state a policy on third-party clients. The client is built to Fluxer's documented API and stays well under its rate limits. Requests are spaced out because a global rate-limit hit revokes a user's session.

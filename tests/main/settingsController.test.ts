@@ -75,6 +75,7 @@ describe("settings state", () => {
     expect(state.modules.map((m) => [m.id, m.fixedUrl])).toEqual([
       ["discord", true],
       ["fluxer", false],
+      ["fluxer-web", false],
       ["telegram", true],
       ["matrix-native", false],
       ["matrix", false],
