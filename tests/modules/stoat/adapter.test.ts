@@ -492,6 +492,8 @@ describe("StoatAdapter messages", () => {
     expect(bridged).toMatchObject({ author: "Bridged", avatarUrl: undefined, reply: undefined });
     expect(mine).toMatchObject({ author: "me", mine: true, canEdit: true, canDelete: true, source: "mine" });
     expect([system, unknown, bridged, mine].some((m) => m!.mentionsMe)).toBe(false);
+    expect([system, bridged].some((m) => m!.authorId ?? m!.authorMention)).toBe(false);
+    expect(mine).toMatchObject({ authorId: ME_ID, authorMention: `<@${ME_ID}>` });
     expect(rich).toEqual({
       id: ulid(460),
       author: "Ana",
@@ -504,6 +506,8 @@ describe("StoatAdapter messages", () => {
       source: undefined,
       canDelete: false,
       mentionsMe: true,
+      authorId: ANA_ID,
+      authorMention: `<@${ANA_ID}>`,
       reply: { author: "System", content: "@Ana joined" },
       reactions: [
         { key: "👍", label: "👍", imageUrl: undefined, count: 2, me: true },

@@ -667,6 +667,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       source: editable ? message.content : undefined,
       canDelete: mine,
       ...(!mine && this.state.mentionsMe(message) ? { mentionsMe: true } : {}),
+      // Who wrote it, and Stoat's syntax for mentioning them; not for system messages or names a bridge or bot put on.
+      ...(message.system === undefined && !message.masquerade ? { authorId: message.authorId, authorMention: `<@${message.authorId}>` } : {}),
       // Only replies to loaded messages can be previewed; others show none rather than "deleted".
       reply: reply ? { author: this.authorName(reply), content: this.renderContent(reply.system ?? reply.content) } : undefined,
       reactions: message.reactions.map((r) => {
