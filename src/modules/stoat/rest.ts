@@ -201,6 +201,11 @@ export class StoatRest {
     return parseMember(await this.request("GET", `/servers/${serverId}/members/${userId}`));
   }
 
+  /** One message, e.g. the original of a reply that is not loaded. */
+  async message(channelId: string, messageId: string): Promise<StoatMessage | undefined> {
+    return parseMessage(await this.request("GET", `/channels/${channelId}/messages/${messageId}`));
+  }
+
   async user(userId: string): Promise<StoatUser | undefined> {
     return parseUser(await this.request("GET", `/users/${userId}`));
   }

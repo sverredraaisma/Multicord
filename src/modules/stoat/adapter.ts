@@ -5,7 +5,7 @@ import type { AccountStatus } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { StoatEvents, type EventsStatus, type SocketFactory } from "./events";
-import { discoverInstance, instanceHosts, StoatRest, type LoginResult, type RestOptions, type StoatInstance } from "./rest";
+import { discoverInstance, instanceHosts, StoatApiError, StoatRest, type LoginResult, type RestOptions, type StoatInstance } from "./rest";
 import { StoatState, TYPING_MS } from "./state";
 import { ChannelType, TEXT_CHANNEL_TYPES, compareIds, displayName, idTime, isId, withChannelLevel, type StoatChannel, type StoatEmbed, type StoatFile, type StoatMember, type StoatMessage, type StoatRole, type StoatServer, type StoatUser } from "./types";
 
@@ -22,6 +22,9 @@ const TYPING_IDLE_MS = 5_000;
 /** Stoat's default message_attachments limit. */
 const MAX_FILES = Math.min(5, MAX_ATTACHMENTS);
 const ULID = "[0-9A-HJKMNP-TV-Z]{26}";
+/** Originals of replies fetched at most per page of messages, and kept at most. */
+export const ORIGINALS_PER_PAGE = 10;
+const MAX_ORIGINALS = 500;
 
 /** Which instance this is: the engine's own info. */
 export interface StoatInstanceDef {
@@ -104,6 +107,9 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   private profile: NativeProfile | undefined;
   /** Counts sign-outs and new sessions, so answers for an earlier one are dropped. */
   private session = 0;
+  /** Originals of replies that are not loaded, by id: fetched, or null where Stoat has none (deleted). */
+  private readonly originals = new Map<string, StoatMessage | null>();
+  private readonly fetchingOriginals = new Set<string>();
 
   constructor(private readonly deps: StoatAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -114,7 +120,10 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       if (this.state.typing.size > 0) this.typingTimer = setTimeout(() => this.render(), TYPING_MS);
     });
     this.state.incoming.on((message) => {
-      if (message.channelId === this.selectedChannelId) this.ackSoon(message.channelId);
+      if (message.channelId === this.selectedChannelId) {
+        this.ackSoon(message.channelId);
+        void this.fetchOriginals(message.channelId);
+      }
       this.notify(message);
     });
   }
@@ -336,6 +345,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     // Ready dropped the member lists; the open panel fetches its list again.
     this.session++;
     this.memberFetches.clear();
+    this.originals.clear();
+    this.fetchingOriginals.clear();
     if (this.membersOpen) void this.fetchMembers();
     this.render();
     if (!this.state.unreadsLoaded) {
@@ -359,6 +370,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     this.state.reset();
     this.session++;
     this.memberFetches.clear();
+    this.originals.clear();
+    this.fetchingOriginals.clear();
     this.membersOpen = false;
     this.profile = undefined;
     this.selection = { kind: "home" };
@@ -420,6 +433,39 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       this.error = `Could not load messages: ${messageOf(error)}`;
     }
     this.loading.delete(channelId);
+    this.render();
+    void this.fetchOriginals(channelId);
+  }
+
+  /**
+   * Fetches the originals of replies in a channel that are not loaded, the
+   * latest ORIGINALS_PER_PAGE at a time, so their previews show. One Stoat
+   * no longer has shows as deleted; one that failed to load is tried again
+   * with the next page or message.
+   */
+  private async fetchOriginals(channelId: string): Promise<void> {
+    const messages = this.state.messages.get(channelId) ?? [];
+    const loaded = new Set(messages.map((m) => m.id));
+    const wanted = [...new Set(messages.flatMap((m) => m.replies.slice(0, 1)))]
+      .filter((id) => !loaded.has(id) && !this.originals.has(id) && !this.fetchingOriginals.has(id))
+      .slice(-ORIGINALS_PER_PAGE);
+    if (wanted.length === 0) return;
+    const session = this.session;
+    for (const id of wanted) this.fetchingOriginals.add(id);
+    for (const id of wanted) {
+      let found: StoatMessage | null | undefined;
+      try {
+        found = (await this.rest!.message(channelId, id)) ?? null;
+      } catch (error) {
+        found = error instanceof StoatApiError && error.status === 404 ? null : undefined;
+      }
+      // Answers for an earlier session are dropped.
+      if (session !== this.session) return;
+      this.fetchingOriginals.delete(id);
+      if (found === undefined) continue;
+      this.originals.set(id, found);
+      if (this.originals.size > MAX_ORIGINALS) this.originals.delete(this.originals.keys().next().value!);
+    }
     this.render();
   }
 
@@ -989,7 +1035,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     const mine = message.authorId === this.state.meId;
     const editable = mine && message.system === undefined;
     const replyId = message.replies[0];
-    const reply = replyId ? this.state.findMessage(message.channelId, replyId) : undefined;
+    // A loaded original, else one fetched for its preview; null where Stoat no longer has it.
+    const reply = replyId ? (this.state.findMessage(message.channelId, replyId) ?? this.originals.get(replyId)) : undefined;
     const author = this.state.users.get(message.authorId) ?? message.author;
     return {
       id: message.id,
@@ -1008,8 +1055,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       canPin: message.system === undefined,
       // Who wrote it, and Stoat's syntax for mentioning them; not for system messages or names a bridge or bot put on.
       ...(message.system === undefined && !message.masquerade ? { authorId: message.authorId, authorMention: `<@${message.authorId}>` } : {}),
-      // Only replies to loaded messages can be previewed; others show none rather than "deleted".
-      reply: reply ? { author: this.authorName(reply), content: this.renderContent(reply.system ?? reply.content) } : undefined,
+      // Originals not fetched (yet) show no preview rather than "deleted"; a preview leads to its original.
+      reply: reply ? { author: this.authorName(reply), content: this.renderContent(reply.system ?? reply.content), id: reply.id, timestamp: new Date(idTime(reply.id)).toISOString() } : reply,
       reactions: message.reactions.map((r) => {
         const custom = isId(r.emoji) ? this.state.emojis.get(r.emoji) : undefined;
         return {

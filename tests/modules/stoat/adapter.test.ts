@@ -449,8 +449,66 @@ describe("StoatAdapter messages", () => {
     const [first, second] = chat().channel!.messages;
     expect(first!.content).toBe(":party:");
     // Replies quote plain text: the name.
-    expect(second!.reply).toEqual({ author: "Ana", content: ":party:" });
+    expect(second!.reply).toEqual({ author: "Ana", content: ":party:", id: ulid(460), timestamp: new Date(idTime(ulid(460))).toISOString() });
     expect(chat().emojiUrls).toEqual({});
+  });
+
+  it("fetches the originals of replies that are not loaded, a page's latest few at a time", async () => {
+    const { ORIGINALS_PER_PAGE } = await import("../../../src/modules/stoat/adapter");
+    const replies = Array.from({ length: ORIGINALS_PER_PAGE + 2 }, (_, i) => message(470 + i, GENERAL, { replies: [ulid(10 + i)] }));
+    let failing = true;
+    const { adapter, chat, event, online, requests } = setup({
+      token: "saved",
+      routes: [
+        (url) => (url.includes("/messages?") ? { status: 200, body: { messages: [...replies].reverse(), users: [ANA] } } : undefined),
+        // One is gone, one fails until later, the others come back.
+        (url) => (url.endsWith(`/messages/${ulid(20)}`) ? { status: 404, body: { type: "NotFound" } } : undefined),
+        (url) => (url.endsWith(`/messages/${ulid(21)}`) && failing ? { status: 500 } : undefined),
+        (url) => {
+          const n = Number(url.split("/messages/")[1]?.slice(4));
+          return n > 0 && n < 100 ? { status: 200, body: message(n, GENERAL, { author: BOB_ID, content: `was ${n}` }) } : undefined;
+        },
+      ],
+    });
+    await online();
+    await adapter.openConversation(GENERAL);
+    await vi.advanceTimersByTimeAsync(100);
+    const fetched = () => requests("/messages/01HZ").map((c) => c.url.split("/messages/")[1]);
+    // The latest ten, each once; the two oldest are not asked for.
+    expect(fetched()).toEqual(Array.from({ length: ORIGINALS_PER_PAGE }, (_, i) => ulid(12 + i)));
+    const shown = chat().channel!.messages;
+    expect(shown[0]!.reply).toBeUndefined();
+    expect(shown[2]!.reply).toEqual({ author: "bob", content: "was 12", id: ulid(12), timestamp: new Date(idTime(ulid(12))).toISOString() });
+    expect(shown[10]!.reply).toBeNull();
+    expect(shown[11]!.reply).toBeUndefined();
+    // A new message asks again for what failed, and for nothing fetched already.
+    failing = false;
+    await event({ type: "Message", ...message(499, GENERAL, { replies: [ulid(12)] }) });
+    await vi.advanceTimersByTimeAsync(100);
+    // With room again, the two oldest are asked for too.
+    expect(fetched().slice(ORIGINALS_PER_PAGE)).toEqual([ulid(10), ulid(11), ulid(21)]);
+    expect(chat().channel!.messages[11]!.reply).toMatchObject({ content: "was 21" });
+  });
+
+  it("drops originals fetched for a session that has ended", async () => {
+    let renewed = false;
+    const { adapter, chat, online, routes, requests, socket } = setup({ token: "saved" });
+    routes.push(
+      (url) => (url.includes("/messages?") ? { status: 200, body: { messages: [message(470, GENERAL, { replies: [ulid(10)] })], users: [ANA] } } : undefined),
+      (url) => {
+        if (!url.endsWith(`/messages/${ulid(10)}`)) return undefined;
+        // Ready starts a new session while the original is on its way.
+        if (!renewed) socket().receive(readyPayload());
+        renewed = true;
+        return { status: 200, body: message(10, GENERAL) };
+      },
+    );
+    await online();
+    await adapter.openConversation(GENERAL);
+    await vi.advanceTimersByTimeAsync(100);
+    // The first answer was dropped; the new session asked again.
+    expect(requests(`/messages/${ulid(10)}`)).toHaveLength(2);
+    expect(chat().channel!.messages.at(-1)!.reply).toMatchObject({ id: ulid(10) });
   });
 
   it("marks where a channel's news began when it was opened, from its read position", async () => {
@@ -513,12 +571,14 @@ describe("StoatAdapter messages", () => {
     );
     await online();
     await adapter.openConversation(GENERAL);
+    await vi.advanceTimersByTimeAsync(100);
     const [system, unknown, bridged, mine, rich] = chat().channel!.messages;
     expect(system).toMatchObject({ author: "System", content: "@Ana joined", canEdit: false, canDelete: false, mine: false });
     // Known emoji are drawn from the file server; the Messages list keeps their names.
     expect(chat().emojiUrls).toEqual({ [EMOJI]: `https://cdn.test/emojis/${EMOJI}` });
     expect(unknown).toMatchObject({ author: "Unknown user", avatarUrl: undefined });
-    expect(bridged).toMatchObject({ author: "Bridged", avatarUrl: undefined, reply: undefined });
+    // Its original is not loaded, and Stoat has none to fetch: deleted.
+    expect(bridged).toMatchObject({ author: "Bridged", avatarUrl: undefined, reply: null });
     expect(mine).toMatchObject({ author: "me", mine: true, canEdit: true, canDelete: true, source: "mine" });
     expect([system, unknown, bridged, mine].some((m) => m!.mentionsMe)).toBe(false);
     expect([system, bridged].some((m) => m!.authorId ?? m!.authorMention)).toBe(false);
@@ -538,7 +598,7 @@ describe("StoatAdapter messages", () => {
       mentionsMe: true,
       authorId: ANA_ID,
       authorMention: `<@${ANA_ID}>`,
-      reply: { author: "System", content: "@Ana joined" },
+      reply: { author: "System", content: "@Ana joined", id: ulid(450), timestamp: new Date(idTime(ulid(450))).toISOString() },
       reactions: [
         { key: "👍", label: "👍", imageUrl: undefined, count: 2, me: true },
         { key: EMOJI, label: ":party:", imageUrl: `https://cdn.test/emojis/${EMOJI}`, count: 1, me: false },
