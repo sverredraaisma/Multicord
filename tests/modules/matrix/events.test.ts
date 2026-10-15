@@ -18,6 +18,7 @@ import {
   MAX_BODY,
   MAX_EVENT_JSON,
   MAX_NAME,
+  MAX_PINNED,
   MAX_ROOM_ID,
   MAX_SPACE_CHILDREN,
   mimeType,
@@ -236,6 +237,19 @@ describe("room state", () => {
     applyState(state, { type: "m.room.name", content: { name: "no state key" } });
     applyState(state, "junk");
     expect(state).toEqual({ name: "", alias: "", avatar: "", members: {} });
+  });
+
+  it("reads the pinned events: valid ids, each once, the newest kept", () => {
+    const state = emptyState();
+    applyState(state, st("m.room.pinned_events", { pinned: ["$a", "$b", "$a", 5, "nope", "$c"] }));
+    expect(state.pinned).toEqual(["$a", "$b", "$c"]);
+    applyState(state, st("m.room.pinned_events", { pinned: ["$x"] }, "odd"));
+    expect(state.pinned).toEqual(["$a", "$b", "$c"]);
+    applyState(state, st("m.room.pinned_events", {}));
+    expect(state.pinned).toEqual([]);
+    applyState(state, st("m.room.pinned_events", { pinned: Array.from({ length: MAX_PINNED + 5 }, (_, i) => `$e${i}`) }));
+    expect(state.pinned).toHaveLength(MAX_PINNED);
+    expect(state.pinned!.at(-1)).toBe(`$e${MAX_PINNED + 4}`);
   });
 
   it("treats any encryption event as encrypted, even a malformed one", () => {

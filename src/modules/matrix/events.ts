@@ -289,6 +289,9 @@ export function parseEvent(raw: unknown): MxEvent | undefined {
 
 export const emptyState = (): MxRoomState => ({ members: {} });
 
+/** Pinned events kept per room: the newest. */
+export const MAX_PINNED = 100;
+
 const positive = (value: unknown): number | undefined => (typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined);
 
 /** An m.room.encryption content; an algorithm we cannot name stays "", which nothing encrypts with. */
@@ -346,6 +349,10 @@ export function applyState(state: MxRoomState, raw: unknown): void {
       return;
     case "m.room.create":
       if (global && content.type === "m.space") state.space = true;
+      return;
+    case "m.room.pinned_events":
+      // The newest pins, each once.
+      if (global) state.pinned = [...new Set((Array.isArray(content.pinned) ? content.pinned : []).flatMap((id) => eventId(id) ?? []))].slice(-MAX_PINNED);
       return;
     case ROOM_PACK_TYPE: {
       if (raw.state_key.length > MAX_ID) return;

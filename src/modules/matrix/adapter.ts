@@ -9,6 +9,7 @@ import {
   type NativeAttachment,
   type NativeCustomEmoji,
   type NativeMessage,
+  type NativeMessageList,
   type NativePrompt,
   type NativeReaction,
   type NativeSidebarItem,
@@ -48,13 +49,15 @@ import {
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, STICKY_EVENTS_FEATURE, type CallParticipant, type RtcJoin } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
 import { base64 } from "./client";
-import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseEmotes, parseMxc, reactionKey, serviceUrl, userId } from "./events";
+import { cleanName, isRecord, liveKitTransports, MAX_CALL_MEMBERS, MAX_ROOM_PACKS, MAX_SPACE_CHILDREN, mimeType, parseContent, parseEmotes, parseEvent, parseMxc, reactionKey, serviceUrl, userId } from "./events";
 import { AttachmentError, decryptAttachment, encryptAttachment, imageSize } from "./media";
 import { emoticonHtml, emoticonMarkdown, HTML_FORMAT, packImageId, stickerFormat, textMentions } from "./packs";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 import type { Verification, VerificationState } from "./verification";
 
 export const PAGE_SIZE = 50;
+/** Pinned messages the pins panel lists at most, newest pin first. */
+export const MAX_LISTED_PINS = 50;
 /** Profile pictures fetched per refresh; the rest show initials. */
 export const AVATAR_LIMIT = 40;
 /** How long the server may hold a /sync open; the HTTP bridge sets no timeout of its own. */
@@ -289,6 +292,8 @@ interface Room {
   space: boolean;
   /** A space's children (m.space.child) by room id, joined or not; empty for other rooms. */
   children: Map<string, MxSpaceChild>;
+  /** Its pinned events (m.room.pinned_events), oldest pin first. */
+  pinned: string[];
   /** The room's image packs with pictures, by state key. */
   packs: Map<string, MxPack>;
 }
@@ -522,6 +527,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private slidingSync: boolean;
   /** The hosts the engine locked itself to (and so its view); undefined while it is not locked. */
   private lockedHosts: string[] | undefined;
+  /** The open room's pinned messages, while its pins panel is open. */
+  private pins: { roomId: string; list: NativeMessageList } | undefined;
+  /** Pinned events fetched for the pins panel (decrypted where they could be), by event id; null for one the server would not give. */
+  private readonly pinnedEvents = new Map<string, Shown | null>();
   /** Our device's call, joining or joined; one at a time. */
   private call: MatrixCall | undefined;
   /** Counts joins and leaves, so a join that finishes after the user moved on is dropped. */
@@ -830,6 +839,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     this.userPack = undefined;
     this.packRooms = [];
     this.mutedRooms.clear();
+    this.pins = undefined;
+    this.pinnedEvents.clear();
     this.directsChanged.emit([]);
     this.publishServers();
   }
@@ -935,6 +946,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.render();
       case "sendSticker":
         return this.sendSticker(action.stickerId, action.replyTo);
+      case "pins":
+        return this.showPins(action.open);
+      case "pin":
+        return this.pin(action.messageId, action.pin);
       default:
         // Forums are not offered for Matrix.
         return;
@@ -1585,6 +1600,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         space: false,
         children: new Map(),
         packs: new Map(),
+        pinned: [],
       };
       this.rooms.set(id, room);
     }
@@ -1598,6 +1614,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (state.encrypted) room.encrypted = true;
     if (state.encryption) room.encryption = state.encryption;
     if (state.history !== undefined) room.history = state.history;
+    if (state.pinned) {
+      room.pinned = state.pinned;
+      if (this.pins?.roomId === room.id) void this.loadPins(room);
+    }
     if (state.space) room.space = true;
     // Only spaces list children; other rooms' m.space.child events mean nothing.
     for (const [id, child] of room.space ? (state.children ?? []) : []) {
@@ -1822,6 +1842,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     const room = this.rooms.get(this.byLocal.get(local) ?? "");
     if (!room) return;
     if (this.selected !== room.id) this.noteUnread(room);
+    if (this.pins?.roomId !== room.id) this.pins = undefined;
     this.selected = room.id;
     this.lastRoom.set(this.openSpace ?? "", room.id);
     this.render();
@@ -1923,6 +1944,52 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       if (mute) this.mutedRooms.add(room.id);
       else this.mutedRooms.delete(room.id);
       this.publish();
+    });
+  }
+
+  /** Opens the open room's pins panel and lists its pins, or closes it. */
+  private async showPins(open: boolean): Promise<void> {
+    const room = open ? this.selectedRoom() : undefined;
+    this.pins = room ? { roomId: room.id, list: { messages: [], loading: true } } : undefined;
+    this.render();
+    if (room) await this.loadPins(room);
+  }
+
+  /**
+   * Lists a room's pinned events, newest pin first (up to MAX_LISTED_PINS):
+   * those in the timeline as they are, others fetched once and decrypted
+   * where they can be. A reply for a panel since closed is dropped.
+   */
+  private async loadPins(room: Room): Promise<void> {
+    const session = this.session!;
+    const shown: Shown[] = [];
+    for (const id of [...room.pinned].reverse().slice(0, MAX_LISTED_PINS)) {
+      let event: Shown | null | undefined = room.events.find((e) => e.id === id) ?? this.pinnedEvents.get(id);
+      if (event === undefined) {
+        const raw = await this.deps.api.request(session, "GET", `/v3/rooms/${encodeURIComponent(room.id)}/event/${encodeURIComponent(id)}`).catch(() => undefined);
+        const parsed = parseEvent(raw);
+        const [found] = parsed ? await this.decryptAll(room.id, [parsed]) : [];
+        event = found && (found.kind === "message" || found.kind === "encrypted") && found.id === id ? found : null;
+        this.pinnedEvents.set(id, event);
+      }
+      if (event) shown.push(event);
+    }
+    if (this.pins?.roomId !== room.id) return;
+    const messages = shown.map((event) => ({ id: this.local(event.id), author: this.memberName(room, event.sender), content: escapeMarkdown(this.eventText(room, event)), timestamp: new Date(event.ts).toISOString() }));
+    this.pins = { roomId: room.id, list: { messages, loading: false, ...(shown.length < Math.min(room.pinned.length, MAX_LISTED_PINS) ? { note: "Some pinned messages could not be loaded." } : {}) } };
+    this.render();
+  }
+
+  /** Pins or unpins a message in the open room's m.room.pinned_events; the homeserver decides whether the user may. */
+  private async pin(local: string, pin: boolean): Promise<void> {
+    const room = this.selectedRoom();
+    const event = room ? this.findEvent(room, local) : undefined;
+    if (!room || !event) return;
+    const pinned = [...room.pinned.filter((id) => id !== event.id), ...(pin ? [event.id] : [])];
+    await this.attempt(pin ? "Message not pinned" : "Message not unpinned", async () => {
+      await this.deps.api.sendState(this.session!, room.id, "m.room.pinned_events", "", { pinned });
+      this.applyState(room, { members: {}, pinned });
+      this.render();
     });
   }
 
@@ -2960,6 +3027,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
       reactions: [...(reactions.get(event.id) ?? [])].map(([key, senders]) => this.reaction(key, senders)),
       attachments: [],
     };
+    if (room.pinned.includes(event.id)) native.pinned = true;
+    if (!locked) native.canPin = true;
     if (event.kind !== "message") return native;
     if (!mine && this.mentionsMe(room, event)) native.mentionsMe = true;
     // A quiet note on the author line: the message decrypted, but from a device its owner has not verified.
@@ -3069,8 +3138,9 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
             uploading: this.uploading.has(room.id),
             ...(locked ? { locked } : {}),
             ...(this.unreadAt?.roomId === room.id ? { unread: this.unreadView(room, this.unreadAt) } : {}),
+            ...(this.pins?.roomId === room.id ? { pins: this.pins.list } : {}),
             // A locked room takes nothing from here; typing notices follow the user's setting.
-            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false, stickers: !locked },
+            can: { reply: !locked, react: !locked, attach: !locked && this.deps.files !== undefined, typing: this.typingNotices, members: false, stickers: !locked, pins: true },
           }
         : null,
       // After the messages, which fill it.

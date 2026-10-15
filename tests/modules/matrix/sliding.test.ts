@@ -81,6 +81,7 @@ describe("sliding sync requests", () => {
       ["m.space.child", "*"],
       [CALL_MEMBER_TYPE, "*"],
       ["im.ponies.room_emotes", "*"],
+      ["m.room.pinned_events", ""],
     ]) {
       expect(dms.required_state).toContainEqual(state);
       expect(rooms.required_state).toContainEqual(state);

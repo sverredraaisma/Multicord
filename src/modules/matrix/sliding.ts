@@ -47,6 +47,8 @@ const ROOM_STATE = [
   [CALL_MEMBER_TYPE, "*"],
   // Image packs: the room's emoji and stickers, and those of rooms the user enabled everywhere.
   [ROOM_PACK_TYPE, "*"],
+  // What is pinned, for the pins panel and the marks on pinned messages.
+  ["m.room.pinned_events", ""],
 ];
 const DM_MEMBERS = [["m.room.member", "*"]];
 const LAZY_MEMBERS = [

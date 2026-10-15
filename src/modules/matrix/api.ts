@@ -90,6 +90,8 @@ export interface MxRoomState {
   space?: boolean;
   /** m.space.child events seen, by child room id; null for a child that was removed (no via). */
   children?: Map<string, MxSpaceChild | null>;
+  /** The pinned events (m.room.pinned_events), oldest pin first; an empty list unpins all. */
+  pinned?: string[];
   /** Image packs (im.ponies.room_emotes) seen, by state key; one without images was emptied. */
   packs?: Map<string, MxPack>;
 }

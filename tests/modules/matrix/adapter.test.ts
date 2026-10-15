@@ -59,6 +59,7 @@ import {
   USER_PACK_NAME,
 } from "../../../src/modules/matrix/adapter";
 import { MAX_STATUS_TEXT } from "../../../src/shared/settings";
+import { escapeMarkdown } from "../../../src/shared/markdown";
 import type { DeviceRef, E2ee, E2eeOptions, E2eeStatus, RecoveryResult, RoomEncryption, SecureToDevice } from "../../../src/modules/matrix/crypto";
 import type { Verification, VerificationState } from "../../../src/modules/matrix/verification";
 import { OAuthError, type DeviceGrant, type DevicePoll, type OAuthServer, type OAuthTokens } from "../../../src/modules/matrix/oauth";
@@ -825,7 +826,7 @@ describe("conversations", () => {
     const { channel } = ctx.chat();
     expect(channel).toMatchObject({ id: ctx.item("Bo").id, name: "Bo", loading: false, hasOlder: true, typing: [], pending: [], uploading: false });
     expect(channel).not.toHaveProperty("locked");
-    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true });
+    expect(channel!.can).toEqual({ reply: true, react: true, attach: false, typing: true, members: false, stickers: true, pins: true });
     expect(ctx.item("Bo").active).toBe(true);
     expect(ctx.messages()).toEqual([
       {
@@ -839,6 +840,7 @@ describe("conversations", () => {
         mine: false,
         canEdit: false,
         canDelete: false,
+        canPin: true,
         reactions: [],
         attachments: [],
       },
@@ -985,7 +987,7 @@ describe("conversations", () => {
     const ctx = await signedIn();
     await ctx.open("Secret");
     expect(ctx.chat().channel!.locked).toBe(ENCRYPTED_NOTICE);
-    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: false, stickers: false });
+    expect(ctx.chat().channel!.can).toEqual({ reply: false, react: false, attach: false, typing: true, members: false, stickers: false, pins: true });
     expect(ctx.messages()).toEqual([
       expect.objectContaining({ content: ENCRYPTED_TEXT.replace("—", "—"), author: ANA, canEdit: false, canDelete: false }),
       expect.objectContaining({ content: "before encryption", mine: true, canEdit: false, canDelete: true }),
@@ -4627,5 +4629,102 @@ describe("custom emoji and stickers from image packs", () => {
     await flush();
     expect(ctx.api.thumbnail).toHaveBeenCalledTimes(1);
     expect(ctx.prompt().prompt.id).toBe("login");
+  });
+});
+
+describe("pinned messages", () => {
+  const raw = (id: string, body: string, ts: number) => ({ event_id: id, type: "m.room.message", sender: ANA, origin_server_ts: ts, room_id: "!lounge:x.org", content: { msgtype: "m.text", body } });
+  /** The lounge with pins: one in its timeline, one to fetch, one the server refuses and one that is not a message. */
+  const pinnedSync = () => {
+    const first = initialSync();
+    first.joined[1]!.state.pinned = ["$l1", "$old", "$gone", "$topic", "$sealed"];
+    return first;
+  };
+  const answer = (ctx: Awaited<ReturnType<typeof signedIn>>) =>
+    ctx.api.request.mockImplementation(async (_s, _m, path) => {
+      if (path.endsWith("/event/%24old")) return raw("$old", "an *old* one", 50);
+      if (path.endsWith("/event/%24sealed")) return { event_id: "$sealed", type: "m.room.encrypted", sender: ANA, origin_server_ts: 40, content: {} };
+      if (path.endsWith("/event/%24topic")) return { event_id: "$topic", type: "m.room.topic", sender: ANA, origin_server_ts: 1, content: {} };
+      if (path.endsWith("/event/%24new")) return raw("$other", "not what was asked", 60);
+      throw new Error("M_NOT_FOUND");
+    });
+
+  it("lists the room's pins newest first, fetching those not loaded once, and follows changes", async () => {
+    const ctx = await signedIn(pinnedSync());
+    answer(ctx);
+    await ctx.open("Lounge");
+    expect(ctx.chat().channel!.can.pins).toBe(true);
+    expect(ctx.messages()[0]).toMatchObject({ content: "welcome", pinned: true, canPin: true });
+    const pending = ctx.act({ type: "pins", open: true });
+    expect(ctx.chat().channel!.pins).toEqual({ messages: [], loading: true });
+    await pending;
+    expect(ctx.api.request).toHaveBeenCalledWith(SESSION, "GET", "/v3/rooms/!lounge%3Ax.org/event/%24old");
+    expect(ctx.chat().channel!.pins).toEqual({
+      messages: [
+        expect.objectContaining({ content: escapeMarkdown(ENCRYPTED_TEXT), timestamp: new Date(40).toISOString() }),
+        { id: expect.stringMatching(/^\d+$/), author: "Ana", content: "an \\*old\\* one", timestamp: new Date(50).toISOString() },
+        { id: ctx.messages()[0]!.id, author: "Ana", content: "welcome", timestamp: new Date(500).toISOString() },
+      ],
+      loading: false,
+      note: "Some pinned messages could not be loaded.",
+    });
+    // Pinned in another client: listed again, without fetching what was fetched.
+    const calls = ctx.api.request.mock.calls.length;
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { state: { members: {}, pinned: ["$l1", "$old", "$new"] } })] }));
+    expect(ctx.api.request.mock.calls.length).toBe(calls + 1);
+    expect(ctx.chat().channel!.pins!.messages.map((m) => m.content)).toEqual(["an \\*old\\* one", "welcome"]);
+    await ctx.act({ type: "pins", open: false });
+    expect(ctx.chat().channel!.pins).toBeUndefined();
+    await ctx.live(sync({ joined: [room("!lounge:x.org", { state: { members: {}, pinned: ["$l1"] } })] }));
+    expect(ctx.api.request.mock.calls.length).toBe(calls + 1);
+    // The same room keeps the panel; another drops it.
+    await ctx.act({ type: "pins", open: true });
+    await ctx.open("Lounge");
+    expect(ctx.chat().channel!.pins).toEqual({ messages: [expect.objectContaining({ content: "welcome" })], loading: false });
+    await ctx.open("Bo");
+    expect(ctx.chat().channel!.pins).toBeUndefined();
+  });
+
+  it("drops a list for a panel closed meanwhile, and has none without an open room", async () => {
+    const ctx = await signedIn(pinnedSync());
+    answer(ctx);
+    await ctx.act({ type: "pins", open: true });
+    await ctx.act({ type: "pin", messageId: "1", pin: true });
+    expect(ctx.api.sendState).not.toHaveBeenCalled();
+    expect(ctx.api.request).not.toHaveBeenCalled();
+    await ctx.open("Lounge");
+    const pending = ctx.act({ type: "pins", open: true });
+    await ctx.act({ type: "pins", open: false });
+    await pending;
+    expect(ctx.chat().channel!.pins).toBeUndefined();
+  });
+
+  it("pins and unpins through the room's state, and shows a refusal", async () => {
+    const ctx = await signedIn(pinnedSync());
+    answer(ctx);
+    await ctx.open("Lounge");
+    const id = ctx.messages()[0]!.id;
+    await ctx.act({ type: "pin", messageId: id, pin: false });
+    expect(ctx.api.sendState).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", "m.room.pinned_events", "", { pinned: ["$old", "$gone", "$topic", "$sealed"] });
+    expect(ctx.messages()[0]!.pinned).toBeUndefined();
+    await ctx.act({ type: "pin", messageId: id, pin: true });
+    expect(ctx.api.sendState).toHaveBeenLastCalledWith(SESSION, "!lounge:x.org", "m.room.pinned_events", "", { pinned: ["$old", "$gone", "$topic", "$sealed", "$l1"] });
+    expect(ctx.messages()[0]!.pinned).toBe(true);
+    ctx.api.sendState.mockRejectedValueOnce(new Error("M_FORBIDDEN"));
+    await ctx.act({ type: "pin", messageId: id, pin: false });
+    expect(ctx.chat().error).toMatch(/^Message not unpinned: /);
+    ctx.api.sendState.mockRejectedValueOnce(new Error("M_FORBIDDEN"));
+    await ctx.act({ type: "pin", messageId: id, pin: true });
+    expect(ctx.chat().error).toMatch(/^Message not pinned: /);
+    // A message not in the room: nothing is sent.
+    const sent = ctx.api.sendState.mock.calls.length;
+    await ctx.act({ type: "pin", messageId: "999999", pin: true });
+    expect(ctx.api.sendState.mock.calls.length).toBe(sent);
+  });
+
+  it("does not offer pinning in a locked room", async () => {
+    const ctx = await signedIn();
+    await ctx.open("Secret");
+    expect(ctx.messages().some((m) => m.canPin)).toBe(false);
   });
 });
