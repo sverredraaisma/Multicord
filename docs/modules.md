@@ -91,6 +91,7 @@ Native engine fields:
 | `home` | The module has a home (DM) entry in the rail. The adapter needs `openHome()` and `homeBadge()`. |
 | `capabilities` | `{ directMessages, messagePreviews, voice, screenShare }`. The shell reads the manifest's, not the adapter's, so keep them equal: export the adapter's as `CAPABILITIES` from `adapter.ts`, and a test in `tests/main/modules.test.ts` compares them for every native module. |
 | `screenShare` | Route `getDisplayMedia` in the module's view through the shell's screen picker. Set it exactly when `capabilities.screenShare` is set (tested for modules with `voice`). |
+| `holdsMedia` | The engine holds media back until the view asks (`mediaKey` and `loadMedia`). The view then gets this service's limit for media that loads by itself, and Settings offers a per-service choice of it. Give such attachments their `size` where the platform says it: media of unknown size waits for a click unless any size may load. |
 
 #### Service settings
 
