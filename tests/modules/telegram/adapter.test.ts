@@ -631,6 +631,30 @@ describe("chat view", () => {
     expect(ctx.api.markRead).not.toHaveBeenCalled();
   });
 
+  it("marks where a chat's news began when it was opened: the first incoming message after the last one read", async () => {
+    const ctx = await signedIn({ dialogs: [dlg("1", { unreadCount: 2, readUpTo: 11 }), dlg("2", { unreadCount: 3, readUpTo: 5 }), dlg("3", { unreadCount: 1 }), dlg("4")] });
+    ctx.adapter.setVisible(true);
+    ctx.api.history.mockResolvedValueOnce([msg("1", 10), msg("1", 11), msg("1", 12, { out: true }), msg("1", 13), msg("1", 14)]);
+    await ctx.adapter.openConversation("1");
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: "13", count: 2 });
+    // It stays while the chat is open, read or not.
+    ctx.api.emit({ type: "message", message: msg("1", 15) });
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: "13", count: 2 });
+    // The loaded messages do not reach back to the last one read: it began above them.
+    ctx.api.history.mockResolvedValueOnce(Array.from({ length: PAGE_SIZE }, (_, i) => msg("2", 51 + i)));
+    await ctx.adapter.openConversation("2");
+    expect(ctx.chat().channel!.unread).toEqual({ count: 3 });
+    // Nothing older: from the first incoming one.
+    ctx.api.history.mockResolvedValueOnce([msg("3", 1, { out: true }), msg("3", 2)]);
+    await ctx.adapter.openConversation("3");
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: "2", count: 1 });
+    await ctx.adapter.openConversation("4");
+    expect(ctx.chat().channel).not.toHaveProperty("unread");
+    // Read on opening: opened again, it has no news.
+    await ctx.adapter.openConversation("1");
+    expect(ctx.chat().channel).not.toHaveProperty("unread");
+  });
+
   it("shows hasOlder when a full page came back and loads older messages in front", async () => {
     const ctx = await signedIn();
     const newest = Array.from({ length: PAGE_SIZE }, (_, i) => msg("1", 51 + i));
@@ -2143,6 +2167,21 @@ describe("forum topics", () => {
     await ctx.act({ type: "select", channelId: threads(ctx).find((t) => t.name === name)!.id });
     await flush();
   };
+
+  it("marks where a topic's news began, and gives the topic list no marker of its own", async () => {
+    const ctx = await signedIn({ dialogs: forum() });
+    ctx.adapter.setVisible(true);
+    ctx.api.topics.mockResolvedValue([topic(10, { unreadCount: 2, readUpTo: 101 })]);
+    await ctx.act({ type: "select", channelId: viewId(FORUM) });
+    expect(ctx.chat().channel).not.toHaveProperty("unread");
+    ctx.api.history.mockResolvedValueOnce([msg(FORUM, 100, { topicId: 10 }), msg(FORUM, 101, { topicId: 10 }), msg(FORUM, 102, { topicId: 10 })]);
+    await openTopic(ctx, "T10");
+    expect(ctx.chat().channel!.unread).toEqual({ firstId: "102", count: 2 });
+    // Read now, and noted so: back in the list and into the topic again, no news.
+    await ctx.act({ type: "select", channelId: viewId(FORUM) });
+    await openTopic(ctx, "T10");
+    expect(ctx.chat().channel).not.toHaveProperty("unread");
+  });
 
   it("lists a forum's topics, pinned first then most recently active, as posts and under the forum", async () => {
     const ctx = await open();

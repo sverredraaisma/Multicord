@@ -97,6 +97,8 @@ export interface TgDialog {
   unreadMentions: number;
   /** Until when (Unix seconds) the chat's notifications are muted, if they are. */
   mutedUntil?: number;
+  /** The last incoming message the user read (read_inbox_max_id), where Telegram says. */
+  readUpTo?: number;
   /** Nothing can be sent here: a channel only its admins post in, or a group the user may not write in. */
   readOnly?: boolean;
   /** Its members may be listed, as far as the dialog tells: groups the user is in, channels they administer. */
@@ -125,6 +127,8 @@ export interface TgTopic {
   title: string;
   unreadCount: number;
   unreadMentions: number;
+  /** The last message the user read in it (read_inbox_max_id), where Telegram says. */
+  readUpTo?: number;
   /** When it was last active (Unix seconds). */
   date: number;
   /** Pinned to the top of the list. */

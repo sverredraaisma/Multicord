@@ -343,7 +343,7 @@ describe("createGramApi", () => {
     const settings = (props: Record<string, unknown>) => ({ dialog: { notifySettings: make(Api.PeerNotifySettings, props) } });
     const none = { dialog: {} };
     client.getDialogs.mockResolvedValue([
-      { ...none, id: 1n, unreadCount: 2, unreadMentionsCount: 0, date: 100, message: last, entity: make(Api.User, { firstName: "Ana", bot: true }) },
+      { dialog: { readInboxMaxId: 7 }, id: 1n, unreadCount: 2, unreadMentionsCount: 0, date: 100, message: last, entity: make(Api.User, { firstName: "Ana", bot: true }) },
       { ...settings({ muteUntil: 2147483647 }), id: 2n, unreadCount: 0, unreadMentionsCount: 0, date: 90, entity: make(Api.User, { username: "bo" }) },
       { ...settings({ muteUntil: 0 }), id: -7n, unreadCount: 3, unreadMentionsCount: 1, date: 85, entity: make(Api.Chat, { title: "Family", defaultBannedRights: { sendMedia: true } }) },
       { ...none, id: -1001234567890n, unreadCount: 2_000_000, unreadMentionsCount: -1, date: 80, entity: make(Api.Channel, { title: "News", broadcast: true, left: true }) },
@@ -353,7 +353,7 @@ describe("createGramApi", () => {
       { ...none, id: 10n ** 19n, unreadCount: 0, unreadMentionsCount: 0, date: 50, entity: make(Api.User) },
     ]);
     await expect(api.dialogs(20)).resolves.toEqual([
-      { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, lastMessage: toMessage(last, "1") },
+      { chatId: "1", kind: "user", title: "Ana", bot: true, unreadCount: 2, unreadMentions: 0, date: 100, readUpTo: 7, lastMessage: toMessage(last, "1") },
       { chatId: "2", kind: "user", title: "@bo", bot: false, unreadCount: 0, unreadMentions: 0, date: 90, mutedUntil: 2147483647 },
       { chatId: "-7", kind: "group", title: "Family", bot: false, unreadCount: 3, unreadMentions: 1, date: 85, members: true, noMedia: true, noStickers: true },
       { chatId: "-1001234567890", kind: "channel", title: "News", bot: false, unreadCount: 1_000_000, unreadMentions: 0, date: 80, readOnly: true, left: true },
@@ -1015,7 +1015,7 @@ describe("forum topics", () => {
 
   it("lists topics with their counts and last activity, leaving out deleted ones", () => {
     const topics = [
-      make(Api.ForumTopic, { id: 1, title: "General", unreadCount: 2, unreadMentionsCount: 1, topMessage: 40, date: 5, pinned: true }),
+      make(Api.ForumTopic, { id: 1, title: "General", unreadCount: 2, unreadMentionsCount: 1, topMessage: 40, date: 5, pinned: true, readInboxMaxId: 38 }),
       make(Api.ForumTopic, { id: 10, title: "", unreadCount: -1, topMessage: 99, date: 7 }),
       make(Api.ForumTopic, { id: 11, title: "x".repeat(200), topMessage: 41, date: 8 }),
       make(Api.ForumTopicDeleted, { id: 12 }),
@@ -1024,7 +1024,7 @@ describe("forum topics", () => {
     ];
     const messages = [make(Api.Message, { id: 40, date: 400 }), make(Api.MessageService, { id: 41, date: 410 }), {}];
     expect(topicsOf(topics, messages)).toEqual([
-      { id: 1, title: "General", unreadCount: 2, unreadMentions: 1, date: 400, pinned: true },
+      { id: 1, title: "General", unreadCount: 2, unreadMentions: 1, date: 400, pinned: true, readUpTo: 38 },
       { id: 10, title: "Topic", unreadCount: 0, unreadMentions: 0, date: 7 },
       { id: 11, title: "x".repeat(128), unreadCount: 0, unreadMentions: 0, date: 410 },
     ]);

@@ -2,7 +2,7 @@ import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/run
 import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../shared/adapter";
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeText, fromMarkdown, toMarkdown } from "./format";
-import type { NativeAction, NativeAttachment, NativeChannelView, NativeForumPost, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeViewState } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeChannelView, NativeForumPost, NativeMember, NativeMemberList, NativeMessage, NativeProfile, NativePrompt, NativeReaction, NativeSidebarItem, NativeSticker, NativeStickerPack, NativeUnread, NativeViewState } from "../../shared/native";
 import { MAX_HTTP_BODY, type PickedFile } from "../../shared/engine";
 import { MAX_ATTACHMENTS } from "../../shared/native";
 import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
@@ -224,6 +224,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private selected: string | undefined;
   /** In a selected forum, the open topic; none shows the forum's topic list. */
   private topic: number | undefined;
+  /** Where the open conversation's news began when it was opened: the last message read then, and how many were unread. */
+  private unreadAt: { key: string; after?: number; count: number } | undefined;
   /** Forums' topics, once listed; forums being listed. */
   private readonly topics = new Map<string, TgTopic[]>();
   private readonly topicsLoading = new Set<string>();
@@ -684,6 +686,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private async select(chatId: string, topic?: number): Promise<void> {
     const dialog = this.dialog(chatId);
     if (!dialog || (topic !== undefined && !dialog.forum)) return;
+    if (conversation(chatId, topic) !== this.current()) this.noteUnread(dialog, topic);
     this.selected = chatId;
     this.topic = topic;
     this.render();
@@ -694,6 +697,26 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     const key = conversation(chatId, topic);
     if (!this.messages.has(key)) await this.fetchHistory(key, undefined);
     if (this.visible) await this.markRead(key);
+  }
+
+  /** Notes where a conversation being opened has news, before it is marked read. A forum's topic list has none of its own. */
+  private noteUnread(dialog: TgDialog, topic: number | undefined): void {
+    const found = topic === undefined ? undefined : this.topics.get(dialog.chatId)?.find((t) => t.id === topic);
+    const source = dialog.forum ? found : dialog;
+    this.unreadAt = source && source.unreadCount > 0 ? { key: conversation(dialog.chatId, topic), after: source.readUpTo, count: source.unreadCount } : undefined;
+  }
+
+  /**
+   * The open conversation's unread marker: the first incoming message after
+   * the last one read when it was opened, once the loaded messages reach
+   * back that far (or there are no older ones).
+   */
+  private unreadView(key: string, at: NonNullable<TelegramAdapter["unreadAt"]>): NativeUnread {
+    const messages = this.messages.get(key) ?? [];
+    const after = at.after ?? 0;
+    const reach = !(this.hasOlder.get(key) ?? false) || messages.some((m) => m.id <= after);
+    const first = reach ? messages.find((m) => m.id > after && !m.out) : undefined;
+    return first ? { firstId: String(first.id), count: at.count } : { count: at.count };
   }
 
   /** Lists a forum's topics afresh: up to TOPIC_LIMIT, most recently active first. */
@@ -764,6 +787,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       dialog.unreadMentions = Math.max(0, dialog.unreadMentions - found.unreadMentions);
       found.unreadCount = 0;
       found.unreadMentions = 0;
+      found.readUpTo = last.id;
       this.publish();
       await this.api?.markRead(chatId, last.id, topic).catch(() => undefined);
       return;
@@ -772,6 +796,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
     if (!last || (dialog.unreadCount === 0 && dialog.unreadMentions === 0)) return;
     dialog.unreadCount = 0;
     dialog.unreadMentions = 0;
+    dialog.readUpTo = last.id;
     this.publish();
     await this.api?.markRead(chatId, last.id).catch(() => undefined);
   }
@@ -1625,6 +1650,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
       pending: (this.pending.get(key) ?? []).map((f) => ({ name: f.filename, size: f.size })),
       uploading: this.uploading.has(key),
       ...shared,
+      ...(this.unreadAt?.key === key ? { unread: this.unreadView(key, this.unreadAt) } : {}),
       can: { reply: !locked, react: this.canReact(dialog), attach: this.canAttach(dialog), typing: !locked, members: this.canListMembers(dialog), stickers: this.canSendStickers(dialog) },
     };
   }

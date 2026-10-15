@@ -193,6 +193,7 @@ export function topicsOf(topics: readonly unknown[], messages: readonly unknown[
     if (!(t instanceof Api.ForumTopic) || !Number.isInteger(t.id) || t.id <= 0) return [];
     const topic: TgTopic = { id: t.id, title: (t.title || "Topic").slice(0, 128), unreadCount: tally(t.unreadCount), unreadMentions: tally(t.unreadMentionsCount), date: dates.get(t.topMessage) ?? t.date };
     if (t.pinned) topic.pinned = true;
+    if (Number.isInteger(t.readInboxMaxId) && t.readInboxMaxId > 0) topic.readUpTo = t.readInboxMaxId;
     return [topic];
   });
 }
@@ -592,6 +593,8 @@ export function createGramApi(credentials: TelegramCredentials, session: string,
         // A Unix time; "muted for ever" is the largest 32-bit one.
         const mutedUntil = settings instanceof Api.PeerNotifySettings ? settings.muteUntil : undefined;
         if (Number.isInteger(mutedUntil) && mutedUntil! > 0) dialog.mutedUntil = mutedUntil;
+        const readUpTo = d.dialog.readInboxMaxId;
+        if (Number.isInteger(readUpTo) && readUpTo > 0) dialog.readUpTo = readUpTo;
         if (d.message) dialog.lastMessage = toMessage(d.message, chatId);
         return [dialog];
       });
