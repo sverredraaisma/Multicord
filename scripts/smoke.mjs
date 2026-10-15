@@ -2,7 +2,11 @@
 // over the Chrome DevTools Protocol, that it comes up: the rail lists the
 // built-in services, Settings opens on its Services section, the native
 // engines' pages load and stay up, and the main process logs no uncaught
-// exception or unhandled rejection.
+// exception or unhandled rejection. In the main process it also checks what
+// an Electron upgrade can break outside the pages: screen capture lists a
+// screen, and push to talk's global keyboard hook (uiohook-napi) loads, starts
+// and stops. Where the OS withholds a permission these need (macOS: Screen
+// Recording, Accessibility), the check is skipped with that reason.
 //
 //   npm run build && npm run smoke        (or: node scripts/smoke.mjs [--online] [--keep])
 //
@@ -14,9 +18,9 @@
 // children), plus on Windows a sweep for processes naming this run's temporary
 // folder; the folder is deleted afterwards (--keep leaves it, for its log).
 //
-// Main-process errors are caught by a small hook loaded with NODE_OPTIONS
-// --require, which Electron honours only for unpackaged apps: nothing in the
-// app itself is for this test.
+// Main-process errors are caught, and the main-process checks run, by a small
+// hook loaded with NODE_OPTIONS --require, which Electron honours only for
+// unpackaged apps: nothing in the app itself is for this test.
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
@@ -73,14 +77,76 @@ async function targets(port) {
   return (await fetch(`http://127.0.0.1:${port}/json`)).json();
 }
 
+/** The main-process checks, by the name the hook reports them under. */
+const MAIN_CHECKS = {
+  "capture-sources": "screen capture lists a screen",
+  "key-hook-load": "keyboard hook (uiohook-napi) loads",
+  "key-hook-run": "keyboard hook starts and stops",
+};
+
+/**
+ * Runs in the app's main process, through the hook, once the app is ready.
+ * Reports each check as `<tag> check {"name", "status": pass|fail|skip, "detail"}`.
+ */
+function mainChecks(tag) {
+  const { app, desktopCapturer, systemPreferences } = require("electron");
+  const { createRequire } = require("node:module");
+  const path = require("node:path");
+  const result = (name, status, detail, extra = {}) => process.stderr.write(`${tag} check ${JSON.stringify({ name, status, detail, ...extra })}\n`);
+  const within = (promise, ms, what) =>
+    Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what} took over ${ms / 1000}s`)), ms))]);
+  const mac = process.platform === "darwin";
+  app.whenReady().then(async () => {
+    // Screen capture: the sources the screen share picker lists. macOS lists no screen without Screen Recording access.
+    const access = mac ? systemPreferences.getMediaAccessStatus("screen") : "granted";
+    const denied = access !== "granted";
+    try {
+      const sources = await within(desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 16, height: 9 } }), 20_000, "getSources");
+      const screens = sources.filter((s) => s.id.startsWith("screen:")).length;
+      const detail = `${screens} screen(s), ${sources.length - screens} window(s)`;
+      if (screens > 0) result("capture-sources", "pass", detail, { access });
+      else result("capture-sources", denied ? "skip" : "fail", denied ? `no Screen Recording permission (${access}); ${detail}` : detail, { access });
+    } catch (error) {
+      result("capture-sources", denied ? "skip" : "fail", denied ? `no Screen Recording permission (${access}); ${error.message}` : error.message, { access });
+    }
+
+    // Push to talk's keyboard hook, resolved as the built main.js resolves it (pushToTalk.ts, loadKeyHook).
+    let hook;
+    try {
+      hook = createRequire(path.join(app.getAppPath(), "dist", "main.js"))("uiohook-napi").uIOhook;
+      if (typeof hook?.start !== "function" || typeof hook.stop !== "function") throw new Error("uIOhook has no start/stop");
+      result("key-hook-load", "pass", "uIOhook loaded");
+    } catch (error) {
+      hook = undefined;
+      result("key-hook-load", "fail", error.message);
+    }
+    if (!hook) return;
+    if (mac && !systemPreferences.isTrustedAccessibilityClient(false)) {
+      result("key-hook-run", "skip", "no Accessibility permission, which macOS needs for a global key hook");
+      return;
+    }
+    try {
+      hook.start();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      hook.stop();
+      result("key-hook-run", "pass", "started and stopped");
+    } catch (error) {
+      result("key-hook-run", "fail", error.message);
+    }
+  });
+}
+
 // The main-process hook: reports uncaught exceptions and unhandled rejections
-// on stderr (and so keeps Electron's error dialog from blocking a headless run).
+// on stderr (and so keeps Electron's error dialog from blocking a headless run),
+// and runs the main-process checks.
 const HOOK = `"use strict";
 if (process.type === "browser") {
   const report = (kind, error) => process.stderr.write(${JSON.stringify(TAG)} + " " + kind + ": " + ((error && error.stack) || String(error)) + "\\n");
   process.on("uncaughtException", (error) => report("uncaught exception", error));
   process.on("unhandledRejection", (reason) => report("unhandled rejection", reason));
   process.stderr.write(${JSON.stringify(TAG)} + " loaded\\n");
+  // Electron's own module can be required only once the app's main script runs, after this hook.
+  setImmediate(${mainChecks.toString()}, ${JSON.stringify(TAG)});
 }
 `;
 
@@ -88,6 +154,26 @@ const checks = [];
 function check(name, ok, detail = "") {
   checks.push({ name, ok, detail });
   out(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` - ${detail}` : ""}`);
+}
+/** A check the OS keeps from running here (say, a permission CI lacks): neither a pass nor a failure. */
+function skip(name, reason) {
+  checks.push({ name, ok: true, skipped: true, detail: reason });
+  out(`SKIP ${name} - ${reason}`);
+}
+
+/** The main-process checks' results in the log so far, by name. */
+function mainResults(log) {
+  const results = new Map();
+  for (const line of log.split("\n")) {
+    if (!line.startsWith(`${TAG} check `)) continue;
+    try {
+      const r = JSON.parse(line.slice(`${TAG} check `.length).trim());
+      results.set(r.name, r);
+    } catch {
+      // a line cut short
+    }
+  }
+  return results;
 }
 
 if (!existsSync(path.join(REPO, "dist", "main.js")) || !existsSync(path.join(REPO, "dist", "rail.html"))) {
@@ -185,12 +271,22 @@ async function main() {
       check(`engine "${engine}" runs`, origin === `multicord-engine://${engine}`, String(origin));
     }
   }
+  // 4. The main process: screen capture and the keyboard hook, as the hook reported them.
+  const readLog = () => (existsSync(logFile) ? readFileSync(logFile, "utf8") : "");
+  const names = Object.keys(MAIN_CHECKS);
+  await until(async () => names.every((n) => mainResults(readLog()).has(n)), "the main-process checks", 30_000).catch(() => undefined);
+  const results = mainResults(readLog());
+  for (const name of names) {
+    const r = results.get(name);
+    if (r?.status === "skip") skip(MAIN_CHECKS[name], r.detail);
+    else check(MAIN_CHECKS[name], r?.status === "pass", r ? r.detail : "not reported by the main process");
+  }
   check("app still running", alive());
 
-  // 4. The log: the hook was loaded, and nothing uncaught; no engine stopped.
-  const log = existsSync(logFile) ? readFileSync(logFile, "utf8") : "";
+  // 5. The log: the hook was loaded, and nothing uncaught; no engine stopped.
+  const log = readLog();
   check("error hook loaded in the main process", log.includes(`${TAG} loaded`));
-  const uncaught = log.split("\n").filter((l) => l.startsWith(TAG) && !l.endsWith(" loaded") && !l.endsWith(" loaded\r"));
+  const uncaught = log.split("\n").filter((l) => l.startsWith(`${TAG} uncaught exception:`) || l.startsWith(`${TAG} unhandled rejection:`));
   check("no uncaught main-process errors", uncaught.length === 0, uncaught.slice(0, 3).join(" | "));
   const stopped = log.split("\n").filter((l) => /\[engine [\w-]+\] stopped/.test(l));
   check("no engine crashes", stopped.length === 0, stopped.slice(0, 3).join(" | "));
@@ -232,7 +328,8 @@ function finish(failure) {
   if (left > 0) failed.push({ name: "teardown", detail: `${left} processes left` });
   if (!removed) failed.push({ name: "teardown", detail: `could not delete ${dir}` });
   if (KEEP) out(`kept ${dir}`);
-  out(failed.length === 0 ? `all ${checks.length} checks passed in ${elapsed()}` : `FAILED: ${failed.map((c) => `${c.name}${c.detail ? ` (${c.detail})` : ""}`).join("; ")}`);
+  const skipped = checks.filter((c) => c.skipped).length;
+  out(failed.length === 0 ? `all ${checks.length - skipped} checks passed${skipped ? ` (${skipped} skipped)` : ""} in ${elapsed()}` : `FAILED: ${failed.map((c) => `${c.name}${c.detail ? ` (${c.detail})` : ""}`).join("; ")}`);
   process.exit(failed.length === 0 && checks.length > 0 ? 0 : 1);
 }
 
