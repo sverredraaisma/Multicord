@@ -199,6 +199,18 @@ describe("StoatState messages", () => {
     expect(state.unreads.get(DM)!.lastId).toBe(ulid(760));
   });
 
+  it("does not count mentions at or before the read position", () => {
+    // The server can record a mention after the ack that read it.
+    const state = ready({
+      channel_unreads: [
+        { _id: { channel: GENERAL, user: ME_ID }, last_id: ulid(450), mentions: [ulid(440), ulid(450), ulid(460)] },
+        { _id: { channel: DM, user: ME_ID }, mentions: [ulid(800)] },
+      ],
+    });
+    expect(state.unreads.get(GENERAL)!.mentions).toEqual([ulid(460)]);
+    expect(state.mentions(DM)).toBe(1);
+  });
+
   it("loads unread state fetched separately", () => {
     const state = ready({ channel_unreads: undefined });
     expect(state.unreadsLoaded).toBe(false);

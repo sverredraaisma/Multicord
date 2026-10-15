@@ -181,7 +181,11 @@ export class StoatState {
 
   private loadUnreads(unreads: StoatUnread[]): void {
     this.unreadsLoaded = true;
-    for (const unread of unreads) this.unreads.set(unread.channelId, unread);
+    // The server can record a mention after the ack that read it; mentions up to the read position are read.
+    for (const unread of unreads) {
+      const lastId = unread.lastId;
+      this.unreads.set(unread.channelId, lastId ? { ...unread, mentions: unread.mentions.filter((m) => compareIds(m, lastId) > 0) } : unread);
+    }
   }
 
   /** The "notifications" setting from /sync/settings/fetch. */
@@ -198,6 +202,12 @@ export class StoatState {
     if (index < 0) return false;
     cached![index] = message;
     return true;
+  }
+
+  /** Our own message as the server accepted it; its live echo may arrive before or after. */
+  addSent(message: StoatMessage): void {
+    this.onMessage(message);
+    this.changed.emit();
   }
 
   removeMessage(channelId: string, messageId: string): void {

@@ -3,6 +3,7 @@ import { StoatAdapter, type StoatAdapterDeps } from "../../../src/modules/stoat/
 import type { EventSocket } from "../../../src/modules/stoat/events";
 import type { FileSource } from "../../../src/engine/runtime";
 import type { NativeViewState } from "../../../src/shared/native";
+import { idTime } from "../../../src/modules/stoat/types";
 import { ALPHA, ANA, ANA_ID, BETA, BOB_ID, CHAT, DM, EMOJI, GENERAL, GROUP, LOBBY, ME_ID, RULES, message, readyPayload, ulid } from "./fixtures";
 
 const CONFIG = { revolt: "0.15.7", ws: "wss://events.test", features: { autumn: { enabled: true, url: "https://cdn.test" } } };
@@ -484,6 +485,23 @@ describe("StoatAdapter messages", () => {
     expect(chat().channel!.messages.at(-1)).toMatchObject({ id: ulid(990), content: "hello", mine: true });
     await adapter.handleAction({ type: "send", content: "   " });
     expect(requests("/messages").filter((c) => c.init.method === "POST")).toHaveLength(1);
+  });
+
+  it("records its own sent message as the channel's latest and read, and acks it", async () => {
+    const { adapter, chat, event, online, requests } = setup({
+      token: "saved",
+      routes: [(url) => (url.includes(`/ack/${ulid(990)}`) ? { status: 500, body: { type: "InternalError" } } : undefined)],
+    });
+    await online();
+    await adapter.openConversation(DM);
+    // The server's reply can come before the live echo; a failed ack is not the user's problem.
+    await adapter.handleAction({ type: "send", content: "hello" });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(adapter.directs().find((d) => d.key === DM)).toMatchObject({ preview: "hello", lastActivity: idTime(ulid(990)), unread: false, mentions: 0 });
+    expect(requests("/ack/").map((c) => c.url)).toEqual([`https://stoat.test/api/channels/${DM}/ack/${ulid(990)}`]);
+    await event({ type: "Message", ...message(990, DM, { author: ME_ID, content: "hello" }) });
+    expect(chat().channel!.messages.filter((m) => m.id === ulid(990))).toHaveLength(1);
+    expect(chat().error).toBeUndefined();
   });
 
   it("shows a message that could not be sent", async () => {

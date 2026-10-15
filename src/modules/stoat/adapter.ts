@@ -372,7 +372,11 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       for (const file of files) attachments.push(await this.rest!.upload(file));
       const sent = await this.rest!.sendMessage(channelId, content, nonce, replyTo, attachments);
       this.pending.delete(channelId);
-      if (sent) this.state.addHistory(channelId, [sent], [], false);
+      if (sent) {
+        this.state.addSent(sent);
+        // Stoat does not mark the sender's own message read; without this, the next session shows the channel unread.
+        void this.rest!.ack(channelId, sent.id).catch(() => undefined);
+      }
     });
     this.uploading.delete(channelId);
     this.render();
