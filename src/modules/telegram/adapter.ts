@@ -3,7 +3,7 @@ import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../share
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { escapeMarkdown } from "../../shared/markdown";
 import type { NativeAction, NativeAttachment, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState } from "../../shared/native";
-import type { AccountStatus } from "../../shared/settings";
+import type { AccountStatus, ServiceSettingStatus } from "../../shared/settings";
 import { telegramError, type TelegramApi, type TelegramCredentials, type TgDialog, type TgFile, type TgMessage, type TgUpdate, type TgUser } from "./api";
 
 export const DIALOG_LIMIT = 100;
@@ -16,6 +16,8 @@ export const MAX_MEDIA_BYTES = 40 * 1024 * 1024;
 export const MEDIA_CACHE_BYTES = 200 * 1024 * 1024;
 const SESSION_KEY = "session";
 const CREDENTIALS_KEY = "api";
+/** The Settings action (manifest `settings`) that forgets the API ID the user entered. */
+export const FORGET_API_ID = "forgetApiId";
 const DIALOG_REFRESH_MS = 1000;
 const BAD_CREDENTIALS = new Set(["API_ID_INVALID", "API_ID_PUBLISHED_FLOOD"]);
 
@@ -79,6 +81,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
 
   private api: TelegramApi | undefined;
   private credentials: TelegramCredentials | undefined;
+  /** The credentials are ones the user entered (kept in secrets), not the built-in ones. */
+  private ownCredentials = false;
   private step: Step = "phone";
   private busy = false;
   private status: string | undefined;
@@ -111,8 +115,9 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
 
   /** Resumes a saved session, else starts at the first sign-in step. */
   async start(): Promise<void> {
-    const saved = await this.deps.secrets.load(CREDENTIALS_KEY);
-    this.credentials = parseCredentials(saved) ?? this.deps.builtInCredentials;
+    const saved = parseCredentials(await this.deps.secrets.load(CREDENTIALS_KEY));
+    this.ownCredentials = saved !== undefined;
+    this.credentials = saved ?? this.deps.builtInCredentials;
     if (!this.credentials) {
       this.step = "api";
       return this.render();
@@ -162,7 +167,26 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
   private async resetCredentials(): Promise<void> {
     await this.deps.secrets.delete(CREDENTIALS_KEY);
     this.credentials = undefined;
+    this.ownCredentials = false;
     this.step = "api";
+  }
+
+  /** What Settings shows with "Forget API ID". Never the hash. */
+  settingsStatus(): ServiceSettingStatus {
+    let text = "No API ID entered yet.";
+    if (this.ownCredentials) text = `Using the API ID you entered (${this.credentials!.apiId}).`;
+    else if (this.deps.builtInCredentials) text = "Using Multicord's own API ID.";
+    return { [FORGET_API_ID]: { text, disabled: !this.ownCredentials } };
+  }
+
+  /** Settings' "Forget API ID": drops the entered credentials and signs out, falling back to the built-in ones if any. */
+  async runSettingAction(key: string): Promise<void> {
+    if (key !== FORGET_API_ID || !this.ownCredentials || this.busy) return;
+    await this.deps.secrets.delete(CREDENTIALS_KEY);
+    this.ownCredentials = false;
+    this.credentials = this.deps.builtInCredentials;
+    this.error = undefined;
+    await this.signOut();
   }
 
   // --- Shell interface ---------------------------------------------------------
@@ -264,6 +288,7 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
           if (!credentials) throw new Error("The API ID is a number and the API hash 32 letters and digits, both from my.telegram.org.");
           await this.deps.secrets.save(CREDENTIALS_KEY, JSON.stringify(credentials));
           this.credentials = credentials;
+          this.ownCredentials = true;
           this.busy = false;
           return await this.open("");
         }

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DirectConversation, PlatformNotification } from "../../../src/shared/adapter";
 import type { TelegramApi, TelegramCredentials, TgDialog, TgMessage, TgSignIn, TgUpdate } from "../../../src/modules/telegram/api";
-import { AVATAR_LIMIT, PAGE_SIZE, TelegramAdapter, messageText, parseCredentials } from "../../../src/modules/telegram/adapter";
+import { AVATAR_LIMIT, FORGET_API_ID, PAGE_SIZE, TelegramAdapter, messageText, parseCredentials } from "../../../src/modules/telegram/adapter";
 import { escapeMarkdown } from "../../../src/shared/markdown";
 import type { NativeAction, NativeViewState } from "../../../src/shared/native";
 
@@ -221,6 +221,70 @@ describe("API credentials step", () => {
     expect(ctx.prompt()).toMatchObject({ prompt: { id: "api" }, busy: false, error: expect.stringContaining("my.telegram.org") });
     expect(ctx.secrets.has("api")).toBe(false);
     expect(ctx.createApi).not.toHaveBeenCalled();
+  });
+});
+
+describe("Settings: Forget API ID", () => {
+  it("says whose API ID is in use, never the hash", async () => {
+    const none = setup();
+    await none.adapter.start();
+    expect(none.adapter.settingsStatus()).toEqual({ [FORGET_API_ID]: { text: "No API ID entered yet.", disabled: true } });
+    const builtIn = setup({ builtIn: CREDS });
+    await builtIn.adapter.start();
+    expect(builtIn.adapter.settingsStatus()).toEqual({ [FORGET_API_ID]: { text: "Using Multicord's own API ID.", disabled: true } });
+    const own = await signedIn();
+    expect(own.adapter.settingsStatus()).toEqual({ [FORGET_API_ID]: { text: "Using the API ID you entered (12).", disabled: false } });
+    expect(JSON.stringify(own.adapter.settingsStatus())).not.toContain(CREDS.apiHash);
+  });
+
+  it("counts credentials entered at the API step as the user's own, until Telegram rejects them", async () => {
+    const ctx = setup();
+    await ctx.adapter.start();
+    await ctx.answer("api", { apiId: "12", apiHash: HASH });
+    expect(ctx.adapter.settingsStatus()[FORGET_API_ID]!.disabled).toBe(false);
+    ctx.api.sendCode.mockRejectedValue(tgError("API_ID_INVALID"));
+    await ctx.answer("phone", { phone: "+31612345678" });
+    expect(ctx.adapter.settingsStatus()[FORGET_API_ID]).toEqual({ text: "No API ID entered yet.", disabled: true });
+  });
+
+  it("forgets the entered credentials and signs out, back to the API step", async () => {
+    const ctx = await signedIn();
+    await ctx.adapter.runSettingAction(FORGET_API_ID);
+    expect(ctx.secrets.has("api")).toBe(false);
+    expect(ctx.secrets.has("session")).toBe(false);
+    expect(ctx.api.logOut).toHaveBeenCalled();
+    expect(ctx.prompt().prompt.id).toBe("api");
+    expect(ctx.adapter.accountStatus()).toEqual({ state: "signed-out" });
+    expect(ctx.adapter.settingsStatus()[FORGET_API_ID]!.disabled).toBe(true);
+  });
+
+  it("falls back to the built-in credentials, at the phone step", async () => {
+    const builtIn = { apiId: 1, apiHash: "f".repeat(32) };
+    const ctx = await signedIn({ builtIn });
+    ctx.api.isAuthorized = false; // logged out
+    await ctx.adapter.runSettingAction(FORGET_API_ID);
+    await flush();
+    expect(ctx.createApi).toHaveBeenLastCalledWith(builtIn, "");
+    expect(ctx.prompt().prompt.id).toBe("phone");
+    expect(ctx.adapter.settingsStatus()[FORGET_API_ID]!.text).toBe("Using Multicord's own API ID.");
+  });
+
+  it("does nothing for other keys, without entered credentials, or while busy", async () => {
+    const ctx = await signedIn();
+    await ctx.adapter.runSettingAction("other");
+    expect(ctx.secrets.has("api")).toBe(true);
+    const builtIn = setup({ builtIn: CREDS });
+    await builtIn.adapter.start();
+    await builtIn.adapter.runSettingAction(FORGET_API_ID);
+    expect(builtIn.api.logOut).not.toHaveBeenCalled();
+    const busy = await atCodeStep({ secrets: { api: CREDS_JSON } });
+    let finish!: () => void;
+    busy.api.signIn.mockReturnValue(new Promise((resolve) => (finish = () => resolve({ done: true }))));
+    const signing = busy.answer("code", { code: "1" });
+    await busy.adapter.runSettingAction(FORGET_API_ID);
+    expect(busy.secrets.has("api")).toBe(true);
+    finish();
+    await signing;
   });
 });
 

@@ -39,6 +39,8 @@ function fakeApi(authorized: boolean): TelegramApi {
     me: vi.fn(async () => ({ id: "1", name: "Me", bot: false })),
     dialogs: vi.fn(async () => []),
     avatar: vi.fn(async () => undefined),
+    logOut: vi.fn(async () => {}),
+    disconnect: vi.fn(async () => {}),
   } as unknown as TelegramApi;
 }
 
@@ -66,6 +68,15 @@ describe("Telegram engine", () => {
     await startTelegramEngine(bridge, { builtIn: CREDENTIALS, appVersion: "1.0.0", createApi });
     expect(createApi).toHaveBeenCalledWith(CREDENTIALS, "stored", expect.anything());
     expect(bridge.emit).toHaveBeenCalledWith({ type: "account", account: { state: "signed-in", name: "Me" } });
+  });
+
+  it("reports its Settings status and forgets the entered API ID when Settings asks", async () => {
+    const { bridge, command } = fakeBridge({ api: JSON.stringify(CREDENTIALS), session: "stored" });
+    await startTelegramEngine(bridge, { appVersion: "1.0.0", createApi: () => fakeApi(true) });
+    expect(bridge.emit).toHaveBeenCalledWith({ type: "settingsStatus", status: { forgetApiId: { text: "Using the API ID you entered (7).", disabled: false } } });
+    command({ type: "settingAction", key: "forgetApiId" });
+    await vi.waitFor(() => expect(bridge.request).toHaveBeenCalledWith({ type: "secretDelete", key: "api" }));
+    await vi.waitFor(() => expect(bridge.emit).toHaveBeenCalledWith({ type: "settingsStatus", status: { forgetApiId: { text: "No API ID entered yet.", disabled: true } } }));
   });
 
   it("uses the GramJS implementation by default", async () => {

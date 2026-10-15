@@ -20,5 +20,14 @@ export const telegramModule: PlatformModule = {
     hosts: ["*.web.telegram.org"],
     home: true,
     capabilities: { directMessages: true, messagePreviews: true, voice: false, screenShare: false },
+    settings: [
+      {
+        kind: "action",
+        key: "forgetApiId",
+        label: "Forget API ID",
+        hint: "The API ID and hash you entered from my.telegram.org, kept encrypted on this device. Forgetting them signs you out, so you can enter others.",
+        confirm: "Click again to forget",
+      },
+    ],
   },
 };
