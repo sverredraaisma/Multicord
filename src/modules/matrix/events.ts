@@ -2,7 +2,22 @@
 // the network is untrusted: ids, names and bodies are checked for type and
 // length, and whatever does not fit is dropped rather than passed on.
 
-import type { MxCallMember, MxContent, MxCryptoSync, MxEncryption, MxEvent, MxMember, MxPage, MxRoomState, MxRoomUpdate, MxSync } from "./api";
+import type {
+  MxCallMember,
+  MxContent,
+  MxCryptoSync,
+  MxEncryptedFile,
+  MxEncryption,
+  MxEvent,
+  MxMedia,
+  MxMediaKind,
+  MxMediaSource,
+  MxMember,
+  MxPage,
+  MxRoomState,
+  MxRoomUpdate,
+  MxSync,
+} from "./api";
 
 /** Room ids are used in rail keys (at most 200 characters with the instance prefix). */
 export const MAX_ROOM_ID = 150;
@@ -45,12 +60,12 @@ export function parseMxc(value: unknown): { server: string; media: string } | un
   return match ? { server: match[1]!, media: match[2]! } : undefined;
 }
 
-/** A display name or room name: control characters removed, trimmed, cut to length. */
-export function cleanName(value: unknown): string | undefined {
+/** A display, room or file name: control characters removed, trimmed, cut to length. */
+export function cleanName(value: unknown, max = MAX_NAME): string | undefined {
   if (typeof value !== "string") return undefined;
   // Bidirectional overrides too: a name must not reorder the text around it.
   const name = value.replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g, "").trim();
-  return name === "" ? undefined : name.slice(0, MAX_NAME);
+  return name === "" ? undefined : name.slice(0, max);
 }
 
 const count = (value: unknown): number => (typeof value === "number" && Number.isInteger(value) && value >= 0 ? Math.min(value, MAX_COUNT) : 0);
@@ -70,25 +85,103 @@ export function stripReplyFallback(body: string): string {
   return lines.slice(start).join("\n");
 }
 
+// --- Media ------------------------------------------------------------------------
+
+const MAX_FILE_NAME = 255;
+/** Largest width or height believed. */
+const MAX_DIMENSION = 100_000;
+/** A MIME type: no parameters, nothing that could end a data: URL's header. */
+const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]{0,63}\/[a-z0-9][a-z0-9!#$&^_.+-]{0,127}$/;
+/** A 256-bit AES key as a JWK's k: unpadded base64url. */
+const AES_KEY = /^[A-Za-z0-9_-]{43}$/;
+/** 16 bytes of base64, padded or not. */
+const IV = /^[A-Za-z0-9+/]{22}(==)?$/;
+/** 32 bytes of base64, padded or not. */
+const SHA256 = /^[A-Za-z0-9+/]{43}=?$/;
+const DEFAULT_NAMES: Record<MxMediaKind, string> = { image: "Image", video: "Video", audio: "Audio", file: "File", sticker: "Sticker" };
+
+/** A MIME type, lower-cased, when it is a plain type/subtype. */
+export function mimeType(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const mime = value.trim().toLowerCase();
+  return MIME.test(mime) ? mime : undefined;
+}
+
+const size = (value: unknown): number | undefined => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
+const dimension = (value: unknown): number | undefined => (typeof value === "number" && Number.isInteger(value) && value > 0 && value <= MAX_DIMENSION ? value : undefined);
+
+/**
+ * An EncryptedFile, when well formed; a short reason when it is one we must
+ * not use (another version, or a key that is not AES-CTR 256 for decrypting);
+ * undefined when there is none.
+ */
+export function parseEncryptedFile(value: unknown): MxEncryptedFile | string | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.v !== "v2") return "its encryption version is not supported";
+  const key = isRecord(value.key) ? value.key : {};
+  const ops = Array.isArray(key.key_ops) ? key.key_ops : [];
+  if (key.kty !== "oct" || key.alg !== "A256CTR" || typeof key.k !== "string" || !AES_KEY.test(key.k) || !ops.includes("decrypt")) return "its encryption key is not usable";
+  const hashes = isRecord(value.hashes) ? value.hashes : {};
+  if (typeof value.iv !== "string" || !IV.test(value.iv) || typeof hashes.sha256 !== "string" || !SHA256.test(hashes.sha256)) return "its encryption details are not usable";
+  if (!parseMxc(value.url)) return "its address is not valid";
+  return { url: value.url as string, key: key.k, iv: value.iv, sha256: hashes.sha256 };
+}
+
+/** Where a file or thumbnail is (an encrypted file first), with its type and size; or why it cannot be fetched. */
+function mediaSource(url: unknown, file: unknown, info: Record<string, unknown>): MxMediaSource | string {
+  const source: MxMediaSource = {};
+  const encrypted = parseEncryptedFile(file);
+  if (typeof encrypted === "string") return encrypted;
+  if (encrypted) source.file = encrypted;
+  else if (parseMxc(url)) source.url = url as string;
+  else return "its address is not valid";
+  const mime = mimeType(info.mimetype);
+  if (mime) source.mime = mime;
+  const bytes = size(info.size);
+  if (bytes !== undefined) source.size = bytes;
+  return source;
+}
+
+/** The media of an m.image, m.video, m.audio, m.file or m.sticker content. */
+export function parseMedia(content: Record<string, unknown>, kind: MxMediaKind): MxMedia {
+  const info = isRecord(content.info) ? content.info : {};
+  const name = cleanName(content.filename, MAX_FILE_NAME) ?? cleanName(content.body, MAX_FILE_NAME) ?? DEFAULT_NAMES[kind];
+  const source = mediaSource(content.url, content.file, info);
+  const media: MxMedia = typeof source === "string" ? { kind, name, problem: source } : { kind, name, ...source };
+  const width = dimension(info.w);
+  const height = dimension(info.h);
+  const duration = size(info.duration);
+  if (width && height) {
+    media.width = width;
+    media.height = height;
+  }
+  if (duration !== undefined) media.durationMs = duration;
+  // Bridges (mautrix) send GIFs as looping videos.
+  if (kind === "video" && (info["fi.mau.loop"] === true || info["fi.mau.gif"] === true)) media.loop = true;
+  const thumbnail = mediaSource(info.thumbnail_url, info.thumbnail_file, isRecord(info.thumbnail_info) ? info.thumbnail_info : {});
+  if (typeof thumbnail !== "string") media.thumbnail = thumbnail;
+  return media;
+}
+
 /** Text and media label of an m.room.message (or m.sticker) content; undefined when it has no body. */
 export function parseContent(content: Record<string, unknown>, sticker = false): MxContent | undefined {
   if (typeof content.body !== "string") return undefined;
-  if (sticker) return { msgtype: "m.sticker", text: "", media: "🙂 Sticker" };
+  if (sticker) return { msgtype: "m.sticker", text: "", media: "🙂 Sticker", attachment: parseMedia(content, "sticker") };
   if (typeof content.msgtype !== "string") return undefined;
   const msgtype = content.msgtype.slice(0, 64);
   const body = clip(content.body);
-  // With a separate filename, the body of a media message is its caption.
+  // With a separate filename, the body of a media message is its caption (MSC2530).
   const filename = typeof content.filename === "string" ? clip(content.filename) : undefined;
   const caption = filename !== undefined && filename !== body ? body : "";
   switch (msgtype) {
     case "m.image":
-      return { msgtype, text: caption, media: "📷 Image" };
+      return { msgtype, text: caption, media: "📷 Image", attachment: parseMedia(content, "image") };
     case "m.video":
-      return { msgtype, text: caption, media: "🎥 Video" };
+      return { msgtype, text: caption, media: "🎥 Video", attachment: parseMedia(content, "video") };
     case "m.audio":
-      return { msgtype, text: caption, media: content["org.matrix.msc3245.voice"] !== undefined ? "🎤 Voice message" : "🎵 Audio" };
+      return { msgtype, text: caption, media: content["org.matrix.msc3245.voice"] !== undefined ? "🎤 Voice message" : "🎵 Audio", attachment: parseMedia(content, "audio") };
     case "m.file":
-      return { msgtype, text: caption, media: `📎 ${(filename ?? body) || "File"}` };
+      return { msgtype, text: caption, media: `📎 ${(filename ?? body) || "File"}`, attachment: parseMedia(content, "file") };
     case "m.location":
       return { msgtype, text: "", media: "📍 Location" };
     default:

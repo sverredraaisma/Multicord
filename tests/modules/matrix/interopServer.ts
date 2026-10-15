@@ -117,10 +117,31 @@ export class InteropHomeserver extends FakeHomeserver {
     };
   }
 
+  /** Uploaded files by "<server>/<media id>". */
+  private readonly media = new Map<string, Uint8Array<ArrayBuffer>>();
+
+  /** Stores a file as an upload would; returns its mxc:// URI. */
+  storeMedia(bytes: Uint8Array<ArrayBuffer>): string {
+    const id = `media${this.media.size + 1}`;
+    this.media.set(`${SERVER_NAME}/${id}`, bytes);
+    return `mxc://${SERVER_NAME}/${id}`;
+  }
+
+  /** Authenticated media downloads (Matrix 1.11). */
+  private download(url: URL, authorization: string | null): Response | undefined {
+    const match = /^\/_matrix\/client\/v1\/media\/download\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+    if (url.origin !== HS || !match) return undefined;
+    if (!this.tokens.has(authorization?.replace(/^Bearer /, "") ?? "")) return Response.json({ errcode: "M_MISSING_TOKEN", error: "No token" }, { status: 401 });
+    const bytes = this.media.get(`${decodeURIComponent(match[1]!)}/${decodeURIComponent(match[2]!)}`);
+    return bytes ? new Response(bytes, { headers: { "Content-Type": "application/octet-stream" } }) : Response.json({ errcode: "M_NOT_FOUND", error: "No such media" }, { status: 404 });
+  }
+
   /** The fetch both clients use. */
   readonly fetch: typeof fetch = async (input, init) => {
     const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
     const method = (init?.method ?? "GET").toUpperCase();
+    const media = method === "GET" ? this.download(url, new Headers(init?.headers).get("authorization")) : undefined;
+    if (media) return media;
     const text = typeof init?.body === "string" ? init.body : undefined;
     const body = text ? (JSON.parse(text) as Json) : {};
     try {

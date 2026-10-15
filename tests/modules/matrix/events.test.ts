@@ -14,7 +14,10 @@ import {
   MAX_EVENT_JSON,
   MAX_NAME,
   MAX_ROOM_ID,
+  mimeType,
   parseContent,
+  parseEncryptedFile,
+  parseMedia,
   parseCryptoSync,
   parseEncryption,
   parseEvent,
@@ -76,17 +79,17 @@ describe("message content", () => {
   });
 
   it("labels media and keeps captions", () => {
-    expect(parseContent({ msgtype: "m.image", body: "cat.png" })).toEqual({ msgtype: "m.image", text: "", media: "📷 Image" });
-    expect(parseContent({ msgtype: "m.image", body: "look", filename: "cat.png" })).toEqual({ msgtype: "m.image", text: "look", media: "📷 Image" });
+    expect(parseContent({ msgtype: "m.image", body: "cat.png" })).toMatchObject({ msgtype: "m.image", text: "", media: "📷 Image" });
+    expect(parseContent({ msgtype: "m.image", body: "look", filename: "cat.png" })).toMatchObject({ msgtype: "m.image", text: "look", media: "📷 Image" });
     expect(parseContent({ msgtype: "m.image", body: "cat.png", filename: "cat.png" })!.text).toBe("");
     expect(parseContent({ msgtype: "m.video", body: "v" })!.media).toBe("🎥 Video");
     expect(parseContent({ msgtype: "m.audio", body: "a" })!.media).toBe("🎵 Audio");
     expect(parseContent({ msgtype: "m.audio", body: "a", "org.matrix.msc3245.voice": {} })!.media).toBe("🎤 Voice message");
     expect(parseContent({ msgtype: "m.file", body: "report.pdf" })!.media).toBe("📎 report.pdf");
-    expect(parseContent({ msgtype: "m.file", body: "see this", filename: "r.pdf" })).toEqual({ msgtype: "m.file", text: "see this", media: "📎 r.pdf" });
+    expect(parseContent({ msgtype: "m.file", body: "see this", filename: "r.pdf" })).toMatchObject({ msgtype: "m.file", text: "see this", media: "📎 r.pdf" });
     expect(parseContent({ msgtype: "m.file", body: "" })!.media).toBe("📎 File");
     expect(parseContent({ msgtype: "m.location", body: "geo" })).toEqual({ msgtype: "m.location", text: "", media: "📍 Location" });
-    expect(parseContent({ body: "s", url: "mxc://x/y" }, true)).toEqual({ msgtype: "m.sticker", text: "", media: "🙂 Sticker" });
+    expect(parseContent({ body: "s", url: "mxc://x/y" }, true)).toMatchObject({ msgtype: "m.sticker", text: "", media: "🙂 Sticker" });
   });
 
   it("falls back to the body for text and unknown types, cut to length", () => {
@@ -438,5 +441,128 @@ describe("call memberships", () => {
     expect(calls.size).toBe(MAX_CALL_MEMBERS * 2);
     // Known keys still update.
     expect(calls.get("k0")).toBeNull();
+  });
+});
+
+describe("media", () => {
+  const KEY = { kty: "oct", alg: "A256CTR", k: "a".repeat(43), key_ops: ["encrypt", "decrypt"], ext: true };
+  const FILE = { v: "v2", url: "mxc://x.org/enc", key: KEY, iv: "b".repeat(22), hashes: { sha256: "c".repeat(43) } };
+  const SOURCE = { url: "mxc://x.org/enc", key: "a".repeat(43), iv: "b".repeat(22), sha256: "c".repeat(43) };
+
+  it("reads MIME types without parameters", () => {
+    expect(mimeType("image/PNG")).toBe("image/png");
+    expect(mimeType(" image/svg+xml ")).toBe("image/svg+xml");
+    expect(mimeType("application/vnd.openxmlformats-officedocument.wordprocessingml.document")).toBe("application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    for (const bad of ["image/png;base64", "text/html,<b>", "image", "/png", "image/", "a b/c", "x".repeat(70) + "/y", 5, undefined]) expect(mimeType(bad)).toBeUndefined();
+  });
+
+  it("describes plain media", () => {
+    const content = { msgtype: "m.image", body: "look", filename: "cat.gif", url: "mxc://x.org/cat", info: { mimetype: "image/gif", size: 1234, w: 640, h: 480 } };
+    expect(parseContent(content)).toEqual({
+      msgtype: "m.image",
+      text: "look",
+      media: "📷 Image",
+      attachment: { kind: "image", name: "cat.gif", url: "mxc://x.org/cat", mime: "image/gif", size: 1234, width: 640, height: 480 },
+    });
+    expect(parseContent({ msgtype: "m.video", body: "clip.mp4", url: "mxc://x.org/v", info: { duration: 5000 } })!.attachment).toEqual({ kind: "video", name: "clip.mp4", url: "mxc://x.org/v", durationMs: 5000 });
+    expect(parseContent({ msgtype: "m.audio", body: "a.ogg", url: "mxc://x.org/a" })!.attachment!.kind).toBe("audio");
+    expect(parseContent({ msgtype: "m.file", body: "r.pdf", url: "mxc://x.org/f" })!.attachment!.kind).toBe("file");
+    expect(parseContent({ body: "Happy cat", url: "mxc://x.org/s", info: { mimetype: "image/png", w: 256, h: 256 } }, true)!.attachment).toEqual({
+      kind: "sticker",
+      name: "Happy cat",
+      url: "mxc://x.org/s",
+      mime: "image/png",
+      width: 256,
+      height: 256,
+    });
+  });
+
+  it("names media by file name, else body, else kind", () => {
+    expect(parseMedia({ body: "", url: "mxc://x.org/a" }, "image").name).toBe("Image");
+    expect(parseMedia({ body: "‮evil\u0000.png", url: "mxc://x.org/a" }, "file").name).toBe("evil.png");
+    expect(parseMedia({ body: "b", filename: "x".repeat(300), url: "mxc://x.org/a" }, "file").name).toHaveLength(255);
+    expect(parseMedia({ url: "mxc://x.org/a" }, "sticker").name).toBe("Sticker");
+  });
+
+  it("drops info that does not fit", () => {
+    const media = parseMedia({ body: "a", url: "mxc://x.org/a", info: { mimetype: "text/html;x", size: -1, w: 0, h: 10, duration: 1.5 } }, "image");
+    expect(media).toEqual({ kind: "image", name: "a", url: "mxc://x.org/a" });
+    // Both sides or none: a picture of one known side cannot be laid out.
+    expect(parseMedia({ body: "a", url: "mxc://x.org/a", info: { w: 10, h: 100_001 } }, "image").width).toBeUndefined();
+    expect(parseMedia({ body: "a", url: "mxc://x.org/a", info: "nope" }, "image")).toEqual({ kind: "image", name: "a", url: "mxc://x.org/a" });
+  });
+
+  it("marks bridged GIFs as looping videos", () => {
+    expect(parseMedia({ body: "g", url: "mxc://x.org/g", info: { "fi.mau.loop": true } }, "video").loop).toBe(true);
+    expect(parseMedia({ body: "g", url: "mxc://x.org/g", info: { "fi.mau.gif": true } }, "video").loop).toBe(true);
+    expect(parseMedia({ body: "g", url: "mxc://x.org/g", info: { "fi.mau.loop": true } }, "image").loop).toBeUndefined();
+    expect(parseMedia({ body: "g", url: "mxc://x.org/g", info: { "fi.mau.loop": "yes" } }, "video").loop).toBeUndefined();
+  });
+
+  it("checks mxc URIs strictly", () => {
+    for (const url of ["mxc://x.org/../admin", "mxc://x.org/a/b", "https://x.org/a", "mxc://x.org/", "mxc:///a", "mxc://x.org/a?b", 5, undefined]) {
+      expect(parseMedia({ body: "a", url }, "image")).toEqual({ kind: "image", name: "a", problem: "its address is not valid" });
+    }
+  });
+
+  it("reads encrypted files", () => {
+    expect(parseEncryptedFile(FILE)).toEqual(SOURCE);
+    expect(parseEncryptedFile({ ...FILE, iv: `${"b".repeat(22)}==`, hashes: { sha256: `${"c".repeat(43)}=` } })).toMatchObject({ iv: `${"b".repeat(22)}==` });
+    expect(parseEncryptedFile(undefined)).toBeUndefined();
+    expect(parseEncryptedFile("file")).toBeUndefined();
+    const media = parseMedia({ body: "secret.png", file: FILE, info: { mimetype: "image/png", size: 9 } }, "image");
+    expect(media).toEqual({ kind: "image", name: "secret.png", file: SOURCE, mime: "image/png", size: 9 });
+    // An encrypted file wins over a plain URL beside it.
+    expect(parseMedia({ body: "s", url: "mxc://x.org/plain", file: FILE }, "image")).toEqual({ kind: "image", name: "s", file: SOURCE });
+  });
+
+  it.each([
+    ["version 1", { ...FILE, v: "v1" }, "its encryption version is not supported"],
+    ["no version", { ...FILE, v: undefined }, "its encryption version is not supported"],
+    ["another key type", { ...FILE, key: { ...KEY, kty: "RSA" } }, "its encryption key is not usable"],
+    ["another algorithm", { ...FILE, key: { ...KEY, alg: "A128CTR" } }, "its encryption key is not usable"],
+    ["a short key", { ...FILE, key: { ...KEY, k: "a".repeat(22) } }, "its encryption key is not usable"],
+    ["a key that is not base64url", { ...FILE, key: { ...KEY, k: `${"a".repeat(42)}+` } }, "its encryption key is not usable"],
+    ["a key not for decrypting", { ...FILE, key: { ...KEY, key_ops: ["encrypt"] } }, "its encryption key is not usable"],
+    ["no key operations", { ...FILE, key: { ...KEY, key_ops: "decrypt" } }, "its encryption key is not usable"],
+    ["no key", { ...FILE, key: undefined }, "its encryption key is not usable"],
+    ["a short counter block", { ...FILE, iv: "b".repeat(16) }, "its encryption details are not usable"],
+    ["no counter block", { ...FILE, iv: 5 }, "its encryption details are not usable"],
+    ["a malformed hash", { ...FILE, hashes: { sha256: "c".repeat(44) } }, "its encryption details are not usable"],
+    ["no hashes", { ...FILE, hashes: undefined }, "its encryption details are not usable"],
+    ["a malformed address", { ...FILE, url: "mxc://x.org/../a" }, "its address is not valid"],
+  ])("refuses an encrypted file with %s", (_name, file, problem) => {
+    expect(parseEncryptedFile(file)).toBe(problem);
+    expect(parseMedia({ body: "a", file, url: "mxc://x.org/plain" }, "image")).toEqual({ kind: "image", name: "a", problem });
+  });
+
+  it("reads thumbnails, plain or encrypted", () => {
+    const plain = parseMedia({ body: "a", url: "mxc://x.org/a", info: { thumbnail_url: "mxc://x.org/t", thumbnail_info: { mimetype: "image/jpeg", size: 100, w: 1, h: 1 } } }, "image");
+    expect(plain.thumbnail).toEqual({ url: "mxc://x.org/t", mime: "image/jpeg", size: 100 });
+    expect(parseMedia({ body: "a", file: FILE, info: { thumbnail_file: FILE } }, "video").thumbnail).toEqual({ file: SOURCE });
+    expect(parseMedia({ body: "a", url: "mxc://x.org/a", info: { thumbnail_url: "mxc://x.org/../t" } }, "image").thumbnail).toBeUndefined();
+    expect(parseMedia({ body: "a", url: "mxc://x.org/a", info: { thumbnail_file: { ...FILE, v: "v1" } } }, "image").thumbnail).toBeUndefined();
+  });
+
+  it("parses media in m.sticker events, edits and replies", () => {
+    expect(parseEvent(ev({ type: "m.sticker", content: { body: "wave", url: "mxc://x.org/s" } }))).toMatchObject({
+      kind: "message",
+      content: { msgtype: "m.sticker", attachment: { kind: "sticker", name: "wave", url: "mxc://x.org/s" } },
+    });
+    const edit = parseEvent(
+      ev({
+        content: {
+          msgtype: "m.image",
+          body: "* new caption",
+          "m.new_content": { msgtype: "m.image", body: "new caption", filename: "cat.png", url: "mxc://x.org/cat" },
+          "m.relates_to": { rel_type: "m.replace", event_id: "$orig" },
+        },
+      }),
+    );
+    expect(edit).toMatchObject({ replaces: "$orig", content: { text: "new caption", attachment: { name: "cat.png", url: "mxc://x.org/cat" } } });
+    const reply = parseEvent(
+      ev({ content: { msgtype: "m.image", body: "> <@a:x> hi\n\nthis", filename: "c.png", url: "mxc://x.org/c", "m.relates_to": { "m.in_reply_to": { event_id: "$q" } } } }),
+    );
+    expect(reply).toMatchObject({ replyTo: "$q", content: { text: "this", attachment: { name: "c.png" } } });
   });
 });

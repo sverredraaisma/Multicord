@@ -15,6 +15,7 @@ import { openE2ee, type MatrixE2ee } from "../../../src/modules/matrix/crypto";
 import { CALL_MEMBER_TYPE, parseCallMember } from "../../../src/modules/matrix/events";
 import type { IncomingCall } from "../../../src/shared/adapter";
 import type { NativeViewState } from "../../../src/shared/native";
+import { encryptAttachment } from "./attachments";
 import { HS, InteropHomeserver, LIVEKIT_SERVICE, SFU } from "./interopServer";
 
 const ALICE = "@alice:x.org";
@@ -134,6 +135,36 @@ describe("encrypted messages with Element (matrix-js-sdk)", { timeout: 30_000 },
     expect(event.getContent()).toMatchObject({ msgtype: "m.text", body: "hello from Multicord" });
     expect(event.getWireType()).toBe("m.room.encrypted");
     expect(event.isDecryptionFailure()).toBe(false);
+    expect(server.unknown).toEqual([]);
+  });
+});
+
+describe("encrypted attachments with Element (matrix-js-sdk)", { timeout: 30_000 }, () => {
+  it("shows a picture Element sends into an encrypted room, and refuses one the server changed", async () => {
+    const server = new InteropHomeserver();
+    encryptedRoom(server, [BOB, ALICE]);
+    const mc = await multicord(server, ALICE, "MULTI");
+    const bob = await element(server, BOB, "ELEMENT");
+    const picture = new TextEncoder().encode("not really a PNG, but encrypted like one");
+    const sendPicture = async (name: string, data: Uint8Array<ArrayBuffer>, info: Record<string, unknown>) => {
+      const content = { msgtype: "m.image", body: name, file: { ...info, url: server.storeMedia(data) }, info: { mimetype: "image/png", size: picture.length } };
+      await bob.sendMessage(ROOM, content as never);
+    };
+    const good = await encryptAttachment(picture);
+    await sendPicture("photo.png", good.data, good.info);
+    const swapped = await encryptAttachment(picture);
+    swapped.data[0]! ^= 1;
+    await sendPicture("swapped.png", swapped.data, swapped.info);
+
+    await mc.open("Secret");
+    const file = (name: string) => mc.messages().find((m) => m.attachments[0]?.name === name)?.attachments[0];
+    for (const name of ["photo.png", "swapped.png"]) {
+      const key = (await until(() => file(name)?.mediaKey, `Multicord to show ${name}`))!;
+      await mc.act({ type: "loadMedia", key });
+    }
+    expect(file("photo.png")!.url).toBe(`data:image/png;base64,${Buffer.from(picture).toString("base64")}`);
+    expect(file("swapped.png")).toMatchObject({ unavailable: "it does not match its checksum, so it may have been changed" });
+    expect(file("swapped.png")!.url).toBeUndefined();
     expect(server.unknown).toEqual([]);
   });
 });

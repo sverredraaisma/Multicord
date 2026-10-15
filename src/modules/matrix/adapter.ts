@@ -3,7 +3,7 @@ import type { DirectConversation, HomeBadge, PlatformAdapter } from "../../share
 import { BaseAdapter } from "../../shared/baseAdapter";
 import { MAX_DIRECTS } from "../../shared/engine";
 import { escapeMarkdown } from "../../shared/markdown";
-import type { NativeAction, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState, NativeVoiceMember, NativeVoiceSession } from "../../shared/native";
+import type { NativeAction, NativeAttachment, NativeMessage, NativePrompt, NativeSidebarItem, NativeViewState, NativeVoiceMember, NativeVoiceSession } from "../../shared/native";
 import type { AccountStatus } from "../../shared/settings";
 import {
   MatrixError,
@@ -14,6 +14,8 @@ import {
   type MxEncryptedEvent,
   type MxEncryption,
   type MxEvent,
+  type MxMedia,
+  type MxMediaSource,
   type MxMember,
   type MxOAuthSession,
   type MxPage,
@@ -23,7 +25,9 @@ import {
 } from "./api";
 import { CALL_KEYS_TYPE, HostNotAllowedError, MatrixCall, RTC_NOTIFICATION_TYPE, RTC_SLOT_TYPE, ringContent, SLOT_ID, slotContent, type CallParticipant } from "./calls";
 import type { E2ee, E2eeOptions, E2eeStatus } from "./crypto";
+import { base64 } from "./client";
 import { cleanName, MAX_CALL_MEMBERS, serviceUrl, userId } from "./events";
+import { AttachmentError, decryptAttachment } from "./media";
 import { httpsUrl, newDeviceId, OAuthError, type DeviceGrant, type MatrixOAuth, type OAuthServer, type OAuthTokens } from "./oauth";
 import type { Verification, VerificationState } from "./verification";
 
@@ -70,6 +74,13 @@ export const TOKEN_CALL_NOTICE =
 export const ENCRYPTED_CALL_NOTICE =
   "🔒 This room is end-to-end encrypted, and so are its calls, which this build of Multicord cannot encrypt. Multicord never joins an encrypted room's call unencrypted: join it in Element.";
 export const OTHER_SERVER_LABEL = "other call server";
+/** Largest media shown in the view (it travels as a data: URL); bigger files say so. */
+export const MAX_MEDIA_BYTES = 40 * 1024 * 1024;
+/** Media kept in memory for the view, all files together; the oldest go first. */
+export const MEDIA_CACHE_BYTES = 200 * 1024 * 1024;
+export const TOO_LARGE = "too large to show here; open it in Element";
+/** loadMedia keys: "mx:", the room's local id and the local id of the event whose content is shown. */
+const MEDIA_KEY = /^mx:(\d{1,12}):(\d{1,12})$/;
 
 export interface MatrixInstanceDef {
   id: string;
@@ -98,6 +109,8 @@ export interface MatrixAdapterDeps {
   log?: (message: string) => void;
   /** Narrows what the engine may reach to these hosts, once they are known. */
   lockHosts?(hosts: string[]): Promise<void>;
+  /** Bytes of loaded media kept for the view (default MEDIA_CACHE_BYTES). */
+  mediaBudget?: number;
 }
 
 /** The distinct hosts of these URLs, skipping any that are missing. */
@@ -313,6 +326,11 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly avatars = new Map<string, string>();
   private readonly avatarsTried = new Set<string>();
   private loadingAvatars = false;
+  /** Media loaded for the view, as data: URLs by media key, oldest first; and why some could not be. */
+  private readonly media = new Map<string, string>();
+  private mediaBytes = 0;
+  private readonly mediaFailed = new Map<string, string>();
+  private readonly mediaLoading = new Set<string>();
   private readonly loading = new Set<string>();
   private selected: string | undefined;
   private visible = false;
@@ -534,9 +552,18 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     // Another account may sign in next; its chats must not show these pictures.
     this.avatars.clear();
     this.avatarsTried.clear();
+    this.forgetMedia();
     this.selected = undefined;
     this.directsChanged.emit([]);
     await this.showSignIn();
+  }
+
+  /** Drops loaded media: decrypted files must not outlive the session they belong to. */
+  private forgetMedia(): void {
+    this.media.clear();
+    this.mediaBytes = 0;
+    this.mediaFailed.clear();
+    this.mediaLoading.clear();
   }
 
   /** The server no longer accepts the token, e.g. after signing out elsewhere. */
@@ -550,6 +577,7 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     await this.forgetSession();
     this.rooms.clear();
     this.dmUsers.clear();
+    this.forgetMedia();
     this.selected = undefined;
     this.directsChanged.emit([]);
     await this.showSignIn("Your Matrix session has ended. Sign in again.");
@@ -606,6 +634,8 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
         return this.setCallFlags(action);
       case "voiceError":
         return this.leaveCall(`The call ended: ${action.message}`);
+      case "loadMedia":
+        return this.loadMedia(action.key);
       default:
         // Reactions, uploads, typing and forums are not offered for Matrix.
         return;
@@ -1548,6 +1578,90 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
+  // --- Media --------------------------------------------------------------------------
+
+  /** What to download for the view: the file, or for a picture too large to show, its thumbnail; undefined when neither fits. */
+  private mediaSource(media: MxMedia): MxMediaSource | undefined {
+    if (media.size === undefined || media.size <= MAX_MEDIA_BYTES) return media;
+    const thumbnail = media.thumbnail;
+    const picture = media.kind === "image" || media.kind === "sticker";
+    return picture && thumbnail && (thumbnail.size === undefined || thumbnail.size <= MAX_MEDIA_BYTES) ? thumbnail : undefined;
+  }
+
+  private attachment(room: Room, id: string, media: MxMedia): NativeAttachment {
+    const key = `mx:${room.local}:${this.local(id)}`;
+    const shown: NativeAttachment = { name: media.name, kind: media.kind, mime: media.mime, size: media.size, width: media.width, height: media.height };
+    if (media.loop) shown.loop = true;
+    const url = this.media.get(key);
+    if (url) shown.url = url;
+    else if (media.problem) shown.unavailable = media.problem;
+    else if (this.mediaFailed.has(key)) shown.unavailable = this.mediaFailed.get(key);
+    else if (!this.mediaSource(media)) shown.unavailable = TOO_LARGE;
+    else shown.mediaKey = key;
+    return shown;
+  }
+
+  /** The media a shown message carries, by the id of the event its content came from. */
+  private mediaOf(room: Room, id: string): MxMedia | undefined {
+    for (const event of room.events) {
+      if (event.kind !== "message") continue;
+      const shown = this.shownContent(room, event);
+      if (shown.id === id) return shown.content.attachment;
+    }
+    return undefined;
+  }
+
+  /**
+   * Downloads a message's media for the view, once. Keys come from the view,
+   * so they only name a message on screen: nothing else is fetched. An
+   * encrypted file is checked against its hash and decrypted here; the view
+   * never gets its ciphertext.
+   */
+  private async loadMedia(key: string): Promise<void> {
+    const match = MEDIA_KEY.exec(key);
+    const session = this.session;
+    if (!match || !session || this.media.has(key) || this.mediaLoading.has(key) || this.mediaFailed.has(key)) return;
+    const room = this.rooms.get(this.byLocal.get(match[1]!) ?? "");
+    const id = this.byLocal.get(match[2]!);
+    const media = room && id ? this.mediaOf(room, id) : undefined;
+    const source = media && !media.problem ? this.mediaSource(media) : undefined;
+    if (!source) return;
+    const generation = this.generation;
+    this.mediaLoading.add(key);
+    let url: string | undefined;
+    let failure = TOO_LARGE;
+    try {
+      // A source has a file or a URL (events.ts sees to it).
+      const download = await this.deps.api.download(session, source.file?.url ?? source.url!, MAX_MEDIA_BYTES);
+      if (download) {
+        const bytes = source.file ? await decryptAttachment(download.bytes, source.file) : download.bytes;
+        // An encrypted file's type is the sender's (inside the encrypted event); the server only sees ciphertext.
+        const mime = source.mime ?? (source.file ? undefined : download.type) ?? "application/octet-stream";
+        url = `data:${mime};base64,${base64(bytes)}`;
+      }
+    } catch (error) {
+      failure = error instanceof AttachmentError ? error.message : `could not load: ${friendly(error)}`;
+    } finally {
+      this.mediaLoading.delete(key);
+    }
+    // Signed out meanwhile: it belongs to the previous session.
+    if (generation !== this.generation) return;
+    if (url) this.remember(key, url);
+    else this.mediaFailed.set(key, failure);
+    this.render();
+  }
+
+  /** Keeps a loaded file, dropping the oldest ones beyond the budget (never the newest). */
+  private remember(key: string, url: string): void {
+    this.media.set(key, url);
+    this.mediaBytes += url.length;
+    for (const [old, kept] of this.media) {
+      if (this.mediaBytes <= (this.deps.mediaBudget ?? MEDIA_CACHE_BYTES) || old === key) break;
+      this.media.delete(old);
+      this.mediaBytes -= kept.length;
+    }
+  }
+
   // --- Calls --------------------------------------------------------------------------
 
   /** The devices in a room's call now: memberships not expired, of people still in the room, one per device. */
@@ -1794,9 +1908,10 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     return cleanName(title) ?? "Empty room";
   }
 
-  private shownContent(room: Room, event: Message): { content: MxContent; edited: boolean } {
+  /** What a message shows: its latest edit's content, if any; `id` is the event that content came from. */
+  private shownContent(room: Room, event: Message): { content: MxContent; edited: boolean; id: string } {
     const edit = room.edits.get(`${event.sender}|${event.id}`);
-    return edit ? { content: edit.content, edited: true } : { content: event.content, edited: false };
+    return edit ? { content: edit.content, edited: true, id: edit.id } : { content: event.content, edited: false, id: event.id };
   }
 
   private eventText(room: Room, event: Shown): string {
@@ -1854,7 +1969,12 @@ export class MatrixAdapter extends BaseAdapter implements PlatformAdapter {
     if (event.kind !== "message") return native;
     // A quiet note on the author line: the message decrypted, but from a device its owner has not verified.
     if (event.unverified) native.author = `${native.author} · ${UNVERIFIED_LABEL}`;
-    const { content, edited } = this.shownContent(room, event);
+    const { content, edited, id } = this.shownContent(room, event);
+    if (content.attachment) {
+      // Shown media speaks for itself: only its caption stays as text (the label remains for notifications and previews).
+      native.content = escapeMarkdown(content.text);
+      native.attachments = [this.attachment(room, id, content.attachment)];
+    }
     native.edited = edited;
     native.canEdit = mine && !locked && EDITABLE.has(event.content.msgtype);
     if (native.canEdit) native.source = content.text;

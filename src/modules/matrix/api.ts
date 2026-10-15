@@ -85,12 +85,63 @@ interface MxEventBase {
   ts: number;
 }
 
+/**
+ * An encrypted attachment's file (Matrix's EncryptedFile, version 2), its
+ * parts already checked for form: AES-CTR with a 256-bit key.
+ */
+export interface MxEncryptedFile {
+  /** mxc:// URI of the ciphertext. */
+  url: string;
+  /** The AES key, unpadded base64url of 32 bytes (the JWK's k). */
+  key: string;
+  /** The initial counter block, base64 of 16 bytes. */
+  iv: string;
+  /** SHA-256 of the ciphertext, unpadded base64. */
+  sha256: string;
+}
+
+/** Where an attachment (or its thumbnail) is: in the clear at `url`, or encrypted as `file`. */
+export interface MxMediaSource {
+  url?: string;
+  file?: MxEncryptedFile;
+  /** MIME type, as the sender said. */
+  mime?: string;
+  /** Bytes, as the sender said. */
+  size?: number;
+}
+
+export type MxMediaKind = "image" | "video" | "audio" | "file" | "sticker";
+
+/** An image, video, sound, file or sticker of a message, as its sender described it. */
+export interface MxMedia extends MxMediaSource {
+  kind: MxMediaKind;
+  /** The file name, else its description. */
+  name: string;
+  width?: number;
+  height?: number;
+  durationMs?: number;
+  /** A video to play silently on a loop, as bridges mark GIFs. */
+  loop?: boolean;
+  /** A smaller picture of it, when the sender made one. */
+  thumbnail?: MxMediaSource;
+  /** Why it cannot be shown, e.g. a malformed address or key. */
+  problem?: string;
+}
+
 /** A message's displayable content: text, a media label, or both. */
 export interface MxContent {
   msgtype: string;
   text: string;
   /** A short label for media, e.g. "📷 Image". */
   media?: string;
+  /** The media itself, for messages that carry a file. */
+  attachment?: MxMedia;
+}
+
+/** Downloaded media: its bytes, and the type the server gave. */
+export interface MxDownload {
+  bytes: Uint8Array<ArrayBuffer>;
+  type?: string;
 }
 
 export type MxEvent =
@@ -213,6 +264,8 @@ export interface MatrixApi {
   markRead(session: MxSession, roomId: string, eventId: string): Promise<void>;
   /** A small thumbnail of an mxc:// image as a data: URL. */
   thumbnail(session: MxSession, mxc: string): Promise<string | undefined>;
+  /** An mxc:// file, through authenticated media; undefined when it is larger than `maxBytes`. */
+  download(session: MxSession, mxc: string, maxBytes: number): Promise<MxDownload | undefined>;
   /** The user's account data of a type, or undefined when there is none. */
   accountData(session: MxSession, type: string): Promise<Record<string, unknown> | undefined>;
   /**

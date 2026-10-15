@@ -252,6 +252,45 @@ describe("thumbnails", () => {
   });
 });
 
+describe("media downloads", () => {
+  const file = (bytes: Uint8Array<ArrayBuffer>, headers: Record<string, string> = {}, status = 200) => new Response(bytes, { status, headers });
+
+  it("downloads through authenticated media with the session's token", async () => {
+    const { client, fetchFn } = fakeFetch(() => file(new Uint8Array([1, 2, 3]), { "Content-Type": "Image/GIF; charset=binary" }));
+    expect(await client.download(SESSION, "mxc://other.org:8448/abc_D-1", 10)).toEqual({ bytes: new Uint8Array([1, 2, 3]), type: "image/gif" });
+    const { url, init } = callOf(fetchFn);
+    expect(url.href).toBe("https://hs.x.org/_matrix/client/v1/media/download/other.org%3A8448/abc_D-1");
+    expect(init.headers).toEqual({ Authorization: "Bearer tok" });
+  });
+
+  it("leaves out a type that is not one", async () => {
+    const { client } = fakeFetch(() => file(new Uint8Array([1]), { "Content-Type": "nonsense" }));
+    expect(await client.download(SESSION, "mxc://x.org/a", 10)).toEqual({ bytes: new Uint8Array([1]) });
+  });
+
+  it("gives nothing for files larger than allowed, by header or by count", async () => {
+    const declared = fakeFetch(() => file(new Uint8Array([1]), { "Content-Length": "11" }));
+    expect(await declared.client.download(SESSION, "mxc://x.org/a", 10)).toBeUndefined();
+    const counted = fakeFetch(() => file(new Uint8Array(11)));
+    expect(await counted.client.download(SESSION, "mxc://x.org/a", 10)).toBeUndefined();
+    const exact = fakeFetch(() => file(new Uint8Array(10), { "Content-Length": "10" }));
+    expect((await exact.client.download(SESSION, "mxc://x.org/a", 10))!.bytes).toHaveLength(10);
+  });
+
+  it("throws the homeserver's error", async () => {
+    const { client } = fakeFetch(() => json({ errcode: "M_NOT_FOUND", error: "No such media" }, 404));
+    await expect(client.download(SESSION, "mxc://x.org/a", 10)).rejects.toMatchObject({ status: 404, errcode: "M_NOT_FOUND", message: "No such media" });
+    const bare = fakeFetch(() => new Response("oops", { status: 502 }));
+    await expect(bare.client.download(SESSION, "mxc://x.org/a", 10)).rejects.toMatchObject({ status: 502, errcode: "M_UNKNOWN", message: "HTTP 502" });
+  });
+
+  it("does not fetch malformed mxc URIs", async () => {
+    const { client, fetchFn } = fakeFetch(() => file(new Uint8Array([1])));
+    await expect(client.download(SESSION, "mxc://x.org/../../admin", 10)).rejects.toThrow("Invalid media address");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+});
+
 describe("encryption endpoints", () => {
   it("lists joined and invited members for key sharing", async () => {
     const { client, fetchFn } = fakeFetch(() =>
@@ -364,6 +403,13 @@ describe("OAuth token refresh", () => {
     expect(soft.refresh).not.toHaveBeenCalled();
     const plain = fakeFetch(() => expired());
     await expect(plain.client.check(oauthSession({ expiresAt: 0 }))).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("refreshes a due token before downloading media", async () => {
+    const { client, refresh, fetchFn } = refreshing(() => new Response(new Uint8Array([1])), 10);
+    await client.download(oauthSession({ expiresAt: 0 }), "mxc://x.org/abc", 10);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(tokenOf(fetchFn.mock.calls[0]![1]!)).toBe("Bearer new1");
   });
 
   it("refreshes a due token before fetching thumbnails", async () => {

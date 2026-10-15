@@ -1,5 +1,5 @@
-import { MatrixError, type MatrixApi, type MxEncryption, type MxLiveKitGrant, type MxLoginFlows, type MxOpenIdToken, type MxPage, type MxSession, type MxSync } from "./api";
-import { CALL_MEMBER_TYPE, eventId, isRecord, liveKitServices, parseEncryption, parseMembers, parseMxc, parsePage, parseSync, userId } from "./events";
+import { MatrixError, type MatrixApi, type MxDownload, type MxEncryption, type MxLiveKitGrant, type MxLoginFlows, type MxOpenIdToken, type MxPage, type MxSession, type MxSync } from "./api";
+import { CALL_MEMBER_TYPE, eventId, isRecord, liveKitServices, mimeType, parseEncryption, parseMembers, parseMxc, parsePage, parseSync, userId } from "./events";
 
 const CLIENT = "/_matrix/client/v3";
 /** Timeline events kept per room in a sync, and the event types asked for. */
@@ -53,7 +53,8 @@ export function httpsBase(value: unknown): string | undefined {
   }
 }
 
-function base64(bytes: Uint8Array): string {
+/** Bytes as base64, in pieces small enough for String.fromCharCode. */
+export function base64(bytes: Uint8Array): string {
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   return btoa(binary);
@@ -113,12 +114,7 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
     }
     const response = await fetchFn(url.href, init);
     const json: unknown = await response.json().catch(() => undefined);
-    if (!response.ok) {
-      const body = isRecord(json) ? json : {};
-      const errcode = typeof body.errcode === "string" ? body.errcode.slice(0, 64) : "M_UNKNOWN";
-      const message = typeof body.error === "string" && body.error !== "" ? body.error.slice(0, 200) : `HTTP ${response.status}`;
-      throw new MatrixError(response.status, errcode, message, body.soft_logout === true);
-    }
+    if (!response.ok) throw failure(response.status, json);
     if (!isRecord(json)) throw new Error("The homeserver sent an unreadable response");
     return json;
   }
@@ -255,6 +251,24 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
       return `data:${type};base64,${base64(bytes)}`;
     },
 
+    async download(session, mxc, maxBytes): Promise<MxDownload | undefined> {
+      const parsed = parseMxc(mxc);
+      if (!parsed) throw new Error("Invalid media address");
+      await fresh(session);
+      // Authenticated media (Matrix 1.11), as for thumbnails.
+      const url = `${session.baseUrl}/_matrix/client/v1/media/download/${encodeURIComponent(parsed.server)}/${encodeURIComponent(parsed.media)}`;
+      const response = await fetchFn(url, { headers: { Authorization: `Bearer ${session.accessToken}` } });
+      if (!response.ok) throw failure(response.status, await response.json().catch(() => undefined));
+      // The size is checked before and after reading: a server may not say, or say wrong.
+      if (Number(response.headers.get("content-length")) > maxBytes) return undefined;
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.length > maxBytes) return undefined;
+      const download: MxDownload = { bytes };
+      const type = mimeType((response.headers.get("content-type") ?? "").split(";")[0]);
+      if (type) download.type = type;
+      return download;
+    },
+
     async accountData(session, type) {
       if (!ACCOUNT_DATA_TYPE.test(type)) throw new Error("Invalid account data type");
       try {
@@ -341,6 +355,14 @@ export function createMatrixClient(fetchFn: typeof fetch, config: MatrixClientOp
       return { url, jwt };
     },
   };
+}
+
+/** A homeserver's error response as a MatrixError, with its error code. */
+function failure(status: number, json: unknown): MatrixError {
+  const body = isRecord(json) ? json : {};
+  const errcode = typeof body.errcode === "string" ? body.errcode.slice(0, 64) : "M_UNKNOWN";
+  const message = typeof body.error === "string" && body.error !== "" ? body.error.slice(0, 200) : `HTTP ${status}`;
+  return new MatrixError(status, errcode, message, body.soft_logout === true);
 }
 
 const UNSTABLE_RTC = "/_matrix/client/unstable/org.matrix.msc4143";

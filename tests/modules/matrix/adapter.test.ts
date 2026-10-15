@@ -7,6 +7,7 @@ import {
   type MxEncryptedEvent,
   type MxEncryption,
   type MxCallMember,
+  type MxDownload,
   type MxEvent,
   type MxLiveKitGrant,
   type MxOAuthSession,
@@ -29,17 +30,21 @@ import {
   MatrixAdapter,
   type MatrixAdapterDeps,
   messageText,
+  MAX_MEDIA_BYTES,
   PAGE_SIZE,
   REQUEST_ENTRY,
   parseSession,
   SYNC_TIMEOUT_MS,
   TOKEN_NOTICE,
+  TOO_LARGE,
   UNVERIFIED_LABEL,
 } from "../../../src/modules/matrix/adapter";
 import type { DeviceRef, E2ee, E2eeOptions, E2eeStatus, RecoveryResult, RoomEncryption, SecureToDevice } from "../../../src/modules/matrix/crypto";
 import type { Verification, VerificationState } from "../../../src/modules/matrix/verification";
 import { OAuthError, type DeviceGrant, type DevicePoll, type OAuthServer, type OAuthTokens } from "../../../src/modules/matrix/oauth";
+import { parseEvent } from "../../../src/modules/matrix/events";
 import { MAX_DIRECTS } from "../../../src/shared/engine";
+import { encryptAttachment } from "./attachments";
 import type { NativeAction, NativeViewState } from "../../../src/shared/native";
 
 const ME = "@me:x.org";
@@ -115,6 +120,7 @@ class FakeMatrixApi implements MatrixApi {
   redact = vi.fn(async (_s: MxSession, _room: string, _id: string) => {});
   markRead = vi.fn(async (_s: MxSession, _room: string, _id: string) => {});
   thumbnail = vi.fn(async (_s: MxSession, _mxc: string): Promise<string | undefined> => undefined);
+  download = vi.fn(async (_s: MxSession, _mxc: string, _max: number): Promise<MxDownload | undefined> => undefined);
   logout = vi.fn(async (_s: MxSession) => {});
   rtcFoci = vi.fn(async (_url: string): Promise<string[]> => []);
   rtcTransports = vi.fn(async (_s: MxSession): Promise<string[]> => []);
@@ -2679,5 +2685,239 @@ describe("encrypted calls", () => {
     await ctx.act({ type: "joinVoice", channelId: anyCall(ctx.last()) });
     await flush();
     expect(ctx.chat().error).toContain("but encryption could not start. Multicord never joins");
+  });
+});
+
+describe("media", () => {
+  const media = (id: string, content: Record<string, unknown>, extra: { sender?: string; ts?: number; type?: string } = {}): MxEvent =>
+    parseEvent({ type: extra.type ?? "m.room.message", event_id: `$${id}`, sender: extra.sender ?? BO, origin_server_ts: extra.ts ?? 3000, content })!;
+  const IMAGE = { msgtype: "m.image", body: "cat.png", url: "mxc://x.org/cat", info: { mimetype: "image/png", size: 3, w: 4, h: 2 } };
+  const download = (values: number[], type?: string): MxDownload => (type ? { bytes: new Uint8Array(values), type } : { bytes: new Uint8Array(values) });
+
+  /** Signed in, with a room "Media" open: an encrypted placeholder, then these events. */
+  async function inRoom(timeline: MxEvent[], extra: Partial<MatrixAdapterDeps> = {}) {
+    const ctx = setup({ session: SESSION_JSON }, false, extra);
+    ctx.api.push(sync({ joined: [room("!media:x.org", { state: { name: "Media", members: { [BO]: { name: "Bo", membership: "join" } } }, timeline: [enc("m0", BO, 100), ...timeline] })] }));
+    await ctx.adapter.start();
+    await flush();
+    await ctx.open("Media");
+    const shown = (name: string) => ctx.messages().find((m) => m.attachments[0]?.name === name)!;
+    const file = (name: string) => shown(name).attachments[0]!;
+    const key = (local: string) => `mx:${ctx.chat().channel!.id}:${local}`;
+    const load = async (mediaKey: string) => {
+      await ctx.act({ type: "loadMedia", key: mediaKey });
+      await flush();
+    };
+    return { ...ctx, shown, file, key, load };
+  }
+
+  const cached = (adapter: MatrixAdapter) => (adapter as unknown as { media: Map<string, string> }).media;
+
+  it("shows a picture from the homeserver once the view asks for it", async () => {
+    const ctx = await inRoom([media("img", IMAGE)]);
+    const before = ctx.shown("cat.png");
+    expect(before.content).toBe("");
+    expect(before.attachments).toEqual([{ name: "cat.png", kind: "image", mime: "image/png", size: 3, width: 4, height: 2, mediaKey: ctx.key(before.id) }]);
+    ctx.api.download.mockResolvedValue(download([1, 2, 3], "image/jpeg"));
+    await ctx.load(ctx.key(before.id));
+    expect(ctx.api.download).toHaveBeenCalledWith(SESSION, "mxc://x.org/cat", MAX_MEDIA_BYTES);
+    // The sender's type, not the server's.
+    expect(ctx.file("cat.png")).toEqual({ name: "cat.png", kind: "image", mime: "image/png", size: 3, width: 4, height: 2, url: "data:image/png;base64,AQID" });
+    await ctx.load(ctx.key(before.id));
+    expect(ctx.api.download).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the label for notifications, previews and replies, and only the caption as the message", async () => {
+    const ctx = await signedIn();
+    const captioned = media("cap", { ...IMAGE, body: "look at *this*", filename: "cat.png" }, { ts: 5000 });
+    const reply = msg("re", ME, "cute", 6000, { replyTo: "$cap" });
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [captioned, reply] })] }));
+    expect(ctx.notifications.at(-1)!.body).toBe("look at *this*\n📷 Image");
+    await ctx.open("Bo");
+    const [image, answer] = ctx.messages().slice(-2);
+    expect(image!.content).toBe("look at \\*this\\*");
+    expect(image!.attachments[0]!.name).toBe("cat.png");
+    expect(answer!.reply).toEqual({ author: "Bo", content: "look at *this*\n📷 Image" });
+    expect(answer!.attachments).toEqual([]);
+    await ctx.live(sync({ joined: [room("!dm:x.org", { timeline: [media("last", IMAGE, { ts: 7000 })] })] }));
+    expect(ctx.directs.at(-1)![0]!.preview).toBe("📷 Image");
+  });
+
+  it("decrypts an encrypted attachment as Element encrypts it", async () => {
+    const plain = new TextEncoder().encode("GIF89a, or so it says");
+    const { data, info } = await encryptAttachment(plain);
+    const ctx = await inRoom([media("enc", { msgtype: "m.image", body: "secret.gif", file: { ...info, url: "mxc://x.org/secret" }, info: { mimetype: "image/gif" } })]);
+    ctx.api.download.mockResolvedValue({ bytes: data, type: "application/octet-stream" });
+    await ctx.load(ctx.file("secret.gif").mediaKey!);
+    expect(ctx.api.download).toHaveBeenCalledWith(SESSION, "mxc://x.org/secret", MAX_MEDIA_BYTES);
+    expect(ctx.file("secret.gif").url).toBe(`data:image/gif;base64,${Buffer.from(plain).toString("base64")}`);
+  });
+
+  it("gives an encrypted file without a type no type of the server's", async () => {
+    const plain = new Uint8Array([1, 2, 3]);
+    const { data, info } = await encryptAttachment(plain);
+    const ctx = await inRoom([media("enc", { msgtype: "m.file", body: "notes", file: { ...info, url: "mxc://x.org/notes" } })]);
+    ctx.api.download.mockResolvedValue({ bytes: data, type: "text/html" });
+    await ctx.load(ctx.file("notes").mediaKey!);
+    expect(ctx.file("notes").url).toBe("data:application/octet-stream;base64,AQID");
+  });
+
+  it("refuses an encrypted attachment that does not match its hash, and never shows its bytes", async () => {
+    const { data, info } = await encryptAttachment(new TextEncoder().encode("the real picture"));
+    data[3]! ^= 0xff;
+    const ctx = await inRoom([media("enc", { msgtype: "m.image", body: "swapped.png", file: { ...info, url: "mxc://x.org/swapped" } })]);
+    ctx.api.download.mockResolvedValue({ bytes: data });
+    const key = ctx.file("swapped.png").mediaKey!;
+    await ctx.load(key);
+    expect(ctx.file("swapped.png")).toEqual({ name: "swapped.png", kind: "image", unavailable: "it does not match its checksum, so it may have been changed" });
+    // A failure is final: nothing is fetched again.
+    await ctx.load(key);
+    expect(ctx.api.download).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not offer media it cannot show", async () => {
+    const ctx = await inRoom([
+      media("bad", { msgtype: "m.image", body: "v1.png", file: { v: "v1" } }),
+      media("big", { msgtype: "m.video", body: "film.mp4", url: "mxc://x.org/film", info: { size: MAX_MEDIA_BYTES + 1 } }),
+      media("huge", { msgtype: "m.image", body: "huge.png", url: "mxc://x.org/huge", info: { size: MAX_MEDIA_BYTES + 1, thumbnail_url: "mxc://x.org/t", thumbnail_info: { size: MAX_MEDIA_BYTES + 1 } } }),
+    ]);
+    expect(ctx.file("v1.png")).toEqual({ name: "v1.png", kind: "image", unavailable: "its encryption version is not supported" });
+    expect(ctx.file("film.mp4")).toEqual({ name: "film.mp4", kind: "video", size: MAX_MEDIA_BYTES + 1, unavailable: TOO_LARGE });
+    expect(ctx.file("huge.png")).toEqual({ name: "huge.png", kind: "image", size: MAX_MEDIA_BYTES + 1, unavailable: TOO_LARGE });
+    // Keys the view should not have are not loaded either.
+    for (const name of ["v1.png", "film.mp4", "huge.png"]) await ctx.load(ctx.key(ctx.shown(name).id));
+    expect(ctx.api.download).not.toHaveBeenCalled();
+  });
+
+  it("shows the thumbnail of a picture too large to show", async () => {
+    const ctx = await inRoom([
+      media("huge", { msgtype: "m.image", body: "huge.png", url: "mxc://x.org/huge", info: { mimetype: "image/png", size: MAX_MEDIA_BYTES + 1, thumbnail_url: "mxc://x.org/t", thumbnail_info: { mimetype: "image/jpeg", size: 2 } } }),
+      media("wide", { body: "wide", url: "mxc://x.org/wide", info: { size: MAX_MEDIA_BYTES + 1, thumbnail_url: "mxc://x.org/t2" } }, { type: "m.sticker" }),
+    ]);
+    ctx.api.download.mockResolvedValue(download([1, 2], "image/webp"));
+    await ctx.load(ctx.file("huge.png").mediaKey!);
+    expect(ctx.api.download).toHaveBeenLastCalledWith(SESSION, "mxc://x.org/t", MAX_MEDIA_BYTES);
+    expect(ctx.file("huge.png").url).toBe("data:image/jpeg;base64,AQI=");
+    await ctx.load(ctx.file("wide").mediaKey!);
+    expect(ctx.api.download).toHaveBeenLastCalledWith(SESSION, "mxc://x.org/t2", MAX_MEDIA_BYTES);
+    expect(ctx.file("wide")).toMatchObject({ kind: "sticker", url: "data:image/webp;base64,AQI=" });
+  });
+
+  it("says when a download is too large or fails", async () => {
+    const ctx = await inRoom([media("a", { ...IMAGE, body: "a.png" }), media("b", { ...IMAGE, body: "b.png" }), media("c", { ...IMAGE, body: "c.png" })]);
+    ctx.api.download.mockResolvedValueOnce(undefined);
+    await ctx.load(ctx.file("a.png").mediaKey!);
+    expect(ctx.file("a.png").unavailable).toBe(TOO_LARGE);
+    ctx.api.download.mockRejectedValueOnce(new MatrixError(404, "M_NOT_FOUND", "Media not found"));
+    await ctx.load(ctx.file("b.png").mediaKey!);
+    expect(ctx.file("b.png").unavailable).toBe("could not load: Media not found");
+    ctx.api.download.mockRejectedValueOnce("offline");
+    await ctx.load(ctx.file("c.png").mediaKey!);
+    expect(ctx.file("c.png").unavailable).toBe("could not load: offline");
+  });
+
+  it("takes a plain file's type from the server when its sender gave none", async () => {
+    const ctx = await inRoom([media("pdf", { msgtype: "m.file", body: "r.pdf", url: "mxc://x.org/r" }), media("raw", { msgtype: "m.file", body: "raw", url: "mxc://x.org/raw" })]);
+    ctx.api.download.mockResolvedValueOnce(download([1], "application/pdf")).mockResolvedValueOnce(download([1]));
+    await ctx.load(ctx.file("r.pdf").mediaKey!);
+    await ctx.load(ctx.file("raw").mediaKey!);
+    expect(ctx.file("r.pdf").url).toBe("data:application/pdf;base64,AQ==");
+    expect(ctx.file("raw").url).toBe("data:application/octet-stream;base64,AQ==");
+  });
+
+  it("loads only media of messages on screen", async () => {
+    const ctx = await inRoom([media("img", IMAGE), msg("txt", BO, "plain", 4000)]);
+    const image = ctx.shown("cat.png");
+    const text = ctx.messages().find((m) => m.content === "plain")!;
+    const room = ctx.chat().channel!.id;
+    for (const key of ["mx:1", `tg:${room}:${image.id}`, `mx:${room}:${image.id}:1`, `mx:${room}:99999`, `mx:99999:${image.id}`, `mx:${image.id}:${image.id}`, ctx.key(text.id)]) await ctx.load(key);
+    expect(ctx.api.download).not.toHaveBeenCalled();
+    // Not signed in: nothing to load.
+    const out = setup();
+    await out.adapter.start();
+    await out.act({ type: "loadMedia", key: ctx.key(image.id) });
+    expect(out.api.download).not.toHaveBeenCalled();
+  });
+
+  it("downloads a file once while it loads", async () => {
+    const ctx = await inRoom([media("img", IMAGE)]);
+    let finish!: (value: MxDownload) => void;
+    ctx.api.download.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const key = ctx.file("cat.png").mediaKey!;
+    const loading = ctx.act({ type: "loadMedia", key });
+    await ctx.load(key);
+    finish(download([1, 2, 3]));
+    await loading;
+    expect(ctx.api.download).toHaveBeenCalledTimes(1);
+    expect(ctx.file("cat.png").url).toBe("data:image/png;base64,AQID");
+  });
+
+  it("keeps loaded media within its budget, the newest always", async () => {
+    // Each picture is a 26-character data: URL.
+    const ctx = await inRoom([media("a", { ...IMAGE, body: "a.png" }), media("b", { ...IMAGE, body: "b.png" })], { mediaBudget: 40 });
+    ctx.api.download.mockResolvedValue(download([1, 2, 3]));
+    const first = ctx.file("a.png").mediaKey!;
+    await ctx.load(first);
+    expect(ctx.file("a.png").url).toBeDefined();
+    await ctx.load(ctx.file("b.png").mediaKey!);
+    expect(ctx.file("b.png").url).toBeDefined();
+    // The older one went, and can be loaded again.
+    expect(ctx.file("a.png").url).toBeUndefined();
+    expect(ctx.file("a.png").mediaKey).toBe(first);
+    const tiny = await inRoom([media("a", { ...IMAGE, body: "a.png" })], { mediaBudget: 1 });
+    tiny.api.download.mockResolvedValue(download([1, 2, 3]));
+    await tiny.load(tiny.file("a.png").mediaKey!);
+    expect(tiny.file("a.png").url).toBe("data:image/png;base64,AQID");
+  });
+
+  it("forgets loaded media when the session ends, and drops downloads that finish after", async () => {
+    const ctx = await inRoom([media("a", { ...IMAGE, body: "a.png" }), media("b", { ...IMAGE, body: "b.png" })]);
+    ctx.api.download.mockResolvedValueOnce(download([1]));
+    await ctx.load(ctx.file("a.png").mediaKey!);
+    let finish!: (value: MxDownload) => void;
+    ctx.api.download.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)));
+    const loading = ctx.act({ type: "loadMedia", key: ctx.file("b.png").mediaKey! });
+    expect(cached(ctx.adapter).size).toBe(1);
+    await ctx.adapter.signOut();
+    expect(cached(ctx.adapter).size).toBe(0);
+    finish(download([2]));
+    await loading;
+    expect(cached(ctx.adapter).size).toBe(0);
+
+    const ended = await inRoom([media("a", { ...IMAGE, body: "a.png" })]);
+    ended.api.download.mockResolvedValue(download([1]));
+    await ended.load(ended.file("a.png").mediaKey!);
+    expect(cached(ended.adapter).size).toBe(1);
+    await ended.live(new MatrixError(401, "M_UNKNOWN_TOKEN", "gone"));
+    expect(cached(ended.adapter).size).toBe(0);
+  });
+
+  it("shows stickers, looping videos, sound and files", async () => {
+    const ctx = await inRoom([
+      media("st", { body: "wave", url: "mxc://x.org/wave", info: { mimetype: "image/webp", w: 128, h: 128 } }, { type: "m.sticker" }),
+      media("gif", { msgtype: "m.video", body: "dance.mp4", url: "mxc://x.org/dance", info: { mimetype: "video/mp4", "fi.mau.loop": true } }),
+      media("au", { msgtype: "m.audio", body: "voice.ogg", url: "mxc://x.org/voice", "org.matrix.msc3245.voice": {} }),
+      media("fi", { msgtype: "m.file", body: "report.pdf", url: "mxc://x.org/report", info: { size: 2048 } }),
+    ]);
+    expect(ctx.file("wave")).toMatchObject({ kind: "sticker", mime: "image/webp", width: 128, height: 128 });
+    expect(ctx.file("dance.mp4")).toMatchObject({ kind: "video", loop: true });
+    expect(ctx.file("voice.ogg")).toMatchObject({ kind: "audio" });
+    expect(ctx.file("report.pdf")).toMatchObject({ kind: "file", size: 2048 });
+    for (const name of ["wave", "dance.mp4", "voice.ogg", "report.pdf"]) expect(ctx.shown(name).content).toBe("");
+  });
+
+  it("shows an edited message's new media", async () => {
+    const edit = (id: string, sender: string, url: string, ts: number) =>
+      media(id, { msgtype: "m.image", body: "* dog.png", "m.new_content": { msgtype: "m.image", body: "dog.png", url }, "m.relates_to": { rel_type: "m.replace", event_id: "$img" } }, { sender, ts });
+    const ctx = await inRoom([media("img", IMAGE), edit("ed", BO, "mxc://x.org/dog", 4000), edit("other", ANA, "mxc://x.org/evil", 5000)]);
+    const shown = ctx.shown("dog.png");
+    expect(shown.edited).toBe(true);
+    expect(shown.attachments[0]!.mediaKey).not.toBe(ctx.key(shown.id));
+    ctx.api.download.mockResolvedValue(download([1]));
+    await ctx.load(shown.attachments[0]!.mediaKey!);
+    expect(ctx.api.download).toHaveBeenCalledWith(SESSION, "mxc://x.org/dog", MAX_MEDIA_BYTES);
+    // The original's key no longer loads anything.
+    await ctx.load(ctx.key(shown.id));
+    expect(ctx.api.download).toHaveBeenCalledTimes(1);
   });
 });
