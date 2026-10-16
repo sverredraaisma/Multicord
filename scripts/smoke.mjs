@@ -156,14 +156,22 @@ if (process.type === "browser") {
 `;
 
 const checks = [];
+/** On GitHub Actions, also as an annotation: those show on the run's page without signing in, unlike its logs. */
+function annotate(level, name, detail) {
+  if (!process.env.GITHUB_ACTIONS) return;
+  const escape = (text) => text.replace(/%/g, "%25").replace(/\r/g, "%0D").replace(/\n/g, "%0A");
+  process.stdout.write(`::${level} title=${escape(`Smoke (${process.platform}): ${name}`).replace(/[:,]/g, " ")}::${escape(detail || name)}\n`);
+}
 function check(name, ok, detail = "") {
   checks.push({ name, ok, detail });
   out(`${ok ? "PASS" : "FAIL"} ${name}${detail ? ` - ${detail}` : ""}`);
+  if (!ok) annotate("error", name, detail);
 }
 /** A check the OS keeps from running here (say, a permission CI lacks): neither a pass nor a failure. */
 function skip(name, reason) {
   checks.push({ name, ok: true, skipped: true, detail: reason });
   out(`SKIP ${name} - ${reason}`);
+  annotate("notice", name, reason);
 }
 
 /** The main-process checks' results in the log so far, by name. */
