@@ -4,7 +4,12 @@
   --surface: #313338;
   --border: #3f4147;
   --accent: #5865f2;
-  --danger: #f23f43;
+  /* Fills behind white text (4.5:1 or more); --danger-text is the red for text on the dark panels. */
+  --danger: #da373c;
+  --danger-text: #fa777a;
+  /* The accent and green as text on the dark panels, where the fills would be too dim to read. */
+  --accent-text: #949cf7;
+  --ok-text: #2dc770;
   --mention: #f0b232;
 }
 
@@ -53,7 +58,7 @@
 .link { border: 0; background: none; color: var(--muted); font: inherit; cursor: pointer; }
 .link:hover { color: var(--text); text-decoration: underline; }
 .auth .status { margin: 0; color: var(--muted); }
-.auth .error { margin: 0; color: var(--danger); }
+.auth .error { margin: 0; color: var(--danger-text); }
 .auth .status:empty, .auth .error:empty { display: none; }
 /* A code to scan: always dark on light, with room around it, as scanners need. */
 .prompt-qr:not([hidden]) { display: flex; justify-content: center; }
@@ -106,7 +111,7 @@
 .channel .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel .badge { position: static; border: 0; }
 /* Muted conversations: dimmer, with a crossed-out bell; the bell beside a row mutes or unmutes it. */
-.channel.muted, .channel.muted.unread { color: var(--muted); font-weight: normal; opacity: 0.7; }
+.channel.muted, .channel.muted.unread { color: var(--muted); font-weight: normal; opacity: 0.8; }
 .muted-mark { display: inline-flex; }
 .muted-icon, .mute-icon { width: 14px; height: 14px; fill: currentColor; }
 .channels li.mutable { position: relative; }
@@ -154,7 +159,7 @@ li.archivable:hover > .archive-toggle, li.archivable:focus-within > .archive-tog
 .message-area { position: relative; display: flex; flex: 1; flex-direction: column; min-height: 0; }
 .messages { position: relative; flex: 1; margin: 0; padding: 16px; overflow-y: auto; list-style: none; }
 /* Where the news started when the conversation was opened. */
-.unread-divider { display: flex; gap: 8px; align-items: center; margin: 8px 0; color: var(--danger); font-size: 12px; font-weight: 600; }
+.unread-divider { display: flex; gap: 8px; align-items: center; margin: 8px 0; color: var(--danger-text); font-size: 12px; font-weight: 600; }
 .unread-divider::after { flex: 1; height: 1px; background: var(--danger); content: ""; }
 .unread-bar { position: absolute; top: 0; right: 16px; left: 16px; z-index: 2; display: flex; gap: 8px; align-items: center; padding: 4px 4px 4px 12px; border-radius: 0 0 8px 8px; background: var(--accent); color: #fff; font-size: 13px; }
 .unread-bar[hidden] { display: none; }
@@ -381,7 +386,7 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
 
 /* Voice */
 .channel.voice { color: var(--muted); }
-.channel.voice.active { color: #23a55a; }
+.channel.voice.active { color: var(--ok-text); }
 .voice-members { margin: 0 0 4px 28px; padding: 0; list-style: none; font-size: 13px; }
 .voice-members li { display: flex; gap: 6px; align-items: center; padding: 2px 0; color: var(--muted); }
 .voice-members li.muted .name { text-decoration: line-through; }
@@ -390,7 +395,7 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
 .voice-panel { padding: 10px 12px; border-top: 1px solid var(--bg); background: #232428; }
 .voice-panel[hidden] { display: none; }
 .voice-status { color: var(--muted); font-size: 12px; font-weight: 700; }
-.voice-status.connected { color: #23a55a; }
+.voice-status.connected { color: var(--ok-text); }
 .voice-where { overflow: hidden; margin: 2px 0 8px; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .voice-controls { display: flex; flex-wrap: wrap; gap: 4px; }
 .voice-controls button {
@@ -561,7 +566,7 @@ button.member:hover, button.member:focus-visible { background: var(--surface); c
 .member-name { color: var(--member-color, inherit); }
 .member-status { font-size: 12px; }
 .member-note, .member-error { margin: 8px; color: var(--muted); font-size: 12px; }
-.member-error { color: var(--danger); }
+.member-error { color: var(--danger-text); }
 /* Pinned messages: a list beside the conversation, each opening the message. */
 .message-panel { position: relative; width: 280px; }
 .message-panel > .member-section { margin-right: 36px; }
@@ -578,7 +583,7 @@ button.member:hover, button.member:focus-visible { background: var(--surface); c
 .search-input { box-sizing: border-box; width: 100%; padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); font: inherit; }
 .pin-marker { font-size: 12px; }
 /* Threads: a summary under the message, and the thread beside the conversation with a composer of its own. */
-.thread-summary { align-self: flex-start; margin-top: 4px; padding: 2px 8px; border: 0; border-radius: 4px; background: var(--panel); color: var(--accent); font: inherit; font-size: 13px; }
+.thread-summary { align-self: flex-start; margin-top: 4px; padding: 2px 8px; border: 0; border-radius: 4px; background: var(--panel); color: var(--accent-text); font: inherit; font-size: 13px; }
 button.thread-summary { cursor: pointer; }
 button.thread-summary:hover { text-decoration: underline; }
 .thread-panel { position: relative; display: flex; flex-direction: column; width: 320px; padding: 8px 0 0; }
@@ -687,7 +692,7 @@ button.thread-summary:hover { text-decoration: underline; }
 .picker-star-mark { color: #f0b232; }
 .picker-note { color: var(--muted); font-size: 12px; font-weight: 400; }
 .picker-heading .picker-note { margin-left: auto; }
-.picker-error { color: var(--danger); font-size: 12px; }
+.picker-error { color: var(--danger-text); font-size: 12px; }
 .picker-empty { color: var(--muted); text-align: center; }
 .source-badge { flex: none; padding: 0 4px; border-radius: 3px; color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; }
 .picker-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
@@ -781,6 +786,6 @@ button.thread-summary:hover { text-decoration: underline; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.mobile .call-strip .call-return.connected { color: #23a55a; }
+.mobile .call-strip .call-return.connected { color: var(--ok-text); }
 .mobile .call-strip button.on, .mobile .call-strip .leave { background: var(--danger); }
 .mobile .call-strip button:disabled { opacity: 0.5; }

@@ -4,7 +4,9 @@
   --surface: #313338;
   --border: #3f4147;
   --accent: #5865f2;
-  --danger: #f23f43;
+  /* A fill behind white text; --danger-text is the red for text on the dark panels. */
+  --danger: #da373c;
+  --danger-text: #fa777a;
   --ok: #23a55a;
 }
 
@@ -104,7 +106,7 @@
 .primary:hover { background: #4752c4; }
 .secondary { background: #4e5058; }
 .secondary:hover { background: #6d6f78; }
-.danger { background: transparent; color: var(--danger); box-shadow: inset 0 0 0 1px var(--danger); }
+.danger { background: transparent; color: var(--danger-text); box-shadow: inset 0 0 0 1px var(--danger-text); }
 .danger:hover, .danger.confirming { background: var(--danger); color: #fff; }
 
 .settings select, .settings input:not([type="checkbox"]) {
@@ -257,7 +259,7 @@
 .health-check .hint { grid-column: 2; }
 .health-mark { font-weight: 700; }
 .health-check.ok .health-mark { color: var(--ok); }
-.health-check.failed .health-mark { color: var(--danger); }
+.health-check.failed .health-mark { color: var(--danger-text); }
 
 /* Keybinds */
 .key-button { min-width: 160px; font-family: ui-monospace, monospace; }

@@ -89,5 +89,5 @@ html, body { overflow: hidden; }
 .drawer-row .rail-item::before, .drawer-row .rail-item .badge, .drawer-row .module-label { display: none; }
 .drawer-name { flex: 1; min-width: 0; padding: 8px 0; overflow: hidden; border: 0; background: none; color: var(--muted); font: inherit; font-size: 15px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .drawer-row.unread .drawer-name, .drawer-row.active .drawer-name { color: var(--text); font-weight: 600; }
-.drawer-badge { flex: none; min-width: 20px; padding: 2px 6px; border-radius: 10px; background: var(--badge); font-size: 12px; font-weight: 700; text-align: center; }
+.drawer-badge { flex: none; min-width: 20px; padding: 2px 6px; border-radius: 10px; background: var(--badge); color: #fff; font-size: 12px; font-weight: 700; text-align: center; }
 .drawer-empty { margin: 16px; color: var(--muted); }
