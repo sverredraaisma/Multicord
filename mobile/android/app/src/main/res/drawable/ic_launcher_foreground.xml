@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Multicord for Android. Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later.
+     The launcher icon's two speech bubbles, as in build/icon.png (the desktop's icon), drawn in its 1024-unit
+     square and placed inside the adaptive icon's safe zone (108 dp = 1440 units here). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1440"
+    android:viewportHeight="1440">
+    <group
+        android:translateX="208"
+        android:translateY="162">
+        <path
+            android:fillColor="#22D3A0"
+            android:pathData="M430,232 H760 A110,110 0 0 1 870,342 V532 A110,110 0 0 1 760,642 H740 V734 L700,703 V642 H430 A110,110 0 0 1 320,532 V342 A110,110 0 0 1 430,232 Z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M264,382 H594 A110,110 0 0 1 704,492 V682 A110,110 0 0 1 594,792 H434 L322,884 V792 H264 A110,110 0 0 1 154,682 V492 A110,110 0 0 1 264,382 Z" />
+        <path
+            android:fillColor="#5B67F2"
+            android:pathData="M272,587 a42,42 0 1,0 84,0 a42,42 0 1,0 -84,0 Z M387,587 a42,42 0 1,0 84,0 a42,42 0 1,0 -84,0 Z M502,587 a42,42 0 1,0 84,0 a42,42 0 1,0 -84,0 Z" />
+    </group>
+</vector>

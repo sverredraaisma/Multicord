@@ -3,6 +3,7 @@ package app.multicord.call
 
 import android.Manifest
 import android.content.pm.ServiceInfo
+import androidx.annotation.RequiresApi
 import android.webkit.PermissionRequest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -56,9 +57,10 @@ object CallPolicy {
     /**
      * The background service's types: specialUse always (the connections), microphone while in a call and
      * camera while a call has video, each only with its runtime permission held, as Android 14 requires
-     * before a service may claim it. Before Android 14 (API 34) types are not checked at start; the same
-     * flags are used from Android 10 on.
+     * before a service may claim it. Asked only on Android 14 (API 34) and later; before that the service
+     * starts without types (ConnectionService).
      */
+    @RequiresApi(34)
     fun serviceTypes(calls: Collection<Call>, microphone: Boolean, camera: Boolean): Int {
         var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
         if (calls.isEmpty()) return types

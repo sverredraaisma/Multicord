@@ -36,7 +36,8 @@ object BridgeScripts {
     ): String {
         val relay = asset(context, "bridge/relay.js").replace("__LISTENER__", listenerName).replace("__CHANNEL__", channel)
         val api = asset(context, apiAsset)
-        if (isolatedWorld) {
+        // The feature asked here, where lint sees it (isolatedWorld asks the same).
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.JS_INJECTION_IN_FRAME_AND_WORLD)) {
             val world = WebViewCompat.getExecutionWorld(view, WORLD)
             WebViewCompat.addWebMessageListener(view, listenerName, origins, world, listener)
             WebViewCompat.addJavaScriptOnEvent(view, relay, WebViewCompat.INJECTION_EVENT_DOCUMENT_START, origins, world)

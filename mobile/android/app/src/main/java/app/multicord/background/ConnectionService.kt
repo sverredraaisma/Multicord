@@ -62,31 +62,34 @@ class ConnectionService : Service() {
         val call = hub.calls.firstOrNull()
         if (call == null) callSince = 0L else if (callSince == 0L) callSince = System.currentTimeMillis()
         val notification = if (call == null) hub.notifier.connected(hub.running, quitIntent(), openIntent()) else hub.notifier.inCall(call, callSince, hangUpIntent(), openIntent())
+        // Before Android 14 a service starts without types (the manifest's apply).
+        if (Build.VERSION.SDK_INT < 34) return try {
+            startForeground(Notifier.CONNECTED_ID, notification)
+            true
+        } catch (error: Exception) {
+            // Android 12 and later refuse a foreground start from the background; the app then runs while it is on screen.
+            Log.w(TAG, "Could not run in the background: ${error.message}")
+            false
+        }
         val types = CallPolicy.serviceTypes(hub.calls, held(Manifest.permission.RECORD_AUDIO), held(Manifest.permission.CAMERA))
         return try {
-            start(notification, types)
+            startForeground(Notifier.CONNECTED_ID, notification, types)
             true
         } catch (error: Exception) {
             if (types == ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE) {
-                // Android 12 and later refuse a foreground start from the background; the app then runs while it is on screen.
                 Log.w(TAG, "Could not run in the background: ${error.message}")
                 return false
             }
             // A call's types may be refused (say, the app was not in front): the connections keep running, the call may lose its sound when the screen goes off.
             Log.w(TAG, "Could not hold the microphone or camera in the background: ${error.message}")
             try {
-                start(notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                startForeground(Notifier.CONNECTED_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
                 true
             } catch (again: Exception) {
                 Log.w(TAG, "Could not run in the background: ${again.message}")
                 false
             }
         }
-    }
-
-    private fun start(notification: android.app.Notification, types: Int) {
-        if (Build.VERSION.SDK_INT >= 34) startForeground(Notifier.CONNECTED_ID, notification, types)
-        else startForeground(Notifier.CONNECTED_ID, notification)
     }
 
     private fun held(permission: String) = checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Multicord for Android. Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later. -->
+<resources>
+    <!-- The desktop icon's background, between its gradient's two ends. -->
+    <color name="ic_launcher_background">#4A4FD6</color>
+</resources>

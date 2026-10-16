@@ -58,7 +58,11 @@ class WebUrl private constructor(
             return relative(text, base)
         }
 
-        /** Leading and trailing C0 controls and spaces go, and tabs and newlines anywhere. */
+        /**
+         * Leading and trailing C0 controls and spaces go, and tabs and newlines anywhere. The WHATWG URL
+         * parser's set, not Char.isWhitespace (which trims Unicode spaces the parser keeps), hence the lambda.
+         */
+        @Suppress("TrimLambda")
         private fun clean(input: String): String =
             input.trim { it <= ' ' }.filter { it != '\t' && it != '\n' && it != '\r' }
 

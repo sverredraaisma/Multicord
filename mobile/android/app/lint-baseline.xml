@@ -1,0 +1,400 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<issues format="6" by="lint 9.4.1" type="baseline" client="gradle" dependencies="false" name="AGP (9.4.1)" variant="all" version="9.4.1">
+
+    <issue
+        id="RequiresFeature"
+        message="`addDocumentStartJavaScript` should only be called if the feature `DOCUMENT_START_SCRIPT` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="            WebViewCompat.addDocumentStartJavaScript(view, api, origins)"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/bridge/BridgeScripts.kt"
+            line="44"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`addWebMessageListener` should only be called if the feature `WEB_MESSAGE_LISTENER` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        WebViewCompat.addWebMessageListener(view, listenerName, origins, listener)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/bridge/BridgeScripts.kt"
+            line="47"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`addDocumentStartJavaScript` should only be called if the feature `DOCUMENT_START_SCRIPT` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        WebViewCompat.addDocumentStartJavaScript(view, relay, origins)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/bridge/BridgeScripts.kt"
+            line="48"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`addDocumentStartJavaScript` should only be called if the feature `DOCUMENT_START_SCRIPT` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        WebViewCompat.addDocumentStartJavaScript(view, api, origins)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/bridge/BridgeScripts.kt"
+            line="49"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getInstance` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        ProfileStore.getInstance().getOrCreateProfile(profile)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ChatView.kt"
+            line="68"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getOrCreateProfile` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        ProfileStore.getInstance().getOrCreateProfile(profile)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ChatView.kt"
+            line="68"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`setProfile` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        WebViewCompat.setProfile(view, profile)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ChatView.kt"
+            line="69"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`postMessage` should only be called if the feature `WEB_MESSAGE_LISTENER` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        proxy?.postMessage(JsonObject(mapOf(&quot;k&quot; to JsonPrimitive(&quot;back&quot;), &quot;id&quot; to JsonPrimitive(id))).toString())"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ChatView.kt"
+            line="126"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`postMessage` should only be called if the feature `WEB_MESSAGE_LISTENER` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        proxy?.postMessage(JsonObject(mapOf(&quot;k&quot; to JsonPrimitive(kind), &quot;body&quot; to body)).toString())"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ChatView.kt"
+            line="130"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getInstance` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        val profile = ProfileStore.getInstance().getOrCreateProfile(profileName)"
+        errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/engine/EngineHost.kt"
+            line="151"
+            column="23"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getOrCreateProfile` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        val profile = ProfileStore.getInstance().getOrCreateProfile(profileName)"
+        errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/engine/EngineHost.kt"
+            line="151"
+            column="23"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getWebStorage` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="            profile.webStorage.deleteAllData()"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/engine/EngineHost.kt"
+            line="155"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`setProfile` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        WebViewCompat.setProfile(view, profileName)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/engine/EngineHost.kt"
+            line="157"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getCookieManager` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        profile.cookieManager.setAcceptCookie(false)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/engine/EngineHost.kt"
+            line="159"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`postMessage` should only be called if the feature `WEB_MESSAGE_LISTENER` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        to.postMessage(JsonObject(message).toString())"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/engine/EngineHost.kt"
+            line="263"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`postMessage` should only be called if the feature `WEB_MESSAGE_LISTENER` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        proxy?.postMessage(JsonObject(mapOf(&quot;k&quot; to JsonPrimitive(kind), &quot;body&quot; to body)).toString())"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/engine/EngineHost.kt"
+            line="409"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`deleteProfile` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        ProfileStore.getInstance().deleteProfile(name)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/Hub.kt"
+            line="405"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getInstance` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        ProfileStore.getInstance().deleteProfile(name)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/Hub.kt"
+            line="405"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getInstance` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        val profile = ProfileStore.getInstance().getOrCreateProfile(name)"
+        errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/Hub.kt"
+            line="415"
+            column="23"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getOrCreateProfile` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        val profile = ProfileStore.getInstance().getOrCreateProfile(name)"
+        errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/Hub.kt"
+            line="415"
+            column="23"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getWebStorage` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        profile.webStorage.deleteAllData()"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/Hub.kt"
+            line="416"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getCookieManager` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        profile.cookieManager.removeAllCookies(null)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/Hub.kt"
+            line="417"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getInstance` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        ProfileStore.getInstance().getOrCreateProfile(PROFILE)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ShellHost.kt"
+            line="51"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getOrCreateProfile` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        ProfileStore.getInstance().getOrCreateProfile(PROFILE)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ShellHost.kt"
+            line="51"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`setProfile` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        WebViewCompat.setProfile(view, PROFILE)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ShellHost.kt"
+            line="52"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`postMessage` should only be called if the feature `WEB_MESSAGE_LISTENER` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        to.postMessage(JsonObject(message).toString())"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ShellHost.kt"
+            line="106"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`postMessage` should only be called if the feature `WEB_MESSAGE_LISTENER` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        proxy?.postMessage(JsonObject(mapOf(&quot;k&quot; to JsonPrimitive(&quot;event&quot;), &quot;body&quot; to body)).toString())"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ShellHost.kt"
+            line="111"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getInstance` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        val profile = ProfileStore.getInstance().getOrCreateProfile(name)"
+        errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/WebClientView.kt"
+            line="59"
+            column="23"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getOrCreateProfile` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        val profile = ProfileStore.getInstance().getOrCreateProfile(name)"
+        errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/WebClientView.kt"
+            line="59"
+            column="23"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`setProfile` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        WebViewCompat.setProfile(view, name)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/WebClientView.kt"
+            line="60"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getCookieManager` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        profile.cookieManager.setAcceptCookie(true)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/WebClientView.kt"
+            line="62"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`getCookieManager` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        profile.cookieManager.setAcceptThirdPartyCookies(view, false)"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/WebClientView.kt"
+            line="63"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="    private inner class Client : WebViewClient() {"
+        errorLine2="                                 ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ChatView.kt"
+            line="142"
+            column="34"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="    private inner class Client : WebViewClient() {"
+        errorLine2="                                 ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/engine/EngineHost.kt"
+            line="412"
+            column="34"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="    private inner class Client : WebViewClient() {"
+        errorLine2="                                 ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/ShellHost.kt"
+            line="132"
+            column="34"/>
+    </issue>
+
+    <issue
+        id="MissingOnRenderProcessGone"
+        message="WebViewClient should implement `onRenderProcessGone` to handle render process crashes or out-of-memory errors. Otherwise, the app will crash when the render process is shut down."
+        errorLine1="    private inner class Client : WebViewClient() {"
+        errorLine2="                                 ~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/shell/WebClientView.kt"
+            line="115"
+            column="34"/>
+    </issue>
+
+</issues>

@@ -52,7 +52,8 @@ jobs:
 
   # Multicord for Android (mobile/android): its JVM unit tests (the shared network-policy fixture among them),
   # a debug build and an unsigned release build (R8), which bundle the desktop build's engines, native view and
-  # shell page (hence npm run build first). No signing secrets: the release APK stays unsigned here.
+  # shell page (hence npm run build first). No signing secrets: the release APK stays unsigned here. Lint
+  # (lintDebug) fails on any error or warning not in app/lint-baseline.xml.
   android:
     runs-on: ubuntu-latest
     steps:
@@ -69,7 +70,7 @@ jobs:
           java-version: 21
       # Caches Gradle and checks the committed wrapper jar against Gradle's published checksums.
       - uses: gradle/actions/setup-gradle@v5
-      - run: ./gradlew testDebugUnitTest assembleDebug assembleRelease --no-daemon
+      - run: ./gradlew testDebugUnitTest assembleDebug assembleRelease lintDebug --no-daemon
         working-directory: mobile/android
         timeout-minutes: 20
 

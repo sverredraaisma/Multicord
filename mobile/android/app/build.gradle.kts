@@ -70,6 +70,23 @@ android {
     buildFeatures {
         buildConfig = true
     }
+
+    // lintDebug runs in CI (the android job): any error or warning fails it, so it stays clean.
+    lint {
+        abortOnError = true
+        warningsAsErrors = true
+        checkDependencies = false
+        // Which newer versions exist (asked over the network, so a run could pass today and fail tomorrow):
+        // upgrades of the SDK and libraries are deliberate changes of their own, not lint's.
+        disable += setOf("GradleDependency", "NewerVersionAvailable", "OldTargetApi", "AndroidGradlePluginVersion")
+        // Only androidx.webkit's own checks, which cannot see what the app does about them (lint-baseline.xml):
+        // - RequiresFeature: MULTI_PROFILE, DOCUMENT_START_SCRIPT and WEB_MESSAGE_LISTENER are checked once at
+        //   start (WebViewSupport.REQUIRED_FEATURES); without them nothing starts, so no call site runs unchecked.
+        // - MissingOnRenderProcessGone: each WebViewClient does implement onRenderProcessGone (restart or reload);
+        //   the check misses it on these Kotlin inner classes.
+        // Anything new still fails: the baseline names each file and message.
+        baseline = file("lint-baseline.xml")
+    }
 }
 
 /**

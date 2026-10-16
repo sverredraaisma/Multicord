@@ -12,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
+import android.view.KeyEvent
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebView
@@ -109,11 +110,17 @@ class MainActivity : Activity(), Hub.Screen {
         super.onStop()
     }
 
-    @Deprecated("Back before Android 13; later versions use OnBackInvokedCallback")
-    override fun onBackPressed() {
+    /**
+     * Back before Android 13, which sends the back key (gesture or button) here; from Android 13 the
+     * OnBackInvokedCallback above has it (the manifest opts in), so back gestures with predictive back reach it too.
+     */
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {
         val hub = hub
-        @Suppress("DEPRECATION")
-        if (hub == null) super.onBackPressed() else hub.back()
+        if (Build.VERSION.SDK_INT < 33 && hub != null && keyCode == KeyEvent.KEYCODE_BACK && event.isTracking && !event.isCanceled) {
+            hub.back()
+            return true
+        }
+        return super.onKeyUp(keyCode, event)
     }
 
     override fun onNewIntent(intent: Intent) {
