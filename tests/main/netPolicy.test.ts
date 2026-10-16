@@ -1,63 +1,48 @@
 import { describe, expect, it, vi } from "vitest";
 import { checkUrl, hostMatches, isPrivateHost, MAX_REDIRECTS, narrowHosts, patternWithin, performHttp, type FetchLike, type UrlPolicy } from "../../src/main/netPolicy";
 import { MAX_HTTP_BODY, type HttpRequest } from "../../src/shared/engine";
+// The cases every host's network policy must pass; see docs/mobile.md.
+import cases from "../fixtures/netpolicy-cases.json";
+
+/** How each kind of refusal reads here. */
+const REFUSALS: Record<string, RegExp> = {
+  invalid: /^not a valid URL$/,
+  scheme: /^[a-z]+: is not allowed$/,
+  credentials: /^credentials in URLs are not allowed$/,
+  private: / is a local or private address$/,
+  host: / is not one of this module's hosts$/,
+};
 
 describe("isPrivateHost", () => {
-  it.each([
-    "localhost", "LOCALHOST", "localhost.", "foo.localhost", "x.local", "a.internal", "a.lan", "a.home.arpa", "abc.onion",
-    "127.0.0.1", "10.1.2.3", "100.64.0.1", "100.127.255.255", "169.254.1.1", "172.16.0.1", "172.31.9.9", "192.168.1.1",
-    "198.18.0.1", "198.19.0.1", "0.0.0.0", "224.0.0.1", "255.255.255.255",
-    "[::1]", "[fe80::1]", "[fd00::1]", "[::ffff:7f00:1]", "[::]",
-  ])("treats %s as private", (host) => expect(isPrivateHost(host)).toBe(true));
+  it.each(cases.privateHosts)("treats %s as private", (host) => expect(isPrivateHost(host)).toBe(true));
 
-  it.each(["example.com", "8.8.8.8", "100.63.0.1", "100.128.0.1", "172.15.0.1", "172.32.0.1", "198.17.0.1", "223.255.255.255", "[2001:db8::1]", "1.2.3", "1.2.3.4.5", "1.2.3.256", "a.b.c.d", "1234.1.1.1"])(
-    "treats %s as public",
-    (host) => expect(isPrivateHost(host)).toBe(false),
-  );
+  it.each(cases.publicHosts)("treats %s as public", (host) => expect(isPrivateHost(host)).toBe(false));
 
-  it("catches numeric IP forms once the URL parser normalises them", () => {
-    expect(new URL("https://2130706433/").hostname).toBe("127.0.0.1");
-    for (const url of ["https://2130706433/", "https://0x7f.1/", "https://017700000001/", "https://127.1/"]) {
-      expect(isPrivateHost(new URL(url).hostname)).toBe(true);
-    }
+  it.each(cases.numericHosts)("catches $url once the URL parser normalises it", ({ url, hostname }) => {
+    expect(new URL(url).hostname).toBe(hostname);
+    expect(isPrivateHost(new URL(url).hostname)).toBe(true);
   });
 });
 
 describe("hostMatches", () => {
-  it("matches exact hosts only without a wildcard", () => {
-    expect(hostMatches("example.com", "example.com")).toBe(true);
-    expect(hostMatches("a.example.com", "example.com")).toBe(false);
-  });
-
-  it("matches the apex and subdomains for *. patterns", () => {
-    expect(hostMatches("example.com", "*.example.com")).toBe(true);
-    expect(hostMatches("a.b.example.com", "*.example.com")).toBe(true);
-    expect(hostMatches("evilexample.com", "*.example.com")).toBe(false);
-  });
-
-  it("is case-insensitive", () => {
-    expect(hostMatches("API.Example.COM", "*.EXAMPLE.com")).toBe(true);
-    expect(hostMatches("EXAMPLE.com", "example.COM")).toBe(true);
+  it.each(cases.hostMatches)("$host against $pattern: $matches", ({ host, pattern, matches }) => {
+    expect(hostMatches(host, pattern)).toBe(matches);
   });
 });
 
 describe("checkUrl", () => {
-  const policy: UrlPolicy = { schemes: ["https:"], hosts: ["*.example.com", "api.test"] };
-
-  it("rejects what it should", () => {
-    expect(checkUrl("nope", policy)).toBe("not a valid URL");
-    expect(checkUrl("http://example.com/", policy)).toBe("http: is not allowed");
-    expect(checkUrl("https://user:pw@example.com/", policy)).toMatch(/credentials/);
-    expect(checkUrl("https://user@example.com/", policy)).toMatch(/credentials/);
-    expect(checkUrl("https://localhost/", policy)).toMatch(/local or private/);
-    expect(checkUrl("https://2130706433/", policy)).toMatch(/127\.0\.0\.1 is a local or private/);
-    expect(checkUrl("https://other.org/", policy)).toBe("other.org is not one of this module's hosts");
+  it.each(cases.checkUrl)("$url with $schemes and $hosts: $refused", (c) => {
+    const policy: UrlPolicy = "hosts" in c ? { schemes: c.schemes, hosts: c.hosts } : { schemes: c.schemes };
+    const problem = checkUrl(c.url, policy);
+    if (!("refused" in c)) return expect(problem).toBeUndefined();
+    expect(problem).toMatch(REFUSALS[c.refused!]!);
   });
 
-  it("allows matching hosts, and any public host without an allowlist", () => {
-    expect(checkUrl("https://a.example.com/x", policy)).toBeUndefined();
-    expect(checkUrl("https://api.test/", policy)).toBeUndefined();
-    expect(checkUrl("https://other.org/", { schemes: ["https:"] })).toBeUndefined();
+  it("names what it refuses", () => {
+    const policy: UrlPolicy = { schemes: ["https:"], hosts: ["*.example.com"] };
+    expect(checkUrl("http://example.com/", policy)).toBe("http: is not allowed");
+    expect(checkUrl("https://2130706433/", policy)).toBe("127.0.0.1 is a local or private address");
+    expect(checkUrl("https://other.org/", policy)).toBe("other.org is not one of this module's hosts");
   });
 });
 
@@ -73,13 +58,8 @@ describe("performHttp", () => {
 
   it("strips forbidden headers and keeps the rest", async () => {
     const fetchImpl = fetchOf(new Response("ok"));
-    const headers = {
-      Cookie: "a=b", cookie2: "x", Host: "h", "Content-Length": "1", Connection: "x", "Transfer-Encoding": "x", "Keep-Alive": "x",
-      Upgrade: "x", TE: "x", Trailer: "x", Expect: "x", Via: "x", "Proxy-Authorization": "x", "Proxy-Connection": "x", "Proxy-Foo": "x",
-      "Sec-Fetch-Mode": "x", "sec-ch-ua": "x", Authorization: "Bearer t", "X-Custom": "1",
-    };
-    await performHttp(fetchImpl, req({ headers }), policy);
-    expect(fetchImpl.mock.calls[0]![1].headers).toEqual({ Authorization: "Bearer t", "X-Custom": "1" });
+    await performHttp(fetchImpl, req({ headers: cases.requestHeaders.sent }), policy);
+    expect(fetchImpl.mock.calls[0]![1].headers).toEqual(cases.requestHeaders.forwarded);
     expect(fetchImpl.mock.calls[0]![1].redirect).toBe("manual");
   });
 
@@ -127,28 +107,14 @@ describe("performHttp", () => {
     await expect(performHttp(fetchOf(redirect(302, "http://a.example.com/")), req(), policy)).rejects.toThrow("Request blocked: http: is not allowed");
   });
 
-  it.each([[303], [301], [302]])("switches POST to GET without a body on %i", async (status) => {
+  it.each(cases.redirects)("after $status, $method goes on as $nextMethod", async ({ status, method, nextMethod, keepsBody }) => {
     const fetchImpl = fetchOf(redirect(status, "/n"), new Response("ok"));
-    await performHttp(fetchImpl, req({ method: "POST", body: "x" }), policy);
-    expect(fetchImpl.mock.calls[1]![1]).toMatchObject({ method: "GET", body: undefined });
-  });
-
-  it("switches PUT to GET on 303 but keeps it on 301", async () => {
-    const a = fetchOf(redirect(303, "/n"), new Response("ok"));
-    await performHttp(a, req({ method: "PUT", body: "x" }), policy);
-    expect(a.mock.calls[1]![1].method).toBe("GET");
-    const b = fetchOf(redirect(301, "/n"), new Response("ok"));
-    await performHttp(b, req({ method: "PUT", body: "x" }), policy);
-    expect(b.mock.calls[1]![1]).toMatchObject({ method: "PUT", body: "x" });
-  });
-
-  it.each([[307], [308]])("keeps method and body on %i", async (status) => {
-    const fetchImpl = fetchOf(redirect(status, "/n"), new Response("ok"));
-    await performHttp(fetchImpl, req({ method: "POST", body: "x" }), policy);
-    expect(fetchImpl.mock.calls[1]![1]).toMatchObject({ method: "POST", body: "x" });
+    await performHttp(fetchImpl, req({ method, body: "x" }), policy);
+    expect(fetchImpl.mock.calls[1]![1]).toMatchObject({ method: nextMethod, body: keepsBody ? "x" : undefined });
   });
 
   it("allows MAX_REDIRECTS hops but not more", async () => {
+    expect(MAX_REDIRECTS).toBe(cases.maxRedirects);
     const hops = Array.from({ length: MAX_REDIRECTS }, () => redirect(302, "/n"));
     expect((await performHttp(fetchOf(...hops, new Response("ok")), req(), policy)).status).toBe(200);
     const tooMany = Array.from({ length: MAX_REDIRECTS + 1 }, () => redirect(302, "/n"));
@@ -177,21 +143,12 @@ describe("performHttp", () => {
 });
 
 describe("host locks", () => {
-  it("knows which patterns fall within others", () => {
-    expect(patternWithin("api.example.com", "*.example.com")).toBe(true);
-    expect(patternWithin("api.example.com", "api.example.com")).toBe(true);
-    expect(patternWithin("*.cdn.example.com", "*.example.com")).toBe(true);
-    expect(patternWithin("*.example.com", "api.example.com")).toBe(false);
-    expect(patternWithin("evil.com", "*.example.com")).toBe(false);
+  it.each(cases.patternWithin)("$pattern within $allowed: $within", ({ pattern, allowed, within }) => {
+    expect(patternWithin(pattern, allowed)).toBe(within);
   });
 
-  it("only ever narrows, and never to private hosts", () => {
-    expect(narrowHosts(undefined, ["API.Stoat.chat", "*.stoatusercontent.com"])).toEqual(["api.stoat.chat", "*.stoatusercontent.com"]);
-    expect(narrowHosts(["*.stoat.chat"], ["api.stoat.chat"])).toEqual(["api.stoat.chat"]);
-    expect(narrowHosts(["api.stoat.chat"], ["api.stoat.chat", "evil.example"])).toBeUndefined();
-    expect(narrowHosts(["api.stoat.chat"], ["*.stoat.chat"])).toBeUndefined();
-    expect(narrowHosts(undefined, ["router.local"])).toBeUndefined();
-    expect(narrowHosts(undefined, ["*.localhost"])).toBeUndefined();
+  it.each(cases.narrowHosts)("only ever narrows, and never to private hosts: $requested", ({ current, requested, result }) => {
+    expect(narrowHosts(current ?? undefined, requested)).toEqual(result ?? undefined);
   });
 });
 
@@ -241,5 +198,10 @@ describe("createAddressGuard", () => {
     expect(resolve).toHaveBeenCalledTimes(5);
     for (let i = 0; i < 501; i++) await guard(`https://h${i}.example/`);
     expect(resolve).toHaveBeenCalledTimes(506);
+  });
+
+  it.each(cases.resolvedAddresses)("judges a name resolving to $addresses public: $public", async ({ addresses, public: open }) => {
+    const { createAddressGuard } = await import("../../src/main/netPolicy");
+    expect(await createAddressGuard(async () => addresses)("wss://name.example/")).toBe(open);
   });
 });
