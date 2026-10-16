@@ -2,7 +2,7 @@ import { screenAudioPatch } from "../shared/screenAudio";
 import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
-import type { NativeChannelCan, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
+import type { NativeChannelCan, NativeChannelView, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
 import { channelCan, chatFolders, customEmojiList, emojiUrls, gifResults, incomingCall, isAudioRoutes, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, setPromptQr, type LoginForm } from "./components/auth";
@@ -64,6 +64,8 @@ export class NativeView {
   private parts: Record<string, HTMLElement> = {};
   private login: LoginForm | undefined;
   private channelId: string | undefined;
+  /** The open conversation's last message when last drawn, to tell screen readers of the next one. */
+  private lastSeen: { channelId: string; messageId: string | undefined; loading: boolean } | undefined;
   private firstMessageId: string | undefined;
   private replyTo: { id: string; author: string } | undefined;
   /** The message being edited, and the reaction palette and full picker open, by message id; in the thread panel, prefixed with THREAD_KEY. */
@@ -441,6 +443,9 @@ export class NativeView {
     mentionList.setAttribute("aria-label", "People to mention");
     mentionList.hidden = true;
     const typing = el(doc, "div", "typing");
+    // New messages, read out by screen readers: the list is redrawn on every update, so it cannot be a live region itself.
+    const announcer = el(doc, "div", "visually-hidden");
+    announcer.setAttribute("role", "status");
     const pending = el(doc, "ul", "pending-files");
     const attach = el(doc, "button", "attach", "+");
     attach.title = "Attach files";
@@ -466,7 +471,7 @@ export class NativeView {
     // Why the composer is off in a conversation that takes no messages from here.
     const notice = el(doc, "div", "locked-notice");
     notice.hidden = true;
-    main.append(header, banner, callBar, stage, messageArea, typing, reply, pending, notice, composerRow, speakers);
+    main.append(header, banner, callBar, stage, messageArea, typing, announcer, reply, pending, notice, composerRow, speakers);
 
     // One edit box, reused across renders so an edit in progress survives updates.
     const editBox = el(doc, "textarea", "edit-box");
@@ -583,6 +588,7 @@ export class NativeView {
       jumpPresent,
       messages,
       typing,
+      announcer,
       reply,
       pending,
       attach,
@@ -1454,6 +1460,20 @@ export class NativeView {
     );
   }
 
+  /**
+   * Tells screen readers of a message that arrived in the open conversation
+   * since the last update: not one of the user's own, not those of a
+   * conversation just opened or still loading, nor older ones loaded above.
+   */
+  private announceNew(channel: NativeChannelView | null): void {
+    const last = channel?.messages.at(-1);
+    const seen = this.lastSeen;
+    if (channel && last && seen && seen.channelId === channel.id && !seen.loading && last.id !== seen.messageId && !last.mine) {
+      this.parts.announcer!.textContent = `${last.author}: ${last.content.slice(0, 200) || "(attachments)"}`;
+    }
+    this.lastSeen = channel ? { channelId: channel.id, messageId: last?.id, loading: channel.loading } : undefined;
+  }
+
   private updateChat(state: ChatState): void {
     this.lastState = state;
     const { title, list, me, heading, messages, composer, attach } = this.parts as Record<string, HTMLElement>;
@@ -1581,6 +1601,7 @@ export class NativeView {
     else if (prepended) scroller.scrollTop = scroller.scrollHeight - fromBottom;
     // Loaded without it: it is above, and the bar offers to go there.
     if (channel && !channel.loading && channel.messages.length > 0) this.unreadPending = false;
+    this.announceNew(channel);
     this.channelId = channel?.id;
     this.firstMessageId = first;
     if (this.seeking) {

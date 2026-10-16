@@ -301,6 +301,34 @@ describe("chat screen", () => {
   });
 });
 
+describe("new message announcements", () => {
+  const announcer = () => root.querySelector<HTMLElement>(".visually-hidden[role=status]")!;
+  const withMessages = (messages: NativeMessage[], extra: Partial<NonNullable<Chat["channel"]>> = {}) => chat({ channel: { ...chat().channel!, messages, ...extra } });
+
+  it("reads out a message that arrives in the open conversation, but not the user's own, older ones or a conversation just opened", () => {
+    view.update(withMessages([msg("10")]));
+    expect(announcer().textContent).toBe("");
+    view.update(withMessages([msg("10"), msg("11", { author: "Bo", content: "hello" })]));
+    expect(announcer().textContent).toBe("Bo: hello");
+    view.update(withMessages([msg("10"), msg("11"), msg("12", { mine: true })]));
+    expect(announcer().textContent).toBe("Bo: hello");
+    // Older messages loaded above: the last stays the same.
+    view.update(withMessages([msg("9"), msg("10"), msg("11"), msg("12", { mine: true })]));
+    expect(announcer().textContent).toBe("Bo: hello");
+    view.update(withMessages([msg("13", { content: "", attachments: [{ name: "a.png", kind: "image" }] })]));
+    expect(announcer().textContent).toBe("Ana: (attachments)");
+    // Another conversation, and one still loading: nothing read out.
+    view.update(chat({ channel: { ...chat().channel!, id: "3", messages: [msg("20")] } }));
+    expect(announcer().textContent).toBe("Ana: (attachments)");
+    view.update(chat({ channel: { ...chat().channel!, id: "3", messages: [], loading: true } }));
+    view.update(chat({ channel: { ...chat().channel!, id: "3", messages: [msg("21")] } }));
+    expect(announcer().textContent).toBe("Ana: (attachments)");
+    view.update(chat({ channel: null }));
+    view.update(chat({ channel: { ...chat().channel!, id: "3", messages: [msg("22")] } }));
+    expect(announcer().textContent).toBe("Ana: (attachments)");
+  });
+});
+
 describe("helpers", () => {
   it("formats timestamps and tolerates bad ones", () => {
     expect(formatTime("2026-10-14T12:00:00Z", "en-GB")).toMatch(/14\/10\/2026/);
