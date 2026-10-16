@@ -26,6 +26,8 @@ const engineOptions = {
   },
   telegram: {
     plugins: [telegramBrowser()],
+    // GramJS opens its sockets with the websocket package; this engine's go through the shell's relay instead.
+    alias: { websocket: "./src/modules/telegram/websocket.ts" },
     inject: ["scripts/telegramGlobals.mjs"],
     define: {
       // Telegram issues API credentials per app (my.telegram.org); without them users enter their own.
