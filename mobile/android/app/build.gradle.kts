@@ -75,6 +75,8 @@ androidComponents {
 dependencies {
     // JSON for the bridge's messages and validators (no compiler plugin: only the JsonElement tree is used).
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
+    // The engines' HTTP and WebSockets: a DNS hook for the address check, no cookies, no cache.
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     testImplementation("junit:junit:4.13.2")
 }
