@@ -64,5 +64,8 @@ jobs:
           java-version: 21
       # Caches Gradle and checks the committed wrapper jar against Gradle's published checksums.
       - uses: gradle/actions/setup-gradle@v5
+      # The NDK and CMake that app/build.gradle.kts pins (spike 0.5's native code); quick if the image has them.
+      - run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;28.2.13676358" "cmake;3.22.1" > /dev/null'
+        timeout-minutes: 10
       - run: ./gradlew assembleDebug --no-daemon
         timeout-minutes: 15
