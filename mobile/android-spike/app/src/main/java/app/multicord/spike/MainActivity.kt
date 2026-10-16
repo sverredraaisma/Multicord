@@ -2,13 +2,16 @@
 // AGPL-3.0-or-later, see LICENSE at the repo root.
 package app.multicord.spike
 
+import android.Manifest
 import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -48,7 +51,13 @@ class MainActivity : Activity() {
     }
 
     private fun addButtons(into: LinearLayout) {
+        val desktopUa = CheckBox(this).apply { text = "Desktop user agent"; isChecked = true }
         into.addView(Ui.row(this,
+            button("0.1 Discord") { startActivity(WebActivity.discord(this, desktopUa.isChecked)) },
+            desktopUa,
+        ))
+        into.addView(Ui.row(this,
+            button("Grant camera + mic") { requestMedia() },
             button("WebView features") { Features.report(this) },
             button("Copy results") { copyResults() },
             button("Clear") { SpikeLog.clear() },
@@ -62,6 +71,19 @@ class MainActivity : Activity() {
             setOnClickListener { action() }
         }
 
+    /** The WebViews only get camera/microphone after the app holds them; asking up front saves a step later. */
+    private fun requestMedia() {
+        requestPermissions(arrayOf(Manifest.permission.CAMERA, Manifest.permission.RECORD_AUDIO), REQUEST_MEDIA)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        if (requestCode != REQUEST_MEDIA) return
+        permissions.forEachIndexed { i, permission ->
+            val ok = grantResults.getOrNull(i) == PackageManager.PERMISSION_GRANTED
+            SpikeLog.add("permissions", "${permission.substringAfterLast('.')}: ${if (ok) "granted" else "refused"}")
+        }
+    }
+
     private fun copyResults() {
         val clipboard = getSystemService(ClipboardManager::class.java)
         clipboard.setPrimaryClip(ClipData.newPlainText("Multicord spike results", SpikeLog.text()))
@@ -71,5 +93,9 @@ class MainActivity : Activity() {
     private fun refreshLog() {
         logView.text = SpikeLog.text()
         logScroll.post { logScroll.fullScroll(View.FOCUS_DOWN) }
+    }
+
+    private companion object {
+        const val REQUEST_MEDIA = 1
     }
 }
