@@ -80,6 +80,7 @@ await Promise.all([
       rail: "src/entries/rail.ts",
       picker: "src/entries/picker.ts",
       tooltip: "src/entries/tooltip.ts",
+      unreachable: "src/entries/unreachable.ts",
       native: "src/entries/native.ts",
       gallery: "src/entries/gallery.ts",
       settings: "src/entries/settings.ts",

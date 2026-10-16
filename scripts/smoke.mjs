@@ -1,6 +1,7 @@
 // Smoke test: starts the built app (dist/) in a scratch Electron and checks,
 // over the Chrome DevTools Protocol, that it comes up: the rail lists the
-// built-in services, Settings opens on its Services section, the native
+// built-in services, offline a web service shows the shell's own "couldn't
+// reach" page, Settings opens on its Services section, the native
 // engines' pages load and stay up, and the main process logs no uncaught
 // exception or unhandled rejection. In the main process it also checks what
 // an Electron upgrade can break outside the pages: screen capture lists a
@@ -307,6 +308,26 @@ async function main() {
     return BUILT_IN.every((id) => found.some((k) => k.startsWith(`${id}:`))) ? found : undefined;
   }, "the rail to list the built-in services", 45_000).catch((error) => error);
   check("rail lists the built-in services", Array.isArray(keys), Array.isArray(keys) ? keys.join(", ") : keys.message);
+
+  // 1b. Offline, Discord's page cannot load: the shell's own "couldn't reach" page shows over it, and Try again tries.
+  if (!ONLINE) {
+    const probe = `({ title: document.getElementById("unreachable-title").textContent, reason: document.getElementById("unreachable-reason").textContent, retry: document.getElementById("unreachable-retry").textContent, shown: document.visibilityState === "visible" })`;
+    const page = await until(async () => {
+      const r = await evaluate(port, "/unreachable\\.html$", probe, 10_000);
+      return r.shown && /Couldn't reach Discord/.test(r.title) && r.reason ? r : undefined;
+    }, "the couldn't-reach page over Discord", 30_000).catch((error) => error);
+    check("an unreachable web service gets the shell's own page", !(page instanceof Error), page instanceof Error ? page.message : `"${page.title}": ${page.reason}`);
+    if (!(page instanceof Error)) {
+      await evaluate(port, "/unreachable\\.html$", `document.getElementById("unreachable-retry").click(), true`, 10_000);
+      // Offline the retry fails again: the page stays, ready for another try.
+      await sleep(1500);
+      const again = await until(async () => {
+        const r = await evaluate(port, "/unreachable\\.html$", probe, 10_000);
+        return r.shown && r.retry === "Try again" ? r : undefined;
+      }, "the retry to finish", 15_000).catch((error) => error);
+      check("Try again reloads the service and the page stays while it is unreachable", !(again instanceof Error), again instanceof Error ? again.message : `"${again.retry}"`);
+    }
+  }
 
   // 2. Settings: the gear opens it on the Services section, listing the built-ins.
   await rail(`document.getElementById("settings-button").click(), true`);

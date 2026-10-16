@@ -128,7 +128,7 @@ describe("createShell", () => {
     const { handle, window, discordView, railView } = await shellWith();
     expect(window.options).toMatchObject({ title: APP_NAME, width: 1280, height: 800 });
     expect(window.maximize).not.toHaveBeenCalled();
-    expect(window.children).toEqual([railView, discordView, handle.views.get("fluxer"), handle.views.get("telegram"), handle.tooltipView]);
+    expect(window.children).toEqual([railView, discordView, handle.views.get("fluxer"), handle.views.get("telegram"), handle.unreachableView, handle.tooltipView]);
 
     expect(railView.options.webPreferences).toMatchObject({ contextIsolation: true, sandbox: true, nodeIntegration: false });
     expect(railView.webContents.loadFile).toHaveBeenCalledWith(path.join(DIST, "rail.html"));
@@ -281,6 +281,72 @@ describe("createShell", () => {
     ipcMain.emit(IPC.railOpen, senderEvent(railView), "discord:not-a-guild");
     await flush();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("[rail] could not open discord:not-a-guild"));
+  });
+
+  it("covers a web service whose page did not load with the shell's own page, until it loads", async () => {
+    const { handle, discordView, railView } = await shellWith([{ id: "element", name: "Element", url: "https://app.element.io" }]);
+    const overlay = handle.unreachableView as unknown as InstanceType<typeof WebContentsView>;
+    expect(overlay.options.webPreferences).toMatchObject({ preload: path.join(DIST, "preload-shell.js"), sandbox: true });
+    expect(overlay.webContents.loadFile).toHaveBeenCalledWith(path.join(DIST, "unreachable.html"));
+    expect(overlay.visible).toBe(false);
+    const event = { preventDefault: vi.fn() };
+    overlay.webContents.emit("will-navigate", event);
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(overlay.webContents.windowOpenHandler!({ url: "https://example.com" })).toEqual({ action: "deny" });
+    // The page loaded before any failure: nothing to say yet.
+    overlay.webContents.emit("did-finish-load");
+    expect(overlay.webContents.send).not.toHaveBeenCalled();
+
+    discordView.webContents.emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://discord.com/app", true);
+    expect(overlay.visible).toBe(true);
+    expect(overlay.bounds).toEqual(discordView.bounds);
+    const state = { service: "Discord", reason: "the server's address could not be found; check your internet connection", code: "ERR_NAME_NOT_RESOLVED", retrying: false };
+    expect(overlay.webContents.send).toHaveBeenLastCalledWith(IPC.unreachableState, state);
+    overlay.webContents.send.mockClear();
+    overlay.webContents.emit("did-finish-load");
+    expect(overlay.webContents.send).toHaveBeenCalledWith(IPC.unreachableState, state);
+
+    // Try again reloads the service in front; only the overlay may ask.
+    ipcMain.emit(IPC.unreachableRetry, senderEvent(railView));
+    expect(discordView.webContents.reload).not.toHaveBeenCalled();
+    ipcMain.emit(IPC.unreachableRetry, senderEvent(overlay));
+    expect(discordView.webContents.reload).toHaveBeenCalledTimes(1);
+    discordView.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    expect(overlay.webContents.send).toHaveBeenLastCalledWith(IPC.unreachableState, { ...state, retrying: true });
+
+    // Another service in front: the overlay goes, and comes back with Discord.
+    ipcMain.emit(IPC.railOpen, senderEvent(railView), "element:app");
+    await flush();
+    expect(overlay.visible).toBe(false);
+    ipcMain.emit(IPC.unreachableRetry, senderEvent(overlay));
+    expect(discordView.webContents.reload).toHaveBeenCalledTimes(1);
+    ipcMain.emit(IPC.railOpen, senderEvent(railView), "discord:home");
+    await flush();
+    expect(overlay.visible).toBe(true);
+
+    // Settings, from the overlay only.
+    ipcMain.emit(IPC.unreachableSettings, senderEvent(railView));
+    expect(handle.settingsView()).toBeUndefined();
+    ipcMain.emit(IPC.unreachableSettings, senderEvent(overlay));
+    expect((handle.settingsView() as unknown as InstanceType<typeof WebContentsView>).visible).toBe(true);
+    expect(overlay.visible).toBe(false);
+    handle.setSettingsOpen(false);
+    expect(overlay.visible).toBe(true);
+
+    // Loaded at last: the overlay goes.
+    discordView.webContents.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false });
+    discordView.webContents.emit("did-finish-load");
+    expect(overlay.visible).toBe(false);
+  });
+
+  it("leaves native views' load failures to their own page", async () => {
+    const { handle } = await shellWith();
+    const fluxer = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    const railView = handle.railView as unknown as InstanceType<typeof WebContentsView>;
+    ipcMain.emit(IPC.railOpen, senderEvent(railView), "fluxer:home");
+    await flush();
+    fluxer.webContents.emit("did-fail-load", {}, -6, "ERR_FILE_NOT_FOUND", "file:///dist/native.html", true);
+    expect((handle.unreachableView as unknown as InstanceType<typeof WebContentsView>).visible).toBe(false);
   });
 
   it("updates generic platforms from their page title", async () => {

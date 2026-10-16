@@ -31,6 +31,7 @@ import {
   isTooltipRequest,
   type PickerChoice,
   type PickerRequest,
+  type UnreachableState,
 } from "../shared/ipc";
 import type { ActivityUpdate, HealthCheck, PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { ENGINE_SCHEME } from "../shared/engine";
@@ -42,6 +43,7 @@ import { EngineHub } from "./engineHost";
 import { downloadMedia, FavouritesStore } from "./favourites";
 import { checkUrl, createAddressGuard, isPrivateHost } from "./netPolicy";
 import { createServiceReach } from "./serviceReach";
+import { LoadFailures } from "./unreachable";
 import { filterShellRequests, installHardening } from "./hardening";
 import { computeLayout, splitContent, tooltipBounds } from "../core/layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
@@ -157,6 +159,8 @@ export interface ShellHandle {
   window: BaseWindow;
   railView: WebContentsView;
   tooltipView: WebContentsView;
+  /** The shell's "couldn't reach" page, shown over a web service whose page did not load. */
+  unreachableView: WebContentsView;
   views: Map<string, WebContentsView>;
   adapters: Map<string, PlatformAdapter>;
   registry: PlatformRegistry;
@@ -234,6 +238,8 @@ export async function createShell(
   let mode: "platform" | "settings" | "messages" = "platform";
   let settingsView: WebContentsView | undefined;
   let messagesView: WebContentsView | undefined;
+  /** The shell's "couldn't reach" page, over a web service whose page did not load. */
+  let unreachableView: WebContentsView | undefined;
   /** The platform whose conversation is open beside the Messages list. */
   let messagesTarget: string | undefined;
   const front = (): string | undefined => (mode === "platform" ? activePlatform : mode === "messages" ? messagesTarget : undefined);
@@ -279,6 +285,21 @@ export async function createShell(
     // Until a conversation is picked, the list has the whole content area.
     messagesView?.setBounds(messagesTarget ? list : content);
     messagesView?.setVisible(mode === "messages");
+    // Over the service in front, where its page did not load.
+    const failed = shownPlatform !== undefined && failures.get(shownPlatform) !== undefined;
+    unreachableView?.setBounds(mode === "messages" ? conversation : content);
+    unreachableView?.setVisible(failed);
+    if (failed) sendUnreachable();
+  };
+
+  /** Web services whose page did not load: the "couldn't reach" page covers them until it does. */
+  const failures = new LoadFailures(() => layout());
+  const sendUnreachable = (): void => {
+    const id = front();
+    const failure = id === undefined ? undefined : failures.get(id);
+    if (!failure || !unreachableView) return;
+    const state: UnreachableState = { service: platforms.find((p) => p.id === id)?.name ?? id!, ...failure };
+    unreachableView.webContents.send(IPC.unreachableState, state);
   };
 
   // Linux screen-share sound: venmic, leaving out every process of ours.
@@ -390,6 +411,8 @@ export async function createShell(
     // A reloaded page starts out full width; tell it whether it sits beside the Messages list.
     view.webContents.on("did-finish-load", () => view.webContents.send(IPC.viewCompact, mode === "messages"));
 
+    // A web service's page that fails to load gets the shell's own page over it; native views are the shell's already.
+    if (module.load) failures.watch(def.id, view.webContents);
     const host = new URL(def.url).hostname;
     const { adapter, start } = module.load
       ? module.load({
@@ -433,6 +456,24 @@ export async function createShell(
     }
     start();
   }
+
+  // Above the platform views (and below the shell's pages, added later): only ever shown over the one in front.
+  unreachableView = secureView(path.join(paths.dist, "preload-shell.js"));
+  unreachableView.setVisible(false);
+  unreachableView.webContents.on("will-navigate", (event) => event.preventDefault());
+  unreachableView.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  unreachableView.webContents.on("did-finish-load", sendUnreachable);
+  window.contentView.addChildView(unreachableView);
+  prepareContentView(unreachableView);
+  void unreachableView.webContents.loadFile(path.join(paths.dist, "unreachable.html"));
+  ipcMain.on(IPC.unreachableRetry, (event) => {
+    if (event.sender !== unreachableView!.webContents) return;
+    const id = front();
+    if (id !== undefined && failures.get(id)) views.get(id)?.webContents.reload();
+  });
+  ipcMain.on(IPC.unreachableSettings, (event) => {
+    if (event.sender === unreachableView!.webContents) setSettingsOpen(true);
+  });
 
   // Added after the platform views so it draws on top of them.
   const tooltipView = secureView(path.join(paths.dist, "preload-shell.js"));
@@ -867,6 +908,7 @@ export async function createShell(
     window,
     railView,
     tooltipView,
+    unreachableView,
     views,
     adapters,
     registry,

@@ -27,17 +27,26 @@ describe("createShellApi", () => {
     listeners.get(IPC.tooltipShow)!(null, "Gaming Club");
     expect(onTooltip).toHaveBeenCalledWith("Gaming Club");
 
+    const onUnreachable = vi.fn();
+    api.onUnreachable(onUnreachable);
+    listeners.get(IPC.unreachableState)!(null, { service: "Discord", reason: "r", code: "c", retrying: false });
+    expect(onUnreachable).toHaveBeenCalledWith({ service: "Discord", reason: "r", code: "c", retrying: false });
+
     api.open("discord:home");
     api.ready();
     api.tooltip({ text: "Gaming Club", y: 10 });
     api.tooltip(null);
     api.choose(null);
+    api.retry();
+    api.openSettings();
     expect(ipc.send.mock.calls).toEqual([
       [IPC.railOpen, "discord:home"],
       [IPC.railReady, null],
       [IPC.railTooltip, { text: "Gaming Club", y: 10 }],
       [IPC.railTooltip, null],
       [IPC.pickerChoose, null],
+      [IPC.unreachableRetry, null],
+      [IPC.unreachableSettings, null],
     ]);
   });
 });

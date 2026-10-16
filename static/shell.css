@@ -223,3 +223,17 @@ html:has(.tooltip-body), .tooltip-body { background: transparent; overflow: hidd
 .dragging { opacity: 0.4; }
 .drop-before { box-shadow: 0 -4px 0 -1px var(--text); }
 .drop-after { box-shadow: 0 4px 0 -1px var(--text); }
+
+/* "Couldn't reach" page: the shell's own, over a web service whose page did not load. */
+.unreachable-body { display: flex; align-items: center; justify-content: center; padding: 16px; background: #2b2d31; }
+.unreachable { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 440px; text-align: center; }
+.unreachable-icon { width: 48px; height: 48px; fill: var(--muted); }
+.unreachable h1 { margin: 0; font-size: 20px; }
+.unreachable p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
+.unreachable-actions { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: center; margin-top: 4px; }
+.unreachable-primary { min-height: 36px; padding: 8px 20px; border: 0; border-radius: 4px; background: #5865f2; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+.unreachable-primary:hover { background: #4752c4; }
+.unreachable-primary[aria-disabled="true"] { cursor: progress; opacity: 0.8; }
+.unreachable-link { min-height: 36px; padding: 8px 4px; border: 0; background: none; color: #949cf7; font: inherit; text-decoration: underline; cursor: pointer; }
+.unreachable-primary:focus-visible, .unreachable-link:focus-visible { outline: 2px solid #00a8fc; outline-offset: 2px; }
+.unreachable .unreachable-code { font-size: 12px; }

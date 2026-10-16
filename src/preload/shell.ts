@@ -1,4 +1,4 @@
-import { IPC, type PickerChoice, type PickerRequest, type RailState, type TooltipRequest } from "../shared/ipc";
+import { IPC, type PickerChoice, type PickerRequest, type RailState, type TooltipRequest, type UnreachableState } from "../shared/ipc";
 import type { PreloadIpc } from "./discord/index";
 
 /** The narrow API the shell UI, tooltip and picker get through contextBridge. */
@@ -16,6 +16,10 @@ export interface ShellApi {
   onTooltip(cb: (text: string) => void): void;
   onPickerRequest(cb: (request: PickerRequest) => void): void;
   choose(choice: PickerChoice | null): void;
+  /** The "couldn't reach" page: what to say, and its two actions. */
+  onUnreachable(cb: (state: UnreachableState) => void): void;
+  retry(): void;
+  openSettings(): void;
 }
 
 export function createShellApi(ipc: PreloadIpc): ShellApi {
@@ -30,5 +34,8 @@ export function createShellApi(ipc: PreloadIpc): ShellApi {
     onTooltip: (cb) => ipc.on(IPC.tooltipShow, (_event, text) => cb(String(text))),
     onPickerRequest: (cb) => ipc.on(IPC.pickerSources, (_event, request) => cb(request as PickerRequest)),
     choose: (choice) => ipc.send(IPC.pickerChoose, choice),
+    onUnreachable: (cb) => ipc.on(IPC.unreachableState, (_event, state) => cb(state as UnreachableState)),
+    retry: () => ipc.send(IPC.unreachableRetry, null),
+    openSettings: () => ipc.send(IPC.unreachableSettings, null),
   };
 }

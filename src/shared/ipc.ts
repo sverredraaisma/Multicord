@@ -31,7 +31,21 @@ export const IPC = {
   tooltipShow: "tooltip:show",
   pickerSources: "picker:sources",
   pickerChoose: "picker:choose",
+  /** Main -> the "couldn't reach" page over a web service whose page failed to load (UnreachableState). */
+  unreachableState: "unreachable:state",
+  /** That page -> main: load the service's page again. */
+  unreachableRetry: "unreachable:retry",
+  /** That page -> main: open Settings. */
+  unreachableSettings: "unreachable:settings",
 } as const;
+
+/** What the "couldn't reach" page says: which service, why in plain words, the error code, and whether a retry is under way. */
+export interface UnreachableState {
+  service: string;
+  reason: string;
+  code: string;
+  retrying: boolean;
+}
 
 /** DOM event the main-world store bridge uses to hand store data to the preload. */
 export const BRIDGE_EVENT = "multicord:stores";
