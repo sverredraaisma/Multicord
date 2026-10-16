@@ -310,6 +310,8 @@ src/
   renderer/              rail, tooltip, screen-share picker, native chat view, settings page, gallery
   entries/               bundle entry points (thin; excluded from coverage)
 tests/                   Vitest; tests/mocks/electron.ts fakes the Electron API
+mobile/android/          Multicord for Android, in progress: a Kotlin host that runs these bundles (its README)
+mobile/android-spike/    the phase-0 Android spike (docs/mobile.md)
 ```
 
 ## Testing policy

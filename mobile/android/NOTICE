@@ -1,0 +1,23 @@
+Multicord for Android
+Copyright (C) 2026 Multicord contributors.
+
+This program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero
+General Public License as published by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version. See LICENSE at the repository root. The complete source of the app,
+including the TypeScript bundles it runs (built from src/ at the repository root), is in this repository.
+
+It uses these libraries, fetched by Gradle from Google's Maven repository and Maven Central, not included
+as source. None of them is Google Play Services.
+
+androidx.webkit 1.17.1 (https://developer.android.com/jetpack/androidx/releases/webkit)
+  Apache License 2.0.
+OkHttp 4.12.0 and Okio (https://square.github.io/okhttp/)
+  Copyright Square, Inc. Apache License 2.0.
+kotlinx.serialization 1.9.0 (https://github.com/Kotlin/kotlinx.serialization)
+  Copyright JetBrains s.r.o. and contributors. Apache License 2.0.
+Kotlin standard library (https://kotlinlang.org)
+  Copyright JetBrains s.r.o. and contributors. Apache License 2.0.
+
+The bundles in the app's assets carry the licences of the desktop app's dependencies (package.json), among
+them @matrix-org/matrix-sdk-crypto-wasm (Apache License 2.0), livekit-client (Apache License 2.0) and
+@sapphi-red/web-noise-suppressor (Apache License 2.0; RNNoise, BSD 3-Clause).
