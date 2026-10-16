@@ -22,6 +22,7 @@ import androidx.webkit.ProfileStore
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import app.multicord.BuildConfig
+import app.multicord.bridge.BridgeScripts
 import app.multicord.bridge.Validators
 import app.multicord.bridge.Wire
 import app.multicord.net.Body
@@ -144,11 +145,10 @@ class EngineHost(
                 return true
             }
         }
-        val origins = setOf(origin)
-        WebViewCompat.addWebMessageListener(view, LISTENER, origins) { source, message, sourceOrigin, isMainFrame, replyProxy ->
+        val world = BridgeScripts.install(context, view, LISTENER, CHANNEL, "bridge/engine.js", setOf(origin)) { source, message, sourceOrigin, isMainFrame, replyProxy ->
             receive(source, message, sourceOrigin, isMainFrame, replyProxy)
         }
-        WebViewCompat.addDocumentStartJavaScript(view, context.assets.open("bridge/engine.js").bufferedReader().use { it.readText() }, origins)
+        Log.i(TAG, "[engine ${spec.instanceId}] bridge relay in the $world")
         container.addView(view, ViewGroup.LayoutParams(1, 1))
         view.alpha = 0f
         webView = view
@@ -357,6 +357,8 @@ class EngineHost(
     companion object {
         const val TAG = "Multicord"
         private const val LISTENER = "multicordHost"
+        /** The events engine.js and the relay exchange (engine.js has the same name). */
+        private const val CHANNEL = "multicord-engine"
         /** Messages held for an engine that has not loaded yet, at most. */
         private const val MAX_QUEUE = 1000
         /** Crashes in a row before an engine is left stopped, and how long a run counts as stable (engineAdapter.ts). */

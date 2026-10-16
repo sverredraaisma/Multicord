@@ -1,12 +1,13 @@
 // Multicord for Android. Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later, see LICENSE at the repo root.
 //
 // The native chat view's bridge (NativeApi, src/preload/native.ts) in the shell WebView, as a document-start
-// script native code injects into the shell's origin only. Display state comes in from the engine whose
-// view this is; user actions go out to native code, which checks them with isNativeAction and hands them
-// to that engine alone. Messages are JSON; a Uint8Array travels as {"$b64": "<base64>"} (Wire.kt).
+// script native code injects into the shell's origin only, in the page's world; it talks to native code
+// through relay.js (in an isolated world where the WebView supports one). Display state comes in from the
+// engine whose view this is; user actions go out to native code, which checks them with isNativeAction and
+// hands them to that engine alone. Messages are JSON; a Uint8Array travels as {"$b64": "<base64>"} (Wire.kt).
 (() => {
-  const host = window.multicordShell;
-  if (!host || window.multicordNative) return;
+  if (window.multicordNative) return;
+  const CHANNEL = "multicord-shell";
   const BYTES = "$b64";
 
   const fromBase64 = (base64) => {
@@ -19,10 +20,11 @@
   const decode = (text) => JSON.parse(text, (_key, v) => (isEnvelope(v) ? fromBase64(v[BYTES]) : v));
 
   const listeners = { state: [] };
-  host.addEventListener("message", (event) => {
+  window.addEventListener(`${CHANNEL}:in`, (event) => {
+    if (typeof event.detail !== "string") return;
     let message;
     try {
-      message = decode(event.data);
+      message = decode(event.detail);
     } catch {
       return;
     }
@@ -35,7 +37,7 @@
     }
   });
 
-  const send = (message) => host.postMessage(JSON.stringify(message));
+  const send = (message) => window.dispatchEvent(new CustomEvent(`${CHANNEL}:out`, { detail: JSON.stringify(message) }));
   // What the desktop's shell sends besides state (voice settings, media limits, favourites, voice
   // commands) comes with the settings and call work of later milestones; until then the view's defaults hold.
   const later = () => {};

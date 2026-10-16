@@ -1,14 +1,15 @@
 // Multicord for Android. Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later, see LICENSE at the repo root.
 //
 // The EngineBridge (src/preload/engine.ts) for an engine page, as a document-start script that native code
-// injects into the engine's own origin only. It is glue, not a boundary: the page could replace it, and
-// gains nothing by that, because native code decides which engine a message comes from (the WebView it
-// arrived in) and validates every message as the desktop's main process does.
+// injects into the engine's own origin only, in the page's world. It talks to native code through relay.js
+// (in an isolated world where the WebView supports one). It is glue, not a boundary: the page could replace
+// it, and gains nothing by that, because native code decides which engine a message comes from (the WebView
+// it arrived in) and validates every message as the desktop's main process does.
 //
 // Messages are JSON; a Uint8Array travels as {"$b64": "<base64>"} (Wire.kt).
 (() => {
-  const host = window.multicordHost;
-  if (!host || window.multicordEngine) return;
+  if (window.multicordEngine) return;
+  const CHANNEL = "multicord-engine";
   const BYTES = "$b64";
 
   const toBase64 = (bytes) => {
@@ -34,10 +35,11 @@
   let nextId = 0;
   const listeners = { command: [], action: [], socket: [] };
 
-  host.addEventListener("message", (event) => {
+  window.addEventListener(`${CHANNEL}:in`, (event) => {
+    if (typeof event.detail !== "string") return;
     let message;
     try {
-      message = decode(event.data);
+      message = decode(event.detail);
     } catch {
       return;
     }
@@ -58,7 +60,7 @@
     }
   });
 
-  const send = (message) => host.postMessage(encode(message));
+  const send = (message) => window.dispatchEvent(new CustomEvent(`${CHANNEL}:out`, { detail: encode(message) }));
 
   window.multicordEngine = Object.freeze({
     request: (body) =>

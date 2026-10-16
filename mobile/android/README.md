@@ -25,12 +25,12 @@ Install with `adb install -r app/build/outputs/apk/debug/app-debug.apk`. The app
 MainActivity
   status line (engine state, account)
   ShellView      WebView, Profile "shell", https://shell.multicord.invalid/native.html
-                 document-start shell.js -> window.multicordNative (NativeApi)
-                 listener "multicordShell" (shell origin only)
+                 document-start shell.js -> window.multicordNative (NativeApi), page world
+                 relay.js + listener "multicordShell" (shell origin only), isolated world
   EngineHost     WebView per instance, Profile "engine-<instance>", 1x1 and invisible
                  https://<instance>.engine.multicord.invalid/engine.html, CSP connect-src 'none'
-                 document-start engine.js -> window.multicordEngine (EngineBridge)
-                 listener "multicordHost" (that engine's origin only)
+                 document-start engine.js -> window.multicordEngine (EngineBridge), page world
+                 relay.js + listener "multicordHost" (that engine's origin only), isolated world
     EngineSockets + OkHttpSockets   bridged WebSockets (bridgeWebSocket)
     HttpBridge + OkHttpTransport    bridged HTTP (bridgeFetch)
     SecretStore scope               this instance's secrets (KeystoreCipher)
@@ -46,23 +46,25 @@ Validators, Wire                    the desktop's validators (src/shared), JSON 
 | `engine/EngineHost.kt` | `src/main/engineHost.ts` (EngineHub), `src/preload/engine.ts` |
 | `shell/ShellView.kt` | the native view's WebContentsView and `src/preload/native.ts` |
 | `secrets/` | `src/main/credentials.ts` with `safeStorage` |
+| `bridge/BridgeScripts.kt`, `assets/bridge/` | the preloads (`src/preload/engine.ts`, `native.ts`) with context isolation and `contextBridge` |
 | `bridge/Validators.kt` | `isEngineRequest`, `isHttpRequest`, `isEngineEvent`, `isNativeAction`, `isServiceSettingStatus` |
 
-Pages and native code exchange JSON strings over `WebMessageListener`; a `Uint8Array` travels as `{"$b64": "<base64>"}` and the bridge scripts turn it back. Engine requests are answered by id; commands, view actions and socket events are pushed. Everything native runs on the main thread except HTTP (a small pool per engine) and secrets (one thread per engine, so writes and reads keep their order).
+Pages and native code exchange JSON strings over `WebMessageListener`. The bridge API a page uses (`engine.js`, `shell.js`) runs in the page's own world and hands its strings to `relay.js` in DOM events (`<channel>:out`, answered with `<channel>:in`); the relay and the listener live in an isolated world named `multicord-bridge` where the WebView supports `JS_INJECTION_IN_FRAME_AND_WORLD`, and in the page's world otherwise (`BridgeScripts`; the log says which, per WebView). a `Uint8Array` travels as `{"$b64": "<base64>"}` and the bridge scripts turn it back. Engine requests are answered by id; commands, view actions and socket events are pushed. Everything native runs on the main thread except HTTP (a small pool per engine) and secrets (one thread per engine, so writes and reads keep their order).
 
 ## Security model
 
 The rules are the desktop's (docs/mobile.md, section 5); this is where each is enforced here.
 
 - **Identity from the WebView.** Each listener is registered on one WebView, for one origin. A message counts only if it comes from that very WebView, its top frame and that origin; the instance it speaks for is the one native code started in that WebView. Nothing in a message names an engine, a secret's owner or a socket of another engine.
-- **Origin-restricted injection.** `addDocumentStartJavaScript` and `addWebMessageListener` are restricted to the one origin they serve; the engine page has no `multicordShell`, the shell no `multicordHost` (checked on the phone).
+- **Origin-restricted injection.** The scripts and the listener are restricted to the one origin they serve; the engine page has no `multicordShell`, the shell no `multicordHost` (checked on the phone).
+- **An isolated world for the bridge**, where the WebView has `JS_INJECTION_IN_FRAME_AND_WORLD`: the listener object exists only in the `multicord-bridge` world, so the page's scripts (and anything injected into them) never hold it and cannot post to native code except through the relay, as strings; native code hears only that world. The page can still send whatever the relay forwards, so this narrows the surface rather than adding a trust boundary: identity still comes from the WebView and everything is still validated natively.
 - **Validated natively.** Every engine request and event, and every view action, is checked with the ported validators before anything happens; a malformed request is refused, a malformed event or action dropped. Render state must be an object and goes only to that instance's view.
 - **No network of their own.** Engine pages get `connect-src 'none'` (their fetch and WebSocket fail on the phone; that the CSP header rather than the request interception is what stops them is still to confirm) and their origin serves only their page and bundle; requests to any other host get a 404 from `shouldInterceptRequest`. All their HTTP and sockets go through native code: `https:`/`wss:` only, no credentials in URLs, no local or private hosts (all numeric address forms included, as the URL parser reads them), only the module's hosts or a narrower lock, each redirect re-checked, cookies dropped both ways, responses and frames capped. `PublicDns` refuses a name when any address it resolves to is private, at connection time, on the addresses connected to; there is no proxy so that check sees where the connection goes.
 - **The shell view** gets no permissions, connects nowhere (`connect-src 'self'`), and may load pictures and media only over https from public hosts its engine may reach (`shouldInterceptRequest`). The WebView resolves those names again itself, so this check is weaker than the engines' (see below).
 - **Storage apart.** One Profile per engine instance (its own cookies, IndexedDB, service workers) and its own origin; the shell has another. Engine Profiles accept no cookies.
 - **Secrets** are encrypted with a non-exportable AES-256-GCM Keystore key (StrongBox when present), one file per instance in app-private storage, each value bound to its instance and key as associated data. No backups (`allowBackup="false"`, data extraction rules exclude everything).
 - **Platform:** `INTERNET` is the only permission; cleartext is off and only system CAs are trusted; navigation is blocked in engines, and links from the view open in the browser.
-- **Weaker than the desktop**, accepted for now: all WebViews share one renderer process (no per-engine sandbox, docs/mobile.md section 5); the bridge scripts run in the page's main world (they are glue, not the boundary); the shell's image loads are checked by name, then resolved again by the WebView.
+- **Weaker than the desktop**, accepted for now: all WebViews share one renderer process (no per-engine sandbox, docs/mobile.md section 5); on WebViews without `JS_INJECTION_IN_FRAME_AND_WORLD` the relay and the listener run in the page's main world (they are glue, not the boundary; the log says "bridge relay in the main world"); the shell's image loads are checked by name, then resolved again by the WebView.
 
 ## Tests
 

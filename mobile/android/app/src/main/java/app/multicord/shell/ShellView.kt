@@ -20,6 +20,7 @@ import androidx.webkit.ProfileStore
 import androidx.webkit.WebMessageCompat
 import androidx.webkit.WebViewCompat
 import app.multicord.BuildConfig
+import app.multicord.bridge.BridgeScripts
 import app.multicord.bridge.Wire
 import app.multicord.net.NetPolicy
 import app.multicord.net.UrlPolicy
@@ -72,15 +73,14 @@ class ShellView(
                 return true
             }
         }
-        val origins = setOf(ORIGIN)
-        WebViewCompat.addWebMessageListener(view, LISTENER, origins) { source, message, sourceOrigin, isMainFrame, replyProxy ->
-            if (source !== webView || !isMainFrame || sourceOrigin.toString() != ORIGIN) return@addWebMessageListener
-            if (message.type != WebMessageCompat.TYPE_STRING) return@addWebMessageListener
-            val parsed = Wire.parse(message.data ?: return@addWebMessageListener) as? JsonObject ?: return@addWebMessageListener
+        val world = BridgeScripts.install(context, view, LISTENER, CHANNEL, "bridge/shell.js", setOf(ORIGIN)) { source, message, sourceOrigin, isMainFrame, replyProxy ->
+            if (source !== webView || !isMainFrame || sourceOrigin.toString() != ORIGIN) return@install
+            if (message.type != WebMessageCompat.TYPE_STRING) return@install
+            val parsed = Wire.parse(message.data ?: return@install) as? JsonObject ?: return@install
             proxy = replyProxy
             if ((parsed["k"] as? JsonPrimitive)?.content == "act") onAction(parsed["body"])
         }
-        WebViewCompat.addDocumentStartJavaScript(view, context.assets.open("bridge/shell.js").bufferedReader().use { it.readText() }, origins)
+        Log.i(TAG, "[shell] bridge relay in the $world")
         container.addView(view, 0, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         webView = view
         view.loadUrl("$ORIGIN/native.html")
@@ -170,6 +170,8 @@ class ShellView(
         const val ORIGIN = "https://$HOST"
         private const val PROFILE = "shell"
         private const val LISTENER = "multicordShell"
+        /** The events shell.js and the relay exchange (shell.js has the same name). */
+        private const val CHANNEL = "multicord-shell"
 
         /** What the shell's origin serves: path -> (asset under web/shell, type). */
         private val FILES = mapOf(
