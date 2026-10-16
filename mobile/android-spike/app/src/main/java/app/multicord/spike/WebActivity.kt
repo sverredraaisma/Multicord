@@ -175,7 +175,12 @@ class WebActivity : Activity() {
             SpikeLog.add(target.section, "DOCUMENT_START_SCRIPT missing: no document-start scripts")
             return
         }
-        WebViewCompat.addDocumentStartJavaScript(webView, asset("web/report-start.js"), setOf(target.origin))
+        val origins = setOf(target.origin)
+        WebViewCompat.addDocumentStartJavaScript(webView, asset("web/report-start.js"), origins)
+        if (intent.getBooleanExtra(EXTRA_TEST_CAMERA, false)) {
+            WebViewCompat.addDocumentStartJavaScript(webView, asset("web/fakecam.js"), origins)
+            SpikeLog.add(target.section, "test camera patch registered for ${target.origin}")
+        }
     }
 
     private fun asset(path: String): String = assets.open(path).bufferedReader().use { it.readText() }
@@ -286,6 +291,7 @@ class WebActivity : Activity() {
         private const val EXTRA_TARGET = "target"
         private const val EXTRA_DESKTOP_UA = "desktopUa"
         private const val EXTRA_PAGE = "page"
+        private const val EXTRA_TEST_CAMERA = "testCamera"
         private const val TARGET_DISCORD = "discord"
         private const val TARGET_PAGE = "page"
         private const val DISCORD_ORIGIN = "https://discord.com"
@@ -296,16 +302,18 @@ class WebActivity : Activity() {
             PermissionRequest.RESOURCE_AUDIO_CAPTURE to Manifest.permission.RECORD_AUDIO,
         )
 
-        fun discord(context: Context, desktopUa: Boolean): Intent =
+        fun discord(context: Context, desktopUa: Boolean, testCamera: Boolean): Intent =
             Intent(context, WebActivity::class.java)
                 .putExtra(EXTRA_TARGET, TARGET_DISCORD)
                 .putExtra(EXTRA_DESKTOP_UA, desktopUa)
+                .putExtra(EXTRA_TEST_CAMERA, testCamera)
 
         /** A bundled test page from assets/web, served on an https origin (a secure context). */
-        fun page(context: Context, page: String): Intent =
+        fun page(context: Context, page: String, testCamera: Boolean = false): Intent =
             Intent(context, WebActivity::class.java)
                 .putExtra(EXTRA_TARGET, TARGET_PAGE)
                 .putExtra(EXTRA_PAGE, page)
+                .putExtra(EXTRA_TEST_CAMERA, testCamera)
 
         private fun targetFrom(intent: Intent): Target =
             if (intent.getStringExtra(EXTRA_TARGET) == TARGET_DISCORD) {
