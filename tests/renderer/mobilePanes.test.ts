@@ -57,6 +57,34 @@ describe("the chat view's panes on a phone", () => {
     expect(view.pane()).toBe("list");
   });
 
+  it("makes the list the page's main landmark on its pane, and leaves the conversation's own on its pane", () => {
+    const { state, back } = panes();
+    // No chat layout yet (signing in): nothing to mark.
+    state({ screen: "connecting", platform: "Matrix", status: "" });
+    const layout = document.createElement("div");
+    layout.className = "chat";
+    const header = document.createElement("header");
+    layout.append(header);
+    document.body.append(layout);
+    state(chat(null));
+    expect(layout.getAttribute("role")).toBe("main");
+    expect(layout.getAttribute("aria-label")).toBe("Conversations");
+    // Its heading belongs to the main there, not to a banner.
+    expect(header.getAttribute("role")).toBe("none");
+    state(chat("1"));
+    expect(layout.hasAttribute("role")).toBe(false);
+    expect(layout.hasAttribute("aria-label")).toBe(false);
+    expect(header.hasAttribute("role")).toBe(false);
+    back();
+    expect(layout.getAttribute("role")).toBe("main");
+    // Drawn anew (another screen came and went): marked again with the next state.
+    const again = document.createElement("div");
+    again.className = "chat";
+    layout.replaceWith(again);
+    state(chat(null));
+    expect(again.getAttribute("role")).toBe("main");
+  });
+
   it("shows the conversation picked from the list, even the one already open", () => {
     const { view } = panes();
     const list = document.createElement("ul");

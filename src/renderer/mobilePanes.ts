@@ -27,10 +27,28 @@ export function attachMobilePanes(doc: Document, api: PaneApi): { pane(): "list"
   back.append(icon(doc, "mobile-back-icon", BACK));
   doc.body.append(back);
   let pane: "list" | "conversation" = "list";
+  // One main landmark per pane: the conversation's own on its pane; on the list pane, where the conversation
+  // is out of sight, the chat layout (the list's navigation inside it), whose heading is then the main's
+  // own, not a banner. The layout is drawn anew with each screen, so this follows every state too.
+  const landmarks = (): void => {
+    const layout = doc.querySelector(".chat");
+    if (!layout) return;
+    const header = layout.querySelector(":scope > header");
+    if (pane === "list") {
+      layout.setAttribute("role", "main");
+      layout.setAttribute("aria-label", "Conversations");
+      header?.setAttribute("role", "none");
+    } else {
+      layout.removeAttribute("role");
+      layout.removeAttribute("aria-label");
+      header?.removeAttribute("role");
+    }
+  };
   const show = (next: typeof pane): void => {
     pane = next;
     root.dataset.pane = next;
     back.hidden = next !== "conversation";
+    landmarks();
   };
   show("list");
   back.addEventListener("click", () => show("list"));
@@ -41,6 +59,7 @@ export function attachMobilePanes(doc: Document, api: PaneApi): { pane(): "list"
   let open: string | null = null;
   api.onState((state) => {
     const id = state.screen === "chat" ? (state.channel?.id ?? null) : null;
+    landmarks();
     if (id === open) return;
     open = id;
     show(id === null ? "list" : "conversation");
