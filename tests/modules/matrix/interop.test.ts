@@ -7,7 +7,7 @@ import { initAsync } from "@matrix-org/matrix-sdk-crypto-wasm";
 import { ClientEvent, createClient, MatrixEvent, SyncState, type MatrixClient } from "matrix-js-sdk";
 import { CryptoEvent, VerificationPhase, VerifierEvent, type CryptoApi, type ShowSasCallbacks, type VerificationRequest } from "matrix-js-sdk/lib/crypto-api/index.js";
 import { CallMembership, getCallNotificationExpiry, MatrixRTCSessionEvent, parseCallNotificationContent, RTC_SLOT_ENCRYPTION_PER_MEMBER } from "matrix-js-sdk/lib/matrixrtc/index.js";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { MxSession } from "../../../src/modules/matrix/api";
 import type { FileSource } from "../../../src/engine/runtime";
 import { MatrixAdapter } from "../../../src/modules/matrix/adapter";
@@ -27,14 +27,14 @@ const ROOM = "!secret:x.org";
 const MEGOLM = "m.megolm.v1.aes-sha2";
 
 // matrix-js-sdk and its crypto log a lot to the console, through loggers made per client and room.
+// They stay quiet to the end of this file's worker, not just its tests: a stopped client's sync loop,
+// its crypto and the call sessions finish asynchronously, and a line they log after the last test
+// (were the console restored in afterAll) reaches vitest as the worker closes, which fails the run
+// with "Closing rpc while onUserConsoleLog was pending". Errors are left to show.
 const quiet = ["log", "debug", "info", "warn", "trace"] as const;
-const console0 = Object.fromEntries(quiet.map((name) => [name, console[name]]));
 beforeAll(async () => {
   for (const name of quiet) console[name] = () => {};
   await initAsync();
-});
-afterAll(() => {
-  for (const name of quiet) console[name] = console0[name]!;
 });
 
 const cleanups: (() => Promise<void> | void)[] = [];
