@@ -45,7 +45,7 @@ import { filterShellRequests, installHardening } from "./hardening";
 import { computeLayout, splitContent, tooltipBounds } from "../core/layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
 import type { PlatformModule, ShellServices } from "./modules/types";
-import { loadPlatforms, type PlatformDef } from "./platforms";
+import { loadPlatforms, type PlatformDef } from "../core/platforms";
 import { PlatformRegistry } from "../core/registry";
 import { BADGE_SIZE, badgeBitmap } from "./badge";
 import { createDisplayMediaHandler } from "./screenShare";

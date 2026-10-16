@@ -1,6 +1,6 @@
 # Writing a platform module
 
-Every platform in Multicord is a *module*: a manifest the shell reads, plus the code that talks to the platform. The shell knows platforms only through the manifest (`ModuleManifest` in `src/main/modules/types.ts`) and the adapter contract (`PlatformAdapter` in `src/shared/adapter.ts`), so a new platform needs no changes to the shell.
+Every platform in Multicord is a *module*: a manifest the shell reads, plus the code that talks to the platform. The shell knows platforms only through the manifest (`ModuleManifest` in `src/core/modules.ts`) and the adapter contract (`PlatformAdapter` in `src/shared/adapter.ts`), so a new platform needs no changes to the shell.
 
 Modules are compiled in, never loaded from disk. Review a new module as you would any change to the app.
 
@@ -62,11 +62,11 @@ void startExampleEngine((window as unknown as { multicordEngine: EngineBridge })
 
 Don't add an entry for code that should not ship. A test checks that the entries and the registered engines match exactly.
 
-Adding the module to `BUILT_IN` in `src/main/platforms.ts` is optional. That list is for services every user gets (Discord, Fluxer, Telegram). Other modules are added by users in Settings, which offers every `configurable` module.
+Adding the module to `BUILT_IN` in `src/core/platforms.ts` is optional. That list is for services every user gets (Discord, Fluxer, Telegram). Other modules are added by users in Settings, which offers every `configurable` module.
 
 ### The manifest
 
-`ModuleManifest`, `src/main/modules/types.ts`. Fields for every module:
+`ModuleManifest`, `src/core/modules.ts`. Fields for every module:
 
 | Field | What it does |
 |---|---|

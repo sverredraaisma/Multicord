@@ -1,4 +1,4 @@
-import { TELEGRAM } from "../platforms";
+import { TELEGRAM } from "../../core/platforms";
 import type { PlatformModule } from "./types";
 
 /**

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { DiscordAdapter } from "../../src/main/adapters/discordAdapter";
 import { Emitter } from "../../src/shared/emitter";
 import { APP_KEY, GenericWebAdapter, SERVICE_CHECK_INTERVAL_MS } from "../../src/main/adapters/genericWebAdapter";
-import type { PlatformDef } from "../../src/main/platforms";
+import type { PlatformDef } from "../../src/core/platforms";
 
 const element: PlatformDef = {
   id: "element",

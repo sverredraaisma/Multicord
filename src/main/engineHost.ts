@@ -23,7 +23,7 @@ import type { AccountStatus, ServiceSettingStatus, ServiceSettingValues } from "
 import type { SecretStore } from "./credentials";
 import { contentTypeFor, readRange } from "./files";
 import { checkUrl, createAddressGuard, narrowHosts, performHttp, type UrlPolicy } from "./netPolicy";
-import type { PlatformDef } from "./platforms";
+import type { PlatformDef } from "../core/platforms";
 import { isSsoUrl, receiveLoginToken } from "./ssoLoopback";
 
 /**

@@ -5,7 +5,8 @@ import { nerimityNativeModule } from "./nerimity";
 import { spacebarNativeModule } from "./spacebar";
 import { stoatNativeModule } from "./stoat";
 import { telegramModule } from "./telegram";
-import type { ModuleRule } from "../platforms";
+import { configurableModules as configurableIn, findModule as findModuleIn } from "../../core/modules";
+import type { ModuleRule } from "../../core/platforms";
 import type { PlatformModule } from "./types";
 import { fluxerWebModule, matrixModule, mumbleModule, nerimityModule, spacebarModule, stoatModule, webModule } from "./web";
 
@@ -32,12 +33,10 @@ export const MODULES: readonly PlatformModule[] = [
 ];
 
 export function findModule(id: string, modules: readonly PlatformModule[] = MODULES): PlatformModule | undefined {
-  return modules.find((m) => m.manifest.id === id);
+  return findModuleIn(id, modules);
 }
 
 /** Modules users may instantiate from platforms.json, with their address rules. */
 export function configurableModules(modules: readonly PlatformModule[] = MODULES): ModuleRule[] {
-  return modules
-    .filter((m) => m.manifest.configurable)
-    .map(({ manifest: { id, defaultUrl, fixedUrl } }) => ({ id, defaultUrl, fixedUrl }));
+  return configurableIn(modules);
 }

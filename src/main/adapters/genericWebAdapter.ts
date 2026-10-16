@@ -1,6 +1,6 @@
 import type { HealthCheck, RailServer } from "../../shared/adapter";
 import { parseTitleBadge } from "../../shared/ipc";
-import type { PlatformDef } from "../platforms";
+import type { PlatformDef } from "../../core/platforms";
 import { BaseAdapter } from "../../shared/baseAdapter";
 
 export const APP_KEY = "app";

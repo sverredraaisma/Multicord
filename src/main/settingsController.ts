@@ -15,8 +15,8 @@ import {
 } from "../shared/settings";
 import { configurableModules } from "./modules/index";
 import type { PlatformModule } from "./modules/types";
-import { loadPlatforms } from "./platforms";
-import { addService, keepsOneEnabled, removeService, renameService, setServiceEnabled } from "./services";
+import { loadPlatforms } from "../core/platforms";
+import { addService, keepsOneEnabled, removeService, renameService, setServiceEnabled } from "../core/services";
 import type { SettingsStore } from "./settingsStore";
 
 export interface SettingsDeps {

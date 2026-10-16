@@ -1,3 +1,4 @@
+import type { PageKeys } from "../core/modules";
 import type { ShortcutAction, ShortcutSettings } from "../shared/settings";
 
 /** The parts of Electron's globalShortcut used here. */
@@ -40,12 +41,6 @@ export class GlobalShortcuts {
     for (const accelerator of this.active.values()) this.registry.unregister(accelerator);
     this.active.clear();
   }
-}
-
-/** A key press a module's page understands, e.g. Discord's own Ctrl+Shift+M. */
-export interface PageKeys {
-  keyCode: string;
-  modifiers: ("commandOrControl" | "shift" | "alt")[];
 }
 
 /** Electron input event modifiers for a page key on this OS. */

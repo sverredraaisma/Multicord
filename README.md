@@ -274,7 +274,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
 src/
   shared/adapter.ts      PlatformAdapter contract (from the study)
   shared/ipc.ts          IPC channels + validators for every renderer payload
-  core/                  logic free of Electron and Node, for the desktop and a later mobile host: layout, the rail registry and its order
+  core/                  logic free of Electron and Node, for the desktop and a later mobile host (below)
   main/                  main process: app glue, adapters, policies, credential store
   preload/discord/       Discord view preload (DOM hooks in dom.ts, store reads in storeBridge.ts)
   preload/shell.ts       contextBridge API for rail and picker
@@ -282,7 +282,11 @@ src/
   preload/settings.ts    bridge for the settings page
   shared/settings.ts     app settings, services list and settings actions, with validators
   main/settings*.ts      settings store and the controller behind the settings page
-  main/services.ts       edits to platforms.json
+  core/registry.ts       the rail: every service's servers, DMs and conversations, in the user's order
+  core/layout.ts         where the rail, content, Messages list and tooltip go in the window
+  core/platforms.ts      platforms.json: built-in services and the checks on users' own
+  core/services.ts       edits to platforms.json
+  core/modules.ts        the module manifest and the list of modules users may add
   main/modules/          platform module manifests (discord, fluxer, telegram, matrix, stoat, spacebar, nerimity, web clients) and their registry
   main/engineHost.ts     runs module engines: sandboxed views, the validated bridge, session lockdown
   main/netPolicy.ts      what engines may contact, and the HTTP bridge

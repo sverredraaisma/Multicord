@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DISCORD, FLUXER, loadPlatforms, parsePlatforms, TELEGRAM, type ModuleRule } from "../../src/main/platforms";
+import { DISCORD, FLUXER, loadPlatforms, parsePlatforms, TELEGRAM, type ModuleRule } from "../../src/core/platforms";
 
 const user = (raw: unknown, modules?: readonly ModuleRule[]) => {
   const { entries, errors } = parsePlatforms(raw, modules);
@@ -140,9 +140,16 @@ describe("built-in overrides", () => {
   });
 
   it("refuses to turn everything off", () => {
-    const json = JSON.stringify([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]);
-    const { platforms, errors } = loadPlatforms(() => json);
+    const json = JSON.stringify([
+      { id: "discord", enabled: false },
+      { id: "fluxer", enabled: false },
+      { id: "telegram", enabled: false },
+      { id: "el", name: "Element", url: "https://app.element.io", enabled: false },
+    ]);
+    const { platforms, all, errors } = loadPlatforms(() => json);
+    // The built-in services come back on; the user's own stays off.
     expect(platforms.map((p) => p.id)).toEqual(["discord", "fluxer", "telegram"]);
+    expect(all.find((p) => p.def.id === "el")!.enabled).toBe(false);
     expect(errors).toEqual(["at least one platform must stay enabled"]);
   });
 

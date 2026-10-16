@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ModuleRule } from "../../src/main/platforms";
+import type { ModuleRule } from "../../src/core/platforms";
 import {
   addService,
   configEntries,
@@ -8,7 +8,7 @@ import {
   removeService,
   renameService,
   setServiceEnabled,
-} from "../../src/main/services";
+} from "../../src/core/services";
 
 const modules: ModuleRule[] = [
   { id: "discord", defaultUrl: "https://discord.com/app", fixedUrl: true },

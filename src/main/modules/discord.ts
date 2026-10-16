@@ -1,7 +1,7 @@
 import { ipcMain, type IpcMainEvent } from "electron";
 import { IPC, isDiscordPage, isDiscordState, isRelayedNotification } from "../../shared/ipc";
 import { DiscordAdapter } from "../adapters/discordAdapter";
-import { DISCORD } from "../platforms";
+import { DISCORD } from "../../core/platforms";
 import type { PlatformModule } from "./types";
 
 /** Discord's genuine web client as a hidden engine; its preload reports guilds, folders and DMs. */

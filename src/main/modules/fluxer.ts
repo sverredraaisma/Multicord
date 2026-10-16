@@ -1,4 +1,4 @@
-import { FLUXER } from "../platforms";
+import { FLUXER } from "../../core/platforms";
 import type { PlatformModule } from "./types";
 
 /**

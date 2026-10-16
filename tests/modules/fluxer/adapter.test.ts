@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FluxerAdapter, type FluxerAdapterDeps } from "../../../src/modules/fluxer/adapter";
 import type { GatewaySocket } from "../../../src/modules/fluxer/gateway";
-import { FLUXER, type PlatformDef } from "../../../src/main/platforms";
+import { FLUXER, type PlatformDef } from "../../../src/core/platforms";
 import type { NativeViewState } from "../../../src/shared/native";
 import { parseMessage } from "../../../src/modules/fluxer/types";
 import { ANA, ME, readyPayload } from "./fixtures";
