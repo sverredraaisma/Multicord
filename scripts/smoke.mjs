@@ -106,8 +106,14 @@ function mainChecks(tag) {
     const access = mac ? systemPreferences.getMediaAccessStatus("screen") : "granted";
     const denied = access !== "granted";
     try {
-      const sources = await within(desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 16, height: 9 } }), 20_000, "getSources");
-      const screens = sources.filter((s) => s.id.startsWith("screen:")).length;
+      // Right after start, X11 under xvfb sometimes lists no screen yet: ask again a few times before failing.
+      let sources = [];
+      let screens = 0;
+      for (let attempt = 0; attempt < 5 && screens === 0; attempt++) {
+        if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1_000));
+        sources = await within(desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 16, height: 9 } }), 20_000, "getSources");
+        screens = sources.filter((s) => s.id.startsWith("screen:")).length;
+      }
       // With none, what Electron sees of the display, so the failure can be told apart from a bare X server.
       const why = screens > 0 ? "" : `; ${require("electron").screen.getAllDisplays().length} display(s), session ${process.env.XDG_SESSION_TYPE || "unset"}, DISPLAY ${process.env.DISPLAY || "unset"}, WAYLAND_DISPLAY ${process.env.WAYLAND_DISPLAY || "unset"}`;
       const detail = `${screens} screen(s), ${sources.length - screens} window(s)${why}`;
