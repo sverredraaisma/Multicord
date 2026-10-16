@@ -63,7 +63,7 @@ The rules are the desktop's (docs/mobile.md, section 5); this is where each is e
 - **Origin-restricted injection.** The scripts and the listener are restricted to the one origin they serve; the engine page has no `multicordShell`, the shell no `multicordHost` (checked on the phone).
 - **An isolated world for the bridge**, where the WebView has `JS_INJECTION_IN_FRAME_AND_WORLD`: the listener object exists only in the `multicord-bridge` world, so the page's scripts (and anything injected into them) never hold it and cannot post to native code except through the relay, as strings; native code hears only that world. The page can still send whatever the relay forwards, so this narrows the surface rather than adding a trust boundary: identity still comes from the WebView and everything is still validated natively.
 - **Validated natively.** Every engine request and event, and every view action, is checked with the ported validators before anything happens; a malformed request is refused, a malformed event or action dropped. Render state must be an object and goes only to that instance's view.
-- **No network of their own.** Engine pages get `connect-src 'none'` (their fetch and WebSocket fail on the phone; that the CSP header rather than the request interception is what stops them is still to confirm) and their origin serves only their page and bundle; requests to any other host get a 404 from `shouldInterceptRequest`. All their HTTP and sockets go through native code: `https:`/`wss:` only, no credentials in URLs, no local or private hosts (all numeric address forms included, as the URL parser reads them), only the module's hosts or a narrower lock, each redirect re-checked, cookies dropped both ways, responses and frames capped. `PublicDns` refuses a name when any address it resolves to is private, at connection time, on the addresses connected to; there is no proxy so that check sees where the connection goes.
+- **No network of their own.** Engine pages get `connect-src 'none'` (their fetch and WebSocket fail; the CSP header is what stops them, see [Device checks](#device-checks)) and their origin serves only their page and bundle; requests to any other host get a 404 from `shouldInterceptRequest`. All their HTTP and sockets go through native code: `https:`/`wss:` only, no credentials in URLs, no local or private hosts (all numeric address forms included, as the URL parser reads them), only the module's hosts or a narrower lock, each redirect re-checked, cookies dropped both ways, responses and frames capped. `PublicDns` refuses a name when any address it resolves to is private, at connection time, on the addresses connected to; there is no proxy so that check sees where the connection goes.
 - **The shell view** gets no permissions, connects nowhere (`connect-src 'self'`), and may load pictures and media only over https from public hosts its engine may reach (`shouldInterceptRequest`). The WebView resolves those names again itself, so this check is weaker than the engines' (see below).
 - **Storage apart.** One Profile per engine instance (its own cookies, IndexedDB, service workers) and its own origin; the shell has another. Engine Profiles accept no cookies.
 - **Secrets** are encrypted with a non-exportable AES-256-GCM Keystore key (StrongBox when present), one file per instance in app-private storage, each value bound to its instance and key as associated data. No backups (`allowBackup="false"`, data extraction rules exclude everything).
@@ -73,6 +73,21 @@ The rules are the desktop's (docs/mobile.md, section 5); this is where each is e
   - *Browser sign-in* (Matrix's OAuth 2.0 device authorization grant, the first choice where the homeserver has an account service) needs no redirect: the view shows a code and a link, which opens in the browser like any https link from the view.
 - **Platform:** `INTERNET` is the only permission; cleartext is off and only system CAs are trusted; navigation is blocked in engines, and links from the view open in the browser.
 - **Weaker than the desktop**, accepted for now: all WebViews share one renderer process (no per-engine sandbox, docs/mobile.md section 5); on WebViews without `JS_INJECTION_IN_FRAME_AND_WORLD` the relay and the listener run in the page's main world (they are glue, not the boundary; the log says "bridge relay in the main world"); the shell's image loads are checked by name, then resolved again by the WebView.
+
+## Device checks
+
+What the JVM tests cannot show, probed in the engine page over the WebView debug socket (debug build):
+
+| Check | Android 16 emulator, WebView 134 | OnePlus CPH2663, Android 14, WebView 154 |
+|---|---|---|
+| What stops an engine's own network | The CSP: a `securitypolicyviolation` (`connect-src`, enforce) for `fetch` to a public host, `fetch` to its own origin (which `shouldInterceptRequest` would have served with 200) and a `WebSocket`; each fails before reaching the interception | fetch and WebSocket fail (milestone 1); the event is still to read |
+| WebAssembly under `script-src 'self' 'wasm-unsafe-eval'` | Instantiates (async and sync, a module exporting `add`); `eval` is refused | still to run |
+| Bridge world | Main world (no `JS_INJECTION_IN_FRAME_AND_WORLD`); the relay carries requests and answers | the feature is present; the isolated world is still to see in the log |
+| File picking | Refused before an attach and on a second pick; cancel answers `[]`; a picked file reads in ranges; unknown handle refused | still to run |
+| Single sign-on | Refused before a sign-in submit; the Custom Tab opens on matrix.org's account service sign-in page; a redirect with another path is ignored and the request keeps waiting | still to run |
+| Password sign-in form (plain HTTP through the bridge; matrix.org offers `m.login.password`) | Not reachable: the bundles do not run there | still to reach the password step, without credentials |
+
+The emulator's WebView 134 cannot run the bundles themselves (`Uint8Array.fromBase64` arrived in Chrome 140), which is why the engine there never signs in; the minimum WebView check below should cover it.
 
 ## Tests
 
@@ -98,4 +113,4 @@ For phase 2:
 - Fluxer, Stoat, Spacebar, Nerimity and Telegram engines (their sockets already have the relay), web-client modules as plain WebViews.
 - Calls: camera and microphone permissions for the view only, LiveKit's connections, audio routing.
 - Binary messages as `ArrayBuffer`s (`WEB_MESSAGE_ARRAY_BUFFER`) instead of base64 for large bodies; a cap on incoming socket frames before they are read whole.
-- Release signing, an F-Droid build, and a minimum WebView version check beyond the three features checked now.
+- Release signing, an F-Droid build, and a minimum WebView version check beyond the three features checked now (at least 140, for `Uint8Array.fromBase64` in the bundles).
