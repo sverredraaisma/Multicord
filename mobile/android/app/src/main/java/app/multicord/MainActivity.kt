@@ -17,7 +17,6 @@ import android.widget.TextView
 import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import androidx.browser.customtabs.CustomTabsIntent
-import androidx.webkit.WebViewFeature
 import app.multicord.background.NotificationTarget
 
 /**
@@ -35,12 +34,16 @@ class MainActivity : Activity(), Hub.Screen {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val missing = REQUIRED_FEATURES.filterNot(WebViewFeature::isFeatureSupported)
-        if (missing.isNotEmpty()) {
+        val app = application as MulticordApp
+        app.webViewProblem?.let { problem ->
+            // Nothing starts: no Hub, no engines, no background service.
+            Log.w(TAG, "WebView not supported: ${problem.message}")
             setContentView(TextView(this).apply {
                 setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
                 setPadding(48, 48, 48, 48)
-                text = "This phone's Android System WebView is too old for Multicord (missing ${missing.joinToString()}). Update it from your app store."
+                setTextColor(Color.WHITE)
+                setBackgroundColor(BACKGROUND)
+                text = problem.message
             })
             return
         }
@@ -53,7 +56,7 @@ class MainActivity : Activity(), Hub.Screen {
         viewArea = FrameLayout(this)
         root.addView(viewArea, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { topMargin = barHeight() })
         setContentView(root)
-        val hub = (application as MulticordApp).hub()
+        val hub = app.hub()
         this.hub = hub
         hub.attach(this, this)
         NotificationTarget.from(intent)?.let(hub::openNotification)
@@ -179,6 +182,5 @@ class MainActivity : Activity(), Hub.Screen {
         const val REQUEST_PICK = 1
         const val REQUEST_NOTIFY = 2
         val BACKGROUND = Color.rgb(0x1e, 0x1f, 0x22)
-        val REQUIRED_FEATURES = MulticordApp.REQUIRED_FEATURES
     }
 }

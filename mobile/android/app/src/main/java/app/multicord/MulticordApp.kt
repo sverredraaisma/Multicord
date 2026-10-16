@@ -3,7 +3,6 @@ package app.multicord
 
 import android.app.Application
 import android.util.Log
-import androidx.webkit.WebViewFeature
 
 class MulticordApp : Application() {
     private var hub: Hub? = null
@@ -24,8 +23,11 @@ class MulticordApp : Application() {
         it.start()
     }
 
-    /** The Hub, when this phone's WebView can run it; null otherwise. */
-    fun hubIfSupported(): Hub? = if (REQUIRED_FEATURES.all(WebViewFeature::isFeatureSupported)) hub() else null
+    /** Why this phone's WebView cannot run Multicord (checked once per process); null when it can. */
+    val webViewProblem: WebViewSupport.Problem? by lazy { WebViewSupport.problem(this) }
+
+    /** The Hub, when this phone's WebView can run it; null otherwise (nothing starts). */
+    fun hubIfSupported(): Hub? = if (webViewProblem == null) hub() else null
 
     fun hubIfStarted(): Hub? = hub
 
@@ -33,9 +35,5 @@ class MulticordApp : Application() {
     fun quit() {
         hub?.quit()
         hub = null
-    }
-
-    companion object {
-        val REQUIRED_FEATURES = listOf(WebViewFeature.MULTI_PROFILE, WebViewFeature.WEB_MESSAGE_LISTENER, WebViewFeature.DOCUMENT_START_SCRIPT)
     }
 }
