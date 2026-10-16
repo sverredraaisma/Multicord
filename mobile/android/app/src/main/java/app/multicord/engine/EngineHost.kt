@@ -113,7 +113,10 @@ class EngineHost(
     private val queue = ArrayDeque<Pair<String, JsonElement>>()
     /** The hosts the engine may reach now: the module's, or narrower once the engine locks itself. */
     private var allowed: List<String>? = spec.hosts
-    private var crashes = 0
+    /** Core's restart policy: crashes in a row, back-off, and when to leave the engine stopped. */
+    private val restartPolicy = RestartPolicy()
+    /** Counts starts, so a delayed restart that a newer start overtook does nothing. */
+    private var starts = 0
     private var restarts = 0
     private var lastExit: String? = null
     private var readyAt = 0L
@@ -141,6 +144,7 @@ class EngineHost(
     fun start() {
         check(Looper.myLooper() == Looper.getMainLooper())
         stopped = false
+        readyAt = 0L
         val view = WebView(context)
         // The Profile must be set before anything else touches the WebView.
         val profileName = profileName(spec.instanceId)
@@ -195,6 +199,26 @@ class EngineHost(
         tearDown()
         network.shutdownNow()
         secretThread.shutdownNow()
+    }
+
+    /**
+     * Starts the engine again because the user asked (Settings, Restart): one left stopped after crashing
+     * repeatedly, or one that runs but seems stuck. It gets a fresh crash count; the app and the other
+     * engines keep running. Its sockets close and its pending requests go unanswered, as on a reload.
+     */
+    fun restart() {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (stopped) return
+        Log.i(TAG, "[engine ${spec.instanceId}] restarting at the user's request")
+        sso.cancel(this)
+        sockets.closeAll()
+        picked.clear()
+        attachAskedAt = 0L
+        signInAskedAt = 0L
+        tearDown()
+        restartPolicy.reset()
+        starts++
+        start()
     }
 
     private fun tearDown() {
@@ -404,18 +428,18 @@ class EngineHost(
             sockets.closeAll()
             tearDown()
             if (stopped) return true
-            crashes = if (readyAt > 0 && SystemClock.elapsedRealtime() - readyAt >= STABLE_MS) 1 else crashes + 1
             lastExit = if (detail.didCrash()) "crashed" else "killed"
-            if (crashes > MAX_CRASHES) {
-                Log.w(TAG, "[engine ${spec.instanceId}] stopped; crashed $MAX_CRASHES times in a row, not restarting")
+            val delay = restartPolicy.crashed(if (readyAt > 0) SystemClock.elapsedRealtime() - readyAt else null)
+            if (delay == null) {
+                Log.w(TAG, "[engine ${spec.instanceId}] stopped; crashed ${RestartPolicy.MAX_CRASHES} times in a row, not restarting until the user restarts it")
                 health("stopped")
                 return true
             }
-            val delay = minOf(2000L shl (crashes - 1), 30_000L)
             Log.w(TAG, "[engine ${spec.instanceId}] renderer gone (crash: ${detail.didCrash()}); restarting in $delay ms")
             restarts++
             health("starting")
-            main.postDelayed({ if (!stopped && webView == null) start() }, delay)
+            val generation = ++starts
+            main.postDelayed({ if (!stopped && webView == null && generation == starts) start() }, delay)
             return true
         }
     }
@@ -447,9 +471,6 @@ class EngineHost(
         private const val CHANNEL = "multicord-engine"
         /** Messages held for an engine that has not loaded yet, at most. */
         private const val MAX_QUEUE = 1000
-        /** Crashes in a row before an engine is left stopped, and how long a run counts as stable (engineAdapter.ts). */
-        private const val MAX_CRASHES = 5
-        private const val STABLE_MS = 60_000L
         /** How long after the user's attach click, or sign-in submit, the engine may open the picker or the browser (engineHost.ts). */
         const val ASK_WINDOW_MS = 10_000L
 

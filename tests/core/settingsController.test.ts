@@ -252,6 +252,25 @@ describe("settings actions", () => {
     await settings.handle({ type: "restart" });
     expect(deps.restart).toHaveBeenCalled();
   });
+
+  it("restarts one running service where the host can, and says so in its state", async () => {
+    const restartService = vi.fn();
+    const { settings, last } = controller({ fluxer: {} }, { restartService });
+    expect(settings.state().services.find((s) => s.id === "fluxer")!.restartable).toBe(true);
+    expect(settings.state().services.find((s) => s.id === "discord")!.restartable).toBeUndefined();
+    await settings.handle({ type: "restartService", id: "fluxer" });
+    expect(restartService).toHaveBeenCalledWith("fluxer");
+    await settings.handle({ type: "restartService", id: "discord" });
+    expect(last().error).toBe("Turn the service on first.");
+    expect(restartService).toHaveBeenCalledTimes(1);
+  });
+
+  it("cannot restart one service where the host has no way to", async () => {
+    const { settings, last } = controller({ fluxer: {} });
+    expect(settings.state().services.find((s) => s.id === "fluxer")!.restartable).toBeUndefined();
+    await settings.handle({ type: "restartService", id: "fluxer" });
+    expect(last().error).toBe("Turn the service on first.");
+  });
 });
 
 describe("settings modules declare", () => {

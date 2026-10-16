@@ -217,6 +217,8 @@ class Hub(private val app: Context) : EngineUi {
                 stop(id)
                 io.execute { secrets.forget(id) }
             }
+            // The user's Restart for one service: its engine starts again, nothing else does.
+            "restartEngine" -> instances[text("instance")]?.engine?.restart()
             "restart" -> {
                 booted = false
                 for (id in instances.keys.toList()) stop(id)

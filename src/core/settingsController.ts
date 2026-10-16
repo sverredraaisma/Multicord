@@ -43,6 +43,8 @@ export interface SettingsDeps {
   updates?: { status: UpdateStatus; check(): Promise<void>; install(): void };
   /** Shows a running service, e.g. to sign in. */
   openService(id: string): void;
+  /** Starts a running service again on its own, where the host can (the phone restarts its engine). */
+  restartService?(id: string): void;
   /** Clears a service's web session (cookies, storage) and reloads it if running. */
   clearSession(id: string): Promise<void>;
   /** Drops a service's saved tokens. */
@@ -123,6 +125,7 @@ export class SettingsController {
       if (manifest?.holdsMedia) service.holdsMedia = true;
       if (manifest?.sendsTyping) service.sendsTyping = true;
       if (adapter) service.account = adapter.accountStatus?.() ?? { state: "unknown" };
+      if (adapter && this.deps.restartService) service.restartable = true;
       const health = adapter?.health?.();
       if (health) service.health = health;
       const fields = manifest?.settings ?? [];
@@ -235,6 +238,10 @@ export class SettingsController {
       }
       case "openService":
         if (this.deps.adapters.has(action.id)) this.deps.openService(action.id);
+        return;
+      case "restartService":
+        if (!this.deps.restartService || !this.deps.adapters.has(action.id)) throw new Error("Turn the service on first.");
+        this.deps.restartService(action.id);
         return;
       case "restart":
         this.deps.restart();

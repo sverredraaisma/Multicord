@@ -313,6 +313,13 @@ describe("services tab", () => {
     expect(act).toHaveBeenCalledWith({ type: "openService", id: "out" });
   });
 
+  it("Restart shows for services that can restart alone, and sends restartService", () => {
+    mount(viewState({ services: [service(), service({ id: "eng", restartable: true })] }));
+    expect(button("Restart", row())).toBeUndefined();
+    button("Restart", row("eng")).click();
+    expect(act).toHaveBeenCalledWith({ type: "restartService", id: "eng" });
+  });
+
   it("Sign out and Remove ask for confirmation; built-in services have no Remove", () => {
     mount(viewState({ services: [service(), service({ id: "extra", builtIn: false })] }));
     expect(button("Remove", row())).toBeUndefined();

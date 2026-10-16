@@ -28,6 +28,8 @@ export class EngineAdapter extends BaseAdapter implements PlatformAdapter {
     readonly capabilities: PlatformAdapter["capabilities"],
     private readonly send: (command: EngineCommand) => void,
     home: boolean,
+    /** What the user can do about an engine left stopped: on the phone, restart the service alone. */
+    private readonly retry = "restart Multicord to try again",
   ) {
     super(id, { platform: id, instance, accountId: "default" });
     if (home) this.openHome = async () => this.send({ type: "openHome" });
@@ -87,7 +89,7 @@ export class EngineAdapter extends BaseAdapter implements PlatformAdapter {
     const { state, responsive, restarts, lastExit } = this.engine;
     const exits = restarts > 0 ? ` It has restarted ${restarts} time${restarts === 1 ? "" : "s"}${lastExit ? ` (last: ${lastExit})` : ""}.` : "";
     const running: HealthCheck = { name: "Engine running", ok: state === "running" };
-    if (state === "stopped") running.detail = `Stopped after crashing repeatedly; restart Multicord to try again. Nothing from this service arrives.${exits}`;
+    if (state === "stopped") running.detail = `Stopped after crashing repeatedly; ${this.retry}. Nothing from this service arrives.${exits}`;
     else if (state === "starting") running.detail = `Starting; messages and notifications arrive once it runs.${exits}`;
     else if (exits) running.detail = exits.trim();
     if (state !== "running") return [running];

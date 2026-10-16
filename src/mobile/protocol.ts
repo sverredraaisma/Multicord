@@ -58,6 +58,8 @@ export type ShellCommand =
   | { type: "clearSession"; instance: string }
   /** Deletes an instance's secrets. */
   | { type: "forgetSecrets"; instance: string }
+  /** Starts an instance's engine again (the user's Restart in Settings), with a fresh crash count; the app keeps running. */
+  | { type: "restartEngine"; instance: string }
   /** Stops every engine and loads the shell page again, which starts them as its settings say. */
   | { type: "restart" }
   | { type: "copyText"; text: string }
@@ -129,6 +131,7 @@ export function isShellCommand(value: unknown): value is ShellCommand {
       return only(value, ["type", "count"]) && isCount(value.count, MAX_BADGE);
     case "clearSession":
     case "forgetSecrets":
+    case "restartEngine":
       return only(value, ["type", "instance"]) && isInstanceId(value.instance);
     case "restart":
     case "backUnhandled":

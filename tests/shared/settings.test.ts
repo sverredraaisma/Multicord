@@ -85,6 +85,7 @@ describe("settings actions", () => {
       { type: "removeService", id: "element" },
       { type: "signOut", id: "fluxer" },
       { type: "openService", id: "fluxer" },
+      { type: "restartService", id: "tg-2" },
       { type: "serviceAction", id: "matrix", key: "forgetCallServices" },
       { type: "restart" },
       { type: "checkUpdates" },
@@ -108,6 +109,7 @@ describe("settings actions", () => {
       { type: "addService", module: "web", name: "A", url: 5 },
       { type: "renameService", id: "discord" },
       { type: "signOut", id: "../x" },
+      { type: "restartService" },
       { type: "serviceAction", id: "matrix", key: "Bad-Key" },
       { type: "serviceAction", id: "matrix" },
     ]) {

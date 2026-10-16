@@ -699,6 +699,13 @@ export class SettingsPage {
         open.addEventListener("click", () => this.api.act({ type: "openService", id: service.id }));
         actions.append(open);
         if (!signedOut) actions.append(confirmButton(doc, "Sign out", "Click again to sign out", () => this.api.act({ type: "signOut", id: service.id })));
+        if (service.restartable) {
+          const restart = el(doc, "button", "secondary", "Restart");
+          restart.type = "button";
+          restart.title = "Start this service again, without restarting Multicord";
+          restart.addEventListener("click", () => this.api.act({ type: "restartService", id: service.id }));
+          actions.append(restart);
+        }
       }
       if (this.renaming?.id !== service.id) {
         const rename = el(doc, "button", "secondary", "Rename");

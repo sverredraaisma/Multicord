@@ -252,6 +252,15 @@ describe("settings", () => {
     expect(of("restart")).toHaveLength(1);
   });
 
+  it("restarts one service's engine, and says how when it was left stopped", async () => {
+    const { shell, of, emit } = await started();
+    expect(shell.settings.state().services.find((s) => s.id === "matrix")!.restartable).toBe(true);
+    await shell.settingsAction({ type: "restartService", id: "matrix" });
+    expect(of("restartEngine")).toEqual([{ type: "restartEngine", instance: "matrix" }]);
+    await emit({ type: "health", instance: "matrix", state: "stopped", restarts: 5 });
+    expect(shell.adapters.get("matrix")!.health()[0]!.detail).toContain("tap Restart beside it in Settings to try again");
+  });
+
   it("adds a service, signs out, copies the report and opens services", async () => {
     const { shell, of, last } = await started();
     await shell.settingsAction({ type: "addService", module: "stoat-native", name: "Stoat" });

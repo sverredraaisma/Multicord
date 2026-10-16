@@ -31,6 +31,7 @@
       { "type": "badge", "count": { "$limit": "MAX_BADGE" } },
       { "type": "clearSession", "instance": "matrix" },
       { "type": "forgetSecrets", "instance": "matrix" },
+      { "type": "restartEngine", "instance": "tg-2" },
       { "type": "restart" },
       { "type": "backUnhandled" },
       { "type": "copyText", "text": "report" },
@@ -79,6 +80,8 @@
       { "type": "badge" },
       { "type": "clearSession", "instance": "" },
       { "type": "forgetSecrets" },
+      { "type": "restartEngine", "instance": "matrix", "extra": 1 },
+      { "type": "restartEngine", "instance": "../x" },
       { "type": "copyText", "text": { "$repeat": "r", "times": "MAX_COPY+1" } },
       { "type": "copyText" }
     ]

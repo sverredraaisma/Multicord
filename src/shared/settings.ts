@@ -512,6 +512,8 @@ export interface ServiceInfo {
   holdsMedia?: boolean;
   /** Its module sends typing indicators, so the service may choose its own (ModuleManifest.sendsTyping). */
   sendsTyping?: boolean;
+  /** It runs now and can be restarted on its own (restartService), without restarting Multicord. */
+  restartable?: boolean;
 }
 
 /** A module the user can add services (or extra accounts) from. */
@@ -582,6 +584,8 @@ export type SettingsAction =
   | { type: "openService"; id: string }
   /** Runs an action field its module declares, on the running service. */
   | { type: "serviceAction"; id: string; key: string }
+  /** Starts a running service again on its own (its engine, after it stopped or got stuck). */
+  | { type: "restartService"; id: string }
   | { type: "restart" }
   | { type: "checkUpdates" }
   | { type: "installUpdate" }
@@ -607,6 +611,7 @@ export function isSettingsAction(value: unknown): value is SettingsAction {
     case "removeService":
     case "signOut":
     case "openService":
+    case "restartService":
       return isServiceId(value.id);
     case "serviceAction":
       return isServiceId(value.id) && isSettingKey(value.key);

@@ -57,7 +57,7 @@ object ShellCommands {
                 optional(v["railKey"]) { text(it, Limits.MAX_KEY, 1) } &&
                 optional(v["urgent"]) { it.boolean() != null }
             "badge" -> only(v, "type", "count") && count(v["count"], MAX_BADGE.toDouble())
-            "clearSession", "forgetSecrets" -> only(v, "type", "instance") && isInstanceId(v["instance"])
+            "clearSession", "forgetSecrets", "restartEngine" -> only(v, "type", "instance") && isInstanceId(v["instance"])
             "restart", "backUnhandled" -> only(v, "type")
             "copyText" -> only(v, "type", "text") && text(v["text"], MAX_COPY)
             else -> false

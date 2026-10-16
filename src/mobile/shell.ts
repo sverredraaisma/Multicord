@@ -147,6 +147,7 @@ export class MobileShell {
       openService: (id) => this.show(id),
       clearSession: async (id) => this.send({ type: "clearSession", instance: id }),
       forgetSecrets: (id) => this.send({ type: "forgetSecrets", instance: id }),
+      restartService: (id) => this.send({ type: "restartEngine", instance: id }),
       restart: () => this.send({ type: "restart" }),
       publish: (state) => this.ui.settings(this.forPhone(state)),
       copyText: (text) => this.send({ type: "copyText", text: text.slice(0, MAX_COPY) }),
@@ -196,6 +197,7 @@ export class MobileShell {
       manifest.capabilities ?? NO_CAPABILITIES,
       (command) => this.send({ type: "command", instance: id, command }),
       manifest.home === true,
+      "tap Restart beside it in Settings to try again",
     );
     this.adapters.set(id, adapter);
     this.manifests.set(id, manifest);
