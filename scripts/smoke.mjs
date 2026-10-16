@@ -339,7 +339,10 @@ async function main() {
     // Let the engines run (and fail to connect, offline) for a few seconds.
     await sleep(5000);
     for (const engine of NATIVE) {
-      const origin = await engineUp(engine).catch((error) => `error: ${error.message}`);
+      // A slow runner may still be loading a large engine (Telegram's) after those seconds: wait for it to finish.
+      const origin = await until(async () => (await engineUp(engine).catch(() => undefined)) || undefined, `engine "${engine}" to load`, 20_000)
+        .catch(() => engineUp(engine))
+        .catch((error) => `error: ${error.message}`);
       check(`engine "${engine}" runs`, origin === `multicord-engine://${engine}`, String(origin));
     }
     // A bridged socket opens in the engine's relay page (src/main/webSockets.ts) and the engine hears how it ends:
