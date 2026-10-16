@@ -1,6 +1,6 @@
 # Multicord on phones: design note
 
-Status: research and design only, no code yet. Written 2026-10-15. Claims marked **(unverified)** come from memory, secondary sources or inference and need a device test before we rely on them.
+Status: design written 2026-10-15; phase 1 (core extraction, desktop only) mostly done 2026-10-16, see section 7. No mobile code yet. Claims marked **(unverified)** come from memory, secondary sources or inference and need a device test before we rely on them.
 
 ## Summary
 
@@ -52,7 +52,7 @@ Status: research and design only, no code yet. Written 2026-10-15. Claims marked
 - **Engine origin.** Serve each engine from `https://<engine-id>.engine.multicord.invalid/` (or a domain we own) through `shouldInterceptRequest` or `WebViewAssetLoader` (which defaults to `https://appassets.androidplatform.net` and can change the domain). An https origin is a secure context, which `crypto.subtle`, WASM streaming, AudioWorklet and `getUserMedia` need. A custom scheme like `multicord-engine://` would not reliably be one (unverified on Android WebView). One origin per engine, in its own Profile, keeps the engines' storage apart twice over.
 - **Network control** is the weak spot. `shouldInterceptRequest` sees URL, method and headers but **not request bodies** (unverified, but widely reported), and it does not see WebSocket connections. Plan:
   - (a) Engines already send HTTP through the bridge (`bridgeFetch`), so port `performHttp` and `netPolicy` to Kotlin (OkHttp with a DNS check and per-redirect checks). The TS tests' cases are a shared JSON fixture, `tests/fixtures/netpolicy-cases.json`, so both implementations are tested against the same URLs: private and public hosts, numeric address forms, host patterns, `checkUrl` with its kind of refusal (`invalid`, `scheme`, `credentials`, `private`, `host`), host locks, resolved addresses, the request headers that are dropped, and how each redirect status changes the method. A Kotlin or Swift test reads the same file and must pass every case; `tests/main/netPolicy.test.ts` shows how each is meant.
-  - (b) Bridge **WebSockets natively** too (a small `bridgeWebSocket` in `runtime.ts`), instead of letting the WebView open them. Native sockets can then also live in the foreground service (section 6).
+  - (b) Bridge **WebSockets natively** too (`bridgeWebSocket` in `runtime.ts`, done in phase 1), instead of letting the WebView open them. Native sockets can then also live in the foreground service (section 6). The native side has to keep the rules `src/core/engineSockets.ts` keeps on the desktop: ids it hands out, the host policy, and the caps in `src/shared/engine.ts`.
   - (c) Send a strict CSP header with each engine page (`connect-src 'none'` once WebSockets are bridged). We serve the page, so we control the header. CSP is then the backstop if a module tries a direct `fetch`.
   - A `lockHosts` narrowing then lives entirely in native code.
 - **Secrets.** Encrypt each value with a non-exportable Android Keystore AES key and store it in app-private storage, keyed by instance id, as `credentials.ts` does with `safeStorage`.
@@ -161,7 +161,15 @@ Foreground service (Android): keeps engines + their native sockets alive, posts 
 Camera service: Camera2 / USB host + libuvc / AVCapture → MessagePort → page virtual device
 ```
 
-**Where the "main process" logic lives.** `src/main/*` mixes Electron glue with real logic: `registry`, `settingsController`, `settingsStore`, `layout`, rail order, and `EngineAdapter`'s state and validation. Move the logic into a `src/core` that imports neither Electron nor Node, and use it from both hosts.
+**Where the "main process" logic lives.** `src/main/*` mixed Electron glue with real logic. Phase 1 moved the logic into `src/core`, which imports neither Electron nor Node (a test in `tests/main/modules.test.ts` checks every file; its coverage is held to 100%), and both hosts use it:
+- `core/registry.ts`: the rail, every service's servers and DMs in the user's order, and the Messages list.
+- `core/layout.ts`: where the rail, content, Messages list and tooltip go (a phone layout will add to it).
+- `core/platforms.ts`, `core/services.ts`, `core/modules.ts`: platforms.json and its edits, the module manifest and the list of modules users may add.
+- `core/settingsStore.ts`, `core/settingsController.ts`: the settings and the settings page's state and actions. Files come in through `SettingsPersistence` and `PlatformsConfig`; `main/settingsFiles.ts` is the desktop's.
+- `core/engineAdapter.ts`: the shell's stand-in for an engine (what it reported, commands to it, its health) and the restart rules.
+- `core/engineSockets.ts`: the shell's side of bridged WebSockets.
+
+`src/main` keeps the Electron glue: views, sessions, IPC, the HTTP bridge and `netPolicy` (portable too, but the mobile hosts will enforce it natively, against the shared fixture).
 - On desktop it keeps running in the main process.
 - On mobile it runs in the **shell WebView**, the one trusted page we ship, and native code only does what the Electron APIs did.
 - The rule stays the same as now: every engine message is validated by `isEngineEvent` / `isEngineRequest` in trusted code before it reaches state or another view. Engines never get a channel to the shell page directly, only to the native router, which tags each message with the engine's instance id from the WebView it came from.
@@ -194,12 +202,19 @@ Camera service: Camera2 / USB host + libuvc / AVCapture → MessagePort → page
 | Phase | Scope | Rough effort (one developer) |
 |---|---|---|
 | **0. Spikes (retire the big risks)** | Throwaway Android app, about 300 lines of Kotlin, no SDK beyond androidx.webkit: (1) Discord in a WebView with a desktop UA and Profile: sign-in, messages, voice, camera, document-start script running, tablet and phone; (2) `enumerateDevices` test page plus a Camera2 dump with a UVC camera on 2–3 phones; (3) a fake camera (canvas or generated track) patched into `getUserMedia`, used in a Discord video call and checked from another client; (4) measure MJPEG to VideoFrame decode cost. | 1–2 weeks |
-| **1. Core extraction** (desktop benefit too) | Move registry, settings controller and engine-adapter logic out of `src/main` into `src/core`. Shared netPolicy test fixture. A `bridgeWebSocket` in `runtime.ts`, used on desktop too. | 1–2 weeks |
+| **1. Core extraction** (desktop benefit too) | Move registry, settings controller and engine-adapter logic out of `src/main` into `src/core`. Shared netPolicy test fixture. A `bridgeWebSocket` in `runtime.ts`, used on desktop too. **Status below.** | 1–2 weeks |
 | **2. Android MVP** | Kotlin host, shell WebView with a phone layout (rail as drawer, one view at a time), engine WebViews with Profiles, origin bridge, native HTTP and WebSockets, Keystore secrets, file picker, notifications through a foreground service. Modules: Matrix (including E2EE WASM) and Fluxer first, then Stoat and Telegram. Web-client modules as plain WebViews. F-Droid/sideload APK. | 6–10 weeks |
 | **3. Discord on Android** | Discord view with ported hooks, rail and DM integration, call ringing, background voice. Tablet first. | 2–4 weeks (depends on spike 1) |
 | **4. External cameras on Android** | Tier A: device listing and grants. Tier B: libuvc JNI, MessagePort transport, page virtual device, LiveKit and Discord. Hot-plug, permission prompts, a device matrix. | Tier A: days. Tier B: 3–6 weeks |
 | **5. Voice extras** | Call view on mobile, Android screen share through MediaProjection plus a generated track, headset PTT | 2–4 weeks |
 | **6. iPadOS/iOS** | Swift host (iOS 17+), the same structure. External cameras on iPad. Notifications limited. App Store build without Discord. | 6–10 weeks |
+
+**Phase 1 status (2026-10-16).**
+- Done: `src/core` as listed in section 5, with the boundary test and full coverage. The desktop behaves as before.
+- Done: the shared fixture `tests/fixtures/netpolicy-cases.json` (section 2, (a)).
+- Done: `bridgeWebSocket` (`src/engine/runtime.ts`), the socket requests and events with their validators (`src/shared/engine.ts`), and the shell's side (`src/core/engineSockets.ts`, opened on Node's WebSocket by `src/main/webSockets.ts`), with caps on sockets per engine, frame size and bytes waiting to be sent, and every socket closed when its engine reloads, crashes or goes away.
+- Not done: no module uses `bridgeWebSocket` on the desktop yet. Every module with a socket takes its factory as a parameter (Fluxer, Stoat, Spacebar, Nerimity), so switching is one line each, but Node's WebSocket in the main process ignores the system proxy settings and certificate store and sends no `Origin`, which the page's own sockets do; self-hosted instances behind a private CA or users behind a proxy would lose their connection, and no test here can show it. Telegram's GramJS opens its sockets itself and would need a shim. Next step: open the bridged sockets in Chromium's network stack instead (for example from a hidden page in the engine's own session), or give Node's WebSocket the system's proxy and certificates; then switch the four factories, and Telegram through a shim.
+- Not done, as a result: the engine page's CSP still allows `connect-src wss:`. Once every module bridges its sockets it can become `connect-src 'self'`, and on mobile `'none'`.
 
 **What to prototype first:** spike 0.1 (Discord in an Android WebView, with voice and camera) together with 0.3 (a generated track accepted as a Discord camera). These decide whether "preferably for Discord too" is possible at all. Spike 0.2 decides whether Tier B is needed for the phones the user owns.
 
