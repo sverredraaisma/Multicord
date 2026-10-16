@@ -4,6 +4,9 @@ export default defineConfig({
   test: {
     include: ["tests/**/*.test.ts"],
     restoreMocks: true,
+    // Tests are fast (mocked I/O), but a busy machine (an emulator, a Gradle build) once pushed
+    // a few past the 5 s default under coverage; a hang still fails, just later.
+    testTimeout: 15_000,
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
