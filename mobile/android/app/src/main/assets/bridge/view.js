@@ -7,7 +7,8 @@
 // hands them to that engine alone. The view never reaches the shell page or another instance.
 //
 // Besides the desktop's API it has onBack: the system's back goes to the view first (one pane at a time,
-// src/renderer/mobilePanes.ts), and native code hears whether the view used it.
+// src/renderer/mobilePanes.ts), and native code hears whether the view used it. And a call's audio routes:
+// onAudioRoutes hears where it plays and where it can, setAudioRoute asks for another (CallAudio.kt).
 // Messages are JSON; a Uint8Array travels as {"$b64": "<base64>"} (Wire.kt).
 (() => {
   if (window.multicordNative) return;
@@ -24,7 +25,7 @@
   const decode = (text) => JSON.parse(text, (_key, v) => (isEnvelope(v) ? fromBase64(v[BYTES]) : v));
 
   const send = (message) => window.dispatchEvent(new CustomEvent(`${CHANNEL}:out`, { detail: JSON.stringify(message) }));
-  const listeners = { state: [], media: [], back: [] };
+  const listeners = { state: [], media: [], back: [], routes: [] };
   const run = (list, value) => {
     for (const listener of list) {
       try {
@@ -50,6 +51,9 @@
         if (message.body === null) return run(listeners.media, Infinity);
         if (typeof message.body === "number" && message.body >= 0) run(listeners.media, message.body);
         return;
+      // Where a call plays and where it can (CallAudio.kt); the page checks the shape again (isAudioRoutes).
+      case "routes":
+        return run(listeners.routes, message.body);
       case "back": {
         let handled = false;
         for (const listener of listeners.back) {
@@ -64,7 +68,7 @@
     }
   });
 
-  // Calls, voice settings and favourites come with later milestones; until then the view's defaults hold.
+  // Voice settings, global voice keys and favourites are the desktop's; on the phone the view's defaults hold.
   const later = () => {};
 
   window.multicordNative = Object.freeze({
@@ -72,6 +76,9 @@
     act: (action) => send({ k: "act", body: action }),
     onMediaAutoLoad: (cb) => void listeners.media.push(cb),
     onBack: (cb) => void listeners.back.push(cb),
+    onAudioRoutes: (cb) => void listeners.routes.push(cb),
+    // Native code takes only a route it offered (AudioRoute.of), for a call in progress.
+    setAudioRoute: (route) => send({ k: "route", route: String(route) }),
     screenAudioEnded: later,
     onVoiceSettings: later,
     onCompact: later,

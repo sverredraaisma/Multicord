@@ -6,12 +6,14 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.TextView
@@ -19,6 +21,7 @@ import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import androidx.browser.customtabs.CustomTabsIntent
 import app.multicord.background.NotificationTarget
+import app.multicord.call.Call
 
 /**
  * The screen: the shell page (src/core with the bar, the drawer and the settings page) over the chat view
@@ -161,6 +164,13 @@ class MainActivity : Activity(), Hub.Screen {
         val (asked, done) = permitting ?: return
         permitting = null
         done(asked.filter { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }.toSet())
+    }
+
+    override fun inCall(call: Call?) {
+        // Volume keys set the call's volume while one is in progress; a video call keeps the screen on.
+        volumeControlStream = if (call != null) AudioManager.STREAM_VOICE_CALL else AudioManager.USE_DEFAULT_STREAM_TYPE
+        if (call?.video == true) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 
     override fun openBrowser(url: String): Boolean = try {

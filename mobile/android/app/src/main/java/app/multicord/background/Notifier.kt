@@ -11,6 +11,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import app.multicord.MainActivity
+import app.multicord.call.Call
 
 /** What a tapped notification opens: one instance's conversation, as the shell page named it. */
 data class NotificationTarget(val instance: String, val target: String, val railKey: String?) {
@@ -67,6 +68,10 @@ class Notifier(private val context: Context) {
                 description = "Someone is calling you."
                 setShowBadge(true)
             },
+            NotificationChannel(ONGOING, "Ongoing calls", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Shown while you are in a call, with a button to hang up."
+                setShowBadge(false)
+            },
         ))
     }
 
@@ -113,6 +118,24 @@ class Notifier(private val context: Context) {
             .addAction(Notification.Action.Builder(null, "Quit", quit).build())
             .build()
 
+    /**
+     * The background service's notification while the user is in a call (it then also holds the microphone,
+     * and the camera with video): where, since when, and Hang up.
+     */
+    fun inCall(call: Call, since: Long, hangUp: PendingIntent, open: PendingIntent): Notification =
+        Notification.Builder(context, ONGOING)
+            .setSmallIcon(android.R.drawable.stat_sys_phone_call)
+            .setContentTitle(if (call.video) "In a video call" else "In a call")
+            .setContentText(call.channelName)
+            .setContentIntent(open)
+            .setOngoing(true)
+            .setCategory(Notification.CATEGORY_CALL)
+            .setWhen(since)
+            .setShowWhen(true)
+            .setUsesChronometer(true)
+            .addAction(Notification.Action.Builder(null, "Hang up", hangUp).build())
+            .build()
+
     fun update(notification: Notification) {
         if (allowed()) manager.notify(CONNECTED_ID, notification)
     }
@@ -123,6 +146,7 @@ class Notifier(private val context: Context) {
         const val CONNECTION = "connection"
         const val MESSAGES = "messages"
         const val CALLS = "calls"
+        const val ONGOING = "ongoing-calls"
         const val CONNECTED_ID = 1
     }
 }

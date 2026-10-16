@@ -19,6 +19,7 @@ import androidx.webkit.WebViewCompat
 import app.multicord.BuildConfig
 import app.multicord.bridge.BridgeScripts
 import app.multicord.bridge.Wire
+import app.multicord.call.AudioRoute
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -42,15 +43,21 @@ class ChatView(
     private val onBack: (id: Long, handled: Boolean) -> Unit,
     /** The hosts this instance's engine may reach now; null for any public host. */
     private val viewHosts: () -> List<String>?,
+    /** The page asks for the camera or microphone (a call); the caller decides (CallPolicy) and grants or denies. */
+    private val onPermission: (PermissionRequest) -> Unit,
+    /** The user picked where the call plays, not yet checked: the caller takes only a route it offered. */
+    private val onRoute: (AudioRoute) -> Unit,
 ) {
     private val host = "$instanceId.view.multicord.invalid"
-    private val origin = "https://$host"
+    /** The view's own origin: the only one its permission requests may come from. */
+    val origin = "https://$host"
     var webView: WebView? = null
         private set
     private var proxy: JavaScriptReplyProxy? = null
     /** What the view shows, kept for a view that (re)loads: its engine's last state, and its media limit. */
     private var state: JsonObject? = null
     private var media: JsonElement? = null
+    private var routes: JsonObject? = null
 
     /** Whether the view's page is up and can answer (a back press, say). */
     val ready: Boolean get() = proxy != null
@@ -63,8 +70,8 @@ class ChatView(
         Pages.configure(view)
         view.webViewClient = Client()
         view.webChromeClient = object : WebChromeClient() {
-            // Calls (camera, microphone) come in a later milestone; until then the view gets nothing.
-            override fun onPermissionRequest(request: PermissionRequest) = request.deny()
+            // Calls: the camera and microphone, as CallPolicy allows them for this view's own call.
+            override fun onPermissionRequest(request: PermissionRequest) = onPermission(request)
 
             override fun onConsoleMessage(message: ConsoleMessage): Boolean {
                 if (BuildConfig.DEBUG) Log.d(TAG, "[view $instanceId] ${message.messageLevel()} ${message.message().take(500)}")
@@ -80,9 +87,11 @@ class ChatView(
                 // A view that has just loaded gets what it missed.
                 media?.let { post("media", it) }
                 state?.let { post("state", it) }
+                routes?.let { post("routes", it) }
             }
             when ((parsed["k"] as? JsonPrimitive)?.content) {
                 "act" -> onAction(parsed["body"])
+                "route" -> AudioRoute.of((parsed["route"] as? JsonPrimitive)?.takeIf { it.isString }?.content)?.let(onRoute)
                 "back" -> {
                     val id = (parsed["id"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull ?: return@install
                     onBack(id, (parsed["handled"] as? JsonPrimitive)?.content == "true")
@@ -104,6 +113,12 @@ class ChatView(
     fun mediaAutoLoad(limit: JsonElement) {
         media = limit
         post("media", limit)
+    }
+
+    /** Where the view's call plays now and where it could (AudioRoute.report). */
+    fun audioRoutes(report: JsonObject) {
+        routes = report
+        post("routes", report)
     }
 
     /** Asks the view whether it can go back; it answers through onBack with this id. */
@@ -151,8 +166,10 @@ class ChatView(
 
     /** Our own files on the view's origin; https pictures and media from public hosts the engine may reach; nothing else. */
     private fun serve(url: Uri, method: String): WebResourceResponse? {
-        if (url.scheme == "https" && url.host == host) return Pages.serve(context, FILES, url, method, CSP)
-        if (!Pages.mayLoad(url, viewHosts())) return Pages.blocked(CSP)
+        val hosts = viewHosts()
+        val csp = ViewCsp.of(hosts)
+        if (url.scheme == "https" && url.host == host) return Pages.serve(context, FILES, url, method, csp)
+        if (!Pages.mayLoad(url, hosts)) return Pages.blocked(csp)
         return null
     }
 
@@ -174,24 +191,5 @@ class ChatView(
             "/audio/rnnoise-worklet.js" to ("audio/rnnoise-worklet.js" to "text/javascript"),
             "/livekit-e2ee-worker.js" to ("livekit-e2ee-worker.js" to "text/javascript"),
         )
-
-        /**
-         * Added to native.html's own policy (both apply): no network connections from the view for now
-         * (calls come later), pictures and media over https or inline.
-         */
-        private val CSP = listOf(
-            "default-src 'self'",
-            "script-src 'self' 'wasm-unsafe-eval'",
-            "style-src 'self'",
-            "img-src 'self' https: data: blob:",
-            "media-src 'self' https: data: blob:",
-            "connect-src 'self' data: blob:",
-            "worker-src 'self'",
-            "object-src 'none'",
-            "frame-src 'none'",
-            "base-uri 'none'",
-            "form-action 'none'",
-            "frame-ancestors 'none'",
-        ).joinToString("; ")
     }
 }

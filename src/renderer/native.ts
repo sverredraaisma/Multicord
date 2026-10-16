@@ -3,7 +3,7 @@ import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, chatFolders, customEmojiList, emojiUrls, gifResults, incomingCall, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
+import { channelCan, chatFolders, customEmojiList, emojiUrls, gifResults, incomingCall, isAudioRoutes, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
 import type { VoiceCommand, VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, setPromptQr, type LoginForm } from "./components/auth";
 import { channelList, folderTabs } from "./components/channels";
@@ -14,7 +14,7 @@ import { typingText } from "./components/format";
 import { memberPanel, profileCard, type ProfileCardData } from "./components/members";
 import { matchMentions, mentionCandidates, mentionOptionId, mentionOptions, mentionQuery, type MentionCandidate } from "./components/mentions";
 import { autoLoads, favouriteKind, messageItem, type MessageHandlers } from "./components/message";
-import { forumPosts, listedMessages, pendingFiles, pollForm, postForm, replyBar, voicePanel } from "./components/panels";
+import { forumPosts, listedMessages, pendingFiles, pollForm, postForm, replyBar, voicePanel, type VoicePanelOptions } from "./components/panels";
 import { isOwnReaction } from "./components/reactions";
 import { attachMobilePanes } from "./mobilePanes";
 import { VoiceCall } from "./voice";
@@ -76,6 +76,7 @@ export class NativeView {
   private focusProfile = false;
   private call: VoiceCall | undefined;
   private voiceSettings: VoiceSettings | undefined;
+  private voiceOptions: VoicePanelOptions = {};
   /** The shell's favourites, as last sent; the module never sees them. */
   private favourites: FavouritesState | undefined;
   /** The composer's picker, while open. */
@@ -122,6 +123,12 @@ export class NativeView {
     /** Starts LiveKit's end-to-end encryption worker, for encrypted calls. */
     private readonly e2eeWorker?: ConstructorParameters<typeof VoiceCall>[6],
   ) {}
+
+  /** How the call controls differ on this host (a phone: no screen sharing, audio routes). */
+  setVoiceOptions(options: VoicePanelOptions): void {
+    this.voiceOptions = options;
+    this.rerender();
+  }
 
   /** The favourites changed: stars in messages and the open picker follow. */
   setFavourites(state: FavouritesState): void {
@@ -1441,7 +1448,7 @@ export class NativeView {
         ? voicePanel(this.doc, state.voice, {
             onChange: (flags) => this.api.act({ type: "voiceState", ...flags }),
             onLeave: () => this.api.act({ type: "leaveVoice" }),
-          })
+          }, this.voiceOptions)
         : []),
     );
     void this.call?.sync(state.voice);
@@ -1518,7 +1525,17 @@ export function startNative(
   const view = new NativeView(doc.getElementById("app")!, api, denoiser, e2eeWorker);
   api.onState((state) => view.update(state));
   // The phone's bridge: one pane at a time, and the system's back.
-  if (api.onBack) attachMobilePanes(doc, { onState: (cb) => api.onState(cb), onBack: api.onBack });
+  if (api.onBack) {
+    attachMobilePanes(doc, { onState: (cb) => api.onState(cb), onBack: api.onBack });
+    // A phone's WebView has no getDisplayMedia: no screen sharing. Calls play where the phone routes them.
+    view.setVoiceOptions({ screenShare: false });
+    const { onAudioRoutes, setAudioRoute } = api;
+    if (onAudioRoutes && setAudioRoute) {
+      onAudioRoutes((routes) => {
+        if (isAudioRoutes(routes)) view.setVoiceOptions({ screenShare: false, audio: { routes, onRoute: (route) => setAudioRoute(route) } });
+      });
+    }
+  }
   api.onVoiceSettings((settings) => view.setVoiceSettings(settings));
   api.onMediaAutoLoad((limit) => view.setMediaAutoLoad(limit));
   api.onFavourites((favourites) => view.setFavourites(favourites));

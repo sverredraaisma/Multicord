@@ -8,11 +8,18 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <!-- Camera and microphone, for web-client modules' own pages only (their calls), asked when a page asks
-         (WebClientPolicy, the desktop's permission allowlist); WebRTC needs to set the audio mode. Neither is required. -->
+    <!-- Camera and microphone, for calls: in web-client modules' own pages (WebClientPolicy, the desktop's
+         permission allowlist), and in a chat view only for its own call in progress (CallPolicy); asked when
+         a page asks. Neither is required. Calls set the audio mode and route (CallAudio), Bluetooth headsets
+         through SCO before Android 12, and turn the screen off at the ear (a proximity wake lock). While in a
+         call the background service also holds the microphone, and the camera with video. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <!-- "Start with your phone" (off by default): BootReceiver starts ConnectionService after a reboot or an update. -->
@@ -46,11 +53,12 @@
              background, as Element's and Conversations' F-Droid builds do. specialUse: none of the defined types fits.
              dataSync is capped at 6 hours a day from Android 15, and remoteMessaging is for handing messages
              between a user's devices; this keeps the user's own chat connections open so messages and calls
-             arrive, for services without push that needs no Google services (mobile/android/README.md). -->
+             arrive, for services without push that needs no Google services (mobile/android/README.md).
+             microphone and camera: only while the user is in a call, with its runtime permission (CallPolicy). -->
         <service
             android:name=".background.ConnectionService"
             android:exported="false"
-            android:foregroundServiceType="specialUse">
+            android:foregroundServiceType="specialUse|microphone|camera">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Keeps the user's chat services connected (WebSocket and sync connections to their own servers) so incoming messages and calls are delivered; these services offer no push without Google Play Services." />

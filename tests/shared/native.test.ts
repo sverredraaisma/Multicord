@@ -4,6 +4,7 @@ import {
   customEmojiList,
   emojiUrls,
   gifResults,
+  isAudioRoutes,
   isShownUrl,
   MAX_CUSTOM_EMOJI,
   MAX_GIF_QUERY,
@@ -632,5 +633,27 @@ describe("polls", () => {
     expect(isNativeAction({ ...poll, anonymous: 1 })).toBe(false);
     expect(isNativeAction({ type: "endPoll", messageId: "5" })).toBe(true);
     expect(isNativeAction({ type: "endPoll", messageId: "$x" })).toBe(false);
+  });
+});
+
+describe("audio routes", () => {
+  it("accepts the routes a phone reports, the one in use among them", () => {
+    expect(isAudioRoutes({ current: "speaker", available: ["earpiece", "speaker", "wired", "bluetooth"] })).toBe(true);
+    expect(isAudioRoutes({ current: "earpiece", available: ["earpiece"] })).toBe(true);
+    for (const bad of [
+      null,
+      [],
+      "speaker",
+      { current: "speaker" },
+      { current: "speaker", available: [] },
+      { current: "speaker", available: ["earpiece"] },
+      { current: "loud", available: ["loud"] },
+      { current: "speaker", available: ["speaker", "speaker"] },
+      { current: "speaker", available: "speaker" },
+      { current: "speaker", available: ["speaker", "earpiece", "wired", "bluetooth", "speaker"] },
+      { current: "speaker", available: ["speaker"], extra: 1 },
+    ]) {
+      expect(isAudioRoutes(bad)).toBe(false);
+    }
   });
 });

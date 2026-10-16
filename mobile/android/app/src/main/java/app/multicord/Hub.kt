@@ -10,6 +10,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.webkit.PermissionRequest
 import android.webkit.WebView
 import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewCompat
@@ -17,6 +18,10 @@ import app.multicord.background.ConnectionService
 import app.multicord.background.NotificationTarget
 import app.multicord.background.Notifier
 import app.multicord.bridge.Validators
+import app.multicord.call.AudioRoute
+import app.multicord.call.Call
+import app.multicord.call.CallAudio
+import app.multicord.call.CallPolicy
 import app.multicord.engine.EngineHost
 import app.multicord.engine.EngineListener
 import app.multicord.engine.EngineSpec
@@ -66,6 +71,9 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
 
         /** The user quit: the screen goes too. */
         fun close()
+
+        /** A call is in progress (null: none): the screen stays on for video, volume keys set the call's volume. */
+        fun inCall(call: Call?)
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -96,6 +104,16 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
     var onRunningChanged: ((Int) -> Unit)? = null
     private var pendingOpen: NotificationTarget? = null
 
+    /** Calls in progress, by instance, as their engines' display state says; the first one has the phone's audio. */
+    private val callsByInstance = LinkedHashMap<String, Call>()
+    val calls: List<Call> get() = callsByInstance.values.toList()
+    /** Who wants to hear when calls start, end or turn video on or off (the background service's types and notification). */
+    var onCallsChanged: (() -> Unit)? = null
+    private val callAudio = CallAudio(app) { current, available ->
+        val call = callsByInstance.values.firstOrNull() ?: return@CallAudio
+        instances[call.instance]?.view?.audioRoutes(AudioRoute.report(current, available))
+    }
+
     fun start() {
         deletePendingProfiles()
         // Keeps everything running while no activity is on screen (ConnectionService).
@@ -114,6 +132,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
 
     fun attach(screen: Screen, activity: Context) {
         this.screen = screen
+        screen.inCall(callsByInstance.values.firstOrNull())
         shellContext.baseContext = activity
         for (instance in instances.values) instance.context.baseContext = activity
         place()
@@ -293,6 +312,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
         override fun onRender(host: EngineHost, state: JsonObject) {
             this.state = state
             view?.showState(state)
+            if (instances[id] === this) setCall(id, Call.of(id, state))
         }
 
         override fun onHealth(host: EngineHost, state: String, restarts: Int, lastExit: String?) {
@@ -341,6 +361,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
 
     private fun stop(id: String) {
         val instance = instances.remove(id) ?: return
+        setCall(id, null)
         instance.engine?.destroy()
         instance.view?.destroy()
         instance.web?.destroy()
@@ -412,6 +433,55 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
         if (names.isEmpty()) profilesToDelete.delete() else profilesToDelete.writeText(JsonArray(names.map(::JsonPrimitive)).toString())
     }
 
+    // Calls -----------------------------------------------------------------------------------------------
+
+    /** An instance's call as its engine now reports it (null: none); the audio, the screen and the background service follow. */
+    private fun setCall(id: String, call: Call?) {
+        if (callsByInstance[id] == call) return
+        if (call == null) callsByInstance.remove(id) else callsByInstance[id] = call
+        Log.i(TAG, if (call == null) "[call $id] ended" else "[call $id] in progress" + (if (call.video) " with video" else ""))
+        val first = callsByInstance.values.firstOrNull()
+        callAudio.update(first)
+        screen?.inCall(first)
+        val service = onCallsChanged
+        if (service != null) {
+            service()
+        } else if (call != null) {
+            // The background service did not start before (the app was not in front then): it may now.
+            try {
+                app.startForegroundService(Intent(app, ConnectionService::class.java))
+            } catch (error: Exception) {
+                Log.w(TAG, "Could not start the background service for a call: ${error.message}")
+            }
+        }
+    }
+
+    /** Hang up from the call notification: each call is left, as the view's Leave does. */
+    fun hangUp() {
+        for (id in callsByInstance.keys.toList()) instances[id]?.engine?.action(JsonObject(mapOf("type" to JsonPrimitive("leaveVoice"))))
+    }
+
+    /**
+     * A chat view asks for the camera or microphone: granted only as CallPolicy allows for that view's own
+     * call, once Android's runtime permission is held (asked now if need be); the background service may then
+     * take the microphone and camera types.
+     */
+    private fun permit(instanceId: String, request: PermissionRequest) {
+        val viewOrigin = instances[instanceId]?.view?.origin
+        val wanted = if (viewOrigin == null) emptyList() else CallPolicy.grantable(request.resources.toList(), request.origin?.toString(), viewOrigin, callsByInstance[instanceId])
+        if (wanted.isEmpty()) {
+            Log.i(TAG, "[view $instanceId] refused ${request.resources.joinToString()}: no call of its own wants it")
+            return request.deny()
+        }
+        val needed = wanted.mapNotNull { CallPolicy.ANDROID_PERMISSIONS[it] }.distinct()
+        val asked = requestPermissions(needed) { granted ->
+            val ok = wanted.filter { CallPolicy.ANDROID_PERMISSIONS[it] in granted }
+            if (ok.isEmpty()) request.deny() else request.grant(ok.toTypedArray())
+            onCallsChanged?.invoke()
+        }
+        if (!asked) request.deny()
+    }
+
     // Views -----------------------------------------------------------------------------------------------
 
     /** The shown instance's chat view, made when first shown; at most MAX_VIEWS are kept, the least recently shown go. */
@@ -429,13 +499,17 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
             },
             onBack = ::onBackAnswer,
             viewHosts = { engine.allowedHosts },
+            onPermission = { request -> permit(instance.id, request) },
+            // Only the view of the call that has the phone's audio picks its route.
+            onRoute = { route -> if (callsByInstance.values.firstOrNull()?.instance == instance.id) callAudio.choose(route) },
         )
         view.start()
         instance.media?.let(view::mediaAutoLoad)
         instance.state?.let(view::showState)
         instance.view = view
         val kept = instances.values.filter { it.view != null }.sortedByDescending { it.shownAt }
-        for (old in kept.drop(MAX_VIEWS)) {
+        // A view in a call runs that call: it stays.
+        for (old in kept.drop(MAX_VIEWS).filter { it.id !in callsByInstance }) {
             old.view?.destroy()
             old.view = null
         }

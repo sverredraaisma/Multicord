@@ -1,15 +1,27 @@
-import { MAX_MESSAGE_LENGTH, MAX_NEW_POLL_ANSWER, MAX_NEW_POLL_ANSWERS, MAX_NEW_POLL_QUESTION, MIN_NEW_POLL_ANSWERS, type NativeForumPost, type NativeListedMessage, type NativeMessageList, type NativeVoiceSession } from "../../shared/native";
+import { MAX_MESSAGE_LENGTH, MAX_NEW_POLL_ANSWER, MAX_NEW_POLL_ANSWERS, MAX_NEW_POLL_QUESTION, MIN_NEW_POLL_ANSWERS, type NativeForumPost, type NativeListedMessage, type NativeMessageList, type AudioRoute, type AudioRoutes, type NativeVoiceSession } from "../../shared/native";
 import { avatar } from "./avatar";
 import { countBadge, el } from "./dom";
 import { formatSize, formatTime } from "./format";
 
 type VoiceFlags = Pick<NativeVoiceSession, "mute" | "deaf" | "video" | "stream">;
 
+/** What the phone calls each audio route. */
+const ROUTE_NAMES: Record<AudioRoute, string> = { earpiece: "Earpiece", speaker: "Speaker", wired: "Headset", bluetooth: "Bluetooth" };
+
+/** Where the host differs from the desktop's (a phone): no screen sharing, and audio routes to switch between. */
+export interface VoicePanelOptions {
+  /** Whether screen sharing exists here; a phone's WebView has no getDisplayMedia. Default true. */
+  screenShare?: boolean;
+  /** The phone's audio routes; a button switches to the next available one. */
+  audio?: { routes: AudioRoutes; onRoute(route: AudioRoute): void };
+}
+
 /** The call controls: connection status, where, and toggles that report the new flags. */
 export function voicePanel(
   doc: Document,
   voice: NativeVoiceSession,
   handlers: { onChange(flags: VoiceFlags): void; onLeave(): void },
+  options: VoicePanelOptions = {},
 ): HTMLElement[] {
   const status = el(doc, "div", "voice-status", voice.token ? "Voice connected" : "Connecting…");
   status.classList.toggle("connected", Boolean(voice.token));
@@ -27,7 +39,17 @@ export function voicePanel(
   toggle(voice.mute ? "Unmute" : "Mute", voice.mute, { mute: !voice.mute });
   toggle(voice.deaf ? "Undeafen" : "Deafen", voice.deaf, { deaf: !voice.deaf });
   toggle(voice.video ? "Camera off" : "Camera", voice.video, { video: !voice.video });
-  toggle(voice.stream ? "Stop sharing" : "Share screen", voice.stream, { stream: !voice.stream });
+  if (options.screenShare !== false) toggle(voice.stream ? "Stop sharing" : "Share screen", voice.stream, { stream: !voice.stream });
+  const audio = options.audio;
+  if (audio && audio.routes.available.length > 1) {
+    const { current: playing, available } = audio.routes;
+    const next = available[(available.indexOf(playing) + 1) % available.length]!;
+    const route = el(doc, "button", "audio-route", ROUTE_NAMES[playing]);
+    route.type = "button";
+    route.title = `Playing through the ${ROUTE_NAMES[playing].toLowerCase()}; switch to the ${ROUTE_NAMES[next].toLowerCase()}`;
+    route.addEventListener("click", () => audio.onRoute(next));
+    controls.append(route);
+  }
   const leave = el(doc, "button", "leave", "Leave");
   leave.addEventListener("click", handlers.onLeave);
   controls.append(leave);

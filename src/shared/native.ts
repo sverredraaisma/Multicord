@@ -1056,6 +1056,35 @@ export function chatFolders(value: unknown): NativeFolder[] {
 /** A call feature that may fail to start on its own. */
 export type VoiceNoticeFlag = "video" | "stream";
 
+/**
+ * Where a phone plays a call (mobile/android's view bridge only): its
+ * earpiece, its loudspeaker, a wired headset or a Bluetooth one.
+ */
+export const AUDIO_ROUTES = ["earpiece", "speaker", "wired", "bluetooth"] as const;
+export type AudioRoute = (typeof AUDIO_ROUTES)[number];
+
+/** The phone's audio routes for a call now: the one in use, and those it can switch to. */
+export interface AudioRoutes {
+  current: AudioRoute;
+  available: AudioRoute[];
+}
+
+export const isAudioRoute = (value: unknown): value is AudioRoute => typeof value === "string" && (AUDIO_ROUTES as readonly string[]).includes(value);
+
+export function isAudioRoutes(value: unknown): value is AudioRoutes {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const { current, available } = value as Record<string, unknown>;
+  return (
+    Object.keys(value).length === 2 &&
+    isAudioRoute(current) &&
+    Array.isArray(available) &&
+    available.length <= AUDIO_ROUTES.length &&
+    available.every(isAudioRoute) &&
+    new Set(available).size === available.length &&
+    available.includes(current)
+  );
+}
+
 export type NativeAction =
   | { type: "ready" }
   | { type: "login"; identity: string; password: string }
