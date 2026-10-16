@@ -1393,9 +1393,10 @@ export class NativeView {
     const parts: HTMLElement[] = [close, el(doc, "h3", "member-section", title)];
     if (searching) parts.push(this.parts.searchForm!);
     if (this.jumpNote) parts.push(el(doc, "p", "member-error", this.jumpNote));
-    if (pins) parts.push(...listedMessages(doc, pins, (message) => this.jumpTo(message), "No pinned messages."));
+    const excerpts = { customEmojiUrl: (id: string, animated: boolean) => this.emojiUrl(id, animated) };
+    if (pins) parts.push(...listedMessages(doc, pins, (message) => this.jumpTo(message), "No pinned messages.", excerpts));
     const results = searching && this.searched ? searchResults(channel!.search) : undefined;
-    if (results) parts.push(...listedMessages(doc, results, (message) => this.jumpTo(message), `No messages found for “${results.query}”.`));
+    if (results) parts.push(...listedMessages(doc, results, (message) => this.jumpTo(message), `No messages found for “${results.query}”.`, excerpts));
     panel.replaceChildren(...parts);
     if (focusKey === undefined) return;
     [...panel.querySelectorAll<HTMLElement>("button, input")].find((b) => (b.dataset.id ?? b.className) === focusKey)?.focus();

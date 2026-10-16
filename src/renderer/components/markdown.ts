@@ -118,3 +118,115 @@ export function renderMarkdown(doc: Document, source: string, options: MarkdownO
   root.append(...blocks.map((b) => renderBlock(doc, b, options)));
   return root;
 }
+
+/** How long an excerpt's text may run, in characters, before it is cut with "…". */
+export const EXCERPT_LENGTH = 200;
+
+/**
+ * A message's text as a short excerpt for a list of messages (pinned ones,
+ * search results), where the whole entry is one button: formatting shows
+ * (bold, italics, code, custom emoji), but nothing in it is interactive or a
+ * block. Links read as their text, spoilers stay hidden as "(spoiler)",
+ * headings and quotes run on as text, list items get a bullet. Built from
+ * text nodes and inline elements only, and cut at about `max` characters.
+ */
+export function renderExcerpt(doc: Document, source: string, options: MarkdownOptions = {}, max = EXCERPT_LENGTH): HTMLElement {
+  const root = el(doc, "span", "markdown excerpt");
+  let left = max;
+  let cut = false;
+  const text = (parent: Node, value: string): void => {
+    if (value.length > left) cut = true;
+    parent.appendChild(doc.createTextNode(value.slice(0, Math.max(left, 0))));
+    left -= value.length;
+  };
+  const inline = (parent: Node, nodes: Inline[]): void => {
+    for (const node of nodes) {
+      if (left <= 0) {
+        cut = true;
+        return;
+      }
+      switch (node.type) {
+        case "text":
+          text(parent, node.text);
+          break;
+        case "br":
+          text(parent, " ");
+          break;
+        case "code": {
+          const code = el(doc, "code", "md-code");
+          text(code, node.text);
+          parent.appendChild(code);
+          break;
+        }
+        case "bold":
+        case "italic":
+        case "underline":
+        case "strike": {
+          const element = el(doc, WRAP_TAGS[node.type]);
+          inline(element, node.children);
+          parent.appendChild(element);
+          break;
+        }
+        case "spoiler":
+          parent.appendChild(el(doc, "span", "excerpt-spoiler", "(spoiler)"));
+          left -= 9;
+          break;
+        case "link":
+          inline(parent, node.children);
+          break;
+        case "emoji":
+          text(parent, node.unicode);
+          break;
+        case "customEmoji": {
+          const url = options.customEmojiUrl?.(node.id, node.animated);
+          if (!url) {
+            text(parent, `:${node.name}:`);
+            break;
+          }
+          const img = el(doc, "img", "emoji custom");
+          img.src = url;
+          img.alt = `:${node.name}:`;
+          img.draggable = false;
+          parent.appendChild(img);
+          left -= 1;
+          break;
+        }
+      }
+    }
+  };
+  const block = (b: Block): void => {
+    if (left <= 0) {
+      cut = true;
+      return;
+    }
+    // Blocks run on, a space apart.
+    if (root.childNodes.length > 0 && !/\s$/.test(root.textContent ?? "")) text(root, " ");
+    switch (b.type) {
+      case "paragraph":
+      case "subtext":
+        return inline(root, b.children);
+      case "heading": {
+        const strong = el(doc, "strong");
+        inline(strong, b.children);
+        root.appendChild(strong);
+        return;
+      }
+      case "quote":
+        return b.children.forEach((child) => block(child));
+      case "codeblock": {
+        const code = el(doc, "code", "md-code");
+        text(code, b.text.replace(/\s+/g, " ").trim());
+        root.appendChild(code);
+        return;
+      }
+      case "list":
+        return b.items.forEach((item, i) => {
+          text(root, `${i > 0 ? " " : ""}${b.ordered ? `${b.start + i}.` : "•"} `);
+          inline(root, item);
+        });
+    }
+  };
+  for (const b of parseMarkdown(source)) block(b);
+  if (cut) root.appendChild(doc.createTextNode("…"));
+  return root;
+}

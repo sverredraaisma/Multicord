@@ -2,6 +2,7 @@ import { MAX_MESSAGE_LENGTH, MAX_NEW_POLL_ANSWER, MAX_NEW_POLL_ANSWERS, MAX_NEW_
 import { avatar } from "./avatar";
 import { countBadge, el } from "./dom";
 import { formatSize, formatTime } from "./format";
+import { renderExcerpt, type MarkdownOptions } from "./markdown";
 
 type VoiceFlags = Pick<NativeVoiceSession, "mute" | "deaf" | "video" | "stream">;
 
@@ -164,9 +165,10 @@ export function replyBar(doc: Document, author: string, onCancel: () => void): H
  * The side panel's list of messages (pinned ones, search results): each a
  * button with the author's picture, name, time and text, which brings the
  * message into sight. A note, loading and errors around it, and `empty`
- * when there is nothing. The list is bounded by messageList().
+ * when there is nothing. The list is bounded by messageList(). The text is
+ * an excerpt with its formatting (renderExcerpt), not raw Markdown.
  */
-export function listedMessages(doc: Document, list: NativeMessageList, onOpen: (message: NativeListedMessage) => void, empty: string): HTMLElement[] {
+export function listedMessages(doc: Document, list: NativeMessageList, onOpen: (message: NativeListedMessage) => void, empty: string, options: MarkdownOptions = {}): HTMLElement[] {
   const parts: HTMLElement[] = [];
   if (list.note) parts.push(el(doc, "p", "panel-note", list.note));
   if (list.error) parts.push(el(doc, "p", "member-error", list.error));
@@ -180,7 +182,9 @@ export function listedMessages(doc: Document, list: NativeMessageList, onOpen: (
       const meta = el(doc, "span", "listed-meta");
       meta.append(el(doc, "strong", "listed-author", message.author), el(doc, "time", undefined, formatTime(message.timestamp)));
       const text = el(doc, "span", "listed-text");
-      text.append(meta, el(doc, "span", "listed-content", message.content || "(no text)"));
+      const content = el(doc, "span", "listed-content");
+      content.append(message.content ? renderExcerpt(doc, message.content, options) : doc.createTextNode("(no text)"));
+      text.append(meta, content);
       button.append(avatar(doc, message.avatarUrl, message.author), text);
       button.addEventListener("click", () => onOpen(message));
       li.append(button);

@@ -586,6 +586,8 @@ button.member:hover, button.member:focus-visible { background: var(--surface); c
 .listed-text { display: flex; flex-direction: column; min-width: 0; }
 .listed-meta { display: flex; gap: 6px; align-items: baseline; color: var(--muted); font-size: 11px; }
 .listed-author { color: var(--text); font-size: 13px; }
+.listed-content .excerpt-spoiler { color: var(--muted); font-style: italic; }
+.listed-content .emoji.custom { width: 1.25em; height: 1.25em; vertical-align: -0.25em; }
 .listed-content { overflow: hidden; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; font-size: 13px; overflow-wrap: anywhere; }
 .panel-note { margin: 8px; color: var(--muted); font-size: 12px; font-style: italic; }
 .search-form { margin: 8px; }
