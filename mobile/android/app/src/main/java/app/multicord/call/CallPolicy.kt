@@ -18,20 +18,30 @@ data class Call(val instance: String, val channelName: String, val video: Boolea
     companion object {
         private const val MAX_NAME = 100
 
+        private val CALL_ID = Regex("^[A-Za-z0-9_-]{1,32}$")
+        private val MEMBER_ID = Regex("^[A-Za-z0-9@:._=+/-]{1,255}$")
+
         /**
          * The call in an engine's display state, or null: only a chat screen whose voice session has its
-         * server's address and grant (a call still connecting has no microphone or camera yet).
+         * server's address and grant, or a peer-to-peer call joined (`p2p` with its call id and the user's
+         * own id, as peerCall() in src/shared/native.ts needs them). A call still connecting has no
+         * microphone or camera yet.
          */
         fun of(instance: String, state: JsonObject?): Call? {
             if (state == null || text(state["screen"]) != "chat") return null
             val voice = state["voice"] as? JsonObject ?: return null
-            if (text(voice["url"]).isNullOrEmpty() || text(voice["token"]).isNullOrEmpty()) return null
+            if (!peerToPeer(voice) && (text(voice["url"]).isNullOrEmpty() || text(voice["token"]).isNullOrEmpty())) return null
             val name = text(voice["channelName"])?.take(MAX_NAME)?.ifBlank { null } ?: "a call"
             val video = (voice["video"] as? JsonPrimitive)?.takeIf { !it.isString }?.content == "true"
             return Call(instance, name, video)
         }
 
         private fun text(value: Any?): String? = (value as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+        private fun peerToPeer(voice: JsonObject): Boolean {
+            val call = voice["p2p"] as? JsonObject ?: return false
+            return text(call["callId"])?.let(CALL_ID::matches) == true && text(call["self"])?.let(MEMBER_ID::matches) == true
+        }
     }
 }
 

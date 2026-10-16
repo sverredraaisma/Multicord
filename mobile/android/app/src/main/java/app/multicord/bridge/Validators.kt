@@ -248,6 +248,8 @@ object Validators {
     const val MAX_GIF_QUERY = 100
     const val MAX_MEMBER_OFFSET = 100_000
     const val MAX_JOIN_ADDRESS = 255
+    const val MAX_SDP = 32768
+    const val MAX_ICE_CANDIDATE = 1024
 
     private val ID = Regex("^([0-9]{1,20}|[0-9A-HJKMNP-TV-Z]{26})$")
     private val PROMPT_ID = Regex("^[a-z][a-z0-9-]{0,31}$")
@@ -257,6 +259,7 @@ object Validators {
     private val MEDIA_ID = Regex("^[A-Za-z0-9:._@!+=/-]{1,200}$")
     private val MEDIA_KEY = Regex("^[A-Za-z0-9:._-]{1,200}$")
     private val MEMBER_ID = Regex("^[A-Za-z0-9@:._=+/-]{1,255}$")
+    private val SDP_MID = Regex("^[A-Za-z0-9_-]{1,32}$")
 
     private fun id(value: JsonElement?): Boolean = value.string()?.let(ID::matches) == true
     private fun promptId(value: JsonElement?): Boolean = value.string()?.let(PROMPT_ID::matches) == true
@@ -293,6 +296,36 @@ object Validators {
         return list.all { pollText(it, MAX_NEW_POLL_ANSWER) } && list.map { jsTrim(it.string()!!) }.toSet().size == list.size
     }
 
+    /** An ICE candidate in a signal: its line (no line breaks), and where given its m-line index (0 to 255) and mid, each may be null. */
+    private fun isIceCandidate(value: JsonElement?): Boolean {
+        val v = value.record() ?: return false
+        if (!v.keys.all { it in setOf("candidate", "sdpMLineIndex", "sdpMid") }) return false
+        val line = v["candidate"].string() ?: return false
+        if (line.length > MAX_ICE_CANDIDATE || line.contains('\r') || line.contains('\n')) return false
+        val index = v["sdpMLineIndex"]
+        if (index != null && index !is JsonNull && !(isInteger(index) && index.number()!! >= 0 && index.number()!! <= 255)) return false
+        val mid = v["sdpMid"]
+        return mid == null || mid is JsonNull || mid.string()?.let(SDP_MID::matches) == true
+    }
+
+    /**
+     * A WebRTC signal a view sends to a peer of its peer-to-peer call (isVoiceSignal), in simple-peer's forms
+     * with nothing beyond their fields: a session description, an ICE candidate, a renegotiation or a
+     * transceiver request.
+     */
+    fun isVoiceSignal(value: JsonElement?): Boolean {
+        val v = value.record() ?: return false
+        return when (v["type"].string()) {
+            "offer", "answer" -> v.keys == setOf("type", "sdp") && isText(v["sdp"], MAX_SDP, 1)
+            "candidate" -> v.keys == setOf("type", "candidate") && isIceCandidate(v["candidate"])
+            "renegotiate" -> v.keys == setOf("type", "renegotiate") && v["renegotiate"].boolean() == true
+            "transceiverRequest" -> v.keys == setOf("type", "transceiverRequest") && v["transceiverRequest"].record()?.let { request ->
+                request.keys == setOf("kind") && request["kind"].string().let { it == "audio" || it == "video" }
+            } == true
+            else -> false
+        }
+    }
+
     /** A user action from a module's own view; `sendFile` is the shell's alone and never accepted from a view. */
     fun isNativeAction(value: JsonElement?): Boolean {
         val v = value.record() ?: return false
@@ -327,6 +360,7 @@ object Validators {
             "voiceState" -> listOf("mute", "deaf", "video", "stream").all { isBoolean(v[it]) }
             "voiceError" -> isText(v["message"], 500, 1)
             "voiceNotice" -> isText(v["message"], 500, 1) && optional(v["off"]) { it.string() == "video" || it.string() == "stream" }
+            "voiceSignal" -> v["to"].string()?.let(MEMBER_ID::matches) == true && isVoiceSignal(v["signal"])
             "loadMedia" -> v["key"].string()?.let(MEDIA_KEY::matches) == true
             "sendSticker" -> v["stickerId"].string()?.let(MEDIA_ID::matches) == true && optional(v["replyTo"], ::id)
             "searchGifs" -> isText(v["query"], MAX_GIF_QUERY)

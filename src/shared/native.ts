@@ -146,7 +146,210 @@ export interface NativeVoiceSession {
    * using these keys, and never unencrypted.
    */
   e2ee?: { keys: NativeMediaKey[] };
+  /**
+   * Set instead of `url` and `token` for a peer-to-peer call (Nerimity's):
+   * the view connects to each other participant itself, with signalling
+   * through the engine. Read through peerCall().
+   */
+  p2p?: NativePeerCall;
 }
+
+/**
+ * A peer-to-peer call the user is in: one WebRTC connection per other
+ * participant, with no media server between. Signals pass through the
+ * engine both ways (`voiceSignal` actions out, `signals` in).
+ */
+export interface NativePeerCall {
+  /** New with each join: a new call, whose connections start afresh. */
+  callId: string;
+  /** The user's own id on the platform. */
+  self: string;
+  /** The others in the call that the view connects to, at most MAX_CALL_PARTICIPANTS - 1, in the order they joined. */
+  peers: NativeCallPeer[];
+  /** Others in the call beyond the cap, not connected to. */
+  over?: number;
+  /** The STUN and TURN servers the platform gave for this call; no others are used. */
+  iceServers: NativeIceServer[];
+  /** Connect through the TURN relay only (iceTransportPolicy "relay"), so peers never learn the user's addresses. */
+  relayOnly: boolean;
+  /**
+   * Signals from peers since the last render, each once, oldest first
+   * (`seq` counts up within a call). The view acts on each it has not seen.
+   */
+  signals: NativeCallSignal[];
+}
+
+export interface NativeCallPeer {
+  id: string;
+  name: string;
+  avatarUrl?: string;
+  /** The view makes the offer to this peer (it joined after the user); otherwise it waits for theirs. */
+  offer: boolean;
+}
+
+export interface NativeIceServer {
+  urls: string[];
+  username?: string;
+  credential?: string;
+}
+
+export interface NativeCallSignal {
+  seq: number;
+  /** The peer it comes from. */
+  from: string;
+  signal: VoiceSignal;
+}
+
+/**
+ * A WebRTC signal between two peers, in the form simple-peer (which
+ * Nerimity's own client uses) sends it: a session description, an ICE
+ * candidate, a request to renegotiate, or a request for a transceiver.
+ */
+export type VoiceSignal =
+  | { type: "offer" | "answer"; sdp: string }
+  | { type: "candidate"; candidate: { candidate: string; sdpMLineIndex?: number | null; sdpMid?: string | null } }
+  | { type: "renegotiate"; renegotiate: true }
+  | { type: "transceiverRequest"; transceiverRequest: { kind: "audio" | "video" } };
+
+/** The longest session description a signal may carry. */
+export const MAX_SDP = 32768;
+/** The longest ICE candidate line a signal may carry. */
+export const MAX_ICE_CANDIDATE = 1024;
+/** People in a peer-to-peer call at most, the user included: each one is a connection of its own. */
+export const MAX_CALL_PARTICIPANTS = 8;
+/** Signals one render may carry. */
+export const MAX_CALL_SIGNALS = 128;
+/** ICE servers a call may name, and URLs per server. */
+export const MAX_ICE_SERVERS = 8;
+const SDP_MID = /^[A-Za-z0-9_-]{1,32}$/;
+const CALL_ID = /^[A-Za-z0-9_-]{1,32}$/;
+
+/** An ICE candidate as a signal carries it; undefined if any field is off. */
+function iceCandidate(value: unknown): { candidate: string; sdpMLineIndex?: number | null; sdpMid?: string | null } | undefined {
+  const v = record(value);
+  if (!v || typeof v.candidate !== "string" || v.candidate.length > MAX_ICE_CANDIDATE || /[\r\n]/.test(v.candidate)) return undefined;
+  const { sdpMLineIndex: index, sdpMid: mid } = v;
+  if (index !== undefined && index !== null && !(typeof index === "number" && Number.isInteger(index) && index >= 0 && index <= 255)) return undefined;
+  if (mid !== undefined && mid !== null && !(typeof mid === "string" && SDP_MID.test(mid))) return undefined;
+  const candidate: { candidate: string; sdpMLineIndex?: number | null; sdpMid?: string | null } = { candidate: v.candidate };
+  if (index !== undefined) candidate.sdpMLineIndex = index as number | null;
+  if (mid !== undefined) candidate.sdpMid = mid as string | null;
+  return candidate;
+}
+
+/**
+ * A signal as Multicord trusts it, rebuilt from its known fields alone
+ * (other fields are dropped); undefined if it is none of the forms or a
+ * field is off.
+ */
+export function voiceSignal(value: unknown): VoiceSignal | undefined {
+  const v = record(value);
+  switch (v?.type) {
+    case "offer":
+    case "answer":
+      return typeof v.sdp === "string" && v.sdp.length > 0 && v.sdp.length <= MAX_SDP ? { type: v.type, sdp: v.sdp } : undefined;
+    case "candidate": {
+      const candidate = iceCandidate(v.candidate);
+      return candidate && { type: "candidate", candidate };
+    }
+    case "renegotiate":
+      return v.renegotiate === true ? { type: "renegotiate", renegotiate: true } : undefined;
+    case "transceiverRequest": {
+      const kind = record(v.transceiverRequest)?.kind;
+      return kind === "audio" || kind === "video" ? { type: "transceiverRequest", transceiverRequest: { kind } } : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** Exactly these keys, no more. */
+const onlyKeys = (value: Record<string, unknown>, keys: readonly string[]): boolean => Object.keys(value).every((key) => keys.includes(key));
+
+/** A signal the view sends: one of the forms with nothing else in it (what voiceSignal() keeps, and only that). */
+export function isVoiceSignal(value: unknown): value is VoiceSignal {
+  const v = record(value);
+  if (!v || voiceSignal(v) === undefined) return false;
+  switch (v.type) {
+    case "offer":
+    case "answer":
+      return onlyKeys(v, ["type", "sdp"]);
+    case "candidate":
+      return onlyKeys(v, ["type", "candidate"]) && onlyKeys(v.candidate as Record<string, unknown>, ["candidate", "sdpMLineIndex", "sdpMid"]);
+    case "renegotiate":
+      return onlyKeys(v, ["type", "renegotiate"]);
+    default:
+      return onlyKeys(v, ["type", "transceiverRequest"]) && onlyKeys(v.transceiverRequest as Record<string, unknown>, ["kind"]);
+  }
+}
+
+/**
+ * An ICE server URL a call may use: stun:, turn: or turns: on a host name
+ * (never an address, nor a name without a dot), an optional port and an
+ * optional transport. Returns the host, lower case; undefined otherwise.
+ */
+export function iceServerHost(value: unknown): string | undefined {
+  const match = typeof value === "string" ? /^(?:stun|turns?):([A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})+)(?::(\d{1,5}))?(?:\?transport=(?:udp|tcp))?$/.exec(value) : null;
+  if (!match) return undefined;
+  const host = match[1]!.toLowerCase();
+  const port = match[2] === undefined ? 1 : Number(match[2]);
+  // A last label of digits alone is an IPv4 address, not a name.
+  return port >= 1 && port <= 65535 && !/^\d+$/.test(host.split(".").at(-1)!) ? host : undefined;
+}
+
+/** The credential of a TURN server: printable ASCII, at most 512 characters. */
+const iceCredential = (value: unknown): value is string => typeof value === "string" && value.length >= 1 && value.length <= 512 && /^[!-~]+$/.test(value);
+
+/** ICE servers as the view trusts them: at most MAX_ICE_SERVERS, each with its usable URLs (at most MAX_ICE_SERVERS) and a credential where both parts fit. */
+export function iceServers(value: unknown): NativeIceServer[] {
+  const servers: NativeIceServer[] = [];
+  for (const raw of Array.isArray(value) ? value.slice(0, MAX_ICE_SERVERS) : []) {
+    const v = record(raw);
+    const urls = (Array.isArray(v?.urls) ? v.urls : [v?.urls]).slice(0, MAX_ICE_SERVERS).filter((url): url is string => iceServerHost(url) !== undefined);
+    if (urls.length === 0) continue;
+    const server: NativeIceServer = { urls };
+    if (iceCredential(v!.username) && iceCredential(v!.credential)) Object.assign(server, { username: v!.username, credential: v!.credential });
+    servers.push(server);
+  }
+  return servers;
+}
+
+/**
+ * A peer-to-peer call as the view trusts it: a usable call id and own id,
+ * peers with ids and names (each once, never the user, at most
+ * MAX_CALL_PARTICIPANTS - 1), ICE servers as iceServers() keeps them, and
+ * the signals that pass voiceSignal() from those peers (at most
+ * MAX_CALL_SIGNALS). Undefined without a call id or own id.
+ */
+export function peerCall(value: unknown): NativePeerCall | undefined {
+  const v = record(value);
+  if (!v || typeof v.callId !== "string" || !CALL_ID.test(v.callId) || !isMemberId(v.self)) return undefined;
+  const self = v.self;
+  const peers: NativeCallPeer[] = [];
+  for (const raw of Array.isArray(v.peers) ? v.peers : []) {
+    const p = record(raw);
+    const name = shortText(p?.name);
+    if (!p || !isMemberId(p.id) || p.id === self || !name || peers.some((o) => o.id === p.id)) continue;
+    if (peers.length === MAX_CALL_PARTICIPANTS - 1) break;
+    const peer: NativeCallPeer = { id: p.id, name, offer: p.offer === true };
+    if (typeof p.avatarUrl === "string" && p.avatarUrl.startsWith("https://")) peer.avatarUrl = p.avatarUrl;
+    peers.push(peer);
+  }
+  const signals: NativeCallSignal[] = [];
+  for (const raw of Array.isArray(v.signals) ? v.signals.slice(0, MAX_CALL_SIGNALS) : []) {
+    const s = record(raw);
+    const signal = voiceSignal(s?.signal);
+    if (!s || !signal || typeof s.seq !== "number" || !Number.isSafeInteger(s.seq) || s.seq < 0 || !peers.some((p) => p.id === s.from)) continue;
+    signals.push({ seq: s.seq, from: s.from as string, signal });
+  }
+  const call: NativePeerCall = { callId: v.callId, self, peers, iceServers: iceServers(v.iceServers), relayOnly: v.relayOnly !== false, signals };
+  const over = count(v.over);
+  if (over > 0) call.over = over;
+  return call;
+}
+
+/** Whether the user is in the call itself: a voice server's grant, or a peer-to-peer call to connect to. */
+export const voiceConnected = (voice: NativeVoiceSession): boolean => Boolean(voice.token) || peerCall(voice.p2p) !== undefined;
 
 /** A participant's media key for an end-to-end encrypted call. */
 export interface NativeMediaKey {
@@ -1109,6 +1312,8 @@ export type NativeAction =
   | { type: "voiceError"; message: string }
   /** A problem the call survives (a camera that won't open); `off` names the flag that could not be turned on. */
   | { type: "voiceNotice"; message: string; off?: VoiceNoticeFlag }
+  /** A signal for one peer of the peer-to-peer call the user is in (NativePeerCall), which the engine passes on. */
+  | { type: "voiceSignal"; to: string; signal: VoiceSignal }
   | { type: "removeAttachment"; index: number }
   /** Fetch an attachment the engine holds back until asked (NativeAttachment.mediaKey). */
   | { type: "loadMedia"; key: string }
@@ -1264,6 +1469,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return text(v.message, 1, 500);
     case "voiceNotice":
       return text(v.message, 1, 500) && (v.off === undefined || v.off === "video" || v.off === "stream");
+    case "voiceSignal":
+      return isMemberId(v.to) && isVoiceSignal(v.signal);
     case "loadMedia":
       return isMediaKey(v.key);
     case "sendSticker":

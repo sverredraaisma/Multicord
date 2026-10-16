@@ -40,6 +40,16 @@ class CallPolicyTest {
     }
 
     @Test
+    fun aPeerToPeerCallCountsOnceJoinedWithItsCallIdAndOwnId() {
+        val p2p = """"p2p":{"callId":"c1","self":"42","peers":[],"iceServers":[],"relayOnly":true,"signals":[]}"""
+        assertEquals(Call("n", "Ana", true), Call.of("n", state("""{"screen":"chat","voice":{"channelName":"Ana","video":true,$p2p}}""")))
+        assertNull(Call.of("n", state("""{"screen":"chat","voice":{"channelName":"Ana","p2p":{"callId":"c 1","self":"42"}}}""")))
+        assertNull(Call.of("n", state("""{"screen":"chat","voice":{"channelName":"Ana","p2p":{"callId":"c1","self":""}}}""")))
+        assertNull(Call.of("n", state("""{"screen":"chat","voice":{"channelName":"Ana","p2p":{"callId":"c1"}}}""")))
+        assertNull(Call.of("n", state("""{"screen":"chat","voice":{"channelName":"Ana","p2p":"c1"}}""")))
+    }
+
+    @Test
     fun theMicrophoneOnlyForTheViewsOwnCallAndTheCameraOnlyWithVideoOn() {
         val call = Call("matrix", "Lounge", false)
         assertEquals(listOf(audio), CallPolicy.grantable(listOf(audio, video), view, view, call))

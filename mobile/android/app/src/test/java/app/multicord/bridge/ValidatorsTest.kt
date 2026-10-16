@@ -88,6 +88,7 @@ class ValidatorsTest {
             "MAX_MEMBER_OFFSET" to Validators.MAX_MEMBER_OFFSET, "MAX_SEARCH_QUERY" to Validators.MAX_SEARCH_QUERY,
             "MAX_GIF_QUERY" to Validators.MAX_GIF_QUERY, "MAX_JOIN_ADDRESS" to Validators.MAX_JOIN_ADDRESS,
             "MAX_POLL_OPTIONS" to Validators.MAX_POLL_OPTIONS, "MAX_NEW_POLL_QUESTION" to Validators.MAX_NEW_POLL_QUESTION,
+            "MAX_SDP" to Validators.MAX_SDP, "MAX_ICE_CANDIDATE" to Validators.MAX_ICE_CANDIDATE,
         )
         assertEquals(own, limits)
     }
