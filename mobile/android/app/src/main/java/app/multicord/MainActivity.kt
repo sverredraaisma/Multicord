@@ -2,6 +2,8 @@
 package app.multicord
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
@@ -14,6 +16,7 @@ import androidx.webkit.WebViewFeature
 import app.multicord.bridge.Validators
 import app.multicord.engine.EngineHost
 import app.multicord.engine.EngineListener
+import app.multicord.engine.EngineUi
 import app.multicord.engine.EngineSpec
 import app.multicord.secrets.KeystoreCipher
 import app.multicord.secrets.SecretStore
@@ -27,12 +30,14 @@ import kotlinx.serialization.json.JsonPrimitive
  * Phase 2, milestone 1: one module instance (Matrix) in its engine, and its native chat view in the shell,
  * one view at a time. No rail yet; a status line shows the engine's state and account.
  */
-class MainActivity : Activity() {
+class MainActivity : Activity(), EngineUi {
     private lateinit var status: TextView
     private var engine: EngineHost? = null
     private var shell: ShellView? = null
     private var engineState = "starting"
     private var account = "unknown"
+    /** The open document picker's caller; one picker at a time. */
+    private var picking: ((List<String>) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,7 +80,7 @@ class MainActivity : Activity() {
                 Log.i(EngineHost.TAG, "[engine ${host.spec.instanceId}] $state")
                 showStatus()
             }
-        })
+        }, this)
         engine = host
         shell = ShellView(this, content, ::onViewAction) { engine?.allowedHosts }.also { it.start() }
         host.start()
@@ -93,6 +98,42 @@ class MainActivity : Activity() {
         engine?.action(action as JsonObject)
     }
 
+    override fun pickDocuments(done: (List<String>) -> Unit): Boolean {
+        if (picking != null) return false
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        return try {
+            @Suppress("DEPRECATION")
+            startActivityForResult(intent, REQUEST_PICK)
+            picking = done
+            true
+        } catch (error: ActivityNotFoundException) {
+            Log.w(EngineHost.TAG, "No document picker: ${error.message}")
+            false
+        }
+    }
+
+    @Deprecated("Activity results for the document picker")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        @Suppress("DEPRECATION")
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != REQUEST_PICK) return
+        val done = picking ?: return
+        picking = null
+        val uris = ArrayList<String>()
+        if (resultCode == RESULT_OK && data != null) {
+            val clip = data.clipData
+            if (clip != null) {
+                for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let { uris += it.toString() }
+            } else {
+                data.data?.let { uris += it.toString() }
+            }
+        }
+        done(uris)
+    }
+
     private fun showStatus() {
         status.text = "${MATRIX.name} · engine $engineState · $account"
     }
@@ -106,6 +147,7 @@ class MainActivity : Activity() {
     }
 
     private companion object {
+        const val REQUEST_PICK = 1
         val REQUIRED_FEATURES = listOf(WebViewFeature.MULTI_PROFILE, WebViewFeature.WEB_MESSAGE_LISTENER, WebViewFeature.DOCUMENT_START_SCRIPT)
 
         /** The desktop's "matrix-native" module (src/main/modules/matrix.ts) with its default settings. */

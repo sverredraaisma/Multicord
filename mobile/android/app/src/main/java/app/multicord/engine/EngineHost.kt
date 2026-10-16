@@ -53,6 +53,15 @@ data class EngineSpec(
     val settings: JsonObject? = null,
 )
 
+/** What an engine may ask of the screen: only right after the user asked for it in the engine's view. */
+interface EngineUi {
+    /**
+     * Opens the system's document picker; `done` gets the picked documents' URIs (none when the user
+     * cancelled). False when a picker is already open or there is none.
+     */
+    fun pickDocuments(done: (List<String>) -> Unit): Boolean
+}
+
 /** What the shell hears from an engine, already validated. */
 interface EngineListener {
     /** An EngineEvent (servers, account, notification…), checked with isEngineEvent. */
@@ -81,6 +90,8 @@ class EngineHost(
     /** Where the engine's WebView lives: it is attached (1x1, never seen) so that it keeps running. */
     private val container: ViewGroup,
     private val listener: EngineListener,
+    private val ui: EngineUi,
+    documents: DocumentSource = ContentDocuments(context.contentResolver),
 ) {
     val origin = "https://${spec.instanceId}.engine.multicord.invalid"
     private val host = "${spec.instanceId}.engine.multicord.invalid"
@@ -103,6 +114,9 @@ class EngineHost(
         private set
     var signInAskedAt = 0L
         private set
+
+    /** The files the user picked for this engine, by handle. */
+    private val picked = PickedFiles(documents)
 
     private val sockets = EngineSockets(
         check = { url -> NetPolicy.checkUrl(url, UrlPolicy(listOf("wss:"), allowed))?.message },
@@ -160,6 +174,7 @@ class EngineHost(
     fun destroy() {
         stopped = true
         sockets.closeAll()
+        picked.clear()
         tearDown()
         network.shutdownNow()
         secretThread.shutdownNow()
@@ -270,10 +285,36 @@ class EngineHost(
                 sockets.close(text("id"), (request["code"] as? JsonPrimitive)?.content?.toDouble()?.toInt(), (request["reason"] as? JsonPrimitive)?.content)
                 done(Result.success(null))
             }
-            // Picking files and single sign-on need the user's say-so in the view; not on this host yet.
-            "pickFiles", "readFile", "ssoSignIn" -> done(Result.failure(UnsupportedOperationException("Not available in Multicord for Android yet")))
+            "pickFiles" -> pickFiles(done)
+            "readFile" -> {
+                val handle = text("handle")
+                val start = (request["start"] as JsonPrimitive).content.toDouble().toLong()
+                val end = (request["end"] as JsonPrimitive).content.toDouble().toLong()
+                off(network, done) { Wire.bytes(picked.read(handle, start, end)) }
+            }
+            // Single sign-on needs the browser to bring a token back; not on this host yet.
+            "ssoSignIn" -> done(Result.failure(UnsupportedOperationException("Not available in Multicord for Android yet")))
             else -> done(Result.failure(IllegalArgumentException("Malformed engine request")))
         }
+    }
+
+    /**
+     * The system's document picker, only right after the user asked to attach in this engine's view, once
+     * per ask (engineHost.ts): an engine cannot open pickers on its own. The picked files get handles this
+     * engine alone can read.
+     */
+    private fun pickFiles(done: (Result<JsonElement?>) -> Unit) {
+        val asked = attachAskedAt
+        if (asked == 0L || SystemClock.elapsedRealtime() - asked > ASK_WINDOW_MS) {
+            return done(Result.failure(IllegalStateException("Files can only be picked when the user asks to attach")))
+        }
+        attachAskedAt = 0L
+        val opened = ui.pickDocuments { documents ->
+            if (stopped) return@pickDocuments
+            if (documents.isEmpty()) return@pickDocuments done(Result.success(JsonArray(emptyList())))
+            off(network, done) { JsonArray(picked.add(documents).map(PickedFile::toJson)) }
+        }
+        if (!opened) done(Result.failure(IllegalStateException("No file picker could be opened")))
     }
 
     // Host -> engine ---------------------------------------------------------------------------------------
@@ -364,6 +405,8 @@ class EngineHost(
         /** Crashes in a row before an engine is left stopped, and how long a run counts as stable (engineAdapter.ts). */
         private const val MAX_CRASHES = 5
         private const val STABLE_MS = 60_000L
+        /** How long after the user's attach click, or sign-in submit, the engine may open the picker or the browser (engineHost.ts). */
+        const val ASK_WINDOW_MS = 10_000L
 
         /** No network at all: HTTP and WebSockets go through the bridge. */
         private val CSP = listOf(

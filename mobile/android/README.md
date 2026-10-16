@@ -34,6 +34,7 @@ MainActivity
     EngineSockets + OkHttpSockets   bridged WebSockets (bridgeWebSocket)
     HttpBridge + OkHttpTransport    bridged HTTP (bridgeFetch)
     SecretStore scope               this instance's secrets (KeystoreCipher)
+    PickedFiles + ContentDocuments  files the user picked for this engine, by handle
 NetPolicy, WebUrl, PublicDns        what engines may contact (ported from src/main/netPolicy.ts)
 Validators, Wire                    the desktop's validators (src/shared), JSON with {"$b64"} bytes
 ```
@@ -45,6 +46,7 @@ Validators, Wire                    the desktop's validators (src/shared), JSON 
 | `engine/EngineSockets.kt`, `engine/OkHttpSockets.kt` | `src/core/engineSockets.ts`, `src/main/webSockets.ts` (relay page) |
 | `engine/EngineHost.kt` | `src/main/engineHost.ts` (EngineHub), `src/preload/engine.ts` |
 | `shell/ShellView.kt` | the native view's WebContentsView and `src/preload/native.ts` |
+| `engine/PickedFiles.kt`, `engine/ContentDocuments.kt` | `EngineHub.pickFiles`, `readFile` and `src/main/files.ts` |
 | `secrets/` | `src/main/credentials.ts` with `safeStorage` |
 | `bridge/BridgeScripts.kt`, `assets/bridge/` | the preloads (`src/preload/engine.ts`, `native.ts`) with context isolation and `contextBridge` |
 | `bridge/Validators.kt` | `isEngineRequest`, `isHttpRequest`, `isEngineEvent`, `isNativeAction`, `isServiceSettingStatus` |
@@ -63,6 +65,7 @@ The rules are the desktop's (docs/mobile.md, section 5); this is where each is e
 - **The shell view** gets no permissions, connects nowhere (`connect-src 'self'`), and may load pictures and media only over https from public hosts its engine may reach (`shouldInterceptRequest`). The WebView resolves those names again itself, so this check is weaker than the engines' (see below).
 - **Storage apart.** One Profile per engine instance (its own cookies, IndexedDB, service workers) and its own origin; the shell has another. Engine Profiles accept no cookies.
 - **Secrets** are encrypted with a non-exportable AES-256-GCM Keystore key (StrongBox when present), one file per instance in app-private storage, each value bound to its instance and key as associated data. No backups (`allowBackup="false"`, data extraction rules exclude everything).
+- **Files** are picked with the system's document picker (`ACTION_OPEN_DOCUMENT`, no storage permission), only within 10 s after the user asked to attach in that engine's view and once per ask, as on the desktop; one picker at a time. Each picked document gets a random handle kept for that engine only (the oldest forgotten past 200); `readFile` reads at most 16 MB per request (the validator's cap), clipped to the document's size, through the read grant the picker gave.
 - **Platform:** `INTERNET` is the only permission; cleartext is off and only system CAs are trusted; navigation is blocked in engines, and links from the view open in the browser.
 - **Weaker than the desktop**, accepted for now: all WebViews share one renderer process (no per-engine sandbox, docs/mobile.md section 5); on WebViews without `JS_INJECTION_IN_FRAME_AND_WORLD` the relay and the listener run in the page's main world (they are glue, not the boundary; the log says "bridge relay in the main world"); the shell's image loads are checked by name, then resolved again by the WebView.
 
@@ -80,7 +83,7 @@ The rules are the desktop's (docs/mobile.md, section 5); this is where each is e
 ## What is left
 
 For milestone 1:
-- Signing in. Matrix's sign-in uses the browser (OAuth) or single sign-on; both need the shell to open the browser and take the answer back for that engine only (an app link or a custom-tab redirect, in place of the desktop's loopback). File picking (`pickFiles`/`readFile`) is refused for now.
+- Signing in. Matrix's sign-in uses the browser (OAuth) or single sign-on; both need the shell to open the browser and take the answer back for that engine only (an app link or a custom-tab redirect, in place of the desktop's loopback).
 
 For phase 2:
 - The shell with `src/core` (registry, settings, EngineAdapter) in the shell WebView, a phone layout (rail as a drawer), several instances, and the settings page.
