@@ -65,6 +65,7 @@ await Promise.all([
       "preload-settings": "src/entries/preload-settings.ts",
       "preload-messages": "src/entries/preload-messages.ts",
       "preload-engine": "src/entries/preload-engine.ts",
+      "preload-relay": "src/entries/preload-relay.ts",
     },
     platform: "browser",
     format: "cjs",

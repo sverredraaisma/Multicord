@@ -14,7 +14,8 @@ import type { SecretStore } from "./credentials";
 import { contentTypeFor, readRange } from "./files";
 import { checkUrl, createAddressGuard, narrowHosts, performHttp, type UrlPolicy } from "./netPolicy";
 import { isSsoUrl, receiveLoginToken } from "./ssoLoopback";
-import { openHostSocket } from "./webSockets";
+import { RELAY_IPC } from "../shared/relay";
+import { relayHost, serveRelay, SocketRelay, type RelayContents } from "./webSockets";
 
 /** What the host needs to run one module instance in an engine. */
 export interface EngineSpec {
@@ -59,6 +60,8 @@ interface Running {
   queue: { channel: string; payload: unknown }[];
   /** The WebSockets the shell opened for the engine (bridgeWebSocket). */
   sockets: EngineSockets;
+  /** The hidden page that opens them in Chromium's network stack. */
+  relay: SocketRelay;
 }
 
 /** Picked-file handles kept per engine; the oldest are forgotten first. */
@@ -115,7 +118,7 @@ export class EngineHub {
       dist: string;
       os: string;
       window: BaseWindow;
-      /** Opens the sockets engines bridge; Node's WebSocket unless given. */
+      /** Opens the sockets engines bridge; the engine's relay page unless given. */
       openSocket?: (url: string, events: RelaySocketEvents) => RelaySocket;
     },
   ) {
@@ -128,6 +131,10 @@ export class EngineHub {
     ipcMain.on(ENGINE_IPC.event, (event, payload) => {
       const running = this.byEngine.get(event.sender);
       if (running && isEngineEvent(payload)) running.adapter.handle(payload);
+    });
+    // Each relay takes reports only from its own page.
+    ipcMain.on(RELAY_IPC.event, (event, payload) => {
+      for (const running of this.byEngine.values()) running.relay.receive(event.sender, payload);
     });
     ipcMain.on(ENGINE_IPC.render, (event, state) => {
       const running = this.byEngine.get(event.sender);
@@ -220,9 +227,10 @@ export class EngineHub {
       attachAskedAt: 0,
       signInAskedAt: 0,
       queue: [],
+      relay: new SocketRelay({ spawn: () => this.spawnRelay(partition), url: `${ENGINE_SCHEME}://${relayHost(spec.engine)}/relay.html` }),
       sockets: new EngineSockets({
         check: async (url) => checkUrl(url, socketPolicy) ?? ((await socketAddress(url)) ? undefined : "it resolves to a local or private address"),
-        connect: (url, events) => (this.deps.openSocket ?? openHostSocket)(url, events),
+        connect: (url, events) => (this.deps.openSocket ? this.deps.openSocket(url, events) : running.relay.open(url, events)),
         emit: (event) => this.deliver(running, ENGINE_IPC.socket, event),
       }),
     };
@@ -239,7 +247,10 @@ export class EngineHub {
       running.ready = false;
       running.sockets.closeAll();
     });
-    engine.webContents.on("destroyed", () => running.sockets.closeAll());
+    engine.webContents.on("destroyed", () => {
+      running.sockets.closeAll();
+      running.relay.dispose();
+    });
     engine.webContents.on("unresponsive", () => report({ responsive: false }));
     engine.webContents.on("responsive", () => report({ responsive: true }));
     // A crashing engine restarts with growing delays, and is left stopped if it keeps crashing.
@@ -264,7 +275,8 @@ export class EngineHub {
   private lockDown(ses: Session, spec: EngineSpec, socketPolicy: UrlPolicy, publicAddress: (url: string) => Promise<boolean>): void {
     ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     ses.setPermissionCheckHandler(() => false);
-    ses.protocol.handle(ENGINE_SCHEME, (request) => serveEngine(this.deps.dist, spec.engine, request.url));
+    // The engine's page, and on a host of its own the page of its socket relay.
+    ses.protocol.handle(ENGINE_SCHEME, async (request) => (new URL(request.url).host === relayHost(spec.engine) ? serveRelay(request.url) : serveEngine(this.deps.dist, spec.engine, request.url)));
     // HTTP goes through the bridge; engines open only WebSockets themselves.
     ses.webRequest.onBeforeRequest((details, callback) => {
       const { protocol } = new URL(details.url);
@@ -273,6 +285,30 @@ export class EngineHub {
       if (checkUrl(details.url, socketPolicy) !== undefined) return callback({ cancel: true });
       void publicAddress(details.url).then((ok) => callback({ cancel: !ok }));
     });
+  }
+
+  /**
+   * The page that opens an engine's bridged sockets (main/webSockets.ts):
+   * hidden, sandboxed, no Node, in the engine's session but on an origin of
+   * its own, with a preload that exposes nothing to its page.
+   */
+  private spawnRelay(partition: string): RelayContents {
+    const relay = new WebContentsView({
+      webPreferences: {
+        preload: path.join(this.deps.dist, "preload-relay.js"),
+        partition,
+        sandbox: true,
+        contextIsolation: true,
+        nodeIntegration: false,
+        webSecurity: true,
+        // Its sockets stay open and drain while hidden.
+        backgroundThrottling: false,
+        spellcheck: false,
+      },
+    });
+    relay.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+    relay.webContents.on("will-navigate", (event) => event.preventDefault());
+    return relay.webContents;
   }
 
   /** Sends to the engine, or holds the message until it has loaded. */

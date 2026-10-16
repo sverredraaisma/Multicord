@@ -342,6 +342,29 @@ async function main() {
       const origin = await engineUp(engine).catch((error) => `error: ${error.message}`);
       check(`engine "${engine}" runs`, origin === `multicord-engine://${engine}`, String(origin));
     }
+    // A bridged socket opens in the engine's relay page (src/main/webSockets.ts) and the engine hears how it ends:
+    // offline it cannot connect, and online the address speaks no WebSocket, so either way it closes.
+    const relayed = await evaluate(
+      port,
+      "^multicord-engine://fluxer/",
+      `new Promise((resolve) => {
+        const closes = [];
+        let id;
+        const timer = setTimeout(() => resolve("no close event within 20s"), 20000);
+        const settle = () => {
+          const close = closes.find((e) => e.id === id);
+          if (close) { clearTimeout(timer); resolve("closed " + close.code); }
+        };
+        multicordEngine.onSocket((event) => { if (event.type === "close") { closes.push(event); settle(); } });
+        multicordEngine.request({ type: "socketOpen", url: "wss://1.1.1.1/" }).then(
+          (answer) => { id = answer.id; settle(); },
+          (error) => { clearTimeout(timer); resolve("refused: " + error.message); },
+        );
+      })`,
+      30_000,
+    ).catch((error) => `error: ${error.message}`);
+    const relayPage = (await targets(port)).some((t) => t.type === "page" && t.url === "multicord-engine://fluxer.relay/relay.html");
+    check("a bridged socket goes through the engine's relay page", relayPage && /^closed \d+$/.test(String(relayed)), `${relayed}; relay page ${relayPage ? "up" : "missing"}`);
   }
   // 4. The main process: screen capture and the keyboard hook, as the hook reported them.
   const readLog = () => (existsSync(logFile) ? readFileSync(logFile, "utf8") : "");

@@ -12,6 +12,7 @@ import type { RelaySocket, RelaySocketEvents } from "../../src/core/engineSocket
 import { readRange } from "../../src/main/files";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
 import { NATIVE_IPC } from "../../src/shared/native";
+import { RELAY_IPC } from "../../src/shared/relay";
 
 const { ipcMain, session, WebContentsView, dialog, BaseWindow } = electron;
 type View = InstanceType<typeof WebContentsView>;
@@ -515,12 +516,50 @@ describe("bridged sockets", () => {
     expect(socket.close).toHaveBeenCalledWith();
   });
 
-  it("opens sockets on Node's WebSocket by default", async () => {
-    const { ask, engine } = setup();
+  it("opens sockets in a relay page of its own, in the engine's session, which only its page may report for", async () => {
+    const { ask, engine, hub } = setup();
+    const otherView = new WebContentsView({ webPreferences: {} });
+    const other = hub.add({ def: { id: "other", name: "Other", url: "https://other.example", partition: "persist:other", module: "other" }, engine: "other", home: false, capabilities, view: otherView as never, secrets: { load: () => undefined, save: () => {}, delete: () => {} } });
+    await ask({ type: "info" });
+    expect(WebContentsView.instances).toHaveLength(4);
     const { id } = (await ask({ type: "socketOpen", url: "wss://gw.example/" })) as { id: string };
-    expect(id).toBe("1");
-    // Nothing answers in tests; closing it is enough.
-    await ask({ type: "socketClose", id });
+    const relay = WebContentsView.instances.at(-1)!;
+    expect(relay.options.webPreferences).toMatchObject({
+      preload: path.join(dist, "preload-relay.js"),
+      partition: "engine_demo",
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
+      backgroundThrottling: false,
+    });
+    expect(electron.BaseWindow.instances[0]!.children).not.toContain(relay);
+    expect(relay.webContents.loadURL).toHaveBeenCalledWith(`${ENGINE_SCHEME}://demo.relay/relay.html`);
+    expect(relay.webContents.windowOpenHandler!({ url: "https://x" })).toEqual({ action: "deny" });
+    const navigation = { preventDefault: vi.fn() };
+    relay.webContents.emit("will-navigate", navigation);
+    expect(navigation.preventDefault).toHaveBeenCalled();
+    // The engine's session serves the relay page on its own host.
+    const handler = session.fromPartition("engine_demo").protocolHandlers.get(ENGINE_SCHEME)!;
+    const page = (await handler({ url: `${ENGINE_SCHEME}://demo.relay/relay.html` })) as Response;
+    expect(page.headers.get("content-security-policy")).toBe("default-src 'none'; connect-src wss:");
+
+    const report = (sender: unknown, payload: unknown) => ipcMain.emit(RELAY_IPC.event, { sender }, payload);
+    report(relay.webContents, { type: "ready" });
+    expect(relay.webContents.send).toHaveBeenCalledWith(RELAY_IPC.command, { type: "open", id: "1", url: "wss://gw.example/" });
+    // Neither the engine nor another engine's page can report for this relay.
+    report(engine.webContents, { type: "open", id: "1" });
+    report((other.engine as unknown as View).webContents, { type: "open", id: "1" });
+    const events = () => engine.webContents.send.mock.calls.filter(([channel]) => channel === ENGINE_IPC.socket).map(([, event]) => event);
+    expect(events()).toEqual([]);
+    report(relay.webContents, { type: "open", id: "1" });
+    expect(events()).toEqual([{ type: "open", id }]);
+    await ask({ type: "socketSend", id, data: "hello" });
+    expect(relay.webContents.send).toHaveBeenLastCalledWith(RELAY_IPC.command, { type: "send", id: "1", data: "hello" });
+
+    // When the engine goes away, so do its sockets and its relay page.
     engine.webContents.emit("destroyed");
+    expect(relay.webContents.send).toHaveBeenLastCalledWith(RELAY_IPC.command, { type: "close", id: "1" });
+    expect(relay.webContents.close).toHaveBeenCalled();
   });
 });
