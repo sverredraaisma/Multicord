@@ -380,7 +380,12 @@ async function main() {
       ).catch((error) => `error: ${error.message}`);
       check(`engine "${engine}" cannot open a WebSocket itself`, blocked === "connect-src", String(blocked));
     }
-    const relayPage = (await targets(port)).some((t) => t.type === "page" && t.url === "multicord-engine://fluxer.relay/relay.html");
+    // The relay page is a target of its own, which DevTools may list a moment after the socket's answer: wait for it (bounded).
+    const relayPage = await until(
+      async () => (await targets(port)).some((t) => t.type === "page" && t.url === "multicord-engine://fluxer.relay/relay.html"),
+      "the relay page",
+      15_000,
+    ).catch(() => false);
     check("a bridged socket goes through the engine's relay page", relayPage && /^closed \d+$/.test(String(relayed)), `${relayed}; relay page ${relayPage ? "up" : "missing"}`);
   }
   // 4. The main process: screen capture and the keyboard hook, as the hook reported them.
