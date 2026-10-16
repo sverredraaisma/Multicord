@@ -1,6 +1,6 @@
 # Multicord on phones: design note
 
-Status: design written 2026-10-15; phase 1 (core extraction, desktop only) mostly done 2026-10-16; the phase 0 spike app (`mobile/android-spike`) built 2026-10-16 and waiting for device results, see section 7. No mobile host code yet. Claims marked **(unverified)** come from memory, secondary sources or inference and need a device test before we rely on them.
+Status: design written 2026-10-15; phase 1 (core extraction, desktop only) mostly done 2026-10-16; the phase 0 spike app (`mobile/android-spike`) built 2026-10-16, with first results from one phone in section 7. No mobile host code yet. Claims marked **(unverified)** come from memory, secondary sources or inference and need a device test before we rely on them.
 
 ## Summary
 
@@ -210,6 +210,13 @@ Camera service: Camera2 / USB host + libuvc / AVCapture → MessagePort → page
 | **6. iPadOS/iOS** | Swift host (iOS 17+), the same structure. External cameras on iPad. Notifications limited. App Store build without Discord. | 6–10 weeks |
 
 **Phase 0 status (2026-10-16).** The spike app is in `mobile/android-spike` (Kotlin, androidx.webkit 1.17.1, minSdk 28; its README says how to build and install it and what to send back). It has one screen per spike: 0.1 Discord in its own Profile, with an optional desktop user agent and an origin-restricted document-start report; 0.2 an `enumerateDevices` page plus a Camera2 and USB dump; 0.3 a generated "Multicord test camera" for that page or for Discord; 0.4 MJPEG to `VideoFrame` decode timing. It builds, and a smoke run on the Android 16 emulator (WebView 134) worked: every feature except `JS_INJECTION_IN_FRAME_AND_WORLD`, the document-start report on discord.com with the desktop user agent (Discord showed its login page), the test camera through `MediaStreamTrackGenerator`, and 720p JPEG decode. An emulator says nothing about phones, so every **(unverified)** above still stands until device results come in.
+
+**First device results (2026-10-16): OnePlus CPH2663, Android 14, WebView 154.0.8037.106.**
+- **Features:** all present, including `JS_INJECTION_IN_FRAME_AND_WORLD`, so the isolated-world hardening of section 2 is available on this phone.
+- **0.1 Discord:** with the desktop user agent, the document-start script ran in discord.com's top frame and the user signed in and reached `/channels`. Microphone and camera were granted to https://discord.com only. `getDisplayMedia` and `Notification` are absent, as expected. With the mobile user agent `/app` also loaded; how usable it was is not recorded.
+- **0.3 Test camera in Discord:** Discord listed "Multicord test camera" next to the 8 real devices, asked for 1280 wide, applied `max 1280x720`, and drew 418 frames in 14.0 s (29.9 fps) through `MediaStreamTrackGenerator`. Whether the far end saw the pattern still needs confirming from a second client.
+- **0.2 Cameras:** the 4 built-in cameras list and open at 720x1280, 30 fps. The phone has `usb.host` but no `android.hardware.camera.external`, and a Logitech StreamCam (UVC, USB-C) was not listed by Camera2 or `enumerateDevices`. **Tier A does not work on this phone; Tier B (section 4.2) is needed.** The `[usb]` dump with the camera attached is still to come, to confirm `UsbManager` sees it (vendor `046d`) and that the phone powers it.
+- **0.4 Decode:** `ImageDecoder` turns a 720p JPEG into an I420 `VideoFrame` in 4.4 ms on average (p95 6.7 ms), about 13% of a 30 fps frame budget. Decode plus write to a generated track held 30.2 fps for 10 s with no skipped ticks, busy about 41% of the time, with main-thread lag under 5 ms.
 
 **Phase 1 status (2026-10-16).**
 - Done: `src/core` as listed in section 5, with the boundary test and full coverage. The desktop behaves as before.
