@@ -9,6 +9,8 @@ function fakeBridge(token?: string) {
       switch (request.type) {
         case "info":
           return { id: "nerimity-native", name: "Nerimity", url: "https://nerimity.com", os: "linux", settings: { typing: true } };
+        case "socketOpen":
+          return { id: "1" };
         case "secretLoad":
           return token;
         case "http":
@@ -21,6 +23,7 @@ function fakeBridge(token?: string) {
     render: vi.fn(),
     onCommand: (_cb: (c: EngineCommand) => void) => undefined,
     onAction: vi.fn(),
+    onSocket: vi.fn(),
   };
   return bridge as unknown as EngineBridge & typeof bridge;
 }
@@ -42,20 +45,11 @@ describe("Nerimity engine", () => {
     expect(files.open({ handle: "h", name: "fav.gif", size: 1, type: "image/gif" }).filename).toBe("fav.gif");
   });
 
-  it("resumes a saved session over the page's WebSocket", async () => {
-    const urls: string[] = [];
-    class StubSocket {
-      constructor(url: string) {
-        urls.push(url);
-      }
-      send() {}
-      close() {}
-      addEventListener() {}
-    }
-    vi.stubGlobal("WebSocket", StubSocket);
+  it("resumes a saved session over a WebSocket the shell opens", async () => {
     const bridge = fakeBridge("saved");
     await startNerimityEngine(bridge);
-    expect(urls).toEqual(["wss://nerimity.com/socket.io/?EIO=4&transport=websocket"]);
+    expect(bridge.request).toHaveBeenCalledWith({ type: "socketOpen", url: "wss://nerimity.com/socket.io/?EIO=4&transport=websocket" });
+    expect(bridge.onSocket).toHaveBeenCalled();
     expect(bridge.emit).toHaveBeenCalledWith({ type: "account", account: { state: "signed-in" } });
   });
 });
