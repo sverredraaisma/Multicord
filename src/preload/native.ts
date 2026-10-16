@@ -22,6 +22,8 @@ export interface NativeApi {
   onFavourites(cb: (state: FavouritesState) => void): void;
   /** Changes the favourites, or sends one into the open conversation. */
   favourites(action: FavouritesAction): void;
+  /** Phones only (mobile/android's view bridge): the system's back; the callback says whether the view used it. */
+  onBack?(cb: () => boolean): void;
 }
 
 export function createNativeApi(ipc: PreloadIpc): NativeApi {

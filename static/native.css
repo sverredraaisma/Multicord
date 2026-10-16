@@ -720,3 +720,31 @@ button.thread-summary:hover { text-decoration: underline; }
 .media-wrap:hover .favourite-star, .favourite-star:focus-visible, .favourite-star[aria-pressed="true"] { opacity: 1; }
 .attachment-sticker-still { margin: 6px 0 0; }
 .sticker-label { color: var(--muted); font-size: 11px; }
+
+/* Phones (mobile/android): one pane at a time, the list or the open conversation (src/renderer/mobilePanes.ts). */
+.mobile-back { display: none; }
+.mobile .mobile-back:not([hidden]) {
+  position: fixed;
+  top: 4px;
+  left: 4px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--text);
+}
+.mobile .mobile-back:active { background: var(--panel); }
+.mobile .mobile-back svg { width: 24px; height: 24px; fill: currentColor; }
+.mobile .chat { grid-template-columns: 1fr; grid-template-rows: 1fr; }
+.mobile .sidebar { max-height: none; }
+.mobile[data-pane="list"] .conversation-area { display: none; }
+.mobile[data-pane="conversation"] .sidebar { display: none; }
+.mobile[data-pane="conversation"] .conversation-title { padding-left: 52px; }
+.mobile .channels .channel { min-height: 44px; }
+.mobile .composer { font-size: 16px; }

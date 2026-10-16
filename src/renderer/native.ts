@@ -16,6 +16,7 @@ import { matchMentions, mentionCandidates, mentionOptionId, mentionOptions, ment
 import { autoLoads, favouriteKind, messageItem, type MessageHandlers } from "./components/message";
 import { forumPosts, listedMessages, pendingFiles, pollForm, postForm, replyBar, voicePanel } from "./components/panels";
 import { isOwnReaction } from "./components/reactions";
+import { attachMobilePanes } from "./mobilePanes";
 import { VoiceCall } from "./voice";
 
 export { formatSize, formatTime, typingText } from "./components/format";
@@ -1516,6 +1517,8 @@ export function startNative(
 ): void {
   const view = new NativeView(doc.getElementById("app")!, api, denoiser, e2eeWorker);
   api.onState((state) => view.update(state));
+  // The phone's bridge: one pane at a time, and the system's back.
+  if (api.onBack) attachMobilePanes(doc, { onState: (cb) => api.onState(cb), onBack: api.onBack });
   api.onVoiceSettings((settings) => view.setVoiceSettings(settings));
   api.onMediaAutoLoad((limit) => view.setMediaAutoLoad(limit));
   api.onFavourites((favourites) => view.setFavourites(favourites));
