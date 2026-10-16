@@ -1,83 +1,59 @@
-/* Colour tokens for every page of the shell. Dark is the default; the light set follows the system or the
-   user's choice (Settings > General > Appearance), which the main process passes on as prefers-color-scheme.
+/* Colour tokens for every page of the shell, each light-dark(light, dark): the page's colour scheme picks.
+   It follows the system or the user's choice (Settings > General > Appearance): the desktop's main process
+   passes that on as prefers-color-scheme; where a host cannot (the phone's WebViews), the page sets
+   data-theme="light" or "dark" on its root, which wins over the system's.
    Text tokens meet WCAG AA (4.5:1) on --bg, --panel and --surface in both sets; fills marked "behind white"
    carry white text at 4.5:1 or more. */
 :root {
-  color-scheme: dark;
-  --bg: #1e1f22;
-  --panel: #2b2d31;
-  --surface: #313338;
-  --item: #313338;
+  color-scheme: light dark;
+  --bg: light-dark(#e3e5e8, #1e1f22);
+  --panel: light-dark(#f2f3f5, #2b2d31);
+  --surface: light-dark(#ffffff, #313338);
+  --item: light-dark(#ffffff, #313338);
   --item-hover: #5865f2;
   /* Rows under the pointer, form fields and the composer, bars that sit a step lower, the selected tab or row. */
-  --hover: #35373c;
-  --field: #383a40;
-  --raised: #232428;
-  --selected: #404249;
-  --selected-text: #fff;
-  --border: #3f4147;
-  --divider: #2b2d31;
-  --text: #f2f3f5;
-  --muted: #b5bac1;
+  --hover: light-dark(#e3e5e8, #35373c);
+  --field: light-dark(#e3e5e8, #383a40);
+  --raised: light-dark(#ebedef, #232428);
+  --selected: light-dark(#d4d7dc, #404249);
+  --selected-text: light-dark(#060607, #fff);
+  --border: light-dark(#c4c9ce, #3f4147);
+  --divider: light-dark(#d4d7dc, #2b2d31);
+  --text: light-dark(#060607, #f2f3f5);
+  --muted: light-dark(#4e5058, #b5bac1);
   /* Behind white. */
   --accent: #5865f2;
   --accent-hover: #4752c4;
   --danger: #da373c;
   --badge: #da373c;
   /* As text on the panels. */
-  --accent-text: #949cf7;
-  --danger-text: #fa777a;
-  --ok-text: #2dc770;
-  --warn-text: #f0b232;
-  --link: #00a8fc;
+  --accent-text: light-dark(#4049b8, #949cf7);
+  --danger-text: light-dark(#b3242a, #fa777a);
+  --ok-text: light-dark(#0f6230, #2dc770);
+  --warn-text: light-dark(#7a5000, #f0b232);
+  --link: light-dark(#0058b3, #00a8fc);
   /* Controls and marks (3:1 or more as non-text). */
-  --ok: #23a55a;
+  --ok: light-dark(#1d8a4b, #23a55a);
   --mention: #f0b232;
-  --focus-ring: #00a8fc;
-  --module-tag-text: #fff;
-  --spoiler: #1e1f22;
-  --spoiler-revealed: rgba(255, 255, 255, 0.1);
-  --scrim: rgba(0, 0, 0, 0.85);
+  --focus-ring: light-dark(#0058b3, #00a8fc);
+  --module-tag-text: light-dark(#060607, #fff);
+  --spoiler: light-dark(#b5bac1, #1e1f22);
+  --spoiler-revealed: light-dark(rgba(0, 0, 0, 0.08), rgba(255, 255, 255, 0.1));
+  --scrim: light-dark(rgba(242, 243, 245, 0.94), rgba(0, 0, 0, 0.85));
   --tooltip: #111214;
   --tooltip-text: #f2f3f5;
-  /* Muted conversations fade this far; colours a service picks (roles) mix this much of themselves with the shade. */
+  /* Muted conversations fade this far; colours a service picks (roles) mix this much of themselves with the shade.
+     Not colours, so light-dark() cannot pick them: the light values follow below. */
   --dim: 0.8;
   --role-mix: 100%;
-  --role-shade: #fff;
+  --role-shade: light-dark(#000, #fff);
 }
 
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] { --dim: 0.9; --role-mix: 55%; }
 @media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #e3e5e8;
-    --panel: #f2f3f5;
-    --surface: #ffffff;
-    --item: #ffffff;
-    --hover: #e3e5e8;
-    --field: #e3e5e8;
-    --raised: #ebedef;
-    --selected: #d4d7dc;
-    --selected-text: #060607;
-    --border: #c4c9ce;
-    --divider: #d4d7dc;
-    --text: #060607;
-    --muted: #4e5058;
-    --accent-text: #4049b8;
-    --danger-text: #b3242a;
-    --ok-text: #0f6230;
-    --warn-text: #7a5000;
-    --link: #0058b3;
-    --ok: #1d8a4b;
-    --mention: #f0b232;
-    --focus-ring: #0058b3;
-    --module-tag-text: #060607;
-    --spoiler: #b5bac1;
-    --spoiler-revealed: rgba(0, 0, 0, 0.08);
-    --scrim: rgba(242, 243, 245, 0.94);
-    --dim: 0.9;
-    --role-mix: 55%;
-    --role-shade: #000;
-  }
+  :root:not([data-theme="dark"]) { --dim: 0.9; --role-mix: 55%; }
 }
 
 * { box-sizing: border-box; }
