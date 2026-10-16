@@ -56,5 +56,8 @@ object DiscordPolicy {
     }
 
     /** The desktop site setting (the module's DESKTOP_SITE), on unless the shell page says otherwise. */
+    /** The USB camera setting (USB_CAMERA in src/mobile/modules.ts), off unless turned on. */
+    fun usbCamera(settings: JsonObject?): Boolean = (settings?.get("usbCamera") as? JsonPrimitive)?.takeIf { !it.isString }?.content == "true"
+
     fun desktopSite(settings: JsonObject?): Boolean = (settings?.get("desktopSite") as? JsonPrimitive)?.takeIf { !it.isString }?.content != "false"
 }

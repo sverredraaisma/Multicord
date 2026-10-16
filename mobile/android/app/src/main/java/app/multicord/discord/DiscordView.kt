@@ -24,6 +24,8 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import app.multicord.BuildConfig
 import app.multicord.bridge.BridgeScripts
+import app.multicord.camera.CameraLink
+import app.multicord.camera.UsbCamera
 import app.multicord.shell.Pages
 import app.multicord.shell.WebClientView
 import kotlinx.serialization.json.Json
@@ -58,6 +60,8 @@ class DiscordView(
     settings: JsonObject?,
     private val listener: Listener,
     private val ui: WebClientView.Ui,
+    /** The phone's USB camera, made when first needed. */
+    camera: () -> UsbCamera,
 ) {
     /** What the view reports, each already checked. */
     interface Listener {
@@ -75,6 +79,8 @@ class DiscordView(
         private set
     private var proxy: JavaScriptReplyProxy? = null
     private var desktopSite = DiscordPolicy.desktopSite(settings)
+    /** "USB camera in calls": the camera offered in Discord's device list (usb-camera.js, CameraPort). */
+    private val usbCamera = CameraLink(DiscordPolicy.ORIGIN, camera).also { it.setEnabled(DiscordPolicy.usbCamera(settings), null) }
     private var mediaLive = false
     private var ownMetadata: UserAgentMetadata? = null
 
@@ -134,6 +140,7 @@ class DiscordView(
     private fun install(view: WebView) {
         val origins = setOf(DiscordPolicy.ORIGIN)
         WebViewCompat.addDocumentStartJavaScript(view, asset("web/mobile/discord-page.js"), origins)
+        usbCamera.install(context, view)
         val world = BridgeScripts.installRelay(view, LISTENER, asset("web/mobile/discord-relay.js"), origins) { source, message, sourceOrigin, isMainFrame, replyProxy ->
             if (source !== webView || !isMainFrame || sourceOrigin.toString().trimEnd('/') != DiscordPolicy.ORIGIN) return@installRelay
             if (message.type != WebMessageCompat.TYPE_STRING) return@installRelay
@@ -185,8 +192,9 @@ class DiscordView(
         proxy?.postMessage(message.toString())
     }
 
-    /** The module's settings native code applies: the desktop site, which loads the page again when it changes. */
+    /** The module's settings native code applies: the USB camera, and the desktop site, which loads the page again when it changes. */
     fun applySettings(settings: JsonObject) {
+        usbCamera.setEnabled(DiscordPolicy.usbCamera(settings), webView)
         val desktop = DiscordPolicy.desktopSite(settings)
         if (desktop == desktopSite) return
         desktopSite = desktop
@@ -216,6 +224,7 @@ class DiscordView(
         }
         webView = null
         proxy = null
+        usbCamera.close()
         if (mediaLive) media(audio = false, video = false)
     }
 
@@ -250,6 +259,11 @@ class DiscordView(
             // A new document: the old one's reply channel and its camera and microphone are gone.
             proxy = null
             if (mediaLive) media(audio = false, video = false)
+        }
+
+        // A loaded document of Discord's gets its own USB camera channel, if the camera is on.
+        override fun onPageFinished(view: WebView, url: String?) {
+            if (view === webView && DiscordValidators.isDiscordPage(url)) usbCamera.pageLoaded(view)
         }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {

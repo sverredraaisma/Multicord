@@ -22,6 +22,7 @@ import app.multicord.call.AudioRoute
 import app.multicord.call.Call
 import app.multicord.call.CallAudio
 import app.multicord.call.CallPolicy
+import app.multicord.camera.UsbCamera
 import app.multicord.discord.DiscordView
 import app.multicord.engine.EngineHost
 import app.multicord.engine.EngineListener
@@ -116,6 +117,10 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
     val calls: List<Call> get() = callsByInstance.values.toList()
     /** Who wants to hear when calls start, end or turn video on or off (the background service's types and notification). */
     var onCallsChanged: (() -> Unit)? = null
+    /** The phone's USB camera (Tier B), made when a view first needs it; shared by every view whose service has it on. */
+    private var usbCamera: UsbCamera? = null
+    private fun camera(): UsbCamera = usbCamera ?: UsbCamera(app).also { usbCamera = it }
+
     private val callAudio = CallAudio(app) { current, available ->
         val call = callsByInstance.values.firstOrNull { it.inChatView } ?: return@CallAudio
         instances[call.instance]?.view?.audioRoutes(AudioRoute.report(current, available))
@@ -232,7 +237,14 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
             }
             "start" -> start(text("instance"), text("module"), text("name"), text("url"), command["settings"] as? JsonObject)
             "command" -> instances[text("instance")]?.engine?.command(command["command"] as JsonObject)
-            "hostSettings" -> instances[text("instance")]?.discord?.applySettings(command["settings"] as JsonObject)
+            "hostSettings" -> instances[text("instance")]?.let { instance ->
+                val settings = command["settings"] as JsonObject
+                instance.discord?.applySettings(settings)
+                if (instance.engine != null) {
+                    instance.usbCamera = (settings["usbCamera"] as? JsonPrimitive)?.takeIf { !it.isString }?.content == "true"
+                    instance.view?.usbCamera(instance.usbCamera)
+                }
+            }
             "discordNavigate" -> instances[text("instance")]?.discord?.navigate(text("target"))
             "discordNotificationClick" -> instances[text("instance")]?.discord?.clickNotification(text("id"))
             "layout" -> {
@@ -303,6 +315,8 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
         screen = null
         shell?.destroy()
         shell = null
+        usbCamera?.shutdown()
+        usbCamera = null
         notifier.clearMessages()
         app.stopService(Intent(app, ConnectionService::class.java))
     }
@@ -325,6 +339,8 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
         var view: ChatView? = null
         var state: JsonObject? = null
         var media: JsonElement? = null
+        /** The service's "USB camera in calls", for its chat view. */
+        var usbCamera = false
         var shownAt = 0L
 
         override fun onEvent(host: EngineHost, event: JsonObject) {
@@ -374,7 +390,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
                 override fun onMedia(audio: Boolean, video: Boolean) {
                     if (instances[id] === instance) setCall(id, if (audio || video) Call(id, name, video, inChatView = false) else null)
                 }
-            }, ui = this)
+            }, ui = this, camera = ::camera)
             instance.discord = discord
             instances[id] = instance
             discord.start()
@@ -545,10 +561,12 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
             onPermission = { request -> permit(instance.id, request) },
             // Only the view of the call that has the phone's audio picks its route.
             onRoute = { route -> if (callsByInstance.values.firstOrNull { it.inChatView }?.instance == instance.id) callAudio.choose(route) },
+            camera = ::camera,
         )
         view.start()
         view.theme(theme)
         instance.media?.let(view::mediaAutoLoad)
+        view.usbCamera(instance.usbCamera)
         instance.state?.let(view::showState)
         instance.view = view
         val kept = instances.values.filter { it.view != null }.sortedByDescending { it.shownAt }

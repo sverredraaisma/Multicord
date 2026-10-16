@@ -184,8 +184,9 @@ val bundleWeb = tasks.register<BundleWeb>("bundleWeb") {
             "mobile/shell.html", "mobile/shell.js", "mobile/mobile.css",
         ).map { distDir.resolve(it) },
     )
-    // The module table, and the Discord view's document-start scripts (src/mobile/discordView.ts), in web/mobile.
-    mobile.from(listOf("modules.json", "discord-page.js", "discord-relay.js").map { distDir.resolve("mobile/$it") })
+    // The module table, the Discord view's document-start scripts (src/mobile/discordView.ts) and the USB camera's
+    // page patch (src/mobile/usbCamera.ts), in web/mobile.
+    mobile.from(listOf("modules.json", "discord-page.js", "discord-relay.js", "usb-camera.js").map { distDir.resolve("mobile/$it") })
     outputDir.set(layout.buildDirectory.dir("generated/web"))
 }
 

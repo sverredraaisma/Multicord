@@ -23,6 +23,8 @@ import app.multicord.bridge.BridgeScripts
 import app.multicord.bridge.Wire
 import app.multicord.call.AudioRoute
 import app.multicord.call.Call
+import app.multicord.camera.CameraLink
+import app.multicord.camera.UsbCamera
 import app.multicord.engine.OkHttpSockets
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -52,6 +54,8 @@ class ChatView(
     private val onPermission: (PermissionRequest) -> Unit,
     /** The user picked where the call plays, not yet checked: the caller takes only a route it offered. */
     private val onRoute: (AudioRoute) -> Unit,
+    /** The phone's USB camera, made when first needed. */
+    camera: () -> UsbCamera,
 ) {
     private val host = "$instanceId.view.multicord.invalid"
     /** The view's own origin: the only one its permission requests may come from. */
@@ -72,6 +76,9 @@ class ChatView(
         connect = OkHttpSockets({ main.post(it) })::connect,
         emit = { post("socket", it) },
     )
+
+    /** "USB camera in calls": the camera the view's calls use while one is attached (usb-camera.js, CameraPort). */
+    private val usbCamera = CameraLink(origin, camera)
 
     /** Whether the view's page is up and can answer (a back press, say). */
     val ready: Boolean get() = proxy != null
@@ -120,6 +127,7 @@ class ChatView(
             }
         }
         Log.i(TAG, "[view $instanceId] bridge relay in the $world")
+        usbCamera.install(context, view)
         webView = view
         view.loadUrl("$origin/native.html")
     }
@@ -148,6 +156,11 @@ class ChatView(
         post("routes", report)
     }
 
+    /** The service's USB camera setting. */
+    fun usbCamera(on: Boolean) {
+        usbCamera.setEnabled(on, webView)
+    }
+
     /** Asks the view whether it can go back; it answers through onBack with this id. */
     fun back(id: Long) {
         send(JsonObject(mapOf("k" to JsonPrimitive("back"), "id" to JsonPrimitive(id))))
@@ -164,6 +177,7 @@ class ChatView(
 
     fun destroy() {
         sockets.closeAll()
+        usbCamera.close()
         webView?.let {
             (it.parent as? android.view.ViewGroup)?.removeView(it)
             it.destroy()
@@ -178,6 +192,10 @@ class ChatView(
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             Pages.openOutside(context, request)
             return true
+        }
+
+        override fun onPageFinished(view: WebView, url: String?) {
+            if (view === webView) usbCamera.pageLoaded(view)
         }
 
         override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {

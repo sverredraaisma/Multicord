@@ -41,6 +41,8 @@ class CameraPort private constructor(private val camera: UsbCamera, private val 
     /** The page went, or the setting was turned off: the channel closes and the camera may stop. */
     fun close() {
         if (closed) return
+        // The page ends its USB tracks and stops listing the camera.
+        runCatching { port.postMessage(WebMessageCompat(CameraFormats.statusMessage(null))) }
         closed = true
         camera.removeSink(this)
         port.close()

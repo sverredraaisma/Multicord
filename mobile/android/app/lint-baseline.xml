@@ -69,12 +69,23 @@
 
     <issue
         id="RequiresFeature"
+        message="`postMessage` should only be called if the feature `WEB_MESSAGE_PORT_POST_MESSAGE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        runCatching { port.postMessage(WebMessageCompat(CameraFormats.statusMessage(null))) }"
+        errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/camera/CameraPort.kt"
+            line="45"
+            column="23"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
         message="`close` should only be called if the feature `WEB_MESSAGE_PORT_CLOSE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
         errorLine1="        port.close()"
         errorLine2="        ~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/camera/CameraPort.kt"
-            line="46"
+            line="48"
             column="9"/>
     </issue>
 
@@ -85,7 +96,7 @@
         errorLine2="                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/camera/CameraPort.kt"
-            line="70"
+            line="72"
             column="34"/>
     </issue>
 
@@ -96,7 +107,7 @@
         errorLine2="            ^">
         <location
             file="src/main/java/app/multicord/camera/CameraPort.kt"
-            line="72"
+            line="74"
             column="13"/>
     </issue>
 
@@ -107,7 +118,7 @@
         errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/camera/CameraPort.kt"
-            line="78"
+            line="80"
             column="13"/>
     </issue>
 
@@ -118,7 +129,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="82"
+            line="89"
             column="9"/>
     </issue>
 
@@ -129,7 +140,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="82"
+            line="89"
             column="9"/>
     </issue>
 
@@ -140,7 +151,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="83"
+            line="90"
             column="9"/>
     </issue>
 
@@ -151,7 +162,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="162"
+            line="175"
             column="9"/>
     </issue>
 
@@ -162,7 +173,7 @@
         errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/discord/DiscordView.kt"
-            line="85"
+            line="91"
             column="23"/>
     </issue>
 
@@ -173,7 +184,7 @@
         errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/discord/DiscordView.kt"
-            line="85"
+            line="91"
             column="23"/>
     </issue>
 
@@ -184,7 +195,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/discord/DiscordView.kt"
-            line="86"
+            line="92"
             column="9"/>
     </issue>
 
@@ -195,7 +206,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/discord/DiscordView.kt"
-            line="88"
+            line="94"
             column="9"/>
     </issue>
 
@@ -206,7 +217,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/discord/DiscordView.kt"
-            line="89"
+            line="95"
             column="9"/>
     </issue>
 
@@ -217,7 +228,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/discord/DiscordView.kt"
-            line="136"
+            line="142"
             column="9"/>
     </issue>
 
@@ -228,7 +239,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/discord/DiscordView.kt"
-            line="185"
+            line="192"
             column="9"/>
     </issue>
 
@@ -316,7 +327,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/Hub.kt"
-            line="447"
+            line="463"
             column="9"/>
     </issue>
 
@@ -327,7 +338,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/Hub.kt"
-            line="447"
+            line="463"
             column="9"/>
     </issue>
 
@@ -338,7 +349,7 @@
         errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/Hub.kt"
-            line="457"
+            line="473"
             column="23"/>
     </issue>
 
@@ -349,7 +360,7 @@
         errorLine2="                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/Hub.kt"
-            line="457"
+            line="473"
             column="23"/>
     </issue>
 
@@ -360,7 +371,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/Hub.kt"
-            line="458"
+            line="474"
             column="9"/>
     </issue>
 
@@ -371,7 +382,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/Hub.kt"
-            line="459"
+            line="475"
             column="9"/>
     </issue>
 
@@ -492,7 +503,7 @@
         errorLine2="                                 ~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="175"
+            line="189"
             column="34"/>
     </issue>
 
@@ -503,7 +514,7 @@
         errorLine2="                                 ~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/discord/DiscordView.kt"
-            line="232"
+            line="241"
             column="34"/>
     </issue>
 

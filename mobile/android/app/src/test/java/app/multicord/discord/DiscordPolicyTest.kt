@@ -52,4 +52,12 @@ class DiscordPolicyTest {
         assertTrue(DiscordPolicy.desktopSite(JsonObject(mapOf("desktopSite" to JsonPrimitive("false")))))
         assertFalse(DiscordPolicy.desktopSite(JsonObject(mapOf("desktopSite" to JsonPrimitive(false)))))
     }
+
+    @Test
+    fun usbCameraIsOffUnlessTurnedOn() {
+        assertFalse(DiscordPolicy.usbCamera(null))
+        assertFalse(DiscordPolicy.usbCamera(JsonObject(mapOf("usbCamera" to JsonPrimitive("true")))))
+        assertFalse(DiscordPolicy.usbCamera(JsonObject(mapOf("usbCamera" to JsonPrimitive(false)))))
+        assertTrue(DiscordPolicy.usbCamera(JsonObject(mapOf("usbCamera" to JsonPrimitive(true)))))
+    }
 }
