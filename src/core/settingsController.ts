@@ -1,5 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
 import type { PlatformAdapter } from "../shared/adapter";
 import type { FavouritesSummary } from "../shared/favourites";
 import {
@@ -13,16 +11,21 @@ import {
   type ShortcutAction,
   type UpdateStatus,
 } from "../shared/settings";
-import { configurableModules } from "./modules/index";
-import type { PlatformModule } from "./modules/types";
-import { loadPlatforms } from "../core/platforms";
-import { addService, keepsOneEnabled, removeService, renameService, setServiceEnabled } from "../core/services";
+import { configurableModules, type ModuleEntry } from "./modules";
+import { loadPlatforms } from "./platforms";
+import { addService, keepsOneEnabled, removeService, renameService, setServiceEnabled } from "./services";
 import type { SettingsStore } from "./settingsStore";
 
+/** Where platforms.json is kept: a file on the desktop. */
+export interface PlatformsConfig {
+  read(): string | undefined;
+  write(text: string): void;
+}
+
 export interface SettingsDeps {
-  /** platforms.json, which the settings page edits. */
-  platformsFile: string;
-  modules: readonly PlatformModule[];
+  /** platforms.json, which the settings page edits: its text (undefined when there is none), and writing it. */
+  platformsConfig: PlatformsConfig;
+  modules: readonly ModuleEntry[];
   store: SettingsStore;
   /** Adapters of the services running now. */
   adapters: ReadonlyMap<string, PlatformAdapter>;
@@ -76,12 +79,8 @@ export class SettingsController {
 
   /** The file's entries. A file that is not valid JSON is never overwritten. */
   private readConfig(): unknown {
-    let text: string;
-    try {
-      text = fs.readFileSync(this.deps.platformsFile, "utf8");
-    } catch {
-      return [];
-    }
+    const text = this.deps.platformsConfig.read();
+    if (text === undefined) return [];
     try {
       return JSON.parse(text);
     } catch {
@@ -90,20 +89,13 @@ export class SettingsController {
   }
 
   private writeConfig(raw: unknown[]): void {
-    fs.mkdirSync(path.dirname(this.deps.platformsFile), { recursive: true });
-    fs.writeFileSync(this.deps.platformsFile, `${JSON.stringify(raw, null, 2)}\n`);
+    this.deps.platformsConfig.write(`${JSON.stringify(raw, null, 2)}\n`);
     this.restartNeeded = true;
   }
 
   /** Every configured service, as platforms.json says now. */
   private platforms() {
-    let text: string | undefined;
-    try {
-      text = fs.readFileSync(this.deps.platformsFile, "utf8");
-    } catch {
-      text = undefined;
-    }
-    return loadPlatforms(() => text, this.rules).all;
+    return loadPlatforms(() => this.deps.platformsConfig.read(), this.rules).all;
   }
 
   /** The settings a service's module declares. */

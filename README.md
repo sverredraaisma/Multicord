@@ -281,7 +281,8 @@ src/
   preload/native.ts      bridge for native chat views (display state in, actions out)
   preload/settings.ts    bridge for the settings page
   shared/settings.ts     app settings, services list and settings actions, with validators
-  main/settings*.ts      settings store and the controller behind the settings page
+  core/settings*.ts      settings store and the controller behind the settings page
+  main/settingsFiles.ts  settings.json and platforms.json on disk
   core/registry.ts       the rail: every service's servers, DMs and conversations, in the user's order
   core/layout.ts         where the rail, content, Messages list and tooltip go in the window
   core/platforms.ts      platforms.json: built-in services and the checks on users' own

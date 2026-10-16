@@ -49,8 +49,9 @@ import { loadPlatforms, type PlatformDef } from "../core/platforms";
 import { PlatformRegistry } from "../core/registry";
 import { BADGE_SIZE, badgeBitmap } from "./badge";
 import { createDisplayMediaHandler } from "./screenShare";
-import { SettingsController } from "./settingsController";
-import { SettingsStore } from "./settingsStore";
+import { SettingsController } from "../core/settingsController";
+import type { SettingsStore } from "../core/settingsStore";
+import { fileSettingsStore, platformsFile } from "./settingsFiles";
 import { HealthWatch } from "./healthWatch";
 import { loadVenmic, SystemAudio } from "./systemAudio";
 import { GlobalPushToTalk, loadKeyHook } from "./pushToTalk";
@@ -213,7 +214,7 @@ export async function createShell(
   const views = new Map<string, WebContentsView>();
   const adapters = new Map<string, PlatformAdapter>();
   const credentials = new CredentialStore(path.join(paths.userData, "credentials.json"), services.secrets);
-  const settingsStore = new SettingsStore(path.join(paths.userData, "settings.json"));
+  const settingsStore = fileSettingsStore(path.join(paths.userData, "settings.json"));
   const favourites = createFavourites(paths.userData);
   const general = () => settingsStore.get().general;
   /** Notifications from this service: on in general and not turned off for it. */
@@ -525,7 +526,7 @@ export async function createShell(
   };
 
   const settings = new SettingsController({
-    platformsFile: path.join(paths.userData, "platforms.json"),
+    platformsConfig: platformsFile(path.join(paths.userData, "platforms.json")),
     modules,
     store: settingsStore,
     adapters,

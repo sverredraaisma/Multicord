@@ -1,36 +1,30 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("electron", () => import("../mocks/electron"));
 
+import { SettingsController, type SettingsDeps } from "../../src/core/settingsController";
+import { SettingsStore } from "../../src/core/settingsStore";
 import { MODULES } from "../../src/main/modules/index";
-import { SettingsController, type SettingsDeps } from "../../src/main/settingsController";
-import { SettingsStore } from "../../src/main/settingsStore";
 import type { PlatformAdapter } from "../../src/shared/adapter";
-import { DEFAULT_SETTINGS, type ServiceSettingValues, type SettingsViewState } from "../../src/shared/settings";
+import { DEFAULT_SETTINGS, type AppSettings, type ServiceSettingValues, type SettingsViewState } from "../../src/shared/settings";
 
-let dir: string;
-let platformsFile: string;
+/** platforms.json and settings.json, in memory. */
+let platformsText: string | undefined;
+let savedSettings: AppSettings | undefined;
 
 beforeEach(() => {
-  dir = fs.mkdtempSync(path.join(os.tmpdir(), "multicord-settings-"));
-  platformsFile = path.join(dir, "platforms.json");
+  platformsText = undefined;
+  savedSettings = undefined;
 });
 
-afterEach(() => {
-  fs.rmSync(dir, { recursive: true, force: true });
-});
-
-const readPlatforms = () => JSON.parse(fs.readFileSync(platformsFile, "utf8")) as unknown[];
+const readPlatforms = () => JSON.parse(platformsText!) as unknown[];
 
 function controller(adapters: Record<string, Partial<PlatformAdapter>> = {}, overrides: Partial<SettingsDeps> = {}) {
   const published: SettingsViewState[] = [];
   const deps: SettingsDeps = {
-    platformsFile,
+    platformsConfig: { read: () => platformsText, write: (text) => (platformsText = text) },
     modules: MODULES,
-    store: new SettingsStore(path.join(dir, "settings.json")),
+    store: new SettingsStore({ read: () => savedSettings, write: (settings) => (savedSettings = settings) }),
     adapters: new Map(Object.entries(adapters)) as unknown as Map<string, PlatformAdapter>,
     secretsPersistent: () => true,
     launchAtLoginSupported: true,
@@ -48,7 +42,7 @@ function controller(adapters: Record<string, Partial<PlatformAdapter>> = {}, ove
 
 describe("settings state", () => {
   it("lists every service with its module and account", () => {
-    fs.writeFileSync(platformsFile, JSON.stringify([{ id: "el", name: "Element", url: "https://app.element.io", enabled: false }]));
+    platformsText = JSON.stringify([{ id: "el", name: "Element", url: "https://app.element.io", enabled: false }]);
     const { settings } = controller({
       discord: { accountStatus: () => ({ state: "signed-in", name: "Ana" }) },
       fluxer: {},
@@ -179,7 +173,7 @@ describe("settings actions", () => {
     await settings.handle({ type: "update", patch: { general: { notifications: false } } });
     expect(deps.store.get().general.notifications).toBe(false);
     expect(last().settings.general.notifications).toBe(false);
-    expect(new SettingsStore(path.join(dir, "settings.json")).get().general.notifications).toBe(false);
+    expect(savedSettings!.general.notifications).toBe(false);
   });
 
   it("turns services off, but never the last one", async () => {
@@ -218,11 +212,11 @@ describe("settings actions", () => {
     expect(last().error).toBe("Could not add Element: url must be an https URL.");
     await settings.handle({ type: "addService", module: "irc", name: "M" });
     expect(last().error).toBe("That module cannot be added.");
-    expect(fs.existsSync(platformsFile)).toBe(false);
+    expect(platformsText).toBeUndefined();
   });
 
   it("will not remove the last service that is on", async () => {
-    fs.writeFileSync(platformsFile, JSON.stringify([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, { id: "w", name: "W", module: "discord" }]));
+    platformsText = JSON.stringify([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, { id: "w", name: "W", module: "discord" }]);
     const { settings, deps, last } = controller();
     await settings.handle({ type: "removeService", id: "w" });
     expect(last().error).toBe("Keep at least one service turned on.");
@@ -230,11 +224,11 @@ describe("settings actions", () => {
   });
 
   it("never overwrites a platforms.json it cannot read", async () => {
-    fs.writeFileSync(platformsFile, "{broken");
+    platformsText = "{broken";
     const { settings, last } = controller();
     await settings.handle({ type: "setEnabled", id: "fluxer", enabled: false });
     expect(last().error).toMatch(/syntax error/);
-    expect(fs.readFileSync(platformsFile, "utf8")).toBe("{broken");
+    expect(platformsText).toBe("{broken");
   });
 
   it("signs out through the adapter, else by clearing the web session", async () => {
@@ -261,7 +255,7 @@ describe("settings actions", () => {
 });
 
 describe("settings modules declare", () => {
-  const withMatrix = () => fs.writeFileSync(platformsFile, JSON.stringify([{ id: "mx", name: "Matrix", url: "https://x.org", module: "matrix-native" }]));
+  const withMatrix = () => (platformsText = JSON.stringify([{ id: "mx", name: "Matrix", url: "https://x.org", module: "matrix-native" }]));
 
   it("shows a module's fields with each service, and only declared keys of what the service reports", () => {
     withMatrix();
@@ -321,15 +315,21 @@ describe("settings modules declare", () => {
 });
 
 describe("settings store", () => {
-  it("reads leniently and announces changes", () => {
-    const file = path.join(dir, "nested", "settings.json");
-    const store = new SettingsStore(file);
+  it("reads leniently, saves and announces changes", () => {
+    const write = vi.fn();
+    const store = new SettingsStore({ read: () => undefined, write });
     expect(store.get()).toEqual(DEFAULT_SETTINGS);
     const changed = vi.fn();
     store.changed.on(changed);
     store.update({ voice: { echoCancellation: false } });
     expect(changed).toHaveBeenCalledWith({ settings: store.get(), patch: { voice: { echoCancellation: false } } });
-    fs.writeFileSync(file, "not json");
-    expect(new SettingsStore(file).get()).toEqual(DEFAULT_SETTINGS);
+    expect(write).toHaveBeenCalledWith(store.get());
+    expect(new SettingsStore({ read: () => store.get(), write }).get()).toEqual(store.get());
+  });
+
+  it("starts from the defaults when what was saved cannot be read", () => {
+    const broken = new SettingsStore({ read: () => { throw new SyntaxError("not json"); }, write: vi.fn() });
+    expect(broken.get()).toEqual(DEFAULT_SETTINGS);
+    expect(new SettingsStore({ read: () => "nonsense", write: vi.fn() }).get()).toEqual(DEFAULT_SETTINGS);
   });
 });
