@@ -4,100 +4,107 @@ package app.multicord
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.graphics.Color
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
 import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
-import android.widget.LinearLayout
 import android.widget.TextView
+import android.window.OnBackInvokedCallback
+import android.window.OnBackInvokedDispatcher
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.webkit.WebViewFeature
-import app.multicord.bridge.Validators
-import app.multicord.engine.EngineHost
-import app.multicord.engine.EngineListener
-import app.multicord.engine.EngineUi
-import app.multicord.engine.EngineSpec
-import app.multicord.secrets.KeystoreCipher
-import app.multicord.secrets.SecretStore
-import app.multicord.shell.ShellView
-import java.io.File
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * Phase 2, milestone 1: one module instance (Matrix) in its engine, and its native chat view in the shell,
- * one view at a time. No rail yet; a status line shows the engine's state and account.
+ * The screen: the shell page (src/core with the bar, the drawer and the settings page) over the chat view
+ * of the service it shows, one view at a time. Everything behind them lives in the [Hub], which keeps
+ * running when this activity goes away.
  */
-class MainActivity : Activity(), EngineUi {
-    private lateinit var status: TextView
-    private var engine: EngineHost? = null
-    private var shell: ShellView? = null
-    private var engineState = "starting"
-    private var account = "unknown"
+class MainActivity : Activity(), Hub.Screen {
+    private lateinit var root: FrameLayout
+    private lateinit var viewArea: FrameLayout
+    private var hub: Hub? = null
     /** The open document picker's caller; one picker at a time. */
     private var picking: ((List<String>) -> Unit)? = null
+    private var backCallback: OnBackInvokedCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        status = TextView(this).apply {
-            setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f)
-            setPadding(24, 12, 24, 12)
-        }
-        val content = FrameLayout(this)
-        setContentView(LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            fitsSystemWindows = true
-            addView(status, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-            addView(content, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
-        })
-
         val missing = REQUIRED_FEATURES.filterNot(WebViewFeature::isFeatureSupported)
         if (missing.isNotEmpty()) {
-            status.text = "This phone's Android System WebView is too old for Multicord (missing ${missing.joinToString()}). Update it from your app store."
+            setContentView(TextView(this).apply {
+                setTextSize(TypedValue.COMPLEX_UNIT_SP, 16f)
+                setPadding(48, 48, 48, 48)
+                text = "This phone's Android System WebView is too old for Multicord (missing ${missing.joinToString()}). Update it from your app store."
+            })
             return
         }
         // Inspecting pages over adb, in debug builds only.
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
-
-        val secrets = SecretStore(File(filesDir, "secrets"), KeystoreCipher())
-        val host = EngineHost(this, MATRIX, secrets.scope(MATRIX.instanceId), content, object : EngineListener {
-            override fun onEvent(host: EngineHost, event: JsonObject) {
-                if ((event["type"] as JsonPrimitive).content == "account") {
-                    account = ((event["account"] as JsonObject)["state"] as JsonPrimitive).content
-                    showStatus()
-                }
+        root = FrameLayout(this).apply {
+            fitsSystemWindows = true
+            setBackgroundColor(BACKGROUND)
+        }
+        viewArea = FrameLayout(this)
+        root.addView(viewArea, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { topMargin = barHeight() })
+        setContentView(root)
+        val hub = (application as MulticordApp).hub()
+        this.hub = hub
+        hub.attach(this, this)
+        if (Build.VERSION.SDK_INT >= 33) {
+            backCallback = OnBackInvokedCallback { hub.back() }.also {
+                onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, it)
             }
-
-            // Render state goes only to this instance's view.
-            override fun onRender(host: EngineHost, state: JsonObject) {
-                if (host === engine) shell?.showState(state)
-            }
-
-            override fun onHealth(host: EngineHost, state: String) {
-                engineState = state
-                Log.i(EngineHost.TAG, "[engine ${host.spec.instanceId}] $state")
-                showStatus()
-            }
-        }, this)
-        engine = host
-        shell = ShellView(this, content, ::onViewAction) { engine?.allowedHosts }.also { it.start() }
-        host.start()
-        // The view is on screen: the engine may show its home and keep its state fresh.
-        host.command(JsonObject(mapOf("type" to JsonPrimitive("visible"), "visible" to JsonPrimitive(true))))
-        showStatus()
+        }
     }
 
-    /** An action from the shown view: checked, then to that view's engine only. */
-    private fun onViewAction(action: JsonElement?) {
-        if (!Validators.isNativeAction(action)) {
-            Log.w(EngineHost.TAG, "[shell] dropped a malformed view action")
-            return
+    /** The shell page's bar: 56 dp, as its CSS (--bar) has it. */
+    private fun barHeight() = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 56f, resources.displayMetrics).toInt()
+
+    override fun place(shell: WebView?, view: WebView?, shellFull: Boolean) {
+        for (i in viewArea.childCount - 1 downTo 0) if (viewArea.getChildAt(i) !== view) viewArea.removeViewAt(i)
+        if (view != null && view.parent !== viewArea) {
+            (view.parent as? ViewGroup)?.removeView(view)
+            viewArea.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
-        engine?.action(action as JsonObject)
+        for (i in root.childCount - 1 downTo 0) {
+            val child = root.getChildAt(i)
+            if (child !== viewArea && child !== shell) root.removeViewAt(i)
+        }
+        if (shell == null) return
+        val params = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, if (shellFull) ViewGroup.LayoutParams.MATCH_PARENT else barHeight())
+        if (shell.parent !== root) {
+            (shell.parent as? ViewGroup)?.removeView(shell)
+            // Above the chat view: its bar, and its drawer over the view.
+            root.addView(shell, params)
+        } else {
+            shell.layoutParams = params
+        }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        hub?.setAppVisible(true)
+    }
+
+    override fun onStop() {
+        hub?.setAppVisible(false)
+        super.onStop()
+    }
+
+    @Deprecated("Back before Android 13; later versions use OnBackInvokedCallback")
+    override fun onBackPressed() {
+        val hub = hub
+        @Suppress("DEPRECATION")
+        if (hub == null) super.onBackPressed() else hub.back()
+    }
+
+    override fun leave() {
+        moveTaskToBack(true)
     }
 
     override fun pickDocuments(done: (List<String>) -> Unit): Boolean {
@@ -112,7 +119,7 @@ class MainActivity : Activity(), EngineUi {
             picking = done
             true
         } catch (error: ActivityNotFoundException) {
-            Log.w(EngineHost.TAG, "No document picker: ${error.message}")
+            Log.w(TAG, "No document picker: ${error.message}")
             false
         }
     }
@@ -121,7 +128,7 @@ class MainActivity : Activity(), EngineUi {
         CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(this, Uri.parse(url))
         true
     } catch (error: ActivityNotFoundException) {
-        Log.w(EngineHost.TAG, "No browser: ${error.message}")
+        Log.w(TAG, "No browser: ${error.message}")
         false
     }
 
@@ -144,29 +151,20 @@ class MainActivity : Activity(), EngineUi {
         done(uris)
     }
 
-    private fun showStatus() {
-        status.text = "${MATRIX.name} · engine $engineState · $account"
-    }
-
     override fun onDestroy() {
-        engine?.destroy()
-        shell?.destroy()
-        engine = null
-        shell = null
+        if (Build.VERSION.SDK_INT >= 33) backCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
+        // A picker this activity opened can no longer answer.
+        picking?.invoke(emptyList())
+        picking = null
+        hub?.detach(this)
+        hub = null
         super.onDestroy()
     }
 
     private companion object {
+        const val TAG = "Multicord"
         const val REQUEST_PICK = 1
+        val BACKGROUND = Color.rgb(0x1e, 0x1f, 0x22)
         val REQUIRED_FEATURES = listOf(WebViewFeature.MULTI_PROFILE, WebViewFeature.WEB_MESSAGE_LISTENER, WebViewFeature.DOCUMENT_START_SCRIPT)
-
-        /** The desktop's "matrix-native" module (src/main/modules/matrix.ts) with its default settings. */
-        val MATRIX = EngineSpec(
-            instanceId = "matrix-native",
-            engine = "matrix",
-            name = "Matrix",
-            url = "https://matrix.org",
-            settings = JsonObject(mapOf("readReceipts" to JsonPrimitive(true), "slidingSync" to JsonPrimitive(true))),
-        )
     }
 }

@@ -8,7 +8,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
-import android.view.ViewGroup
 import android.webkit.ConsoleMessage
 import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
@@ -53,6 +52,8 @@ data class EngineSpec(
     val hosts: List<String>? = null,
     /** The instance's values for the module's declared settings, given to the engine with its info. */
     val settings: JsonObject? = null,
+    /** Keep the engine's web storage (IndexedDB) on disk; otherwise its Profile is cleared at every start. */
+    val storage: Boolean = false,
 )
 
 /** What an engine may ask of the screen: only right after the user asked for it in the engine's view. */
@@ -75,7 +76,8 @@ interface EngineListener {
     /** Display state for the module's own view. */
     fun onRender(host: EngineHost, state: JsonObject)
 
-    fun onHealth(host: EngineHost, state: String)
+    /** "starting", "running" or "stopped", with the restarts so far and why it last stopped. */
+    fun onHealth(host: EngineHost, state: String, restarts: Int, lastExit: String?)
 }
 
 /**
@@ -92,8 +94,6 @@ class EngineHost(
     private val context: Context,
     val spec: EngineSpec,
     private val secrets: ScopedSecrets,
-    /** Where the engine's WebView lives: it is attached (1x1, never seen) so that it keeps running. */
-    private val container: ViewGroup,
     private val listener: EngineListener,
     private val ui: EngineUi,
     documents: DocumentSource = ContentDocuments(context.contentResolver),
@@ -114,7 +114,11 @@ class EngineHost(
     /** The hosts the engine may reach now: the module's, or narrower once the engine locks itself. */
     private var allowed: List<String>? = spec.hosts
     private var crashes = 0
+    private var restarts = 0
+    private var lastExit: String? = null
     private var readyAt = 0L
+    /** The settings the engine gets with its info: the spec's, then each settings command's. */
+    private var settings: JsonObject? = spec.settings
     private var stopped = false
     /** When the user last asked to attach files, or submitted a sign-in step, in the module's view. */
     var attachAskedAt = 0L
@@ -139,8 +143,13 @@ class EngineHost(
         stopped = false
         val view = WebView(context)
         // The Profile must be set before anything else touches the WebView.
-        val profileName = "engine-${spec.instanceId}"
+        val profileName = profileName(spec.instanceId)
         val profile = ProfileStore.getInstance().getOrCreateProfile(profileName)
+        // Without storage the engine starts afresh each time, as its in-memory session does on the desktop.
+        if (!spec.storage && !clearedOnce) {
+            clearedOnce = true
+            profile.webStorage.deleteAllData()
+        }
         WebViewCompat.setProfile(view, profileName)
         // HTTP goes through the bridge; the engine has no use for cookies.
         profile.cookieManager.setAcceptCookie(false)
@@ -170,10 +179,10 @@ class EngineHost(
             receive(source, message, sourceOrigin, isMainFrame, replyProxy)
         }
         Log.i(TAG, "[engine ${spec.instanceId}] bridge relay in the $world")
-        container.addView(view, ViewGroup.LayoutParams(1, 1))
-        view.alpha = 0f
+        // Never on screen: the page runs without a window, and its renderer stays important while the app runs.
+        view.setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
         webView = view
-        listener.onHealth(this, "starting")
+        health("starting")
         view.loadUrl("$origin/engine.html")
     }
 
@@ -191,12 +200,11 @@ class EngineHost(
     private fun tearDown() {
         ready = false
         proxy = null
-        webView?.let {
-            container.removeView(it)
-            it.destroy()
-        }
+        webView?.destroy()
         webView = null
     }
+
+    private fun health(state: String) = listener.onHealth(this, state, restarts, lastExit)
 
     // Engine -> host ---------------------------------------------------------------------------------------
 
@@ -246,13 +254,13 @@ class EngineHost(
                 // The engine asks first thing once loaded: from now on it can receive.
                 ready = true
                 readyAt = SystemClock.elapsedRealtime()
-                listener.onHealth(this, "running")
+                health("running")
                 val info = LinkedHashMap<String, JsonElement>()
                 info["id"] = JsonPrimitive(spec.instanceId)
                 info["name"] = JsonPrimitive(spec.name)
                 info["url"] = JsonPrimitive(spec.url)
                 info["os"] = JsonPrimitive("android")
-                spec.settings?.let { info["settings"] = it }
+                settings?.let { info["settings"] = it }
                 done(Result.success(JsonObject(info)))
                 while (queue.isNotEmpty() && ready) queue.removeFirst().let { (kind, body) -> post(kind, body) }
             }
@@ -345,8 +353,12 @@ class EngineHost(
 
     // Host -> engine ---------------------------------------------------------------------------------------
 
-    /** A shell command (EngineCommand), made by native code. */
-    fun command(command: JsonObject) = deliver("command", command)
+    /** A command from the shell page (EngineCommand), already checked with isEngineCommand. */
+    fun command(command: JsonObject) {
+        // The values the engine gets with its info from now on, e.g. after it restarts.
+        if ((command["type"] as? JsonPrimitive)?.content == "settings") settings = command["values"] as? JsonObject
+        deliver("command", command)
+    }
 
     /** A user action from the module's view, already checked with isNativeAction. */
     fun action(action: JsonObject) {
@@ -393,14 +405,16 @@ class EngineHost(
             tearDown()
             if (stopped) return true
             crashes = if (readyAt > 0 && SystemClock.elapsedRealtime() - readyAt >= STABLE_MS) 1 else crashes + 1
+            lastExit = if (detail.didCrash()) "crashed" else "killed"
             if (crashes > MAX_CRASHES) {
                 Log.w(TAG, "[engine ${spec.instanceId}] stopped; crashed $MAX_CRASHES times in a row, not restarting")
-                listener.onHealth(this@EngineHost, "stopped")
+                health("stopped")
                 return true
             }
             val delay = minOf(2000L shl (crashes - 1), 30_000L)
             Log.w(TAG, "[engine ${spec.instanceId}] renderer gone (crash: ${detail.didCrash()}); restarting in $delay ms")
-            listener.onHealth(this@EngineHost, "starting")
+            restarts++
+            health("starting")
             main.postDelayed({ if (!stopped && webView == null) start() }, delay)
             return true
         }
@@ -421,8 +435,13 @@ class EngineHost(
 
     private fun notFound() = respond("text/plain", ByteArray(0).inputStream(), 404, "Not Found")
 
+    private var clearedOnce = false
+
     companion object {
         const val TAG = "Multicord"
+
+        /** The Profile an instance's engine keeps its web storage in. */
+        fun profileName(instanceId: String) = "engine-$instanceId"
         private const val LISTENER = "multicordHost"
         /** The events engine.js and the relay exchange (engine.js has the same name). */
         private const val CHANNEL = "multicord-engine"

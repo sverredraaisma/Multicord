@@ -1,0 +1,82 @@
+// Multicord for Android. Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later, see LICENSE at the repo root.
+//
+// A chat view's bridge (NativeApi, src/preload/native.ts) in that instance's view WebView, as a document-start
+// script native code injects into the view's own origin only, in the page's world; it talks to native code
+// through relay.js (in an isolated world where the WebView supports one). Display state comes in from the
+// engine whose view this is; user actions go out to native code, which checks them with isNativeAction and
+// hands them to that engine alone. The view never reaches the shell page or another instance.
+//
+// Besides the desktop's API it has onBack: the system's back goes to the view first (one pane at a time,
+// src/renderer/mobilePanes.ts), and native code hears whether the view used it.
+// Messages are JSON; a Uint8Array travels as {"$b64": "<base64>"} (Wire.kt).
+(() => {
+  if (window.multicordNative) return;
+  const CHANNEL = "multicord-view";
+  const BYTES = "$b64";
+
+  const fromBase64 = (base64) => {
+    const text = atob(base64);
+    const bytes = new Uint8Array(text.length);
+    for (let i = 0; i < text.length; i++) bytes[i] = text.charCodeAt(i);
+    return bytes;
+  };
+  const isEnvelope = (v) => v !== null && typeof v === "object" && !Array.isArray(v) && typeof v[BYTES] === "string" && Object.keys(v).length === 1;
+  const decode = (text) => JSON.parse(text, (_key, v) => (isEnvelope(v) ? fromBase64(v[BYTES]) : v));
+
+  const send = (message) => window.dispatchEvent(new CustomEvent(`${CHANNEL}:out`, { detail: JSON.stringify(message) }));
+  const listeners = { state: [], media: [], back: [] };
+  const run = (list, value) => {
+    for (const listener of list) {
+      try {
+        listener(value);
+      } catch (error) {
+        console.error(error);
+      }
+    }
+  };
+  window.addEventListener(`${CHANNEL}:in`, (event) => {
+    if (typeof event.detail !== "string") return;
+    let message;
+    try {
+      message = decode(event.detail);
+    } catch {
+      return;
+    }
+    switch (message.k) {
+      case "state":
+        return run(listeners.state, message.body);
+      // The service's limit for media that loads by itself; null for any size.
+      case "media":
+        if (message.body === null) return run(listeners.media, Infinity);
+        if (typeof message.body === "number" && message.body >= 0) run(listeners.media, message.body);
+        return;
+      case "back": {
+        let handled = false;
+        for (const listener of listeners.back) {
+          try {
+            handled = listener() === true || handled;
+          } catch (error) {
+            console.error(error);
+          }
+        }
+        return send({ k: "back", id: message.id, handled });
+      }
+    }
+  });
+
+  // Calls, voice settings and favourites come with later milestones; until then the view's defaults hold.
+  const later = () => {};
+
+  window.multicordNative = Object.freeze({
+    onState: (cb) => void listeners.state.push(cb),
+    act: (action) => send({ k: "act", body: action }),
+    onMediaAutoLoad: (cb) => void listeners.media.push(cb),
+    onBack: (cb) => void listeners.back.push(cb),
+    screenAudioEnded: later,
+    onVoiceSettings: later,
+    onCompact: later,
+    onVoiceCommand: later,
+    onFavourites: later,
+    favourites: later,
+  });
+})();

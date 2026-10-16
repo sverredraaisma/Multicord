@@ -72,9 +72,10 @@ val copyFixtures = tasks.register<CopyFixtures>("copyFixtures") {
 
 /**
  * The desktop build's bundles the app runs (`npm run build` at the repo root makes them in dist/): each
- * module engine (dist/engines/<id>.js, served on the engine's own origin) and the native chat view with
- * what it loads (served on the shell's origin). Source maps stay out. The task fails, naming the command,
- * when dist/ has not been built.
+ * module engine (dist/engines/<id>.js, served on the engine's own origin), the native chat view with what it
+ * loads (served on each instance's view origin), and the shell page with core (dist/mobile: shell.html,
+ * shell.js, mobile.css, and modules.json, the table of engines, hosts and storage native code reads).
+ * Source maps stay out. The task fails, naming the command, when dist/ has not been built.
  */
 abstract class BundleWeb : DefaultTask() {
     @get:InputFiles
@@ -82,6 +83,9 @@ abstract class BundleWeb : DefaultTask() {
 
     @get:InputFiles
     abstract val shell: ConfigurableFileCollection
+
+    @get:InputFiles
+    abstract val mobile: ConfigurableFileCollection
 
     @get:Internal
     abstract val dist: DirectoryProperty
@@ -92,7 +96,7 @@ abstract class BundleWeb : DefaultTask() {
     @TaskAction
     fun bundle() {
         val root = dist.get().asFile
-        val missing = (engines.files + shell.files).filter { !it.isFile }
+        val missing = (engines.files + shell.files + mobile.files).filter { !it.isFile }
         if (engines.isEmpty || missing.isNotEmpty()) {
             throw GradleException("The desktop bundles are missing (${missing.joinToString { it.relativeTo(root).path }}). Run `npm ci && npm run build` at the repository root first.")
         }
@@ -100,15 +104,22 @@ abstract class BundleWeb : DefaultTask() {
         web.deleteRecursively()
         for (file in engines.files) file.copyTo(web.resolve("engines/${file.name}"), overwrite = true)
         for (file in shell.files) file.copyTo(web.resolve("shell/${file.relativeTo(root).invariantSeparatorsPath}"), overwrite = true)
+        for (file in mobile.files) file.copyTo(web.resolve("mobile/${file.name}"), overwrite = true)
     }
 }
 
 val bundleWeb = tasks.register<BundleWeb>("bundleWeb") {
     val distDir = repoRoot.resolve("dist")
     dist.set(distDir)
-    // Matrix first; the other engines follow once their hosts' needs are met (mobile/android/README.md).
-    engines.from(distDir.resolve("engines/matrix.js"))
-    shell.from(listOf("native.html", "native.js", "native.css", "shell.css", "audio/rnnoise-worklet.js", "livekit-e2ee-worker.js").map { distDir.resolve(it) })
+    // Every native module's engine (the module table names them all).
+    engines.from(listOf("matrix", "fluxer", "telegram", "stoat", "spacebar", "nerimity").map { distDir.resolve("engines/$it.js") })
+    shell.from(
+        listOf(
+            "native.html", "native.js", "native.css", "shell.css", "settings.css", "audio/rnnoise-worklet.js", "livekit-e2ee-worker.js",
+            "mobile/shell.html", "mobile/shell.js", "mobile/mobile.css",
+        ).map { distDir.resolve(it) },
+    )
+    mobile.from(distDir.resolve("mobile/modules.json"))
     outputDir.set(layout.buildDirectory.dir("generated/web"))
 }
 
