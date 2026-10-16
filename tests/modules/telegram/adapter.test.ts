@@ -172,6 +172,8 @@ describe("starting", () => {
     const ctx = setup();
     await ctx.adapter.start();
     expect(ctx.prompt().prompt).toMatchObject({ id: "api", fields: [{ name: "apiId" }, { name: "apiHash" }] });
+    // Where to get them: a link the view opens in the browser.
+    expect(ctx.prompt().prompt.link).toEqual({ url: "https://my.telegram.org/apps", label: "Open my.telegram.org" });
     expect(ctx.createApi).not.toHaveBeenCalled();
     expect(ctx.adapter.accountStatus()).toEqual({ state: "signed-out" });
   });

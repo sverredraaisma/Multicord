@@ -699,6 +699,8 @@ export class TelegramAdapter extends BaseAdapter implements PlatformAdapter {
           title: "Connect Multicord to Telegram",
           description:
             "Telegram asks every app for its own API ID. Create one at my.telegram.org under API development tools, then enter it here. It is stored encrypted on this device.",
+          // Opens in the browser, as every link in the view does: the sign-in there lands on API development tools.
+          link: { url: "https://my.telegram.org/apps", label: "Open my.telegram.org" },
           fields: [
             { name: "apiId", label: "API ID", type: "number" },
             { name: "apiHash", label: "API hash", type: "text", autocomplete: "off" },
