@@ -151,7 +151,8 @@ export class MobileShell {
       adapters: this.adapters,
       // Secrets are under a Keystore key: they always persist.
       secretsPersistent: () => true,
-      launchAtLoginSupported: false,
+      // "Start with your phone": native code reads it from the settings file at boot or after an update (BootReceiver).
+      launchAtLoginSupported: true,
       version: boot.version,
       streaming: () => this.streaming(),
       openService: (id) => this.show(id),

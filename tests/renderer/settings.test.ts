@@ -562,6 +562,17 @@ describe("general and about", () => {
     expect(q(".streaming-note").hidden).toBe(false);
   });
 
+  it("says the phone, not the computer, on the phone's shell page", () => {
+    document.documentElement.classList.add("mobile");
+    try {
+      mount();
+      expect(switchFor("Start with your phone")).toBeDefined();
+      expect(document.body.textContent).toContain("After the phone starts or Multicord updates");
+    } finally {
+      document.documentElement.classList.remove("mobile");
+    }
+  });
+
   it("disables launch at login with a hint when unsupported", () => {
     const page = mount(viewState({ launchAtLoginSupported: false }));
     expect(switchFor("Start with").disabled).toBe(true);

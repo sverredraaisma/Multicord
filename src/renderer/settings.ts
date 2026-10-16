@@ -425,9 +425,13 @@ export class SettingsPage {
     // General
     const general = sections.get("general")!;
     const generalInputs = {} as SettingsPage["parts"]["general"];
+    // The phone's shell page (src/mobile) has the same settings page; starting with the device means the phone there.
+    const phone = doc.documentElement.classList.contains("mobile");
+    const launch = phone ? "Start with your phone" : "Start with your computer";
+    const launchNote = phone ? "After the phone starts or Multicord updates, your services connect in the background." : undefined;
     for (const [key, label, hint] of [
       ["closeToTray", "Keep running in the tray", "Closing the window hides Multicord instead of quitting, so notifications keep coming."],
-      ["launchAtLogin", "Start with your computer", undefined],
+      ["launchAtLogin", launch, launchNote],
       ["notifications", "Desktop notifications", "Show notifications for new messages and mentions."],
       ["spellcheck", "Spell check", "Underline misspelled words while you type."],
     ] as const) {

@@ -284,7 +284,7 @@ describe("settings", () => {
     shell.setSettingsOpen(true);
     expect(last()).toMatchObject({ screen: { page: "settings" }, title: "Settings" });
     expect(settings.at(-1)!.services.map((s) => s.id)).toEqual(["fluxer", "telegram", "matrix", "tg"]);
-    expect(settings.at(-1)).toMatchObject({ secretsPersistent: true, launchAtLoginSupported: false, version: "0.1.0" });
+    expect(settings.at(-1)).toMatchObject({ secretsPersistent: true, launchAtLoginSupported: true, version: "0.1.0" });
     shell.settingsReady();
     expect(settings.length).toBeGreaterThan(1);
   });
