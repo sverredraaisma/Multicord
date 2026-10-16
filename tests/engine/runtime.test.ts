@@ -477,6 +477,27 @@ describe("bridgeWebSocket", () => {
     expect(one.protocol).toBe("binary");
   });
 
+  it("calls on* handlers as a page's WebSocket does, after the listeners", async () => {
+    const { open, socket: shell } = sockets();
+    const socket = open("wss://a.example/");
+    const calls: string[] = [];
+    socket.addEventListener("open", () => calls.push("listener open"));
+    socket.onopen = function (this: unknown, event) {
+      calls.push(`onopen ${event.type} ${this === socket}`);
+    };
+    socket.onmessage = (event) => calls.push(`onmessage ${new Uint8Array(event.data as ArrayBuffer).join()}`);
+    socket.onerror = (event) => calls.push(`on${event.type}`);
+    socket.onclose = (event) => calls.push(`onclose ${event.code} ${event.wasClean}`);
+    await flush();
+    shell({ type: "open", id: "1" });
+    shell({ type: "message", id: "1", data: new Uint8Array([1, 2]) });
+    // A handler set back to null is not called.
+    socket.onmessage = null;
+    shell({ type: "message", id: "1", data: "dropped" });
+    shell({ type: "close", id: "1", code: 1006, reason: "" });
+    expect(calls).toEqual(["listener open", "onopen open true", "onmessage 1,2", "onerror", "onclose 1006 false"]);
+  });
+
   it("reports a refused socket as an error and an abnormal close", async () => {
     const { open, log } = sockets(() => {
       throw new Error("Socket refused: evil.example is not one of this module's hosts");

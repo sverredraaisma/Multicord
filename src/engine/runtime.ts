@@ -89,8 +89,9 @@ type SocketListener = (event: BridgedSocketEvent) => void;
 /**
  * A WebSocket the shell opens and relays for the engine (bridgeWebSocket).
  * It behaves as a page's WebSocket does, as far as modules use one: the
- * same ready states, open, message, error and close events, send() and
- * close(). Binary messages arrive as ArrayBuffers.
+ * same ready states, open, message, error and close events (as listeners
+ * or as on* handlers), send() and close(). Binary messages arrive as
+ * ArrayBuffers.
  */
 export class BridgedWebSocket {
   static readonly CONNECTING = 0;
@@ -101,6 +102,11 @@ export class BridgedWebSocket {
   readonly binaryType = "arraybuffer";
   /** The subprotocol the server chose, once open; "" for none. */
   protocol = "";
+  /** Handlers as a page's WebSocket has them; each runs after the listeners for its event. */
+  onopen: ((event: BridgedSocketEvents["open"]) => void) | null = null;
+  onmessage: ((event: BridgedSocketEvents["message"]) => void) | null = null;
+  onerror: ((event: BridgedSocketEvents["error"]) => void) | null = null;
+  onclose: ((event: BridgedSocketEvents["close"]) => void) | null = null;
   private id: string | undefined;
   private closeAsked: { code?: number; reason?: string } | undefined;
   private readonly listeners = new Map<string, Set<SocketListener>>();
@@ -188,6 +194,7 @@ export class BridgedWebSocket {
 
   private dispatch(event: BridgedSocketEvent): void {
     for (const listener of [...(this.listeners.get(event.type) ?? [])]) listener(event);
+    (this[`on${event.type}`] as SocketListener | null)?.call(this, event);
   }
 }
 
