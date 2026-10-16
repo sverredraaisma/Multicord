@@ -15,49 +15,8 @@ import {
 } from "../../src/shared/native";
 import { channelCan, chatFolders, incomingCall, MAX_FOLDERS, MAX_QR_TEXT, promptQr, isNativeAction, MAX_ABOUT_LENGTH, MAX_JOIN_ADDRESS, MAX_THREAD_MESSAGES, threadSummary, threadView, MAX_EMBED_DESCRIPTION, MAX_EMBED_TITLE, MAX_EMBEDS, messageEmbeds, MAX_MEMBER_OFFSET, MAX_MEMBER_SECTIONS, MAX_MENTION_TEXT, MAX_MESSAGE_LENGTH, MAX_PROFILE_ROLES, MEMBER_ROWS_SHOWN, MAX_LISTED_MESSAGES, MAX_SEARCH_QUERY, MAX_POLL_OPTIONS, MAX_NEW_POLL_ANSWER, MAX_NEW_POLL_ANSWERS, MAX_NEW_POLL_QUESTION, memberList, memberProfile, mentionText, messageList, messagePoll, NATIVE_IPC, searchResults, unreadMarker } from "../../src/shared/native";
 
-describe("isNativeAction", () => {
-  it("accepts well-formed actions", () => {
-    for (const action of [
-      { type: "ready" },
-      { type: "cancelMfa" },
-      { type: "loadOlder" },
-      { type: "typing" },
-      { type: "logout" },
-      { type: "login", identity: "a@b.c", password: "pw" },
-      { type: "mfa", code: "123456" },
-      { type: "select", channelId: "123" },
-      { type: "send", content: "hi" },
-      { type: "send", content: "" },
-      { type: "attach" },
-      { type: "removeAttachment", index: 0 },
-      { type: "send", content: "x".repeat(MAX_MESSAGE_LENGTH) },
-    ]) {
-      expect(isNativeAction(action)).toBe(true);
-    }
-  });
-
-  it("rejects malformed actions", () => {
-    for (const action of [
-      null,
-      "login",
-      { type: "unknown" },
-      { type: "login", identity: "", password: "pw" },
-      { type: "login", identity: "a", password: "x".repeat(1025) },
-      { type: "login", identity: "x".repeat(321), password: "pw" },
-      { type: "mfa", code: "" },
-      { type: "mfa", code: 123456 },
-      { type: "select", channelId: "../x" },
-      { type: "select" },
-      { type: "send", content: 5 },
-      { type: "removeAttachment", index: 10 },
-      { type: "removeAttachment", index: 1.5 },
-      { type: "removeAttachment" },
-      { type: "send", content: "x".repeat(MAX_MESSAGE_LENGTH + 1) },
-    ]) {
-      expect(isNativeAction(action)).toBe(false);
-    }
-  });
-});
+// isNativeAction's main cases are shared with mobile/android: tests/fixtures/engine-validator-cases.json
+// (validatorCases.test.ts). The blocks below check it next to the features it guards.
 
 describe("createNativeApi", () => {
   it("relays state in and actions out", () => {

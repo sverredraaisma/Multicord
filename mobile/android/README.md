@@ -66,12 +66,12 @@ The rules are the desktop's (docs/mobile.md, section 5); this is where each is e
 
 ## Tests
 
-`./gradlew testDebugUnitTest` runs JVM tests (44 in all):
+`./gradlew testDebugUnitTest` runs JVM tests (36 in all):
 
 - `NetPolicyFixtureTest` runs **every case of `tests/fixtures/netpolicy-cases.json`** (93: private and public hosts, numeric address forms, host patterns, checkUrl refusals, narrowing, resolved addresses, dropped headers, redirects, the redirect limit). The `copyFixtures` task copies the file from the repository root at build time; it is never duplicated.
 - `WebUrlTest`: the URL parser against browser behaviour (IPv4 and IPv6 forms, IDN, relative redirects).
 - `HttpBridgeTest`: the HTTP bridge with a scripted network (redirect checks, limits, cookies, PublicDns).
-- `ValidatorsTest`: the cases of `tests/shared/engine.test.ts` and `tests/shared/native.test.ts` for the ported validators.
+- `ValidatorsTest` runs **every case of `tests/fixtures/engine-validator-cases.json`** (over 300 engine requests, HTTP requests, engine events, image URLs and view actions, each to accept or refuse), which `tests/shared/validatorCases.test.ts` runs against the TypeScript validators; the fixture states the limits it relies on, and both sides check them against their own constants. Copied in by `copyFixtures` as the network policy's cases are.
 - `SecretStoreTest`: scoping, associated data, quota (AES-GCM in software; the Keystore exists only on a device).
 - `EngineSocketsTest`: the socket relay's rules and caps.
 
@@ -79,7 +79,6 @@ The rules are the desktop's (docs/mobile.md, section 5); this is where each is e
 
 For milestone 1:
 - Signing in. Matrix's sign-in uses the browser (OAuth) or single sign-on; both need the shell to open the browser and take the answer back for that engine only (an app link or a custom-tab redirect, in place of the desktop's loopback). File picking (`pickFiles`/`readFile`) is refused for now.
-- Validators kept in one place: run `src/shared`'s validators in the shell WebView (docs/mobile.md, section 5), or share their cases as a JSON fixture as the network policy does.
 
 For phase 2:
 - The shell with `src/core` (registry, settings, EngineAdapter) in the shell WebView, a phone layout (rail as a drawer), several instances, and the settings page.
