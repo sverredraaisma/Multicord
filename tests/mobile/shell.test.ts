@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MOBILE_MODULES, nativeModuleTable } from "../../src/mobile/modules";
+import { MOBILE_MODULES, nativeModuleTable, type MobileModule } from "../../src/mobile/modules";
 import { isShellCommand, type BootInfo, type NativeEvent, type ShellBridge, type ShellCommand } from "../../src/mobile/protocol";
 import { FIRST_PLATFORMS, MobileShell, type UiState } from "../../src/mobile/shell";
 import type { SettingsViewState } from "../../src/shared/settings";
@@ -30,11 +30,11 @@ function fakeBridge(files: BootInfo["files"] = {}, boot?: unknown) {
 const MATRIX = { id: "matrix", name: "Matrix", module: "matrix-native", url: "https://matrix.org" };
 const TWO = JSON.stringify([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, MATRIX, { id: "tg", name: "TG", module: "telegram" }]);
 
-async function started(files: BootInfo["files"] = { platforms: TWO }) {
+async function started(files: BootInfo["files"] = { platforms: TWO }, modules: readonly MobileModule[] = MOBILE_MODULES) {
   const fake = fakeBridge(files);
   const renders: UiState[] = [];
   const settings: SettingsViewState[] = [];
-  const shell = new MobileShell(fake.bridge, { render: (state) => renders.push(state), settings: (state) => settings.push(state) });
+  const shell = new MobileShell(fake.bridge, { render: (state) => renders.push(state), settings: (state) => settings.push(state) }, modules);
   await shell.start();
   return { ...fake, shell, renders, settings, last: () => renders.at(-1)! };
 }
@@ -44,10 +44,10 @@ describe("module table", () => {
     expect(nativeModuleTable().map((m) => m.id)).toEqual(MOBILE_MODULES.map((m) => m.manifest.id));
     expect(nativeModuleTable().find((m) => m.id === "telegram")).toEqual({ id: "telegram", engine: "telegram", storage: false, hosts: ["*.web.telegram.org"] });
     expect(nativeModuleTable().find((m) => m.id === "matrix-native")).toEqual({ id: "matrix-native", engine: "matrix", storage: true });
-    // Element, Stoat, Fluxer, Spacebar and Nerimity's own web apps, and any web app; Discord is not on the phone yet.
+    // Element, Stoat, Fluxer, Spacebar and Nerimity's own web apps, and any web app; Discord's own, with its view's scripts.
     expect(nativeModuleTable().filter((m) => m.web).map((m) => m.id)).toEqual(["matrix", "stoat", "fluxer-web", "spacebar", "nerimity", "web"]);
     expect(nativeModuleTable().find((m) => m.id === "web")).toEqual({ id: "web", storage: true, web: true });
-    expect(nativeModuleTable().some((m) => m.id === "discord")).toBe(false);
+    expect(nativeModuleTable().find((m) => m.id === "discord")).toEqual({ id: "discord", storage: true, discord: true });
     // A module with neither an engine nor a web app does not run.
     expect(nativeModuleTable([{ manifest: { id: "web", name: "Web", label: "W", color: "#000000", configurable: true } }])).toEqual([]);
   });
@@ -88,7 +88,8 @@ describe("starting", () => {
   it("skips services whose module does not run here, and shows the home page when none is left", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const platforms = JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]);
-    const { of, last } = await started({ platforms });
+    // A host whose modules leave Discord out.
+    const { of, last } = await started({ platforms }, MOBILE_MODULES.filter((m) => !m.discord));
     expect(of("start")).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('discord: module "discord" does not run on this phone'));
     expect(last()).toMatchObject({ screen: { page: "home" }, title: "Multicord" });
@@ -123,7 +124,7 @@ const DIRECTS = {
 };
 
 describe("web-client services", () => {
-  const WEB = JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, { id: "el", name: "Element", module: "matrix", url: "https://app.element.io" }, { id: "tg", name: "TG", module: "telegram" }]);
+  const WEB = JSON.stringify([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, { id: "el", name: "Element", module: "matrix", url: "https://app.element.io" }, { id: "tg", name: "TG", module: "telegram" }]);
 
   it("start as the service's own web app, with an entry in the drawer that shows it", async () => {
     const { of, last, shell } = await started({ platforms: WEB });
@@ -156,6 +157,81 @@ describe("web-client services", () => {
   });
 });
 
+describe("Discord", () => {
+  const DISCORD = JSON.stringify([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, { id: "dc", name: "Discord", module: "discord", url: "https://discord.com/app" }, { id: "tg", name: "TG", module: "telegram" }]);
+  const BADGE = { unread: false, mentions: 0 };
+  const STATE = {
+    type: "discordState",
+    instance: "dc",
+    state: {
+      guilds: [{ id: "11", name: "Guild", unread: true, mentions: 2 }],
+      badge: { unread: true, mentions: 3 },
+      dms: [{ id: "9", title: "Ana", unread: true, mentions: 1, lastActivity: 500, preview: "hi" }],
+      user: { name: "me" },
+      calls: [{ channelId: "9", from: "Ana" }],
+    },
+  };
+
+  it("starts as Discord's own web app with its view's settings, and shows in the drawer", async () => {
+    const { of, last, shell } = await started({ platforms: DISCORD });
+    expect(of("start")[0]).toEqual({ type: "start", instance: "dc", module: "discord", name: "Discord", url: "https://discord.com/app", settings: { desktopSite: true } });
+    expect(last().screen).toEqual({ page: "service", instance: "dc" });
+    expect(last().services[0]).toEqual({ id: "dc", name: "Discord", label: "Discord", color: "#5865f2" });
+    expect([...shell.discordAdapters.keys()]).toEqual(["dc"]);
+    // Like a web app, Discord is told nothing about being seen.
+    expect(of("command").map((c) => c.instance)).toEqual(["tg"]);
+  });
+
+  it("takes what its page reports: guilds in the drawer, DMs in the Messages list, and the account", async () => {
+    const { emit, last, shell } = await started({ platforms: DISCORD });
+    shell.show("tg");
+    await emit(STATE);
+    expect(last().rail.entries.find((s) => s.key === "dc:11")).toMatchObject({ name: "Guild", mentions: 2 });
+    expect(last().messages.conversations[0]).toMatchObject({ key: "dc:dm:9", title: "Ana", preview: "hi", module: { label: "Discord" } });
+    expect(last().mentions).toBeGreaterThanOrEqual(3);
+    shell.setSettingsOpen(true);
+    // What does not check out never reaches the adapter.
+    await emit({ ...STATE, state: { guilds: "nope", badge: BADGE } });
+    expect(last().rail.entries.some((s) => s.key === "dc:11")).toBe(true);
+    await emit({ ...STATE, instance: "gone" });
+  });
+
+  it("navigates its page from the drawer and the Messages list", async () => {
+    const { emit, of, last, shell } = await started({ platforms: DISCORD });
+    await emit(STATE);
+    shell.show("tg");
+    await shell.open("dc:11");
+    expect(of("discordNavigate").at(-1)).toEqual({ type: "discordNavigate", instance: "dc", target: "11" });
+    expect(last().screen).toEqual({ page: "service", instance: "dc" });
+    shell.setMessagesOpen(true);
+    await shell.openConversation("dc:dm:9");
+    expect(of("discordNavigate").at(-1)).toEqual({ type: "discordNavigate", instance: "dc", target: "dm:9" });
+  });
+
+  it("rings for a call while not in front, and shows its page's notifications, whose click runs Discord's own", async () => {
+    const { emit, of, last, shell } = await started({ platforms: DISCORD });
+    shell.show("tg");
+    await emit(STATE);
+    expect(of("notify")[0]).toEqual({ type: "notify", instance: "dc", title: "Incoming call · Discord", body: "Ana is calling you on Discord", target: "9", railKey: "dm:9", urgent: true });
+    await emit({ type: "discordNotification", instance: "dc", notification: { id: "4", title: "Ana", body: "hello" } });
+    expect(of("notify")[1]).toEqual({ type: "notify", instance: "dc", title: "Ana · Discord", body: "hello", target: "notification:4" });
+    await emit({ type: "discordNotification", instance: "dc", notification: { id: "x", title: "Ana", body: "hello" } });
+    await emit({ type: "discordNotification", instance: "gone", notification: { id: "5", title: "Ana", body: "hello" } });
+    expect(of("notify")).toHaveLength(2);
+    await emit({ type: "openNotification", instance: "dc", target: "notification:4" });
+    expect(of("discordNotificationClick")).toEqual([{ type: "discordNotificationClick", instance: "dc", id: "4" }]);
+    expect(last().screen).toEqual({ page: "service", instance: "dc" });
+  });
+
+  it("passes its view's settings to native code as they change", async () => {
+    const { of, shell } = await started({ platforms: DISCORD });
+    await shell.settingsAction({ type: "update", patch: { services: { dc: { options: { desktopSite: false } } } } });
+    expect(of("hostSettings")).toEqual([{ type: "hostSettings", instance: "dc", settings: { desktopSite: false } }]);
+    await shell.settingsAction({ type: "update", patch: { services: { tg: { notifications: false } } } });
+    expect(of("hostSettings")).toHaveLength(1);
+  });
+});
+
 describe("the unified Messages list", () => {
   it("lists every service's direct conversations, newest first, with the unread badge", async () => {
     const { emit, last } = await started();
@@ -180,9 +256,8 @@ describe("the unified Messages list", () => {
   });
 
   it("goes home when closed before any service was shown", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const { shell, last } = await started({ platforms: JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]) });
-    expect(warn).toHaveBeenCalled();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { shell, last } = await started({ platforms: JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]) }, MOBILE_MODULES.filter((m) => !m.discord));
     shell.setMessagesOpen(true);
     shell.setMessagesOpen(false);
     expect(last()).toMatchObject({ screen: { page: "home" }, title: "Multicord" });
@@ -322,7 +397,7 @@ describe("settings", () => {
     const { shell, settings, last } = await started();
     shell.setSettingsOpen(true);
     expect(last()).toMatchObject({ screen: { page: "settings" }, title: "Settings" });
-    expect(settings.at(-1)!.services.map((s) => s.id)).toEqual(["fluxer", "telegram", "matrix", "tg"]);
+    expect(settings.at(-1)!.services.map((s) => s.id)).toEqual(["discord", "fluxer", "telegram", "matrix", "tg"]);
     expect(settings.at(-1)).toMatchObject({ secretsPersistent: true, launchAtLoginSupported: true, version: "0.1.0" });
     shell.settingsReady();
     expect(settings.length).toBeGreaterThan(1);
@@ -447,9 +522,8 @@ describe("navigation", () => {
   });
 
   it("closes settings to the home page when no service ever showed", async () => {
-    const platforms = JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, { id: "discord", enabled: true }]);
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    const { shell, last, of } = await started({ platforms });
+    const { shell, last, of } = await started({ platforms: JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]) }, MOBILE_MODULES.filter((m) => !m.discord));
     shell.setSettingsOpen(true);
     shell.back();
     expect(of("backUnhandled")).toHaveLength(1);

@@ -5,6 +5,7 @@
 // holds the cases both sides run.
 import { PLATFORM_ID } from "../core/platforms";
 import { isEngineCommand, isEngineEvent, MAX_BODY_TEXT, MAX_KEY, MAX_TEXT, type EngineCommand, type EngineEvent } from "../shared/engine";
+import { isDiscordState, isDiscordTarget, isRelayedNotification, type DiscordState, type DiscordTarget, type RelayedNotification } from "../shared/ipc";
 import { isServiceSettingValues, isTheme, type ServiceSettingValues, type Theme } from "../shared/settings";
 
 /** The files native code keeps for the shell page, in app-private storage. */
@@ -46,6 +47,15 @@ export type ShellCommand =
   /** A command for an instance's engine. */
   | { type: "command"; instance: string; command: EngineCommand }
   /**
+   * An instance's values for the settings native code applies to its WebViews, not its engine (MobileModule's
+   * hostSettings), when they change; the start command carries them first.
+   */
+  | { type: "hostSettings"; instance: string; settings: ServiceSettingValues }
+  /** Where a Discord instance's page goes (DiscordAdapter's navigation: home, a guild, a DM, a folder, a channel). */
+  | { type: "discordNavigate"; instance: string; target: DiscordTarget }
+  /** The user opened a notification Discord's page relayed: its own click handler runs. */
+  | { type: "discordNotificationClick"; instance: string; id: string }
+  /**
    * What is on screen: an instance's chat view under the shell's bar (null:
    * the shell page alone), and whether the page lies over it (its drawer).
    */
@@ -82,6 +92,10 @@ export type NativeEvent =
   | { type: "health"; instance: string; state: EngineState; restarts: number; lastExit?: string }
   /** A web-client instance's page title changed (its unread count is read from it); clipped to MAX_TEXT. */
   | { type: "title"; instance: string; title: string }
+  /** What a Discord instance's page reports (its hidden guild bar and store bridge), checked natively with isDiscordState. */
+  | { type: "discordState"; instance: string; state: DiscordState }
+  /** A notification a Discord instance's page wanted to show, checked natively with isRelayedNotification. */
+  | { type: "discordNotification"; instance: string; notification: RelayedNotification }
   /** Whether the app is on screen. */
   | { type: "appVisible"; visible: boolean }
   /** The user pressed back, and the shown chat view had nothing to go back to. */
@@ -103,6 +117,8 @@ const isHttpsAddress = (value: unknown): boolean => {
     return false;
   }
 };
+/** A relayed notification's number, as Discord's page gave it (isRelayedNotification). */
+const isNotificationId = (value: unknown): value is string => typeof value === "string" && /^[0-9]{1,10}$/.test(value);
 /** Only the keys listed: a message carries nothing native code would ignore. */
 const only = (value: Record<string, unknown>, keys: string[]): boolean => Object.keys(value).every((key) => keys.includes(key));
 
@@ -122,6 +138,12 @@ export function isShellCommand(value: unknown): value is ShellCommand {
       );
     case "command":
       return only(value, ["type", "instance", "command"]) && isInstanceId(value.instance) && isEngineCommand(value.command);
+    case "hostSettings":
+      return only(value, ["type", "instance", "settings"]) && isInstanceId(value.instance) && isServiceSettingValues(value.settings);
+    case "discordNavigate":
+      return only(value, ["type", "instance", "target"]) && isInstanceId(value.instance) && isDiscordTarget(value.target);
+    case "discordNotificationClick":
+      return only(value, ["type", "instance", "id"]) && isInstanceId(value.instance) && isNotificationId(value.id);
     case "layout":
       return only(value, ["type", "instance", "overlay"]) && (value.instance === null || isInstanceId(value.instance)) && typeof value.overlay === "boolean";
     case "viewSettings":
@@ -168,6 +190,10 @@ export function isNativeEvent(value: unknown): value is NativeEvent {
       );
     case "title":
       return isInstanceId(value.instance) && isText(value.title, MAX_TEXT);
+    case "discordState":
+      return isInstanceId(value.instance) && isDiscordState(value.state);
+    case "discordNotification":
+      return isInstanceId(value.instance) && isRelayedNotification(value.notification);
     case "appVisible":
       return typeof value.visible === "boolean";
     case "back":

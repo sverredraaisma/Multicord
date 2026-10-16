@@ -4,6 +4,7 @@
 // goes through the shell bridge as a ShellCommand, and everything it reports
 // is checked with isNativeEvent first.
 import { EngineAdapter } from "../core/engineAdapter";
+import { DiscordAdapter } from "../main/adapters/discordAdapter";
 import { GenericWebAdapter } from "../main/adapters/genericWebAdapter";
 import { configurableModules, findModule, type ModuleManifest } from "../core/modules";
 import { loadPlatforms, type PlatformDef } from "../core/platforms";
@@ -59,7 +60,10 @@ export interface ShellUi {
   settings(state: SettingsViewState): void;
 }
 
-/** A first run turns Discord off: it is not on the phone yet (docs/mobile.md, phase 3). */
+/**
+ * A first run turns Discord off: the user turns it on in Settings, where its notice says what it risks for
+ * the account (docs/mobile.md, section 3).
+ */
 export const FIRST_PLATFORMS = `${JSON.stringify([{ id: "discord", enabled: false }], null, 2)}\n`;
 
 /** The bar's title for each page but a service's (which has the service's name). */
@@ -75,6 +79,8 @@ export class MobileShell {
   readonly adapters = new Map<string, EngineAdapter>();
   /** The running web-client services' adapters, which read their page titles. */
   readonly webAdapters = new Map<string, GenericWebAdapter>();
+  /** The running Discord services' adapters, which their pages' reports feed. */
+  readonly discordAdapters = new Map<string, DiscordAdapter>();
   /** Every running service, native or web: what Settings and the screen know. */
   private readonly services = new Map<string, PlatformAdapter>();
   private readonly manifests = new Map<string, ModuleManifest>();
@@ -133,6 +139,10 @@ export class MobileShell {
     for (const error of errors) console.warn(`[platforms] ${error}`);
     for (const def of platforms) {
       const module = findModule(def.module, this.modules);
+      if (module?.discord) {
+        await this.startDiscordService(def, module);
+        continue;
+      }
       if (module?.web) {
         await this.startWebService(def, module.manifest);
         continue;
@@ -187,7 +197,7 @@ export class MobileShell {
     });
   }
 
-  /** Only services whose module runs here: Discord's built-in entry stays out of sight. */
+  /** Only services whose module runs here. */
   private forPhone(state: SettingsViewState): SettingsViewState {
     const ids = new Set(this.modules.map((m) => m.manifest.id));
     return { ...state, services: state.services.filter((s) => ids.has(s.module)) };
@@ -252,10 +262,22 @@ export class MobileShell {
         if (patch.general?.mediaAutoLoad !== undefined || (patch.services && Object.hasOwn(patch.services, id))) this.viewSettings(id);
       });
     }
+    this.alerts(def, adapter);
+    adapter.onSettingsStatusChanged(() => this.refreshSettings());
+    const start: ShellCommand = { type: "start", instance: id, module: def.module, name: def.name, url: def.url };
+    if (takesSettings) start.settings = this.settingValues(manifest, id);
+    this.send(start);
+    if (manifest.holdsMedia) this.viewSettings(id);
+  }
+
+  /** Notifications and incoming calls, as on the desktop: not for what the user is looking at. */
+  private alerts(def: PlatformDef, adapter: PlatformAdapter): void {
+    const id = def.id;
     adapter.onNotification((n) => {
       if (n.inView && this.isFront(id)) return;
       this.notify(id, n, false);
     });
+    // The service rings in its own view only while that view is in front; otherwise we ring.
     adapter.onIncomingCall((call) => {
       if (this.isFront(id)) return;
       const railKey = `dm:${call.conversationKey}`;
@@ -263,11 +285,38 @@ export class MobileShell {
       if (railKey.length <= MAX_KEY) n.railKey = railKey;
       this.notify(id, n, true);
     });
-    adapter.onSettingsStatusChanged(() => this.refreshSettings());
-    const start: ShellCommand = { type: "start", instance: id, module: def.module, name: def.name, url: def.url };
-    if (takesSettings) start.settings = this.settingValues(manifest, id);
-    this.send(start);
-    if (manifest.holdsMedia) this.viewSettings(id);
+  }
+
+  /** The values of a module's settings that native code applies (hostSettings), not its engine. */
+  private hostValues(module: MobileModule, id: string): ServiceSettingValues {
+    const all = serviceSettingValues(module.manifest.settings, serviceSettings(this.store.get(), id).options);
+    return Object.fromEntries(Object.entries(all).filter(([key]) => module.hostSettings?.includes(key)));
+  }
+
+  /**
+   * A Discord service: Discord's own web app, which native code shows in a WebView of its own with the
+   * desktop's hooks ported (src/mobile/discordView.ts). Its page reports its guild bar, DMs, notifications and
+   * ringing calls, which native code checks (DiscordValidators.kt) and passes on here, to a DiscordAdapter as
+   * on the desktop; navigation and notification clicks go back the same way. Its settings are native code's
+   * (the desktop site), with the start command and as they change.
+   */
+  private async startDiscordService(def: PlatformDef, module: MobileModule): Promise<void> {
+    const id = def.id;
+    const adapter = new DiscordAdapter(
+      (target) => this.send({ type: "discordNavigate", instance: id, target }),
+      id,
+      (notification) => this.send({ type: "discordNotificationClick", instance: id, id: notification }),
+    );
+    this.discordAdapters.set(id, adapter);
+    this.services.set(id, adapter);
+    this.manifests.set(id, module.manifest);
+    this.defs.set(id, def);
+    await this.registry.add(adapter, def.name, { label: module.manifest.label, color: module.manifest.color });
+    this.alerts(def, adapter);
+    this.store.changed.on(({ patch }) => {
+      if (patch.services && Object.hasOwn(patch.services, id)) this.send({ type: "hostSettings", instance: id, settings: this.hostValues(module, id) });
+    });
+    this.send({ type: "start", instance: id, module: def.module, name: def.name, url: def.url, settings: this.hostValues(module, id) });
   }
 
   /**
@@ -316,6 +365,12 @@ export class MobileShell {
       }
       case "title":
         this.webAdapters.get(event.instance)?.updateTitle(event.title);
+        return;
+      case "discordState":
+        this.discordAdapters.get(event.instance)?.update(event.state);
+        return;
+      case "discordNotification":
+        this.discordAdapters.get(event.instance)?.relayNotification(event.notification);
         return;
       case "appVisible":
         this.appVisible = event.visible;

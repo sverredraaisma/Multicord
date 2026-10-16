@@ -38,7 +38,16 @@
       { "type": "restart" },
       { "type": "backUnhandled" },
       { "type": "copyText", "text": "report" },
-      { "type": "copyText", "text": { "$repeat": "r", "times": "MAX_COPY" } }
+      { "type": "copyText", "text": { "$repeat": "r", "times": "MAX_COPY" } },
+      { "type": "hostSettings", "instance": "dc", "settings": { "desktopSite": false } },
+      { "type": "hostSettings", "instance": "dc", "settings": {} },
+      { "type": "discordNavigate", "instance": "dc", "target": "home" },
+      { "type": "discordNavigate", "instance": "dc", "target": "123" },
+      { "type": "discordNavigate", "instance": "dc", "target": "dm:9" },
+      { "type": "discordNavigate", "instance": "dc", "target": "folder:5" },
+      { "type": "discordNavigate", "instance": "dc", "target": "channel:1/2" },
+      { "type": "discordNotificationClick", "instance": "dc", "id": "4" },
+      { "type": "discordNotificationClick", "instance": "dc", "id": "4294967295" }
     ],
     "invalid": [
       null,
@@ -89,7 +98,23 @@
       { "type": "restartEngine", "instance": "matrix", "extra": 1 },
       { "type": "restartEngine", "instance": "../x" },
       { "type": "copyText", "text": { "$repeat": "r", "times": "MAX_COPY+1" } },
-      { "type": "copyText" }
+      { "type": "copyText" },
+      { "type": "hostSettings", "instance": "dc" },
+      { "type": "hostSettings", "instance": "dc", "settings": "x" },
+      { "type": "hostSettings", "instance": "dc", "settings": { "desktop site": true } },
+      { "type": "hostSettings", "instance": "dc", "settings": {}, "extra": 1 },
+      { "type": "hostSettings", "instance": "DC", "settings": {} },
+      { "type": "discordNavigate", "instance": "dc", "target": "../evil" },
+      { "type": "discordNavigate", "instance": "dc", "target": "channel:1" },
+      { "type": "discordNavigate", "instance": "dc", "target": 5 },
+      { "type": "discordNavigate", "instance": "dc" },
+      { "type": "discordNavigate", "instance": "dc", "target": "home", "extra": 1 },
+      { "type": "discordNavigate", "instance": "../x", "target": "home" },
+      { "type": "discordNotificationClick", "instance": "dc", "id": "x" },
+      { "type": "discordNotificationClick", "instance": "dc", "id": "12345678901" },
+      { "type": "discordNotificationClick", "instance": "dc", "id": 4 },
+      { "type": "discordNotificationClick", "instance": "dc", "id": "" },
+      { "type": "discordNotificationClick", "instance": "dc", "id": "4", "extra": 1 }
     ]
   },
   "isNativeEvent": {
@@ -104,7 +129,10 @@
       { "type": "appVisible", "visible": false },
       { "type": "back" },
       { "type": "openNotification", "instance": "matrix", "target": "!room:x.org" },
-      { "type": "openNotification", "instance": "matrix", "target": "t", "railKey": "dm:t" }
+      { "type": "openNotification", "instance": "matrix", "target": "t", "railKey": "dm:t" },
+      { "type": "discordState", "instance": "dc", "state": { "guilds": [], "badge": { "unread": false, "mentions": 0 } } },
+      { "type": "discordState", "instance": "dc", "state": { "guilds": [{ "id": "1", "name": "G", "unread": true, "mentions": 1 }], "badge": { "unread": true, "mentions": 1 }, "dms": [], "user": null } },
+      { "type": "discordNotification", "instance": "dc", "notification": { "id": "1", "title": "Ana", "body": "" } }
     ],
     "invalid": [
       null,
@@ -120,7 +148,12 @@
       { "type": "title", "title": "x" },
       { "type": "appVisible", "visible": "yes" },
       { "type": "openNotification", "instance": "matrix", "target": "" },
-      { "type": "openNotification", "instance": "matrix", "target": "t", "railKey": 5 }
+      { "type": "openNotification", "instance": "matrix", "target": "t", "railKey": 5 },
+      { "type": "discordState", "instance": "dc", "state": { "guilds": "x", "badge": { "unread": false, "mentions": 0 } } },
+      { "type": "discordState", "instance": "dc" },
+      { "type": "discordState", "instance": "DC", "state": { "guilds": [], "badge": { "unread": false, "mentions": 0 } } },
+      { "type": "discordNotification", "instance": "dc", "notification": { "id": "x", "title": "Ana", "body": "" } },
+      { "type": "discordNotification", "instance": "dc" }
     ]
   }
 }

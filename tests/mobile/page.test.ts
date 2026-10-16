@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { MOBILE_MODULES, type MobileModule } from "../../src/mobile/modules";
 import { startMobileShell } from "../../src/mobile/page";
 import type { ShellBridge, ShellCommand } from "../../src/mobile/protocol";
 
@@ -15,7 +16,7 @@ beforeEach(() => {
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
-async function page(platforms = PLATFORMS) {
+async function page(platforms = PLATFORMS, modules?: readonly MobileModule[]) {
   const sent: ShellCommand[] = [];
   let emit: (event: unknown) => void = () => {};
   const bridge: ShellBridge = {
@@ -25,7 +26,7 @@ async function page(platforms = PLATFORMS) {
       emit = cb;
     },
   };
-  const shell = startMobileShell(document, bridge);
+  const shell = startMobileShell(document, bridge, modules);
   await flush();
   return { shell, sent, emit: async (event: unknown) => (emit(event), await flush()) };
 }
@@ -173,7 +174,8 @@ describe("the phone's shell page", () => {
 
   it("opens the settings page, built once, from the bar, the drawer and the home page", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
-    const { sent } = await page(JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]));
+    // Discord stays on (one built-in must), but this host has no Discord module: nothing runs.
+    const { sent } = await page(JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]), MOBILE_MODULES.filter((m) => !m.discord));
     expect(document.body.dataset.page).toBe("home");
     expect($("home").hidden).toBe(false);
     expect(document.querySelector(".drawer-empty")).not.toBeNull();

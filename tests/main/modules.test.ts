@@ -142,9 +142,9 @@ describe("module boundaries", () => {
     }
   });
 
-  it("keeps the phone's shell page free of Electron and Node; from src/main it takes only modules' manifests and the web apps' adapter", async () => {
+  it("keeps the phone's shell page free of Electron and Node; from src/main it takes only modules' manifests and the web apps' and Discord's adapters", async () => {
     const fs = await import("node:fs");
-    const manifests = /^\.\.\/main\/(modules\/(fluxer|matrix|nerimity|spacebar|stoat|telegram|web)|adapters\/genericWebAdapter)$/;
+    const manifests = /^\.\.\/main\/(modules\/(fluxer|matrix|nerimity|spacebar|stoat|telegram|web|discordManifest)|adapters\/(genericWebAdapter|discordAdapter))$/;
     for (const file of await filesUnder("src/mobile")) {
       for (const from of importsOf(fs.readFileSync(file, "utf8"))) {
         expect(from, file).toMatch(/^\.\.?\//);
@@ -158,6 +158,13 @@ describe("module boundaries", () => {
     }
     for (const line of runtimeImports("src/main/modules/web.ts")) expect(line, "web").toMatch(/from "\.\.\/adapters\/genericWebAdapter"/);
     for (const line of runtimeImports("src/main/adapters/genericWebAdapter.ts")) expect(line, "genericWebAdapter").toMatch(/from "\.\.\/\.\.\/shared\/(ipc|baseAdapter)"/);
+    // Discord's manifest loads only core; its adapter, only shared code.
+    for (const line of runtimeImports("src/main/modules/discordManifest.ts")) expect(line, "discordManifest").toMatch(/from "\.\.\/\.\.\/core\//);
+    for (const from of importsOf(fs.readFileSync("src/main/adapters/discordAdapter.ts", "utf8"))) expect(from, "discordAdapter").toMatch(/^\.\.\/\.\.\/shared\//);
+    // The phone's Discord page scripts take the desktop preload's Discord half, which is Electron-free (its entry is not).
+    for (const file of await filesUnder("src/preload/discord")) {
+      for (const from of importsOf(fs.readFileSync(file, "utf8"))) expect(from, file).toMatch(/^\.\.?\/(?!.*\/main\/)/);
+    }
   });
 
   it("keeps core free of Electron, Node and main-process imports, so a mobile host can run it", async () => {

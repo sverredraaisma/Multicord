@@ -1,32 +1,12 @@
 import { ipcMain, type IpcMainEvent } from "electron";
 import { IPC, isDiscordPage, isDiscordState, isRelayedNotification } from "../../shared/ipc";
 import { DiscordAdapter } from "../adapters/discordAdapter";
-import { DISCORD } from "../../core/platforms";
+import { discordManifest } from "./discordManifest";
 import type { PlatformModule } from "./types";
 
 /** Discord's genuine web client as a hidden engine; its preload reports guilds, folders and DMs. */
 export const discordModule: PlatformModule = {
-  manifest: {
-    id: "discord",
-    name: "Discord",
-    label: "Discord",
-    color: "#5865f2",
-    configurable: true,
-    defaultUrl: DISCORD.url,
-    fixedUrl: true,
-    // The study's risk disclosure: honest, not alarmist.
-    notice:
-      "Multicord runs Discord's own web app, but hides parts of it and reads its data to show your servers and messages here. Discord's terms do not allow modified clients, so using Discord here carries some risk to your account.",
-    preload: "preload-discord.js",
-    protocols: ["discord"],
-    // Discord's web client has push to talk, but only hears the key while focused.
-    forwardPushToTalk: true,
-    // Discord's own default keybinds for mute and deafen.
-    voiceKeys: {
-      toggleMute: { keyCode: "M", modifiers: ["commandOrControl", "shift"] },
-      toggleDeafen: { keyCode: "D", modifiers: ["commandOrControl", "shift"] },
-    },
-  },
+  manifest: discordManifest,
   load({ def, view, enableScreenShare }) {
     const adapter = new DiscordAdapter(
       (target) => view.webContents.send(IPC.discordNavigate, target),

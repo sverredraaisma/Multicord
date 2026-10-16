@@ -7,6 +7,7 @@ import app.multicord.bridge.Validators.boolean
 import app.multicord.bridge.Validators.number
 import app.multicord.bridge.Validators.record
 import app.multicord.bridge.Validators.string
+import app.multicord.discord.DiscordValidators
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -28,6 +29,8 @@ object ShellCommands {
     /** The theme setting's values (src/shared/settings.ts, THEMES). */
     val THEMES = setOf("system", "light", "dark")
     private val INSTANCE_ID = Regex("^[a-z0-9][a-z0-9-]{0,31}$")
+    /** A notification Discord's page relayed, by the number it gave it (isRelayedNotification). */
+    private val NOTIFICATION_ID = Regex("^[0-9]{1,10}$")
 
     fun isInstanceId(value: JsonElement?): Boolean = value.string()?.let(INSTANCE_ID::matches) == true
 
@@ -48,6 +51,9 @@ object ShellCommands {
                 text(v["url"], MAX_URL, 1) && Validators.isHttpsUrl(v["url"]) &&
                 optional(v["settings"], Validators::isServiceSettingValues)
             "command" -> only(v, "type", "instance", "command") && isInstanceId(v["instance"]) && Validators.isEngineCommand(v["command"])
+            "hostSettings" -> only(v, "type", "instance", "settings") && isInstanceId(v["instance"]) && Validators.isServiceSettingValues(v["settings"])
+            "discordNavigate" -> only(v, "type", "instance", "target") && isInstanceId(v["instance"]) && DiscordValidators.isDiscordTarget(v["target"])
+            "discordNotificationClick" -> only(v, "type", "instance", "id") && isInstanceId(v["instance"]) && v["id"].string()?.let(NOTIFICATION_ID::matches) == true
             "layout" -> only(v, "type", "instance", "overlay") && (v["instance"] is JsonNull || isInstanceId(v["instance"])) && v["overlay"].boolean() != null
             "viewSettings" -> only(v, "type", "instance", "mediaAutoLoad") && isInstanceId(v["instance"]) &&
                 (v["mediaAutoLoad"] is JsonNull || count(v["mediaAutoLoad"], 9007199254740991.0))
