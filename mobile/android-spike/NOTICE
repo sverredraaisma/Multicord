@@ -1,0 +1,20 @@
+Multicord Android spike
+Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later, see LICENSE at the repository root.
+
+This app includes the following third-party software, as source, in app/src/main/cpp/third_party
+(versions and upstream commits in app/src/main/cpp/third_party/README.md):
+
+libusb 1.0.29 (https://libusb.info)
+  Copyright (C) 2001 Johannes Erdfelt, (C) 2007-2009 Daniel Drake, (C) 2010-2012 Peter Stuge,
+  (C) 2008-2016 Nathan Hjelm, (C) 2009-2013 Pete Batard, (C) 2013-2018 Chris Dickens,
+  and the other libusb authors listed in libusb/AUTHORS.
+  GNU Lesser General Public License, version 2.1 or later (libusb/COPYING).
+  Built as a separate shared library, libusb1.0.so. Its complete source is in this repository.
+
+libuvc (https://github.com/libuvc/libuvc)
+  Copyright (C) 2010-2015 Ken Tossell and libuvc contributors.
+  BSD 3-Clause licence (libuvc/LICENSE.txt).
+  include/utlist.h: Copyright (c) 2007-2017, Troy D. Hanson, BSD 1-Clause licence (in the file).
+
+androidx.webkit (https://developer.android.com/jetpack/androidx/releases/webkit)
+  Apache License 2.0. Fetched by Gradle from Google's Maven repository, not included as source.
