@@ -2,7 +2,7 @@
 
 The phase-2 host from [docs/mobile.md](../../docs/mobile.md): a thin Kotlin app that runs the desktop app's own TypeScript bundles (module engines, the native chat view) in system WebViews, and does natively what Electron's main process does on the desktop. App id `app.multicord` (`app.multicord.debug` for debug builds). No Google Play Services, no local servers, no cleartext traffic. AGPL-3.0-or-later; see [NOTICE](NOTICE).
 
-**Status: milestone 2.** The shell WebView runs `src/core` (the registry, the settings store and controller, an EngineAdapter per service) as the main process does on the desktop; every native module runs (Matrix, Fluxer, Telegram, Stoat, Spacebar, Nerimity), as many instances as the user adds, each in its own Profile, origin and secrets scope; the screen is a bar with the rail as a drawer, one chat view at a time, back navigation and the settings page; a foreground service keeps everything connected in the background and posts notifications. Milestone 1 (one Matrix instance end to end) was checked on a OnePlus CPH2663 with Android 14 and WebView 154; milestone 2 so far on the Android 16 emulator only (see [Device checks](#device-checks)). See [What is left](#what-is-left).
+**Status: milestone 3.** The shell WebView runs `src/core` (the registry, the settings store and controller, an EngineAdapter per service) as the main process does on the desktop; every native module runs (Matrix, Fluxer, Telegram, Stoat, Spacebar, Nerimity), as many instances as the user adds, each in its own Profile, origin and secrets scope; the screen is a bar with the rail as a drawer, one chat view at a time, back navigation and the settings page; a foreground service keeps everything connected in the background and posts notifications. Milestone 3 adds the unified Messages list, the web-client modules (the services' own web apps as plain WebViews), a Restart per service, "Start with your phone" after a reboot or an update, a minimum WebView (140) checked at start, and a release build (R8, signing from outside the repository, an F-Droid draft). Milestone 1 (one Matrix instance end to end) was checked on a OnePlus CPH2663 with Android 14 and WebView 154; milestone 2 so far on the Android 16 emulator only, and milestone 3 in JVM tests and builds only (see [Device checks](#device-checks)). See [What is left](#what-is-left).
 
 ## Build
 
@@ -120,7 +120,7 @@ What the JVM tests cannot show, probed in the engine page over the WebView debug
 | Single sign-on | Refused before a sign-in submit; the Custom Tab opens on matrix.org's account service sign-in page; a redirect with another path is ignored and the request keeps waiting | still to run |
 | Password sign-in form (plain HTTP through the bridge; matrix.org offers `m.login.password`) | Not reachable: the bundles do not run there | still to reach the password step, without credentials |
 
-The emulator's WebView 134 cannot run the bundles themselves (`Uint8Array.fromBase64` arrived in Chrome 140), which is why the engine there never signs in; the minimum WebView check below should cover it.
+The emulator's WebView 134 cannot run the bundles themselves (`Uint8Array.fromBase64` arrived in Chrome 140), which is why the engine there never signs in. Since milestone 3 the app checks this at start and, below WebView 140, shows only a screen asking to update Android System WebView, so the emulator image used here can no longer run the app past that screen.
 
 Milestone 2 on the Android 16 emulator (WebView 134, 1.5 GB), checked over the debug socket:
 - The shell page boots core, which starts the services platforms.json turns on (a first run: Fluxer and Telegram, Discord turned off). The drawer lists each service; the settings page lists services with their accounts and settings; a `<select>` opens (the activity is the WebView's context while it is on screen); back closes the drawer, then the settings page, then leaves the app with the engines running. The activity can go and come back ("don't keep activities") without restarting anything.
@@ -150,16 +150,16 @@ Milestone 2 on the Android 16 emulator (WebView 134, 1.5 GB), checked over the d
 
 ## What is left
 
-For milestone 2:
-- Run it on the phone (WebView 154): Matrix and the chat views need WebView 140 or later, which the emulator lacks. Sign in to each service with a test account; check notifications from real messages, the drawer's DM entries and badges, the chat view's panes and back, and a night in the background.
-- The unified Messages list in the drawer.
-- Starting after a reboot (no boot receiver yet), and restarting an engine left stopped without restarting the app.
-- A minimum WebView version check (140, for `Uint8Array.fromBase64` in the bundles) with a clear message, beyond the three features checked now.
+For milestones 2 and 3, on the phone (WebView 154; the emulator's 134 now stops at the WebView screen):
+- Sign in to each service with a test account; check notifications from real messages, the drawer's DM entries and badges, the chat view's panes and back, and a night in the background.
+- The Messages list with real conversations; Restart on a running and on a stopped engine; "Start with your phone" after a reboot and after `adb install -r` (Android 14 and 15 rules); the WebView screen on an old WebView.
+- The web clients: Element, Stoat, Fluxer, Spacebar and Nerimity web sign in and load in a phone-width WebView (Element may show its "get the app" page to a mobile user agent), links leave for the browser, uploads, the title's unread count, camera and microphone in a call.
+- The release build on a device: R8's output ran through no device or emulator here (not enough free memory for the emulator; it built, and a throwaway key signed it).
 
 For phase 2:
 - Single sign-on all the way through with a real account (it is checked up to the homeserver's sign-in page, and the redirect's rules in unit tests).
-- Web-client modules as plain WebViews; Discord (phase 3).
-- Calls: camera and microphone permissions for the views only, LiveKit's connections, audio routing; the voice settings and favourites in the chat views.
+- Discord (phase 3). Web clients: notifications (WebView has no `Notification`), fullscreen video, downloads, and sign-ins that pass through another host.
+- Calls in the native chat views: camera and microphone permissions for the views only, LiveKit's connections, audio routing; the voice settings and favourites in the chat views.
 - Binary messages as `ArrayBuffer`s (`WEB_MESSAGE_ARRAY_BUFFER`) instead of base64 for large bodies; a cap on incoming socket frames before they are read whole.
 - Matrix push through UnifiedPush, so Matrix need not keep a connection open.
 - Submitting the F-Droid build (see Release builds) and a first release tag.
