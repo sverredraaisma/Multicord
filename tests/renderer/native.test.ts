@@ -1689,6 +1689,20 @@ describe("member panel", () => {
   const toggle = () => root.querySelector<HTMLButtonElement>(".members-toggle")!;
   const panel = () => root.querySelector<HTMLElement>("#member-panel")!;
 
+  it("closes from its own button or with Escape, with focus back on its toggle", () => {
+    view.update(state(WITH_MEMBERS, list));
+    const close = panel().querySelector<HTMLButtonElement>(".profile-close")!;
+    expect(close.getAttribute("aria-label")).toBe("Close member list");
+    close.click();
+    expect(act).toHaveBeenLastCalledWith({ type: "members", open: false });
+    expect(document.activeElement).toBe(toggle());
+    act.mockClear();
+    panel().querySelector<HTMLButtonElement>("button.member")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(act).not.toHaveBeenCalled();
+    panel().querySelector<HTMLButtonElement>("button.member")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(act).toHaveBeenLastCalledWith({ type: "members", open: false });
+  });
+
   it("is offered only where the conversation lists its members", () => {
     view.update(state(ALL));
     expect(toggle().hidden).toBe(true);
@@ -1940,6 +1954,22 @@ describe("forwarding and copying", () => {
     expect(dialog().hidden).toBe(true);
   });
 
+  it("lists no invitation the user has not accepted, and gives focus back to its opener on closing", () => {
+    const invited = { id: "5", name: "Board games", kind: "text" as const, unread: false, mentions: 0, active: false, invite: { from: "Ana" } };
+    view.update(state(WITH_FORWARD, undefined, [...chat().sidebar, invited]));
+    const opener = actions("10").find((b) => b.textContent === "Forward")!;
+    opener.focus();
+    opener.click();
+    expect([...dialog().querySelectorAll(".forward-target")].map((b) => b.textContent)).toEqual(["Ana", "Bo"]);
+    dialog().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(document.activeElement).toBe(opener);
+    // Its opener gone with an update: focus goes to the composer instead.
+    opener.click();
+    view.update(state(WITH_FORWARD));
+    dialog().querySelector<HTMLButtonElement>(".profile-close")!.click();
+    expect(document.activeElement).toBe(root.querySelector(".composer"));
+  });
+
   it("closes with Escape, its button, or when the message or forwarding goes", () => {
     view.update(state(WITH_FORWARD));
     actions("10").find((b) => b.textContent === "Forward")!.click();
@@ -2024,6 +2054,27 @@ describe("profile cards", () => {
     root.querySelector<HTMLButtonElement>("button.author")!.click();
     view.update(chat({ channel: { ...chat().channel!, id: "3" } }));
     expect(card().hidden).toBe(true);
+  });
+
+  it("gives focus back to what opened it, and leaves focus alone when it was elsewhere", () => {
+    view.update(withAuthor());
+    const author = root.querySelector<HTMLButtonElement>("button.author")!;
+    author.focus();
+    author.click();
+    card().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    expect(document.activeElement).toBe(author);
+    author.click();
+    const composer = root.querySelector<HTMLTextAreaElement>(".composer")!;
+    composer.focus();
+    card().querySelector<HTMLButtonElement>(".profile-close")!.click();
+    expect(document.activeElement).toBe(composer);
+    // Nothing to go back to, and the composer off: focus stays where closing left it.
+    author.blur();
+    author.click();
+    view.update(withAuthor({ channel: { ...withAuthor().channel!, locked: "Read only" } }));
+    card().querySelector<HTMLButtonElement>(".profile-close")!.focus();
+    card().querySelector<HTMLButtonElement>(".profile-close")!.click();
+    expect(document.activeElement).not.toBe(composer);
   });
 
   it("opens from a member row with the row's presence and status", () => {

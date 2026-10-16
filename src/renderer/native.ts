@@ -75,6 +75,8 @@ export class NativeView {
   private profileFor: ProfileCardData | undefined;
   /** The card just opened: its close button takes focus. */
   private focusProfile = false;
+  /** What opened the profile card or the forward dialog, for focus to return to when it closes. */
+  private cardOpener: HTMLElement | undefined;
   private call: VoiceCall | undefined;
   private voiceSettings: VoiceSettings | undefined;
   private voiceOptions: VoicePanelOptions = {};
@@ -482,6 +484,9 @@ export class NativeView {
     members.id = "member-panel";
     members.setAttribute("aria-label", "Members");
     members.hidden = true;
+    members.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") this.closeMembers();
+    });
     // Pinned messages, beside the conversation like the members.
     const messagePanel = el(doc, "aside", "member-panel message-panel");
     messagePanel.id = "message-panel";
@@ -1090,6 +1095,7 @@ export class NativeView {
     },
     onOpenThread: (message) => this.api.act({ type: "thread", rootId: message.id }),
     onForward: (message) => {
+      this.cardOpener = this.focused();
       this.forwardFor = message;
       this.updateForward(true);
     },
@@ -1170,7 +1176,13 @@ export class NativeView {
     const focused = this.doc.activeElement;
     const focusKey = focused instanceof HTMLElement && panel.contains(focused) ? (focused.dataset.id ?? focused.className) : undefined;
     const listed = list.sections.reduce((sum, section) => sum + section.members.length, 0);
+    // Its own way out: where the panel lies over the conversation (narrow windows, phones) it covers the toggle.
+    const close = el(this.doc, "button", "profile-close", "×");
+    close.type = "button";
+    close.setAttribute("aria-label", "Close member list");
+    close.addEventListener("click", () => this.closeMembers());
     panel.replaceChildren(
+      close,
       ...memberPanel(this.doc, list, {
         onOpen: (member) => this.openProfile(member),
         onLoadMore: () => this.api.act({ type: "loadMembers", offset: listed }),
@@ -1181,8 +1193,35 @@ export class NativeView {
   }
 
   private closeForward(): void {
+    const hadFocus = this.parts.forward!.contains(this.doc.activeElement);
     this.forwardFor = undefined;
     this.updateForward();
+    this.returnFocus(hadFocus);
+  }
+
+  /** The focused element, if any. */
+  private focused(): HTMLElement | undefined {
+    const active = this.doc.activeElement;
+    return active instanceof HTMLElement && active !== this.doc.body ? active : undefined;
+  }
+
+  /**
+   * After a card closed with focus inside it: focus back to what opened it,
+   * while that is still on the page (lists are rebuilt on updates), else to the composer.
+   */
+  private returnFocus(hadFocus: boolean): void {
+    const opener = this.cardOpener;
+    this.cardOpener = undefined;
+    if (!hadFocus) return;
+    const composer = this.parts.composer as HTMLTextAreaElement;
+    if (opener?.isConnected) opener.focus();
+    else if (!composer.disabled) composer.focus();
+  }
+
+  /** Closes the member list, from its own button or Escape, with focus back on its toggle. */
+  private closeMembers(): void {
+    this.api.act({ type: "members", open: false });
+    this.parts.membersToggle!.focus();
   }
 
   /**
@@ -1206,7 +1245,8 @@ export class NativeView {
     const title = el(doc, "h3", "profile-name", "Forward to");
     title.id = "forward-title";
     const what = el(doc, "p", "forward-what", `${message.author}: ${message.content.slice(0, 100) || "(attachments)"}`);
-    const targets = this.lastState!.sidebar.filter((item) => (item.kind === "text" || item.kind === "dm" || item.kind === "thread") && item.id !== channel!.id);
+    // Not to an invitation the user has not accepted: they are not in that conversation yet.
+    const targets = this.lastState!.sidebar.filter((item) => (item.kind === "text" || item.kind === "dm" || item.kind === "thread") && item.id !== channel!.id && !item.invite);
     const list = el(doc, "ul", "forward-targets");
     for (const target of targets) {
       const li = el(doc, "li");
@@ -1366,6 +1406,7 @@ export class NativeView {
 
   /** Opens someone's card at once with what the view knows, and asks the module for the rest. */
   private openProfile(seed: ProfileCardData): void {
+    this.cardOpener = this.focused();
     this.profileFor = seed;
     this.focusProfile = true;
     this.api.act({ type: "profile", id: seed.id });
@@ -1373,8 +1414,10 @@ export class NativeView {
   }
 
   private closeProfile(): void {
+    const hadFocus = this.parts.profile!.contains(this.doc.activeElement);
     this.profileFor = undefined;
     this.updateProfile();
+    this.returnFocus(hadFocus);
   }
 
   /** The profile card: what it was opened with, plus the module's answer once it is about the same person. */

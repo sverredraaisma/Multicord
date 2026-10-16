@@ -542,7 +542,9 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
 .members-toggle:hover, .members-toggle[aria-pressed="true"], .pins-toggle:hover, .pins-toggle[aria-pressed="true"], .search-toggle:hover, .search-toggle[aria-pressed="true"] { color: var(--text); }
 .members-toggle[aria-pressed="true"], .pins-toggle[aria-pressed="true"], .search-toggle[aria-pressed="true"] { background: var(--border); }
 .members-icon { width: 22px; height: 22px; fill: currentColor; }
-.member-panel { flex: none; width: 240px; padding: 8px; overflow-y: auto; background: var(--panel); }
+.member-panel { position: relative; flex: none; width: 240px; padding: 8px; overflow-y: auto; background: var(--panel); }
+/* The member list's close button sits beside its first heading. */
+.member-panel > .profile-close + .member-section { margin-right: 36px; }
 .member-panel[hidden] { display: none; }
 .member-section { margin: 12px 8px 4px; color: var(--muted); font-size: 12px; font-weight: 700; text-transform: uppercase; }
 .member-list { margin: 0; padding: 0; list-style: none; }
