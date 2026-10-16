@@ -168,6 +168,9 @@ li.archivable:hover > .archive-toggle, li.archivable:focus-within > .archive-tog
 .unread-bar[hidden] { display: none; }
 .call-bar { display: flex; gap: 8px; align-items: center; padding: 6px 16px; background: var(--accent); color: #fff; }
 .call-bar[hidden] { display: none; }
+/* A ringing call stays on top and in reach: profile cards, dialogs and the side panels over the conversation start below it. */
+.call-bar { position: relative; z-index: 8; }
+.conversation-area.ringing .profile-card { top: calc(var(--ring-bottom, 0px) + 8px); max-height: calc(100% - var(--ring-bottom, 0px) - 16px); }
 .call-from { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Darker than the bar, not lighter: white on them stays readable. */
 .call-bar button { padding: 4px 12px; border: 0; border-radius: 4px; background: rgba(0, 0, 0, 0.3); color: inherit; font: inherit; cursor: pointer; }
@@ -619,6 +622,7 @@ button.thread-summary:hover { text-decoration: underline; }
 /* Narrow windows: the panel lies over the conversation instead of squeezing it. */
 @media (max-width: 900px) {
   .member-panel { position: absolute; top: 0; right: 0; bottom: 0; z-index: 6; width: min(260px, 85%); box-shadow: -8px 0 24px rgba(0, 0, 0, 0.4); }
+  .conversation-area.ringing .member-panel { top: var(--ring-bottom, 0px); }
 }
 
 /* Profile cards */

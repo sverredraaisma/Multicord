@@ -77,6 +77,8 @@ export class NativeView {
   private profileFor: ProfileCardData | undefined;
   /** The card just opened: its close button takes focus. */
   private focusProfile = false;
+  /** The call ringing now (channel, caller, video), to announce each new one once. */
+  private ringingKey: string | undefined;
   /** What opened the profile card or the forward dialog, for focus to return to when it closes. */
   private cardOpener: HTMLElement | undefined;
   private call: VoiceCall | undefined;
@@ -367,10 +369,14 @@ export class NativeView {
       this.api.act({ type: "search", query });
     });
     const banner = el(doc, "div", "banner");
-    // A call ringing for the user, with Accept and Decline.
+    // A call ringing for the user, with Accept and Decline: above dialogs and side panels, which make room for it.
     const callBar = el(doc, "div", "call-bar");
-    callBar.setAttribute("role", "alert");
+    callBar.setAttribute("role", "group");
+    callBar.setAttribute("aria-label", "Incoming call");
     callBar.hidden = true;
+    // Says a new call once, at once: the bar itself is redrawn and hidden, so it cannot be the live region.
+    const callAnnouncer = el(doc, "div", "visually-hidden");
+    callAnnouncer.setAttribute("role", "alert");
     // Where the news starts, while it is out of sight: a bar above the messages.
     const unreadBar = el(doc, "div", "unread-bar");
     unreadBar.hidden = true;
@@ -472,7 +478,7 @@ export class NativeView {
     // Why the composer is off in a conversation that takes no messages from here.
     const notice = el(doc, "div", "locked-notice");
     notice.hidden = true;
-    main.append(header, banner, callBar, stage, messageArea, typing, announcer, reply, pending, notice, composerRow, speakers);
+    main.append(header, banner, callBar, callAnnouncer, stage, messageArea, typing, announcer, reply, pending, notice, composerRow, speakers);
 
     // One edit box, reused across renders so an edit in progress survives updates.
     const editBox = el(doc, "textarea", "edit-box");
@@ -591,6 +597,8 @@ export class NativeView {
       pollDialog,
       banner,
       callBar,
+      callAnnouncer,
+      area,
       callButton,
       unreadBar,
       unreadText,
@@ -888,8 +896,23 @@ export class NativeView {
     this.parts.callButton!.hidden = !channel || !this.can.call || state.voice?.channelId === channel.id;
     const ringing = incomingCall(state.incomingCall);
     const bar = this.parts.callBar!;
+    const area = this.parts.area!;
     bar.hidden = !ringing;
-    if (!ringing) return bar.replaceChildren();
+    area.classList.toggle("ringing", Boolean(ringing));
+    const key = ringing ? `${ringing.channelId}|${ringing.from}|${ringing.video === true}` : undefined;
+    if (key !== this.ringingKey) {
+      this.ringingKey = key;
+      this.parts.callAnnouncer!.textContent = ringing ? `${ringing.from} is calling${ringing.video ? " with video" : ""}` : "";
+    }
+    if (!ringing) {
+      delete bar.dataset.call;
+      return bar.replaceChildren();
+    }
+    // Dialogs and side panels over the conversation start below the bar.
+    area.style.setProperty("--ring-bottom", `${bar.offsetTop + bar.offsetHeight}px`);
+    // The same call stays as it is, so focus on Accept or Decline survives updates.
+    if (bar.dataset.call === key) return;
+    bar.dataset.call = key;
     const button = (label: string, className: string, act: () => void) => {
       const b = el(this.doc, "button", className, label);
       b.type = "button";

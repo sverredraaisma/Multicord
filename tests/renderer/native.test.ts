@@ -454,6 +454,33 @@ describe("calls in conversations", () => {
     expect(bar().hidden).toBe(true);
     expect(bar().children).toHaveLength(0);
   });
+
+  it("announces each new call once, keeps the bar (and focus on it) across updates, and makes room for it above dialogs", () => {
+    const announcer = () => root.querySelector<HTMLElement>('[role="alert"].visually-hidden')!;
+    const area = () => root.querySelector<HTMLElement>(".conversation-area")!;
+    view.update(chat());
+    expect(bar().getAttribute("role")).toBe("group");
+    expect(bar().getAttribute("aria-label")).toBe("Incoming call");
+    expect(announcer().textContent).toBe("");
+    view.update(chat({ incomingCall: { channelId: "3", from: "Ana", video: true } }));
+    expect(announcer().textContent).toBe("Ana is calling with video");
+    expect(area().classList.contains("ringing")).toBe(true);
+    expect(area().style.getPropertyValue("--ring-bottom")).toMatch(/^\d+px$/);
+    const accept = bar().querySelector<HTMLButtonElement>(".call-accept")!;
+    accept.focus();
+    announcer().textContent = "read";
+    view.update(chat({ incomingCall: { channelId: "3", from: "Ana", video: true } }));
+    expect(bar().querySelector(".call-accept")).toBe(accept);
+    expect(document.activeElement).toBe(accept);
+    expect(announcer().textContent).toBe("read");
+    view.update(chat());
+    expect(announcer().textContent).toBe("");
+    expect(area().classList.contains("ringing")).toBe(false);
+    // The same call ringing again is news again.
+    view.update(chat({ incomingCall: { channelId: "3", from: "Ana", video: true } }));
+    expect(announcer().textContent).toBe("Ana is calling with video");
+    expect(bar().querySelector(".call-accept")).not.toBe(accept);
+  });
 });
 
 describe("message actions", () => {
