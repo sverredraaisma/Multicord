@@ -4724,6 +4724,7 @@ describe("custom emoji and stickers from image packs", () => {
     ]);
   });
 
+  // Thousands of reactions: about a second alone, but over the default timeout on a busy machine.
   it("loads pictures in batches, a bounded number per session, and forgets them on signing out", async () => {
     const ctx = await signedIn();
     ctx.api.thumbnail.mockReset();
@@ -4740,7 +4741,7 @@ describe("custom emoji and stickers from image packs", () => {
     expect(shown.filter((r) => r.imageUrl)).toHaveLength(MAX_PICTURES);
     // Names are learned up to a limit too.
     expect(shown.filter((r) => r.label.startsWith(":"))).toHaveLength(2000);
-  });
+  }, 20_000);
 
   it("draws custom emoji in messages with their pictures, once loaded", async () => {
     const ctx = await signedIn();
