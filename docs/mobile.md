@@ -1,6 +1,6 @@
 # Multicord on phones: design note
 
-Status: design written 2026-10-15; phase 1 (core extraction, desktop only) mostly done 2026-10-16, see section 7. No mobile code yet. Claims marked **(unverified)** come from memory, secondary sources or inference and need a device test before we rely on them.
+Status: design written 2026-10-15; phase 1 (core extraction, desktop only) mostly done 2026-10-16; the phase 0 spike app (`mobile/android-spike`) built 2026-10-16 and waiting for device results, see section 7. No mobile host code yet. Claims marked **(unverified)** come from memory, secondary sources or inference and need a device test before we rely on them.
 
 ## Summary
 
@@ -208,6 +208,8 @@ Camera service: Camera2 / USB host + libuvc / AVCapture → MessagePort → page
 | **4. External cameras on Android** | Tier A: device listing and grants. Tier B: libuvc JNI, MessagePort transport, page virtual device, LiveKit and Discord. Hot-plug, permission prompts, a device matrix. | Tier A: days. Tier B: 3–6 weeks |
 | **5. Voice extras** | Call view on mobile, Android screen share through MediaProjection plus a generated track, headset PTT | 2–4 weeks |
 | **6. iPadOS/iOS** | Swift host (iOS 17+), the same structure. External cameras on iPad. Notifications limited. App Store build without Discord. | 6–10 weeks |
+
+**Phase 0 status (2026-10-16).** The spike app is in `mobile/android-spike` (Kotlin, androidx.webkit 1.17.1, minSdk 28; its README says how to build and install it and what to send back). It has one screen per spike: 0.1 Discord in its own Profile, with an optional desktop user agent and an origin-restricted document-start report; 0.2 an `enumerateDevices` page plus a Camera2 and USB dump; 0.3 a generated "Multicord test camera" for that page or for Discord; 0.4 MJPEG to `VideoFrame` decode timing. It builds, and a smoke run on the Android 16 emulator (WebView 134) worked: every feature except `JS_INJECTION_IN_FRAME_AND_WORLD`, the document-start report on discord.com with the desktop user agent (Discord showed its login page), the test camera through `MediaStreamTrackGenerator`, and 720p JPEG decode. An emulator says nothing about phones, so every **(unverified)** above still stands until device results come in.
 
 **Phase 1 status (2026-10-16).**
 - Done: `src/core` as listed in section 5, with the boundary test and full coverage. The desktop behaves as before.
