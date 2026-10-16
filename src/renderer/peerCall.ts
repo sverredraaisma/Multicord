@@ -367,6 +367,8 @@ export class PeerCall {
       this.leave();
       // Relay only, with no relay to go through: nothing could connect, and nothing goes another way.
       if (call.relayOnly && !hasRelay(call)) throw new Error(NO_RELAY);
+      // Fluxer's calls negotiate otherwise (MeshSignal), which this view does not speak.
+      if (call.protocol) throw new Error("This call negotiates in a way Multicord does not support.");
       this.call = call;
       this.output = (await this.deviceIds()).output;
       this.ticker = setInterval(() => this.measure(), METER_MS);
@@ -379,7 +381,7 @@ export class PeerCall {
       if (seq <= this.lastSeq) continue;
       this.lastSeq = seq;
       // Someone who joined before the user offers first; their offer opens the connection.
-      (this.links.get(from) ?? this.open(call.peers.find((p) => p.id === from)!, false)).signal(signal);
+      (this.links.get(from) ?? this.open(call.peers.find((p) => p.id === from)!, false)).signal(signal as VoiceSignal);
     }
     this.renderRoster();
   }

@@ -3,7 +3,10 @@ import {
   iceServerHost,
   iceServers,
   isNativeAction,
+  isMeshSignal,
   isVoiceSignal,
+  MESH_SOURCES,
+  meshSignal,
   MAX_CALL_PARTICIPANTS,
   MAX_CALL_SIGNALS,
   MAX_ICE_CANDIDATE,
@@ -159,5 +162,133 @@ describe("peerCall", () => {
     expect(voiceConnected(voice)).toBe(false);
     expect(voiceConnected({ ...voice, token: "t", url: "wss://lk.example.org" })).toBe(true);
     expect(voiceConnected({ ...voice, p2p: { callId: "c", self: "1", peers: [], iceServers: [], relayOnly: true, signals: [] } })).toBe(true);
+  });
+});
+
+describe("meshSignal (Fluxer's peer-to-peer calls)", () => {
+  const sid = "TR_b7f3c2a94e1d4c0f_microphone";
+  const c = { candidate: "candidate:1 1 udp 2122260223 192.0.2.1 54321 typ host", sdpMid: "0", sdpMLineIndex: 0, usernameFragment: "a1B+/" };
+
+  it("keeps the forms Fluxer's own client sends, with their known fields only", () => {
+    expect(meshSignal({ t: "offer", g: 1760000000000, sdp: "v=0", type: "offer" })).toEqual({ t: "offer", g: 1760000000000, sdp: "v=0" });
+    expect(meshSignal({ t: "answer", g: 0, sdp: "v=0" })).toEqual({ t: "answer", g: 0, sdp: "v=0" });
+    expect(meshSignal({ t: "ice", g: 3, c: { ...c, extra: 1 } })).toEqual({ t: "ice", g: 3, c });
+    expect(meshSignal({ t: "ice", g: 3, c: { candidate: "c", usernameFragment: null } })).toEqual({ t: "ice", g: 3, c: { candidate: "c", usernameFragment: null } });
+    expect(meshSignal({ t: "ice", g: 3, c: { candidate: "c" } })).toEqual({ t: "ice", g: 3, c: { candidate: "c" } });
+    expect(meshSignal({ t: "ice", g: 3, c: null })).toEqual({ t: "ice", g: 3, c: null });
+    expect(meshSignal({ t: "need-offer", g: 0 })).toEqual({ t: "need-offer", g: 0 });
+    expect(meshSignal({ t: "need-offer", g: 4, restart: true })).toEqual({ t: "need-offer", g: 4, restart: true });
+    expect(meshSignal({ t: "tracks", v: 9, tracks: [{ src: "microphone", sid, m: false, x: 1 }, { src: "camera", sid: "TR_x_camera", m: true, w: 1280, h: 720 }] })).toEqual({
+      t: "tracks",
+      v: 9,
+      tracks: [
+        { src: "microphone", sid, m: false },
+        { src: "camera", sid: "TR_x_camera", m: true, w: 1280, h: 720 },
+      ],
+    });
+    expect(meshSignal({ t: "tracks", v: 9, tracks: [] })).toEqual({ t: "tracks", v: 9, tracks: [] });
+    expect(meshSignal({ t: "want", v: 10, sids: [sid] })).toEqual({ t: "want", v: 10, sids: [sid] });
+  });
+
+  it("refuses anything else", () => {
+    const five = MESH_SOURCES.map((src) => ({ src, sid: `TR_x_${src}`, m: false }));
+    for (const value of [
+      undefined,
+      { type: "offer", sdp: "v=0" },
+      { t: "offer", sdp: "v=0" },
+      { t: "offer", g: -1, sdp: "v=0" },
+      { t: "offer", g: 1.5, sdp: "v=0" },
+      { t: "offer", g: 1, sdp: "" },
+      { t: "answer", g: 1, sdp: "x".repeat(MAX_SDP + 1) },
+      { t: "ice", g: 1 },
+      { t: "ice", g: 1, c: "c" },
+      { t: "ice", g: 1, c: { candidate: "c", usernameFragment: "a b" } },
+      { t: "ice", g: 1, c: { candidate: "c", usernameFragment: 5 } },
+      { t: "ice", g: 1, c: { candidate: "a\nb" } },
+      { t: "ice", c: null },
+      { t: "need-offer" },
+      { t: "need-offer", g: 1, restart: false },
+      { t: "tracks", v: 1 },
+      { t: "tracks", v: 1, tracks: [...five, five[0]] },
+      { t: "tracks", v: 1, tracks: [five[0], five[0]] },
+      { t: "tracks", v: 1, tracks: [{ src: "data", sid: "s", m: false }] },
+      { t: "tracks", v: 1, tracks: [{ src: "camera", sid: "a b", m: false }] },
+      { t: "tracks", v: 1, tracks: [{ src: "camera", sid: "s", m: "no" }] },
+      { t: "tracks", v: 1, tracks: [{ src: "camera", sid: "s", m: false, w: -1 }] },
+      { t: "tracks", v: 1, tracks: [{ src: "camera", sid: "s", m: false, h: 70000 }] },
+      { t: "tracks", v: "1", tracks: [] },
+      { t: "want", v: 1 },
+      { t: "want", v: 1, sids: [1] },
+      { t: "want", v: 1, sids: ["a", "b", "c", "d", "e"] },
+      { t: "want", sids: [] },
+      { t: "bye" },
+    ]) {
+      expect(meshSignal(value)).toBeUndefined();
+      expect(isMeshSignal(value)).toBe(false);
+    }
+  });
+
+  it("takes from the view only signals with nothing beyond their fields", () => {
+    for (const value of [
+      { t: "offer", g: 1, sdp: "v=0" },
+      { t: "ice", g: 1, c },
+      { t: "ice", g: 1, c: null },
+      { t: "need-offer", g: 1, restart: true },
+      { t: "tracks", v: 1, tracks: [{ src: "microphone", sid, m: true, w: 0, h: 0 }] },
+      { t: "want", v: 1, sids: [] },
+    ]) {
+      expect(isMeshSignal(value)).toBe(true);
+      expect(isNativeAction({ type: "voiceSignal", to: "b7f3c2a94e1d4c0f", signal: value })).toBe(true);
+    }
+    for (const value of [
+      { t: "offer", g: 1, sdp: "v=0", x: 1 },
+      { t: "ice", g: 1, c: { ...c, x: 1 } },
+      { t: "need-offer", g: 1, x: 1 },
+      { t: "tracks", v: 1, tracks: [{ src: "microphone", sid, m: true, x: 1 }] },
+      { t: "want", v: 1, sids: [], x: 1 },
+    ]) {
+      expect(isMeshSignal(value)).toBe(false);
+      expect(isNativeAction({ type: "voiceSignal", to: "b7f3c2a94e1d4c0f", signal: value })).toBe(false);
+    }
+    // A simple-peer signal is no mesh signal, nor the other way round.
+    expect(isMeshSignal({ type: "offer", sdp: "v=0" })).toBe(false);
+    expect(isVoiceSignal({ t: "offer", g: 1, sdp: "v=0" })).toBe(false);
+  });
+
+  it("is what a fluxer-mesh call carries, with each peer's server mute", () => {
+    const result = peerCall({
+      callId: "c1",
+      self: "a1",
+      protocol: "fluxer-mesh",
+      peers: [
+        { id: "b2", name: "Ana", offer: true, muted: true },
+        { id: "c3", name: "Bo", muted: "yes" },
+      ],
+      signals: [
+        { seq: 1, from: "b2", signal: { t: "need-offer", g: 0 } },
+        { seq: 2, from: "b2", signal: { type: "offer", sdp: "v=0" } },
+      ],
+    })!;
+    expect(result).toEqual({
+      callId: "c1",
+      self: "a1",
+      protocol: "fluxer-mesh",
+      peers: [
+        { id: "b2", name: "Ana", offer: true, muted: true },
+        { id: "c3", name: "Bo", offer: false },
+      ],
+      iceServers: [],
+      relayOnly: true,
+      signals: [{ seq: 1, from: "b2", signal: { t: "need-offer", g: 0 } }],
+    });
+    // Without the protocol, mesh signals are not simple-peer's.
+    expect(peerCall({ callId: "c1", self: "a1", protocol: "other", peers: [{ id: "b2", name: "Ana" }], signals: [{ seq: 1, from: "b2", signal: { t: "need-offer", g: 0 } }] })).toEqual({
+      callId: "c1",
+      self: "a1",
+      peers: [{ id: "b2", name: "Ana", offer: false }],
+      iceServers: [],
+      relayOnly: true,
+      signals: [],
+    });
   });
 });

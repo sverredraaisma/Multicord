@@ -326,6 +326,49 @@ object Validators {
         }
     }
 
+    private val MESH_SOURCES = listOf("microphone", "camera", "screen_share", "screen_share_audio")
+    private val MESH_SID = Regex("^[A-Za-z0-9_.:-]{1,300}$")
+    private val ICE_UFRAG = Regex("^[A-Za-z0-9+/]{1,256}$")
+
+    /** A generation or version counter of a Fluxer call's signal: a safe integer, not negative. */
+    private fun isCounter(value: JsonElement?): Boolean = isCount(value) && value.number()!! <= 9007199254740991.0
+
+    private fun isMeshCandidate(value: JsonElement?): Boolean {
+        if (value is JsonNull) return true
+        val v = value.record() ?: return false
+        val ufrag = v["usernameFragment"]
+        if (ufrag != null && ufrag !is JsonNull && ufrag.string()?.let(ICE_UFRAG::matches) != true) return false
+        return isIceCandidate(JsonObject(v - "usernameFragment"))
+    }
+
+    private fun isMeshTrack(value: JsonElement?): Boolean {
+        val v = value.record() ?: return false
+        if (!v.keys.all { it in setOf("src", "sid", "m", "w", "h") }) return false
+        val dimension = { d: JsonElement? -> d == null || (d.number()?.let { it.isFinite() && it >= 0 && it <= 65535 } == true) }
+        return v["src"].string() in MESH_SOURCES && v["sid"].string()?.let(MESH_SID::matches) == true && isBoolean(v["m"]) && dimension(v["w"]) && dimension(v["h"])
+    }
+
+    /**
+     * A signal a view sends to a peer of a Fluxer peer-to-peer call (isMeshSignal), in the forms Fluxer's own
+     * client sends, with nothing beyond their fields: a session description or ICE candidate of one
+     * generation, a request for an offer, the tracks the view sends (one per source) or those it wants.
+     */
+    fun isMeshSignal(value: JsonElement?): Boolean {
+        val v = value.record() ?: return false
+        return when (v["t"].string()) {
+            "offer", "answer" -> v.keys == setOf("t", "g", "sdp") && isCounter(v["g"]) && isText(v["sdp"], MAX_SDP, 1)
+            "ice" -> v.keys == setOf("t", "g", "c") && isCounter(v["g"]) && isMeshCandidate(v["c"])
+            "need-offer" -> (v.keys == setOf("t", "g") || (v.keys == setOf("t", "g", "restart") && v["restart"].boolean() == true)) && isCounter(v["g"])
+            "tracks" -> v.keys == setOf("t", "v", "tracks") && isCounter(v["v"]) && (v["tracks"] as? JsonArray)?.let { tracks ->
+                tracks.size <= MESH_SOURCES.size && tracks.all(::isMeshTrack) && tracks.map { it.record()!!["src"].string() }.toSet().size == tracks.size
+            } == true
+            "want" -> v.keys == setOf("t", "v", "sids") && isCounter(v["v"]) && (v["sids"] as? JsonArray)?.let { sids ->
+                sids.size <= MESH_SOURCES.size && sids.all { it.string()?.let(MESH_SID::matches) == true }
+            } == true
+            else -> false
+        }
+    }
+
     /** A user action from a module's own view; `sendFile` is the shell's alone and never accepted from a view. */
     fun isNativeAction(value: JsonElement?): Boolean {
         val v = value.record() ?: return false
@@ -360,7 +403,7 @@ object Validators {
             "voiceState" -> listOf("mute", "deaf", "video", "stream").all { isBoolean(v[it]) }
             "voiceError" -> isText(v["message"], 500, 1)
             "voiceNotice" -> isText(v["message"], 500, 1) && optional(v["off"]) { it.string() == "video" || it.string() == "stream" }
-            "voiceSignal" -> v["to"].string()?.let(MEMBER_ID::matches) == true && isVoiceSignal(v["signal"])
+            "voiceSignal" -> v["to"].string()?.let(MEMBER_ID::matches) == true && (isVoiceSignal(v["signal"]) || isMeshSignal(v["signal"]))
             "loadMedia" -> v["key"].string()?.let(MEDIA_KEY::matches) == true
             "sendSticker" -> v["stickerId"].string()?.let(MEDIA_ID::matches) == true && optional(v["replyTo"], ::id)
             "searchGifs" -> isText(v["query"], MAX_GIF_QUERY)

@@ -147,9 +147,9 @@ export interface NativeVoiceSession {
    */
   e2ee?: { keys: NativeMediaKey[] };
   /**
-   * Set instead of `url` and `token` for a peer-to-peer call (Nerimity's):
-   * the view connects to each other participant itself, with signalling
-   * through the engine. Read through peerCall().
+   * Set instead of `url` and `token` for a peer-to-peer call (Nerimity's,
+   * Fluxer's): the view connects to each other participant itself, with
+   * signalling through the engine. Read through peerCall().
    */
   p2p?: NativePeerCall;
 }
@@ -162,8 +162,14 @@ export interface NativeVoiceSession {
 export interface NativePeerCall {
   /** New with each join: a new call, whose connections start afresh. */
   callId: string;
-  /** The user's own id on the platform. */
+  /** The user's own id on the platform: in a "fluxer-mesh" call, the id of the user's own voice connection. */
   self: string;
+  /**
+   * How the peers negotiate: as simple-peer does (Nerimity's own client),
+   * where absent, or as Fluxer's own client does ("fluxer-mesh"), whose
+   * signals are MeshSignal and whose peers are voice connections.
+   */
+  protocol?: "fluxer-mesh";
   /** The others in the call that the view connects to, at most MAX_CALL_PARTICIPANTS - 1, in the order they joined. */
   peers: NativeCallPeer[];
   /** Others in the call beyond the cap, not connected to. */
@@ -185,6 +191,8 @@ export interface NativeCallPeer {
   avatarUrl?: string;
   /** The view makes the offer to this peer (it joined after the user); otherwise it waits for theirs. */
   offer: boolean;
+  /** The platform muted them (a server mute): their sound is not played. */
+  muted?: boolean;
 }
 
 export interface NativeIceServer {
@@ -197,7 +205,8 @@ export interface NativeCallSignal {
   seq: number;
   /** The peer it comes from. */
   from: string;
-  signal: VoiceSignal;
+  /** A MeshSignal in a "fluxer-mesh" call, else a VoiceSignal. */
+  signal: VoiceSignal | MeshSignal;
 }
 
 /**
@@ -284,6 +293,120 @@ export function isVoiceSignal(value: unknown): value is VoiceSignal {
 }
 
 /**
+ * What a peer of a Fluxer call sends, in the order of the transceivers each
+ * connection carries (VOICE_MESH_SOURCES in Fluxer's own client,
+ * fluxer_app/src/features/voice/engine/mesh/VoiceMeshSignal.ts).
+ */
+export const MESH_SOURCES = ["microphone", "camera", "screen_share", "screen_share_audio"] as const;
+export type MeshSource = (typeof MESH_SOURCES)[number];
+
+/** A track a peer of a Fluxer call sends, or would: its source, its id, and whether it is muted (`m`); a video's size where known. */
+export interface MeshTrack {
+  src: MeshSource;
+  sid: string;
+  m: boolean;
+  w?: number;
+  h?: number;
+}
+
+export interface MeshCandidate {
+  candidate: string;
+  sdpMid?: string | null;
+  sdpMLineIndex?: number | null;
+  usernameFragment?: string | null;
+}
+
+/**
+ * A signal between two peers of a Fluxer peer-to-peer call, in the form
+ * Fluxer's own client sends it (VoiceMeshSignalData in VoiceMeshSignal.ts;
+ * Fluxer relays it unread): a session description or ICE candidate of one
+ * generation of the connection (`g`), a request for an offer (or an ICE
+ * restart), the tracks the sender has (`v` counts up), or the tracks it
+ * wants sent (`sids`).
+ */
+export type MeshSignal =
+  | { t: "offer" | "answer"; g: number; sdp: string }
+  | { t: "ice"; g: number; c: MeshCandidate | null }
+  | { t: "need-offer"; g: number; restart?: true }
+  | { t: "tracks"; v: number; tracks: MeshTrack[] }
+  | { t: "want"; v: number; sids: string[] };
+
+/** A track id: Fluxer's client makes them as TR_<connection id>_<source>. */
+const MESH_SID = /^[A-Za-z0-9_.:-]{1,300}$/;
+const ICE_UFRAG = /^[A-Za-z0-9+/]{1,256}$/;
+const isCounter = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+const isDimension = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 65535;
+
+function meshCandidate(value: unknown): MeshCandidate | null | undefined {
+  if (value === null) return null;
+  const base = iceCandidate(value);
+  const ufrag = record(value)?.usernameFragment;
+  if (!base || !(ufrag === undefined || ufrag === null || (typeof ufrag === "string" && ICE_UFRAG.test(ufrag)))) return undefined;
+  return ufrag === undefined ? base : { ...base, usernameFragment: ufrag as string | null };
+}
+
+function meshTrack(value: unknown): MeshTrack | undefined {
+  const v = record(value);
+  if (!v || !MESH_SOURCES.includes(v.src as MeshSource) || typeof v.sid !== "string" || !MESH_SID.test(v.sid) || typeof v.m !== "boolean") return undefined;
+  if ((v.w !== undefined && !isDimension(v.w)) || (v.h !== undefined && !isDimension(v.h))) return undefined;
+  const track: MeshTrack = { src: v.src as MeshSource, sid: v.sid, m: v.m };
+  if (v.w !== undefined) track.w = v.w as number;
+  if (v.h !== undefined) track.h = v.h as number;
+  return track;
+}
+
+/**
+ * A Fluxer call's signal as Multicord trusts it, rebuilt from its known
+ * fields alone; undefined if it is none of the forms or a field is off
+ * (at most one track per source, and as many wanted).
+ */
+export function meshSignal(value: unknown): MeshSignal | undefined {
+  const v = record(value);
+  switch (v?.t) {
+    case "offer":
+    case "answer":
+      return isCounter(v.g) && typeof v.sdp === "string" && v.sdp.length > 0 && v.sdp.length <= MAX_SDP ? { t: v.t, g: v.g, sdp: v.sdp } : undefined;
+    case "ice": {
+      const c = meshCandidate(v.c);
+      return isCounter(v.g) && c !== undefined ? { t: "ice", g: v.g, c } : undefined;
+    }
+    case "need-offer":
+      if (!isCounter(v.g) || !(v.restart === undefined || v.restart === true)) return undefined;
+      return v.restart ? { t: "need-offer", g: v.g, restart: true } : { t: "need-offer", g: v.g };
+    case "tracks": {
+      if (!isCounter(v.v) || !Array.isArray(v.tracks) || v.tracks.length > MESH_SOURCES.length) return undefined;
+      const tracks = v.tracks.map(meshTrack);
+      if (tracks.some((t) => !t) || new Set(tracks.map((t) => t!.src)).size !== tracks.length) return undefined;
+      return { t: "tracks", v: v.v, tracks: tracks as MeshTrack[] };
+    }
+    case "want":
+      if (!isCounter(v.v) || !Array.isArray(v.sids) || v.sids.length > MESH_SOURCES.length || !v.sids.every((sid) => typeof sid === "string" && MESH_SID.test(sid))) return undefined;
+      return { t: "want", v: v.v, sids: [...(v.sids as string[])] };
+    default:
+      return undefined;
+  }
+}
+
+/** A Fluxer call's signal the view sends: one of the forms with nothing else in it (what meshSignal() keeps, and only that). */
+export function isMeshSignal(value: unknown): value is MeshSignal {
+  const v = record(value);
+  if (!v || meshSignal(v) === undefined) return false;
+  switch (v.t) {
+    case "offer":
+    case "answer":
+      return onlyKeys(v, ["t", "g", "sdp"]);
+    case "ice":
+      return onlyKeys(v, ["t", "g", "c"]) && (v.c === null || onlyKeys(v.c as Record<string, unknown>, ["candidate", "sdpMLineIndex", "sdpMid", "usernameFragment"]));
+    case "need-offer":
+      return onlyKeys(v, ["t", "g", "restart"]);
+    case "tracks":
+      return onlyKeys(v, ["t", "v", "tracks"]) && (v.tracks as Record<string, unknown>[]).every((track) => onlyKeys(track, ["src", "sid", "m", "w", "h"]));
+    default:
+      return onlyKeys(v, ["t", "v", "sids"]);
+  }
+}
+
+/**
  * An ICE server URL a call may use: stun:, turn: or turns: on a host name
  * (never an address, nor a name without a dot), an optional port and an
  * optional transport. Returns the host, lower case; undefined otherwise.
@@ -333,16 +456,19 @@ export function peerCall(value: unknown): NativePeerCall | undefined {
     if (peers.length === MAX_CALL_PARTICIPANTS - 1) break;
     const peer: NativeCallPeer = { id: p.id, name, offer: p.offer === true };
     if (typeof p.avatarUrl === "string" && p.avatarUrl.startsWith("https://")) peer.avatarUrl = p.avatarUrl;
+    if (p.muted === true) peer.muted = true;
     peers.push(peer);
   }
+  const mesh = v.protocol === "fluxer-mesh";
   const signals: NativeCallSignal[] = [];
   for (const raw of Array.isArray(v.signals) ? v.signals.slice(0, MAX_CALL_SIGNALS) : []) {
     const s = record(raw);
-    const signal = voiceSignal(s?.signal);
+    const signal = mesh ? meshSignal(s?.signal) : voiceSignal(s?.signal);
     if (!s || !signal || typeof s.seq !== "number" || !Number.isSafeInteger(s.seq) || s.seq < 0 || !peers.some((p) => p.id === s.from)) continue;
     signals.push({ seq: s.seq, from: s.from as string, signal });
   }
   const call: NativePeerCall = { callId: v.callId, self, peers, iceServers: iceServers(v.iceServers), relayOnly: v.relayOnly !== false, signals };
+  if (mesh) call.protocol = "fluxer-mesh";
   const over = count(v.over);
   if (over > 0) call.over = over;
   return call;
@@ -1313,7 +1439,7 @@ export type NativeAction =
   /** A problem the call survives (a camera that won't open); `off` names the flag that could not be turned on. */
   | { type: "voiceNotice"; message: string; off?: VoiceNoticeFlag }
   /** A signal for one peer of the peer-to-peer call the user is in (NativePeerCall), which the engine passes on. */
-  | { type: "voiceSignal"; to: string; signal: VoiceSignal }
+  | { type: "voiceSignal"; to: string; signal: VoiceSignal | MeshSignal }
   | { type: "removeAttachment"; index: number }
   /** Fetch an attachment the engine holds back until asked (NativeAttachment.mediaKey). */
   | { type: "loadMedia"; key: string }
@@ -1470,7 +1596,7 @@ export function isNativeAction(value: unknown): value is NativeAction {
     case "voiceNotice":
       return text(v.message, 1, 500) && (v.off === undefined || v.off === "video" || v.off === "stream");
     case "voiceSignal":
-      return isMemberId(v.to) && isVoiceSignal(v.signal);
+      return isMemberId(v.to) && (isVoiceSignal(v.signal) || isMeshSignal(v.signal));
     case "loadMedia":
       return isMediaKey(v.key);
     case "sendSticker":

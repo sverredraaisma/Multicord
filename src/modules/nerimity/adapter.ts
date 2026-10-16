@@ -11,6 +11,7 @@ import {
   type NativeIncomingCall,
   type NativeVoiceMember,
   type NativeVoiceSession,
+  type MeshSignal,
   type VoiceSignal,
   type NativeAttachment,
   type NativeCustomEmoji,
@@ -994,8 +995,8 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     this.render();
   }
 
-  /** The view's signal for one person in the call, passed on over the socket as Nerimity's client sends it. */
-  private sendSignal(to: string, signal: VoiceSignal): void {
+  /** The view's signal for one person in the call, passed on over the socket as Nerimity's client sends it (only simple-peer's forms, which voiceSignal() keeps). */
+  private sendSignal(to: string, signal: VoiceSignal | MeshSignal): void {
     const voice = this.voice;
     const clean = voiceSignal(signal);
     if (!voice?.joined || !clean || !this.callPeers(voice).peers.some((p) => p.id === to)) return;
