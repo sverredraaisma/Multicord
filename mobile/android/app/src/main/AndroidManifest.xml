@@ -10,7 +10,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <!-- Camera and microphone, for calls: in web-client modules' own pages (WebClientPolicy, the desktop's
-         permission allowlist), and in a chat view only for its own call in progress (CallPolicy); asked when
+         permission allowlist), in Discord's view for https://discord.com only (DiscordPolicy), and in a chat view
+         only for its own call in progress (CallPolicy); asked when
          a page asks. Neither is required. Calls set the audio mode and route (CallAudio), Bluetooth headsets
          through SCO before Android 12, and turn the screen off at the ear (a proximity wake lock). While in a
          call the background service also holds the microphone, and the camera with video. -->

@@ -35,18 +35,26 @@ object BridgeScripts {
         listener: WebViewCompat.WebMessageListener,
     ): String {
         val relay = asset(context, "bridge/relay.js").replace("__LISTENER__", listenerName).replace("__CHANNEL__", channel)
-        val api = asset(context, apiAsset)
+        val world = installRelay(view, listenerName, relay, origins, listener)
+        WebViewCompat.addDocumentStartJavaScript(view, asset(context, apiAsset), origins)
+        return world
+    }
+
+    /**
+     * Installs a relay script and the native message listener it posts to, for `origins`, in the isolated world
+     * where the WebView has one and in the page's world otherwise; returns which, for the log. The relay is any
+     * document-start script that finds the listener as `window.<listenerName>` (relay.js, or the Discord view's).
+     */
+    fun installRelay(view: WebView, listenerName: String, relay: String, origins: Set<String>, listener: WebViewCompat.WebMessageListener): String {
         // The feature asked here, where lint sees it (isolatedWorld asks the same).
         if (WebViewFeature.isFeatureSupported(WebViewFeature.JS_INJECTION_IN_FRAME_AND_WORLD)) {
             val world = WebViewCompat.getExecutionWorld(view, WORLD)
             WebViewCompat.addWebMessageListener(view, listenerName, origins, world, listener)
             WebViewCompat.addJavaScriptOnEvent(view, relay, WebViewCompat.INJECTION_EVENT_DOCUMENT_START, origins, world)
-            WebViewCompat.addDocumentStartJavaScript(view, api, origins)
             return "isolated world"
         }
         WebViewCompat.addWebMessageListener(view, listenerName, origins, listener)
         WebViewCompat.addDocumentStartJavaScript(view, relay, origins)
-        WebViewCompat.addDocumentStartJavaScript(view, api, origins)
         return "main world"
     }
 

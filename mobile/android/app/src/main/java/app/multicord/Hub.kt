@@ -22,6 +22,7 @@ import app.multicord.call.AudioRoute
 import app.multicord.call.Call
 import app.multicord.call.CallAudio
 import app.multicord.call.CallPolicy
+import app.multicord.discord.DiscordView
 import app.multicord.engine.EngineHost
 import app.multicord.engine.EngineListener
 import app.multicord.engine.EngineSpec
@@ -44,8 +45,9 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Everything that runs, for as long as the app runs (not only while an activity is on screen): the shell
- * page with src/core, an engine per native service instance and its chat view, and a plain WebView per
- * web-client instance (the service's own web app, which gets nothing of Multicord's). It does what
+ * page with src/core, an engine per native service instance and its chat view, a plain WebView per
+ * web-client instance (the service's own web app, which gets nothing of Multicord's), and a Discord view per
+ * Discord instance (Discord's web app with the desktop's hooks; its reports go to the shell page, checked). It does what
  * Electron's main process does on the desktop besides core: it starts and stops engines and views as the
  * shell page says, keeps the shell's files, and routes between them. The routes are fixed here: an
  * engine's events go to the shell page (tagged with the instance native code started in that WebView),
@@ -115,7 +117,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
     /** Who wants to hear when calls start, end or turn video on or off (the background service's types and notification). */
     var onCallsChanged: (() -> Unit)? = null
     private val callAudio = CallAudio(app) { current, available ->
-        val call = callsByInstance.values.firstOrNull() ?: return@CallAudio
+        val call = callsByInstance.values.firstOrNull { it.inChatView } ?: return@CallAudio
         instances[call.instance]?.view?.audioRoutes(AudioRoute.report(current, available))
     }
 
@@ -137,7 +139,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
 
     fun attach(screen: Screen, activity: Context) {
         this.screen = screen
-        screen.inCall(callsByInstance.values.firstOrNull())
+        screen.inCall(callsByInstance.values.firstOrNull { it.inChatView })
         screen.theme(theme)
         shellContext.baseContext = activity
         for (instance in instances.values) instance.context.baseContext = activity
@@ -163,9 +165,13 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
      */
     fun back() {
         val instance = shown?.let { instances[it] }
-        // A web app goes back in its own history first.
+        // A web app, and Discord, go back in their own history first.
         instance?.web?.let { web ->
             if (overlay || !web.back()) shellBack()
+            return
+        }
+        instance?.discord?.let { discord ->
+            if (overlay || !discord.back()) shellBack()
             return
         }
         val view = instance?.view
@@ -226,6 +232,9 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
             }
             "start" -> start(text("instance"), text("module"), text("name"), text("url"), command["settings"] as? JsonObject)
             "command" -> instances[text("instance")]?.engine?.command(command["command"] as JsonObject)
+            "hostSettings" -> instances[text("instance")]?.discord?.applySettings(command["settings"] as JsonObject)
+            "discordNavigate" -> instances[text("instance")]?.discord?.navigate(text("target"))
+            "discordNotificationClick" -> instances[text("instance")]?.discord?.clickNotification(text("id"))
             "layout" -> {
                 shown = (command["instance"] as? JsonPrimitive)?.takeIf { it.isString }?.content
                 overlay = (command["overlay"] as JsonPrimitive).content == "true"
@@ -260,7 +269,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
                 io.execute { secrets.forget(id) }
             }
             // The user's Restart for one service: its engine starts again (or its web app loads again), nothing else does.
-            "restartEngine" -> instances[text("instance")]?.let { it.engine?.restart() ?: it.web?.restart() }
+            "restartEngine" -> instances[text("instance")]?.let { it.engine?.restart() ?: it.web?.restart() ?: it.discord?.restart() }
             "restart" -> {
                 booted = false
                 for (id in instances.keys.toList()) stop(id)
@@ -309,6 +318,8 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
         var engine: EngineHost? = null
         /** A web-client instance's web app; null for a native one. */
         var web: WebClientView? = null
+        /** A Discord instance's view; null for any other. */
+        var discord: DiscordView? = null
         /** The chat view's context: the activity while there is one. */
         val context = MutableContextWrapper(screen?.let { shellContext.baseContext } ?: app)
         var view: ChatView? = null
@@ -349,7 +360,25 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
         }
         reclaimProfiles(id)
         val instance = Instance(id)
-        if (module.web) {
+        if (module.discord) {
+            val discord = DiscordView(instance.context, id, url, settings, object : DiscordView.Listener {
+                override fun onState(state: JsonObject) {
+                    if (instances[id] === instance) event("discordState", "instance" to JsonPrimitive(id), "state" to state)
+                }
+
+                override fun onNotification(notification: JsonObject) {
+                    if (instances[id] === instance) event("discordNotification", "instance" to JsonPrimitive(id), "notification" to notification)
+                }
+
+                // Discord's page holds the microphone or camera: a call, which the background service keeps going.
+                override fun onMedia(audio: Boolean, video: Boolean) {
+                    if (instances[id] === instance) setCall(id, if (audio || video) Call(id, name, video, inChatView = false) else null)
+                }
+            }, ui = this)
+            instance.discord = discord
+            instances[id] = instance
+            discord.start()
+        } else if (module.web) {
             val web = WebClientView(instance.context, id, url, onTitle = { title ->
                 if (instances[id] === instance) event("title", "instance" to JsonPrimitive(id), "title" to JsonPrimitive(title))
             }, ui = this)
@@ -377,6 +406,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
         instance.engine?.destroy()
         instance.view?.destroy()
         instance.web?.destroy()
+        instance.discord?.destroy()
         onRunningChanged?.invoke(instances.size)
         if (shown == id) place()
     }
@@ -410,8 +440,8 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
         writePending(pending)
     }
 
-    /** Every Profile an instance may have used: its engine's and chat view's, or its web app's. */
-    private fun profilesOf(id: String) = listOf(EngineHost.profileName(id), ChatView.profileName(id), WebClientView.profileName(id))
+    /** Every Profile an instance may have used: its engine's and chat view's, its web app's, or its Discord view's. */
+    private fun profilesOf(id: String) = listOf(EngineHost.profileName(id), ChatView.profileName(id), WebClientView.profileName(id), DiscordView.profileName(id))
 
     private fun deleteProfile(name: String): Boolean = try {
         ProfileStore.getInstance().deleteProfile(name)
@@ -452,7 +482,8 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
         if (callsByInstance[id] == call) return
         if (call == null) callsByInstance.remove(id) else callsByInstance[id] = call
         Log.i(TAG, if (call == null) "[call $id] ended" else "[call $id] in progress" + (if (call.video) " with video" else ""))
-        val first = callsByInstance.values.firstOrNull()
+        // Audio routes and the screen follow a chat view's call; a web app's (Discord's) are its page's own.
+        val first = callsByInstance.values.firstOrNull { it.inChatView }
         callAudio.update(first)
         screen?.inCall(first)
         val service = onCallsChanged
@@ -513,7 +544,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
             viewHosts = { engine.allowedHosts },
             onPermission = { request -> permit(instance.id, request) },
             // Only the view of the call that has the phone's audio picks its route.
-            onRoute = { route -> if (callsByInstance.values.firstOrNull()?.instance == instance.id) callAudio.choose(route) },
+            onRoute = { route -> if (callsByInstance.values.firstOrNull { it.inChatView }?.instance == instance.id) callAudio.choose(route) },
         )
         view.start()
         view.theme(theme)
@@ -534,7 +565,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
     private fun place() {
         val screen = screen ?: return
         val instance = shown?.let { instances[it] }
-        val view = instance?.web?.webView ?: instance?.let(::viewOf)?.webView
+        val view = instance?.web?.webView ?: instance?.discord?.webView ?: instance?.let(::viewOf)?.webView
         screen.place(shell?.webView, view, instance == null || overlay)
     }
 
@@ -553,6 +584,6 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
         /** Chat views kept alive at once; others are made again when shown. */
         private const val MAX_VIEWS = 3
         private const val BACK_WAIT_MS = 400L
-        private val PROFILE = Regex("^(engine|view|web)-[a-z0-9][a-z0-9-]{0,31}$")
+        private val PROFILE = Regex("^(engine|view|web|discord)-[a-z0-9][a-z0-9-]{0,31}$")
     }
 }

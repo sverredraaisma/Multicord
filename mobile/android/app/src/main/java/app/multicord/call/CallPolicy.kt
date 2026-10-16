@@ -10,9 +10,11 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * A call one chat view is in, as its engine's display state says (NativeVoiceSession in src/shared/native.ts):
- * connected to its voice server (a LiveKit address and grant), with or without the user's camera on.
+ * connected to its voice server (a LiveKit address and grant), with or without the user's camera on. Or, with
+ * `inChatView` false, a call in a service's own web app (Discord's page holding the microphone or camera): the
+ * background service keeps it going, but its sound, its route and its hanging up are the page's own.
  */
-data class Call(val instance: String, val channelName: String, val video: Boolean) {
+data class Call(val instance: String, val channelName: String, val video: Boolean, val inChatView: Boolean = true) {
     companion object {
         private const val MAX_NAME = 100
 

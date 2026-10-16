@@ -120,7 +120,8 @@ class Notifier(private val context: Context) {
 
     /**
      * The background service's notification while the user is in a call (it then also holds the microphone,
-     * and the camera with video): where, since when, and Hang up.
+     * and the camera with video): where, since when, and Hang up for a chat view's call (a web app's, such as
+     * Discord's, is left in the app itself: nothing here acts in Discord's page).
      */
     fun inCall(call: Call, since: Long, hangUp: PendingIntent, open: PendingIntent): Notification =
         Notification.Builder(context, ONGOING)
@@ -133,7 +134,7 @@ class Notifier(private val context: Context) {
             .setWhen(since)
             .setShowWhen(true)
             .setUsesChronometer(true)
-            .addAction(Notification.Action.Builder(null, "Hang up", hangUp).build())
+            .apply { if (call.inChatView) addAction(Notification.Action.Builder(null, "Hang up", hangUp).build()) }
             .build()
 
     fun update(notification: Notification) {
