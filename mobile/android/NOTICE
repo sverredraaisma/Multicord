@@ -11,6 +11,8 @@ as source. None of them is Google Play Services.
 
 androidx.webkit 1.17.1 (https://developer.android.com/jetpack/androidx/releases/webkit)
   Apache License 2.0.
+androidx.browser 1.8.0 (https://developer.android.com/jetpack/androidx/releases/browser), with the androidx
+  libraries it depends on. Apache License 2.0.
 OkHttp 4.12.0 and Okio (https://square.github.io/okhttp/)
   Copyright Square, Inc. Apache License 2.0.
 kotlinx.serialization 1.9.0 (https://github.com/Kotlin/kotlinx.serialization)
