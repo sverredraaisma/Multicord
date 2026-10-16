@@ -25,6 +25,8 @@
 }
 
 .conversation-list { flex: 1; margin: 0; padding: 8px; overflow-y: auto; list-style: none; }
+/* Empty: no room taken, so the note saying why shows under the header, where the list would be. */
+.conversation-list:empty { flex: none; padding: 0; }
 .conversation-button {
   display: flex;
   align-items: center;
