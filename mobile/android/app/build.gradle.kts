@@ -22,6 +22,8 @@ val releaseKeystore = secret("multicord.keystore", "MULTICORD_KEYSTORE")
 android {
     namespace = "app.multicord"
     compileSdk = 36
+    // The USB camera's native code (libusb, libuvc, the JNI layer in src/main/cpp). CI installs this NDK if it is missing.
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "app.multicord"
@@ -30,6 +32,17 @@ android {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0-dev"
+        ndk {
+            // Phones, and the x86_64 emulator.
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     signingConfigs {

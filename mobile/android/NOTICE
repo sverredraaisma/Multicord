@@ -23,3 +23,18 @@ Kotlin standard library (https://kotlinlang.org)
 The bundles in the app's assets carry the licences of the desktop app's dependencies (package.json), among
 them @matrix-org/matrix-sdk-crypto-wasm (Apache License 2.0), livekit-client (Apache License 2.0) and
 @sapphi-red/web-noise-suppressor (Apache License 2.0; RNNoise, BSD 3-Clause).
+
+It includes this third-party software as source, in app/src/main/cpp/third_party, for the USB camera
+(versions and upstream commits in app/src/main/cpp/third_party/README.md):
+
+libusb 1.0.29 (https://libusb.info)
+  Copyright (C) 2001 Johannes Erdfelt, (C) 2007-2009 Daniel Drake, (C) 2010-2012 Peter Stuge,
+  (C) 2008-2016 Nathan Hjelm, (C) 2009-2013 Pete Batard, (C) 2013-2018 Chris Dickens,
+  and the other libusb authors listed in libusb/AUTHORS.
+  GNU Lesser General Public License, version 2.1 or later (libusb/COPYING).
+  Built as a separate shared library, libusb1.0.so, which can be replaced on its own (LGPL-2.1, section 6).
+  Its complete source is in this repository.
+libuvc (https://github.com/libuvc/libuvc)
+  Copyright (C) 2010-2015 Ken Tossell and libuvc contributors.
+  BSD 3-Clause licence (libuvc/LICENSE.txt), linked statically into libmulticord_uvc.so.
+  include/utlist.h: Copyright (c) 2007-2017, Troy D. Hanson, BSD 1-Clause licence (in the file).

@@ -6,7 +6,7 @@ The phase-2 host from [docs/mobile.md](../../docs/mobile.md): a thin Kotlin app 
 
 ## Build
 
-You need JDK 17 or newer (CI uses 21), the Android SDK (platform 36 and build-tools), and the desktop build:
+You need JDK 17 or newer (CI uses 21), the Android SDK (platform 36 and build-tools), the NDK 28.2.13676358 and CMake 3.22.1 (the USB camera's native code: `sdkmanager "ndk;28.2.13676358" "cmake;3.22.1"`), and the desktop build:
 
 ```
 npm ci && npm run build          # at the repository root: makes dist/, whose bundles the app runs

@@ -24,6 +24,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.microphone" android:required="false" />
+    <!-- The USB camera (a UVC camera through the USB host API, for pages' calls when the user turns it on). No
+         permission: Android asks the user per device (UsbCamera). -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
     <!-- "Start with your phone" (off by default): BootReceiver starts ConnectionService after a reboot or an update. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 

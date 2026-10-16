@@ -36,6 +36,83 @@
 
     <issue
         id="RequiresFeature"
+        message="`postMessage` should only be called if the feature `WEB_MESSAGE_PORT_POST_MESSAGE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        if (!closed) port.postMessage(WebMessageCompat(CameraFormats.statusMessage(status)))"
+        errorLine2="                     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/camera/CameraPort.kt"
+            line="30"
+            column="22"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`WebMessageCompat` should only be called if the feature `WEB_MESSAGE_ARRAY_BUFFER` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="            if (!closed) port.postMessage(WebMessageCompat(jpeg))"
+        errorLine2="                                          ~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/camera/CameraPort.kt"
+            line="37"
+            column="43"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`postMessage` should only be called if the feature `WEB_MESSAGE_PORT_POST_MESSAGE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="            if (!closed) port.postMessage(WebMessageCompat(jpeg))"
+        errorLine2="                         ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/camera/CameraPort.kt"
+            line="37"
+            column="26"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`close` should only be called if the feature `WEB_MESSAGE_PORT_CLOSE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="        port.close()"
+        errorLine2="        ~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/camera/CameraPort.kt"
+            line="46"
+            column="9"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`createWebMessageChannel` should only be called if the feature `CREATE_WEB_MESSAGE_CHANNEL` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="            val (mine, theirs) = WebViewCompat.createWebMessageChannel(webView)"
+        errorLine2="                                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/camera/CameraPort.kt"
+            line="70"
+            column="34"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`setWebMessageCallback` should only be called if the feature `WEB_MESSAGE_PORT_SET_MESSAGE_CALLBACK` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="            mine.setWebMessageCallback(Handler(Looper.getMainLooper()), object : WebMessagePortCompat.WebMessageCallbackCompat() {"
+        errorLine2="            ^">
+        <location
+            file="src/main/java/app/multicord/camera/CameraPort.kt"
+            line="72"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
+        message="`postWebMessage` should only be called if the feature `POST_WEB_MESSAGE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
+        errorLine1="            WebViewCompat.postWebMessage(webView, WebMessageCompat(HELLO, arrayOf(theirs)), Uri.parse(origin))"
+        errorLine2="            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        <location
+            file="src/main/java/app/multicord/camera/CameraPort.kt"
+            line="78"
+            column="13"/>
+    </issue>
+
+    <issue
+        id="RequiresFeature"
         message="`getInstance` should only be called if the feature `MULTI_PROFILE` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
         errorLine1="        ProfileStore.getInstance().getOrCreateProfile(profile)"
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~">

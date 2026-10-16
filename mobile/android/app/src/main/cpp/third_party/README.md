@@ -1,4 +1,4 @@
-# Vendored native libraries (spike 0.5)
+# Vendored native libraries (the USB camera)
 
 Two libraries, copied as source from upstream with no changes, built by `../CMakeLists.txt`. Only the files the Android build needs are here; everything else upstream (build systems, examples, tests, other platforms' backends) is left out.
 

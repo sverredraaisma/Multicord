@@ -1,8 +1,8 @@
 Multicord Android spike
 Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later, see LICENSE at the repository root.
 
-This app includes the following third-party software, as source, in app/src/main/cpp/third_party
-(versions and upstream commits in app/src/main/cpp/third_party/README.md):
+This app includes the following third-party software, as source, in ../android/app/src/main/cpp/third_party
+(shared with the app; versions and upstream commits in its README.md):
 
 libusb 1.0.29 (https://libusb.info)
   Copyright (C) 2001 Johannes Erdfelt, (C) 2007-2009 Daniel Drake, (C) 2010-2012 Peter Stuge,

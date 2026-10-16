@@ -5,7 +5,8 @@
 cmake_minimum_required(VERSION 3.22.1)
 project(multicord_uvc LANGUAGES C)
 
-set(THIRD_PARTY ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
+# The vendored sources live in the app (mobile/android), which the spike shares.
+set(THIRD_PARTY ${CMAKE_CURRENT_SOURCE_DIR}/../../../../../android/app/src/main/cpp/third_party)
 set(LIBUSB ${THIRD_PARTY}/libusb)
 set(LIBUVC ${THIRD_PARTY}/libuvc)
 

@@ -2,7 +2,7 @@
 
 A throwaway app that answers the four phase-0 questions in [docs/mobile.md](../../docs/mobile.md#7-phased-plan) on a real phone. It is not Multicord for Android. It shares no code with the desktop app and will be replaced by the phase-2 host.
 
-Kotlin, plain Android views, and one library: `androidx.webkit` (Profiles, document-start scripts, origin-restricted message listeners, `WebViewAssetLoader`). Spike 0.5 adds native code: libusb and libuvc, vendored as source in `app/src/main/cpp/third_party` (versions, commits and licences in its README and in [NOTICE](NOTICE)), and a small JNI layer. There are no Google Play Services, no local servers, and no cleartext traffic. Everything the app finds goes into one results log, which you can copy.
+Kotlin, plain Android views, and one library: `androidx.webkit` (Profiles, document-start scripts, origin-restricted message listeners, `WebViewAssetLoader`). Spike 0.5 adds native code: libusb and libuvc, vendored as source in the app's `../android/app/src/main/cpp/third_party`, which the spike now shares (versions, commits and licences in its README and in [NOTICE](NOTICE)), and a small JNI layer (the app has its own copy, for its USB camera). There are no Google Play Services, no local servers, and no cleartext traffic. Everything the app finds goes into one results log, which you can copy.
 
 ## Build
 
