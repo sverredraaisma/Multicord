@@ -7,6 +7,7 @@ describe("isRelayEvent", () => {
     for (const event of [
       { type: "ready" },
       { type: "open", id: "1" },
+      { type: "open", id: "1", protocol: "binary" },
       { type: "message", id: "12", data: "text" },
       { type: "message", id: "12", data: new Uint8Array(3) },
       { type: "close", id: "1", code: 1006, reason: "" },
@@ -26,6 +27,9 @@ describe("isRelayEvent", () => {
       { type: "open", id: "abc" },
       { type: "open", id: 1 },
       { type: "open", id: "1".repeat(17) },
+      { type: "open", id: "1", protocol: "" },
+      { type: "open", id: "1", protocol: "a b" },
+      { type: "open", id: "1", protocol: 1 },
       { type: "message", id: "1", data: {} },
       { type: "message", id: "1", data: "x".repeat(MAX_SOCKET_FRAME + 1) },
       { type: "close", id: "1", code: 999, reason: "" },

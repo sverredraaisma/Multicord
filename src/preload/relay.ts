@@ -16,6 +16,8 @@ export interface RelayIpc {
 export interface RelayWebSocket {
   binaryType: string;
   readonly bufferedAmount: number;
+  /** The subprotocol the server chose; "" for none. */
+  readonly protocol: string;
   send(data: string | Uint8Array): void;
   close(code?: number, reason?: string): void;
   addEventListener(type: "open", listener: () => void): void;
@@ -30,7 +32,7 @@ const TOO_BIG = 1009;
 
 const sizeOf = (data: string | Uint8Array): number => (typeof data === "string" ? data.length : data.byteLength);
 
-export function startRelay(ipc: RelayIpc, create: (url: string) => RelayWebSocket = (url) => new WebSocket(url) as unknown as RelayWebSocket): void {
+export function startRelay(ipc: RelayIpc, create: (url: string, protocols?: string[]) => RelayWebSocket = (url, protocols) => new WebSocket(url, protocols) as unknown as RelayWebSocket): void {
   const sockets = new Map<string, RelayWebSocket>();
   const draining = new Set<string>();
   const emit = (event: RelayEvent): void => ipc.send(RELAY_IPC.event, event);
@@ -49,11 +51,11 @@ export function startRelay(ipc: RelayIpc, create: (url: string) => RelayWebSocke
     setTimeout(tick, DRAIN_POLL_MS);
   };
 
-  const open = (id: string, url: string): void => {
+  const open = (id: string, url: string, protocols: string[] | undefined): void => {
     if (sockets.has(id)) return;
     let socket: RelayWebSocket;
     try {
-      socket = create(url);
+      socket = create(url, protocols);
     } catch {
       return emit({ type: "close", id, code: 1006, reason: "" });
     }
@@ -61,7 +63,8 @@ export function startRelay(ipc: RelayIpc, create: (url: string) => RelayWebSocke
     const live = (): boolean => sockets.get(id) === socket;
     socket.binaryType = "arraybuffer";
     socket.addEventListener("open", () => {
-      if (live()) emit({ type: "open", id });
+      if (!live()) return;
+      emit(socket.protocol ? { type: "open", id, protocol: socket.protocol } : { type: "open", id });
     });
     socket.addEventListener("message", ({ data }) => {
       if (!live()) return;
@@ -84,7 +87,7 @@ export function startRelay(ipc: RelayIpc, create: (url: string) => RelayWebSocke
     const command = payload as RelayCommand;
     switch (command.type) {
       case "open":
-        return open(command.id, command.url);
+        return open(command.id, command.url, command.protocols);
       case "send": {
         const socket = sockets.get(command.id);
         if (!socket) return;

@@ -76,6 +76,16 @@ describe("SocketRelay", () => {
     expect(e.close).not.toHaveBeenCalled();
   });
 
+  it("offers the subprotocols asked for, and reports the one the server chose", () => {
+    const { socketRelay, pages, commands } = relay();
+    const e = events();
+    socketRelay.open("wss://gw.example/", e, ["binary"]);
+    socketRelay.receive(pages[0], { type: "ready" });
+    expect(commands()).toEqual([{ type: "open", id: "1", url: "wss://gw.example/", protocols: ["binary"] }]);
+    socketRelay.receive(pages[0], { type: "open", id: "1", protocol: "binary" });
+    expect(e.open).toHaveBeenCalledWith("binary");
+  });
+
   it("closes a socket without a code or reason when none is given", () => {
     const { socketRelay, pages, commands } = relay();
     const socket = socketRelay.open("wss://gw.example/", events());

@@ -10,7 +10,8 @@ export interface RelaySocket {
 
 /** What the host reports of a socket it opened. */
 export interface RelaySocketEvents {
-  open(): void;
+  /** `protocol`: the subprotocol the server chose, if any. */
+  open(protocol?: string): void;
   message(data: string | Uint8Array): void;
   /** Once, when the socket is closed for good or could not connect. */
   close(code: number, reason: string): void;
@@ -19,8 +20,8 @@ export interface RelaySocketEvents {
 export interface EngineSocketsDeps {
   /** Why the engine may not open a socket to `url` now (its scheme, host or address), or undefined. */
   check(url: string): Promise<string | undefined>;
-  /** Opens a socket the relay has allowed. */
-  connect(url: string, events: RelaySocketEvents): RelaySocket;
+  /** Opens a socket the relay has allowed, offering the server these subprotocols. */
+  connect(url: string, events: RelaySocketEvents, protocols?: string[]): RelaySocket;
   /** Sends the engine what happened on one of its sockets. */
   emit(event: EngineSocketEvent): void;
 }
@@ -48,7 +49,7 @@ export class EngineSockets {
     return this.sockets.size;
   }
 
-  async open(url: string): Promise<{ id: string }> {
+  async open(url: string, protocols?: string[]): Promise<{ id: string }> {
     if (this.sockets.size >= MAX_SOCKETS) throw new Error(`An engine may have at most ${MAX_SOCKETS} sockets open`);
     const id = String(++this.next);
     const entry: { socket?: RelaySocket; open: boolean } = { open: false };
@@ -67,10 +68,11 @@ export class EngineSockets {
     const live = () => this.sockets.get(id) === entry;
     try {
       entry.socket = this.deps.connect(url, {
-        open: () => {
+        open: (protocol) => {
           if (!live()) return;
           entry.open = true;
-          this.deps.emit({ type: "open", id });
+          // Only a subprotocol the engine offered, as a page's WebSocket would allow.
+          this.deps.emit(protocol && protocols?.includes(protocol) ? { type: "open", id, protocol } : { type: "open", id });
         },
         message: (data) => {
           if (!live()) return;
@@ -85,7 +87,7 @@ export class EngineSockets {
           this.sockets.delete(id);
           this.deps.emit({ type: "close", id, code, reason });
         },
-      });
+      }, protocols);
     } catch (error) {
       this.sockets.delete(id);
       throw new Error(`Socket refused: ${(error as Error).message}`);

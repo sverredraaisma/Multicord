@@ -131,9 +131,10 @@ export type EngineRequest =
    * Opens a WebSocket for the engine (bridgeWebSocket): the shell checks the
    * URL as it checks the engine's own sockets (wss only, the engine's hosts,
    * public addresses), opens it and answers with its id. What happens on it
-   * then arrives as EngineSocketEvents.
+   * then arrives as EngineSocketEvents. `protocols` are the subprotocols to
+   * offer the server, as a page's WebSocket takes them.
    */
-  | { type: "socketOpen"; url: string }
+  | { type: "socketOpen"; url: string; protocols?: string[] }
   /** Sends a frame on one of the engine's bridged sockets once it is open. */
   | { type: "socketSend"; id: string; data: string | Uint8Array }
   /** Closes one of the engine's bridged sockets (code 1000 or 3000-4999, as a page's WebSocket allows). */
@@ -141,7 +142,8 @@ export type EngineRequest =
 
 /** What happens on a bridged socket, from the shell to the engine that opened it. */
 export type EngineSocketEvent =
-  | { type: "open"; id: string }
+  /** `protocol`: the subprotocol the server chose, when it chose one. */
+  | { type: "open"; id: string; protocol?: string }
   | { type: "message"; id: string; data: string | Uint8Array }
   /** The socket is closed and its id is gone; 1006 when the connection failed or broke. */
   | { type: "close"; id: string; code: number; reason: string };
@@ -172,7 +174,12 @@ export const MAX_SOCKET_FRAME = 16 * 1024 * 1024;
 export const MAX_SOCKET_QUEUE = 32 * 1024 * 1024;
 /** Longest close reason, as a page's WebSocket allows (bytes, so at most this many characters). */
 export const MAX_CLOSE_REASON = 123;
+/** Subprotocols a bridged socket may offer, and the longest name of one. */
+export const MAX_SOCKET_PROTOCOLS = 8;
+export const MAX_SOCKET_PROTOCOL = 64;
 const SOCKET_ID = /^[a-z0-9-]{1,64}$/;
+/** A subprotocol name: an HTTP token (RFC 6455, section 4.1). */
+const PROTOCOL_TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const MAX_HEADERS = 50;
 const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 const COLOR = /^#[0-9a-f]{6}$/i;
@@ -346,7 +353,7 @@ export function isEngineRequest(value: unknown): value is EngineRequest {
         value.end - value.start <= MAX_READ
       );
     case "socketOpen":
-      return isText(value.url, 8192, 1);
+      return isText(value.url, 8192, 1) && (value.protocols === undefined || isSocketProtocols(value.protocols));
     case "socketSend":
       return isSocketId(value.id) && isFrame(value.data);
     case "socketClose":
@@ -367,12 +374,22 @@ export function isFrame(value: unknown): value is string | Uint8Array {
   return (typeof value === "string" && value.length <= MAX_SOCKET_FRAME) || (value instanceof Uint8Array && value.byteLength <= MAX_SOCKET_FRAME);
 }
 
+/** A WebSocket subprotocol name, within MAX_SOCKET_PROTOCOL. */
+export function isSocketProtocol(value: unknown): value is string {
+  return isText(value, MAX_SOCKET_PROTOCOL, 1) && PROTOCOL_TOKEN.test(value);
+}
+
+/** Subprotocols to offer: one to MAX_SOCKET_PROTOCOLS names, none twice (a page's WebSocket refuses repeats too). */
+export function isSocketProtocols(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length >= 1 && value.length <= MAX_SOCKET_PROTOCOLS && value.every(isSocketProtocol) && new Set(value).size === value.length;
+}
+
 /** Checked by the engine too: its bridge should only ever carry these. */
 export function isEngineSocketEvent(value: unknown): value is EngineSocketEvent {
   if (!isRecord(value) || !isSocketId(value.id)) return false;
   switch (value.type) {
     case "open":
-      return true;
+      return value.protocol === undefined || isSocketProtocol(value.protocol);
     case "message":
       return isFrame(value.data);
     case "close":

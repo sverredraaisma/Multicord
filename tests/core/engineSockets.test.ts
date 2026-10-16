@@ -3,13 +3,13 @@ import { EngineSockets, type RelaySocketEvents } from "../../src/core/engineSock
 import { MAX_SOCKET_FRAME, MAX_SOCKET_QUEUE, MAX_SOCKETS, type EngineSocketEvent } from "../../src/shared/engine";
 
 function setup(check: (url: string) => Promise<string | undefined> = async () => undefined) {
-  const opened: { url: string; events: RelaySocketEvents; socket: { send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; bufferedAmount: number } }[] = [];
+  const opened: { url: string; protocols?: string[]; events: RelaySocketEvents; socket: { send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; bufferedAmount: number } }[] = [];
   const emitted: EngineSocketEvent[] = [];
   const sockets = new EngineSockets({
     check,
-    connect: (url, events) => {
+    connect: (url, events, protocols) => {
       const socket = { send: vi.fn(), close: vi.fn(), bufferedAmount: 0 };
-      opened.push({ url, events, socket });
+      opened.push({ url, protocols, events, socket });
       return socket;
     },
     emit: (event) => emitted.push(event),
@@ -43,6 +43,22 @@ describe("bridged sockets, the shell's side", () => {
     opened[0]!.events.close(1000, "");
     expect(emitted).toHaveLength(4);
     expect(() => sockets.send(id, "x")).toThrow("No such open socket");
+  });
+
+  it("offers the subprotocols the engine names, and passes on only one of those as chosen", async () => {
+    const { sockets, opened, emitted } = setup();
+    const a = await sockets.open("wss://a.example/", ["binary", "v2"]);
+    const b = await sockets.open("wss://b.example/", ["binary"]);
+    const c = await sockets.open("wss://c.example/");
+    expect(opened.map((o) => o.protocols)).toEqual([["binary", "v2"], ["binary"], undefined]);
+    opened[0]!.events.open("v2");
+    opened[1]!.events.open("other");
+    opened[2]!.events.open("binary");
+    expect(emitted).toEqual([
+      { type: "open", id: a.id, protocol: "v2" },
+      { type: "open", id: b.id },
+      { type: "open", id: c.id },
+    ]);
   });
 
   it("gives each socket an id of its own", async () => {

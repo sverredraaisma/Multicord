@@ -33,7 +33,7 @@ afterEach(() => {
 
 const capabilities = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
 
-function setup(extra: Partial<EngineSpec> = {}, openSocket?: (url: string, events: RelaySocketEvents) => RelaySocket) {
+function setup(extra: Partial<EngineSpec> = {}, openSocket?: (url: string, events: RelaySocketEvents, protocols?: string[]) => RelaySocket) {
   const window = new BaseWindow({});
   const hub = new EngineHub({ dist, os: "win32", window: window as never, openSocket });
   const view = new WebContentsView({ webPreferences: {} });
@@ -472,10 +472,10 @@ describe("engine health", () => {
 
 describe("bridged sockets", () => {
   function withSockets(extra: Partial<EngineSpec> = {}) {
-    const opened: { url: string; events: RelaySocketEvents; socket: { send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; bufferedAmount: number } }[] = [];
-    const parts = setup(extra, (url, events) => {
+    const opened: { url: string; protocols?: string[]; events: RelaySocketEvents; socket: { send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; bufferedAmount: number } }[] = [];
+    const parts = setup(extra, (url, events, protocols) => {
       const socket = { send: vi.fn(), close: vi.fn(), bufferedAmount: 0 };
-      opened.push({ url, events, socket });
+      opened.push({ url, protocols, events, socket });
       return socket;
     });
     const sent = () => parts.engine.webContents.send.mock.calls.filter(([channel]) => channel === ENGINE_IPC.socket).map(([, event]) => event);
@@ -499,6 +499,16 @@ describe("bridged sockets", () => {
       { type: "close", id, code: 4000, reason: "done" },
     ]);
     await expect(ask({ type: "socketSend", id, data: "again" })).rejects.toThrow("No such open socket");
+  });
+
+  it("offers the server the subprotocols the engine names, and tells it which one was chosen", async () => {
+    const { ask, opened, sent } = withSockets();
+    await ask({ type: "info" });
+    const { id } = (await ask({ type: "socketOpen", url: "wss://gw.example/", protocols: ["binary"] })) as { id: string };
+    expect(opened[0]!.protocols).toEqual(["binary"]);
+    opened[0]!.events.open("binary");
+    expect(sent()).toEqual([{ type: "open", id, protocol: "binary" }]);
+    await expect(ask({ type: "socketOpen", url: "wss://gw.example/", protocols: ["not a token"] })).rejects.toThrow("Malformed engine request");
   });
 
   it("refuses sockets the engine may not open: not wss, other hosts, private addresses", async () => {

@@ -7,9 +7,13 @@ import { RELAY_IPC } from "../../src/shared/relay";
 class FakeSocket extends EventEmitter implements RelayWebSocket {
   binaryType = "blob";
   bufferedAmount = 0;
+  protocol = "";
   send = vi.fn();
   close = vi.fn();
-  constructor(readonly url: string) {
+  constructor(
+    readonly url: string,
+    readonly protocols?: string[],
+  ) {
     super();
   }
   addEventListener(type: string, listener: (event: { data: unknown } & { code: number; reason: string }) => void): void {
@@ -17,7 +21,7 @@ class FakeSocket extends EventEmitter implements RelayWebSocket {
   }
 }
 
-function start(create?: (url: string) => RelayWebSocket) {
+function start(create?: (url: string, protocols?: string[]) => RelayWebSocket) {
   const ipc = new EventEmitter();
   const sent: unknown[] = [];
   const sockets: FakeSocket[] = [];
@@ -30,8 +34,8 @@ function start(create?: (url: string) => RelayWebSocket) {
       on: (channel, listener) => void ipc.on(channel, listener),
     },
     create ??
-      ((url) => {
-        const socket = new FakeSocket(url);
+      ((url, protocols) => {
+        const socket = new FakeSocket(url, protocols);
         sockets.push(socket);
         return socket;
       }),
@@ -70,13 +74,22 @@ describe("socket relay preload", () => {
     ]);
   });
 
+  it("offers the subprotocols asked for, and reports the one the server chose", () => {
+    const { sent, sockets, command } = start();
+    command({ type: "open", id: "1", url: "wss://gw.example/", protocols: ["binary"] });
+    expect(sockets[0]!.protocols).toEqual(["binary"]);
+    sockets[0]!.protocol = "binary";
+    sockets[0]!.emit("open");
+    expect(sent.at(-1)).toEqual({ type: "open", id: "1", protocol: "binary" });
+  });
+
   it("opens the page's own WebSocket by default", () => {
     const created: FakeSocket[] = [];
     vi.stubGlobal(
       "WebSocket",
       class extends FakeSocket {
-        constructor(url: string) {
-          super(url);
+        constructor(url: string, protocols?: string[]) {
+          super(url, protocols);
           created.push(this);
         }
       },
@@ -84,8 +97,12 @@ describe("socket relay preload", () => {
     const ipc = new EventEmitter();
     startRelay({ send: () => {}, on: (channel, listener) => void ipc.on(channel, listener) });
     ipc.emit(RELAY_IPC.command, {}, { type: "open", id: "1", url: "wss://gw.example/" });
+    ipc.emit(RELAY_IPC.command, {}, { type: "open", id: "2", url: "wss://gw.example/", protocols: ["binary"] });
     vi.unstubAllGlobals();
-    expect(created.map((s) => s.url)).toEqual(["wss://gw.example/"]);
+    expect(created.map((s) => [s.url, s.protocols])).toEqual([
+      ["wss://gw.example/", undefined],
+      ["wss://gw.example/", ["binary"]],
+    ]);
   });
 
   it("closes a socket whose frame is too large", () => {

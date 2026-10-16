@@ -61,12 +61,12 @@ export class SocketRelay {
     return contents !== undefined && contents === this.contents;
   }
 
-  /** Opens a socket the main process has checked. */
-  open(url: string, events: RelaySocketEvents): RelaySocket {
+  /** Opens a socket the main process has checked, offering these subprotocols. */
+  open(url: string, events: RelaySocketEvents, protocols?: string[]): RelaySocket {
     const id = String(++this.next);
     const entry = { events, inFlight: 0, buffered: 0 };
     this.sockets.set(id, entry);
-    this.command({ type: "open", id, url });
+    this.command(protocols ? { type: "open", id, url, protocols } : { type: "open", id, url });
     return {
       send: (data) => {
         entry.inFlight += sizeOf(data);
@@ -97,7 +97,7 @@ export class SocketRelay {
     if (!entry) return;
     switch (payload.type) {
       case "open":
-        return entry.events.open();
+        return entry.events.open(payload.protocol);
       case "message":
         return entry.events.message(payload.data);
       case "close":

@@ -460,6 +460,23 @@ describe("bridgeWebSocket", () => {
     expect(events).toHaveLength(4);
   });
 
+  it("offers subprotocols as a page's WebSocket does, and tells which one the server chose", async () => {
+    const { bridge, open, socket: shell } = sockets();
+    open("wss://b.example/", ["v1", "v2"]);
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "socketOpen", url: "wss://b.example/", protocols: ["v1", "v2"] });
+    open("wss://c.example/", []);
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "socketOpen", url: "wss://c.example/" });
+    // The fake shell gives every socket id 1: the last one opened is the one it reports for.
+    const one = open("wss://a.example/", "binary");
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "socketOpen", url: "wss://a.example/", protocols: ["binary"] });
+    for (const bad of ["a b", ["x", "x"], [""]]) expect(() => open("wss://d.example/", bad)).toThrow("Invalid subprotocols");
+    expect(bridge.request).toHaveBeenCalledTimes(3);
+    expect(one.protocol).toBe("");
+    await flush();
+    shell({ type: "open", id: "1", protocol: "binary" });
+    expect(one.protocol).toBe("binary");
+  });
+
   it("reports a refused socket as an error and an abnormal close", async () => {
     const { open, log } = sockets(() => {
       throw new Error("Socket refused: evil.example is not one of this module's hosts");

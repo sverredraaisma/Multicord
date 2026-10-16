@@ -117,7 +117,7 @@ export class EngineHub {
       os: string;
       window: BaseWindow;
       /** Opens the sockets engines bridge; the engine's relay page unless given. */
-      openSocket?: (url: string, events: RelaySocketEvents) => RelaySocket;
+      openSocket?: (url: string, events: RelaySocketEvents, protocols?: string[]) => RelaySocket;
     },
   ) {
     ipcMain.handle(ENGINE_IPC.invoke, (event, request) => {
@@ -230,7 +230,7 @@ export class EngineHub {
       relay: new SocketRelay({ spawn: () => this.spawnRelay(partition), url: `${ENGINE_SCHEME}://${relayHost(spec.engine)}/relay.html` }),
       sockets: new EngineSockets({
         check: async (url) => checkUrl(url, socketPolicy) ?? ((await socketAddress(url)) ? undefined : "it resolves to a local or private address"),
-        connect: (url, events) => (this.deps.openSocket ? this.deps.openSocket(url, events) : running.relay.open(url, events)),
+        connect: (url, events, protocols) => (this.deps.openSocket ? this.deps.openSocket(url, events, protocols) : running.relay.open(url, events, protocols)),
         emit: (event) => this.deliver(running, ENGINE_IPC.socket, event),
       }),
     };
@@ -351,7 +351,7 @@ export class EngineHub {
       case "ssoSignIn":
         return this.ssoSignIn(running, request.url);
       case "socketOpen":
-        return running.sockets.open(request.url);
+        return running.sockets.open(request.url, request.protocols);
       case "socketSend":
         return running.sockets.send(request.id, request.data);
       case "socketClose":

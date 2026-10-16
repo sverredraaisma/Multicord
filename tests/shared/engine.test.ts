@@ -267,6 +267,12 @@ describe("bridged socket messages", () => {
     expect(isEngineRequest({ type: "socketOpen", url: "wss://gateway.example/?v=1" })).toBe(true);
     expect(isEngineRequest({ type: "socketOpen", url: "" })).toBe(false);
     expect(isEngineRequest({ type: "socketOpen", url: "x".repeat(8193) })).toBe(false);
+    const { MAX_SOCKET_PROTOCOL, MAX_SOCKET_PROTOCOLS } = await import("../../src/shared/engine");
+    // Subprotocols: HTTP tokens, a few, none twice.
+    for (const protocols of [["binary"], ["v1.json", "x-a_b~c!#$%&'*+^`|"], ["p".repeat(MAX_SOCKET_PROTOCOL)], Array.from({ length: MAX_SOCKET_PROTOCOLS }, (_, i) => `p${i}`)])
+      expect(isEngineRequest({ type: "socketOpen", url: "wss://a.example/", protocols }), JSON.stringify(protocols)).toBe(true);
+    for (const protocols of [[], "binary", [""], ["a b"], ["a,b"], ["a/b"], ["a\"b"], ["caf" + String.fromCodePoint(0xe9)], [String.fromCodePoint(10)], ["p".repeat(MAX_SOCKET_PROTOCOL + 1)], ["x", "x"], [1], Array.from({ length: MAX_SOCKET_PROTOCOLS + 1 }, (_, i) => `p${i}`)])
+      expect(isEngineRequest({ type: "socketOpen", url: "wss://a.example/", protocols }), JSON.stringify(protocols)).toBe(false);
     expect(isEngineRequest({ type: "socketSend", id: "1", data: "hello" })).toBe(true);
     expect(isEngineRequest({ type: "socketSend", id: "1", data: new Uint8Array([1]) })).toBe(true);
     expect(isEngineRequest({ type: "socketSend", id: "1", data: "x".repeat(MAX_SOCKET_FRAME + 1) })).toBe(false);
@@ -287,6 +293,9 @@ describe("bridged socket messages", () => {
   it("validates what the shell tells the engine about its sockets", async () => {
     const { isEngineSocketEvent, MAX_SOCKET_FRAME } = await import("../../src/shared/engine");
     expect(isEngineSocketEvent({ type: "open", id: "1" })).toBe(true);
+    expect(isEngineSocketEvent({ type: "open", id: "1", protocol: "binary" })).toBe(true);
+    expect(isEngineSocketEvent({ type: "open", id: "1", protocol: "" })).toBe(false);
+    expect(isEngineSocketEvent({ type: "open", id: "1", protocol: "a b" })).toBe(false);
     expect(isEngineSocketEvent({ type: "message", id: "1", data: "hi" })).toBe(true);
     expect(isEngineSocketEvent({ type: "message", id: "1", data: new Uint8Array(2) })).toBe(true);
     expect(isEngineSocketEvent({ type: "message", id: "1", data: new Uint8Array(MAX_SOCKET_FRAME + 1) })).toBe(false);

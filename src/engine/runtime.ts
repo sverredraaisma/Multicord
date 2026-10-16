@@ -4,7 +4,7 @@
 
 import type { EngineBridge } from "../preload/engine";
 import type { DirectConversation, PlatformAdapter, RailServer } from "../shared/adapter";
-import { isEngineSocketEvent, MAX_CLOSE_REASON, type EngineDirect, type EngineInfo, type EngineRequest, type EngineServer, type EngineSocketEvent, type HttpRequest, type HttpResponse, type PickedFile } from "../shared/engine";
+import { isEngineSocketEvent, isSocketProtocols, MAX_CLOSE_REASON, type EngineDirect, type EngineInfo, type EngineRequest, type EngineServer, type EngineSocketEvent, type HttpRequest, type HttpResponse, type PickedFile } from "../shared/engine";
 import type { AccountStatus } from "../shared/settings";
 
 /** A file to upload, read in ranges so it never has to sit in memory whole. */
@@ -99,6 +99,8 @@ export class BridgedWebSocket {
   static readonly CLOSED = 3;
   readyState = BridgedWebSocket.CONNECTING;
   readonly binaryType = "arraybuffer";
+  /** The subprotocol the server chose, once open; "" for none. */
+  protocol = "";
   private id: string | undefined;
   private closeAsked: { code?: number; reason?: string } | undefined;
   private readonly listeners = new Map<string, Set<SocketListener>>();
@@ -150,6 +152,7 @@ export class BridgedWebSocket {
       case "open":
         if (this.readyState !== BridgedWebSocket.CONNECTING) return;
         this.readyState = BridgedWebSocket.OPEN;
+        this.protocol = event.protocol ?? "";
         return this.dispatch({ type: "open" });
       case "message": {
         if (this.readyState !== BridgedWebSocket.OPEN) return;
@@ -194,9 +197,10 @@ export class BridgedWebSocket {
  * each socket with the engine's host policy (wss only, its hosts or lock,
  * public addresses) and relays frames both ways, within MAX_SOCKETS sockets,
  * MAX_SOCKET_FRAME a frame and MAX_SOCKET_QUEUE waiting to be sent.
- * Returns a factory for a module's socket factory: `(url) => socket`.
+ * Returns a factory for a module's socket factory: `(url, protocols?) =>
+ * socket`, with subprotocols as a page's WebSocket takes them.
  */
-export function bridgeWebSocket(bridge: EngineBridge): (url: string) => BridgedWebSocket {
+export function bridgeWebSocket(bridge: EngineBridge): (url: string, protocols?: string | string[]) => BridgedWebSocket {
   const sockets = new Map<string, BridgedWebSocket>();
   bridge.onSocket((event) => {
     if (!isEngineSocketEvent(event)) return;
@@ -204,9 +208,12 @@ export function bridgeWebSocket(bridge: EngineBridge): (url: string) => BridgedW
     if (event.type === "close") sockets.delete(event.id);
     socket?.receive(event);
   });
-  return (url) => {
+  return (url, protocols = []) => {
+    const offered = typeof protocols === "string" ? [protocols] : [...protocols];
+    // As a page's WebSocket: names that are no tokens, or repeated, throw at once.
+    if (offered.length > 0 && !isSocketProtocols(offered)) throw new DOMException(`Invalid subprotocols: ${String(protocols)}`, "SyntaxError");
     const socket = new BridgedWebSocket(url, bridge);
-    bridge.request({ type: "socketOpen", url }).then(
+    bridge.request(offered.length > 0 ? { type: "socketOpen", url, protocols: offered } : { type: "socketOpen", url }).then(
       (answer) => {
         const { id } = answer as { id: string };
         sockets.set(id, socket);

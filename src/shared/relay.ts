@@ -3,7 +3,7 @@
 // Chromium's network stack (src/main/webSockets.ts). The engine never talks
 // to it; the main process checks every socket before the relay opens it.
 
-import { isFrame, MAX_CLOSE_REASON } from "./engine";
+import { isFrame, isSocketProtocol, MAX_CLOSE_REASON } from "./engine";
 
 export const RELAY_IPC = {
   /** Main -> relay: RelayCommand. */
@@ -14,7 +14,7 @@ export const RELAY_IPC = {
 
 /** What the main process asks of the relay. Ids are the main process's own. */
 export type RelayCommand =
-  | { type: "open"; id: string; url: string }
+  | { type: "open"; id: string; url: string; protocols?: string[] }
   | { type: "send"; id: string; data: string | Uint8Array }
   | { type: "close"; id: string; code?: number; reason?: string };
 
@@ -22,7 +22,8 @@ export type RelayCommand =
 export type RelayEvent =
   /** The relay page has loaded and listens for commands. */
   | { type: "ready" }
-  | { type: "open"; id: string }
+  /** `protocol`: the subprotocol the server chose, when it chose one. */
+  | { type: "open"; id: string; protocol?: string }
   | { type: "message"; id: string; data: string | Uint8Array }
   /** The socket is closed for good, or could not connect (1006). */
   | { type: "close"; id: string; code: number; reason: string }
@@ -43,7 +44,7 @@ export function isRelayEvent(value: unknown): value is RelayEvent {
   if (typeof value.id !== "string" || !RELAY_ID.test(value.id)) return false;
   switch (value.type) {
     case "open":
-      return true;
+      return value.protocol === undefined || isSocketProtocol(value.protocol);
     case "message":
       return isFrame(value.data);
     case "close":
