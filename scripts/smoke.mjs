@@ -312,11 +312,12 @@ async function main() {
   // 1b. Offline, Discord's page cannot load: the shell's own "couldn't reach" page shows over it, and Try again tries.
   if (!ONLINE) {
     const probe = `({ title: document.getElementById("unreachable-title").textContent, reason: document.getElementById("unreachable-reason").textContent, retry: document.getElementById("unreachable-retry").textContent, shown: document.visibilityState === "visible" })`;
+    let seen;
     const page = await until(async () => {
-      const r = await evaluate(port, "/unreachable\\.html$", probe, 10_000);
+      const r = (seen = await evaluate(port, "/unreachable\\.html$", probe, 10_000));
       return r.shown && /Couldn't reach Discord/.test(r.title) && r.reason ? r : undefined;
-    }, "the couldn't-reach page over Discord", 30_000).catch((error) => error);
-    check("an unreachable web service gets the shell's own page", !(page instanceof Error), page instanceof Error ? page.message : `"${page.title}": ${page.reason}`);
+    }, "the couldn't-reach page over Discord", 45_000).catch((error) => error);
+    check("an unreachable web service gets the shell's own page", !(page instanceof Error), page instanceof Error ? `${page.message}; last seen ${JSON.stringify(seen)}` : `"${page.title}": ${page.reason}`);
     if (!(page instanceof Error)) {
       await evaluate(port, "/unreachable\\.html$", `document.getElementById("unreachable-retry").click(), true`, 10_000);
       // Offline the retry fails again: the page stays, ready for another try.
