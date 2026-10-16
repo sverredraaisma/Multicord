@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en" class="mobile">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https: data:; style-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>Multicord</title>
+  <link rel="stylesheet" href="shell.css">
+  <link rel="stylesheet" href="settings.css">
+  <link rel="stylesheet" href="mobile.css">
+</head>
+<body class="mobile-shell" data-page="home">
+  <header id="bar">
+    <button id="menu" type="button" aria-label="Services" aria-controls="drawer" aria-expanded="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </button>
+    <h1 id="title">Multicord</h1>
+    <button id="settings-button" type="button" aria-label="Settings" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94a7.07 7.07 0 0 0 .05-.94 7.07 7.07 0 0 0-.05-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.49.49 0 0 0-.59-.22l-2.39.96a7.03 7.03 0 0 0-1.62-.94l-.36-2.54a.48.48 0 0 0-.48-.41h-3.84a.48.48 0 0 0-.48.41l-.36 2.54a7.36 7.36 0 0 0-1.62.94l-2.39-.96a.48.48 0 0 0-.59.22L2.74 8.87a.48.48 0 0 0 .12.61l2.03 1.58a7.3 7.3 0 0 0 0 1.88l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.04.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.48-.41l.36-2.54a7.36 7.36 0 0 0 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 0 0-.12-.61zM12 15.6A3.6 3.6 0 1 1 15.6 12 3.6 3.6 0 0 1 12 15.6z"/></svg>
+    </button>
+  </header>
+  <main id="home" hidden>
+    <p>No services are turned on yet.</p>
+    <button id="home-settings" class="primary" type="button">Add a service</button>
+  </main>
+  <div id="settings" hidden></div>
+  <div id="scrim" hidden></div>
+  <nav id="drawer" aria-label="Services" hidden>
+    <div id="drawer-services"></div>
+    <button id="drawer-settings" type="button">Settings</button>
+  </nav>
+  <script src="shell.js"></script>
+</body>
+</html>

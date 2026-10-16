@@ -142,6 +142,23 @@ describe("module boundaries", () => {
     }
   });
 
+  it("keeps the phone's shell page free of Electron and Node; from src/main it takes only native modules' manifests", async () => {
+    const fs = await import("node:fs");
+    const manifests = /^\.\.\/main\/modules\/(fluxer|matrix|nerimity|spacebar|stoat|telegram)$/;
+    for (const file of await filesUnder("src/mobile")) {
+      for (const from of importsOf(fs.readFileSync(file, "utf8"))) {
+        expect(from, file).toMatch(/^\.\.?\//);
+        if (from.includes("/main/")) expect(from, file).toMatch(manifests);
+      }
+    }
+    // Those manifests load nothing at run time but core.
+    for (const name of ["fluxer", "matrix", "nerimity", "spacebar", "stoat", "telegram"]) {
+      const source = fs.readFileSync(`src/main/modules/${name}.ts`, "utf8");
+      const runtime = source.split("\n").filter((line) => /^\s*import\b/.test(line) && !/^\s*import type\b/.test(line));
+      for (const line of runtime) expect(line, name).toMatch(/from "\.\.\/\.\.\/core\//);
+    }
+  });
+
   it("keeps core free of Electron, Node and main-process imports, so a mobile host can run it", async () => {
     const fs = await import("node:fs");
     const { builtinModules } = await import("node:module");

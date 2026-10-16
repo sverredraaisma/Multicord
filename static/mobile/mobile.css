@@ -1,0 +1,83 @@
+/* The shell page on a phone (src/mobile/page.ts). Builds on shell.css and settings.css.
+   Native code sizes the page: just the bar over a service's chat view, the whole screen otherwise,
+   and the whole screen over the view while the drawer is open. */
+:root { --bar: 56px; }
+
+html, body { overflow: hidden; }
+.mobile-shell { display: flex; flex-direction: column; }
+/* Over a chat view the page is see-through, so the view shows behind the scrim. */
+.mobile-shell[data-page="service"] { background: transparent; }
+
+#bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  height: var(--bar);
+  padding: 0 4px;
+  border-bottom: 1px solid #2b2d31;
+  background: var(--bg);
+}
+#bar button {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--text);
+}
+#bar button:active { background: var(--item); }
+#bar svg { width: 24px; height: 24px; fill: currentColor; }
+#bar .badge { right: 2px; bottom: 4px; }
+#menu.unread::after { content: ""; position: absolute; top: 10px; right: 10px; width: 8px; height: 8px; border-radius: 50%; background: var(--text); }
+#settings-button[aria-pressed="true"] { color: #23a55a; }
+#title { flex: 1; min-width: 0; margin: 0 4px; overflow: hidden; font-size: 18px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+
+#home { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; color: var(--muted); text-align: center; }
+#home[hidden], #settings[hidden], #drawer[hidden], #scrim[hidden] { display: none; }
+#home .primary { padding: 10px 16px; border: 0; border-radius: 4px; background: #5865f2; color: #fff; font: inherit; font-weight: 600; }
+
+/* Settings: one column, the section list as a row of tabs (settings.css narrows it under 640px). */
+#settings { flex: 1; min-height: 0; height: auto; }
+.mobile .settings-main { padding: 16px 16px 48px; }
+.mobile .settings-tab { padding: 10px 12px; }
+/* Desktop-only parts: calls and their devices, favourites (the chat view's, which come later). */
+.mobile .settings-tab[data-tab="voice"], .mobile .settings-section[data-tab="voice"],
+.mobile .settings-tab[data-tab="favourites"], .mobile .settings-section[data-tab="favourites"] { display: none !important; }
+
+/* The drawer: over everything, from the left, with a scrim beside it. */
+#scrim { position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.5); }
+#drawer {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 11;
+  display: flex;
+  flex-direction: column;
+  width: min(320px, 85vw);
+  background: var(--bg);
+  box-shadow: 8px 0 24px rgba(0, 0, 0, 0.4);
+}
+#drawer-services { flex: 1; min-height: 0; padding: 8px 0; overflow-y: auto; }
+#drawer-settings { flex: none; margin: 8px; padding: 12px; border: 0; border-radius: 4px; background: var(--item); color: var(--text); font: inherit; text-align: left; }
+.drawer-service + .drawer-service { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2b2d31; }
+.drawer-heading { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 16px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 700; text-align: left; text-transform: uppercase; }
+.drawer-heading.active { color: var(--text); }
+.drawer-heading-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-module { padding: 0 6px; border-radius: 8px; background: var(--module-color, var(--item)); color: #fff; font-size: 11px; text-transform: none; }
+.drawer-list { margin: 0; padding: 0; list-style: none; }
+.drawer-row { position: relative; display: flex; align-items: center; gap: 12px; padding: 4px 16px; }
+.drawer-row.drawer-child { padding-left: 40px; }
+.drawer-row.active { background: var(--item); }
+.drawer-row .rail-item { width: 40px; height: 40px; }
+.drawer-row .rail-item::before, .drawer-row .rail-item .badge, .drawer-row .module-label { display: none; }
+.drawer-name { flex: 1; min-width: 0; padding: 8px 0; overflow: hidden; border: 0; background: none; color: var(--muted); font: inherit; font-size: 15px; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.drawer-row.unread .drawer-name, .drawer-row.active .drawer-name { color: var(--text); font-weight: 600; }
+.drawer-badge { flex: none; min-width: 20px; padding: 2px 6px; border-radius: 10px; background: var(--badge); font-size: 12px; font-weight: 700; text-align: center; }
+.drawer-empty { margin: 16px; color: var(--muted); }

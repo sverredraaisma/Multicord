@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { cpSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { telegramBrowser } from "./telegramBrowser.mjs";
 
 const common = { bundle: true, sourcemap: true, target: "chrome140", logLevel: "info" };
@@ -90,6 +90,14 @@ await Promise.all([
     outdir: "dist",
     loader: { ".wasm": "binary" },
   }),
+  // The phone app's shell page (mobile/android): src/core with the mobile glue, beside static/mobile.
+  build({
+    ...common,
+    entryPoints: { "mobile/shell": "src/entries/mobile-shell.ts" },
+    platform: "browser",
+    format: "iife",
+    outdir: "dist",
+  }),
   // Module engines, one bundle each.
   ...engineIds.map((id) =>
     build({
@@ -102,3 +110,8 @@ await Promise.all([
     }),
   ),
 ]);
+
+// The phone app's module table (engine, hosts, storage per module), which native code takes from here, never from the page.
+const table = await build({ entryPoints: ["src/entries/mobile-modules.ts"], bundle: true, write: false, format: "esm", platform: "neutral", logLevel: "warning" });
+const { default: modules } = await import(`data:text/javascript;base64,${Buffer.from(table.outputFiles[0].text).toString("base64")}`);
+writeFileSync("dist/mobile/modules.json", `${JSON.stringify(modules, null, 2)}\n`);

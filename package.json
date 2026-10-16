@@ -51,7 +51,8 @@
       "dist/**",
       "package.json",
       "!dist/**/*.map",
-      "!dist/gallery.*"
+      "!dist/gallery.*",
+      "!dist/mobile/**"
     ],
     "publish": [
       {
