@@ -290,7 +290,9 @@ src/
   core/modules.ts        the module manifest and the list of modules users may add
   main/modules/          platform module manifests (discord, fluxer, telegram, matrix, stoat, spacebar, nerimity, web clients) and their registry
   core/engineAdapter.ts  the shell's stand-in for an engine: what it reported, commands to it, its health
+  core/engineSockets.ts  the shell's side of an engine's bridged WebSockets: who may open what, and caps
   main/engineHost.ts     runs module engines: sandboxed views, the validated bridge, session lockdown
+  main/webSockets.ts     the sockets the shell opens for engines, on Node's WebSocket
   main/netPolicy.ts      what engines may contact, and the HTTP bridge
   shared/engine.ts       the engine protocol and its validators
   engine/runtime.ts      engine-side helpers: bridged fetch, secrets, files; serving an adapter

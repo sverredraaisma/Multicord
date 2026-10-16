@@ -260,3 +260,43 @@ describe("host lock requests", () => {
     }
   });
 });
+
+describe("bridged socket messages", () => {
+  it("validates the engine's socket requests", async () => {
+    const { MAX_CLOSE_REASON, MAX_SOCKET_FRAME } = await import("../../src/shared/engine");
+    expect(isEngineRequest({ type: "socketOpen", url: "wss://gateway.example/?v=1" })).toBe(true);
+    expect(isEngineRequest({ type: "socketOpen", url: "" })).toBe(false);
+    expect(isEngineRequest({ type: "socketOpen", url: "x".repeat(8193) })).toBe(false);
+    expect(isEngineRequest({ type: "socketSend", id: "1", data: "hello" })).toBe(true);
+    expect(isEngineRequest({ type: "socketSend", id: "1", data: new Uint8Array([1]) })).toBe(true);
+    expect(isEngineRequest({ type: "socketSend", id: "1", data: "x".repeat(MAX_SOCKET_FRAME + 1) })).toBe(false);
+    expect(isEngineRequest({ type: "socketSend", id: "1", data: new Uint8Array(MAX_SOCKET_FRAME + 1) })).toBe(false);
+    expect(isEngineRequest({ type: "socketSend", id: "1", data: [1, 2] })).toBe(false);
+    expect(isEngineRequest({ type: "socketSend", id: "../1", data: "x" })).toBe(false);
+    expect(isEngineRequest({ type: "socketSend", id: 1, data: "x" })).toBe(false);
+    expect(isEngineRequest({ type: "socketClose", id: "1" })).toBe(true);
+    expect(isEngineRequest({ type: "socketClose", id: "1", code: 1000, reason: "bye" })).toBe(true);
+    expect(isEngineRequest({ type: "socketClose", id: "1", code: 4999, reason: "r".repeat(MAX_CLOSE_REASON) })).toBe(true);
+    // Codes a page's WebSocket may not send, and reasons longer than it allows (in bytes).
+    for (const code of [1001, 1006, 2999, 5000, 3000.5, "1000"]) expect(isEngineRequest({ type: "socketClose", id: "1", code }), String(code)).toBe(false);
+    expect(isEngineRequest({ type: "socketClose", id: "1", reason: "r".repeat(MAX_CLOSE_REASON + 1) })).toBe(false);
+    expect(isEngineRequest({ type: "socketClose", id: "1", reason: String.fromCodePoint(0xe9).repeat(62) })).toBe(false);
+    expect(isEngineRequest({ type: "socketClose", id: "1", reason: 5 })).toBe(false);
+  });
+
+  it("validates what the shell tells the engine about its sockets", async () => {
+    const { isEngineSocketEvent, MAX_SOCKET_FRAME } = await import("../../src/shared/engine");
+    expect(isEngineSocketEvent({ type: "open", id: "1" })).toBe(true);
+    expect(isEngineSocketEvent({ type: "message", id: "1", data: "hi" })).toBe(true);
+    expect(isEngineSocketEvent({ type: "message", id: "1", data: new Uint8Array(2) })).toBe(true);
+    expect(isEngineSocketEvent({ type: "message", id: "1", data: new Uint8Array(MAX_SOCKET_FRAME + 1) })).toBe(false);
+    expect(isEngineSocketEvent({ type: "message", id: "1", data: {} })).toBe(false);
+    expect(isEngineSocketEvent({ type: "close", id: "1", code: 1006, reason: "" })).toBe(true);
+    expect(isEngineSocketEvent({ type: "close", id: "1", code: 999, reason: "" })).toBe(false);
+    expect(isEngineSocketEvent({ type: "close", id: "1", code: 1000 })).toBe(false);
+    expect(isEngineSocketEvent({ type: "close", id: "1", code: "1000", reason: "" })).toBe(false);
+    expect(isEngineSocketEvent({ type: "open", id: "" })).toBe(false);
+    expect(isEngineSocketEvent({ type: "other", id: "1" })).toBe(false);
+    expect(isEngineSocketEvent(null)).toBe(false);
+  });
+});

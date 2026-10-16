@@ -19,6 +19,8 @@ export const ENGINE_IPC = {
   command: "engine:command",
   /** Main -> engine: a user action from the module's own view. */
   action: "engine:action",
+  /** Main -> engine: what happens on the engine's bridged WebSockets (EngineSocketEvent). */
+  socket: "engine:socket",
 } as const;
 
 /** The scheme engine pages are served from: a standard, secure origin per module. */
@@ -124,7 +126,25 @@ export type EngineRequest =
    * own, and answers with the one login token that comes back. Only right
    * after the user submitted a sign-in step in the module's view.
    */
-  | { type: "ssoSignIn"; url: string };
+  | { type: "ssoSignIn"; url: string }
+  /**
+   * Opens a WebSocket for the engine (bridgeWebSocket): the shell checks the
+   * URL as it checks the engine's own sockets (wss only, the engine's hosts,
+   * public addresses), opens it and answers with its id. What happens on it
+   * then arrives as EngineSocketEvents.
+   */
+  | { type: "socketOpen"; url: string }
+  /** Sends a frame on one of the engine's bridged sockets once it is open. */
+  | { type: "socketSend"; id: string; data: string | Uint8Array }
+  /** Closes one of the engine's bridged sockets (code 1000 or 3000-4999, as a page's WebSocket allows). */
+  | { type: "socketClose"; id: string; code?: number; reason?: string };
+
+/** What happens on a bridged socket, from the shell to the engine that opened it. */
+export type EngineSocketEvent =
+  | { type: "open"; id: string }
+  | { type: "message"; id: string; data: string | Uint8Array }
+  /** The socket is closed and its id is gone; 1006 when the connection failed or broke. */
+  | { type: "close"; id: string; code: number; reason: string };
 
 /** Hosts an engine may lock itself to at once. */
 export const MAX_LOCKED_HOSTS = 16;
@@ -144,6 +164,15 @@ export const MAX_DATA_IMAGE = 200_000;
 export const MAX_SECRET = 16_384;
 export const MAX_HTTP_BODY = 50 * 1024 * 1024;
 export const MAX_READ = 16 * 1024 * 1024;
+/** Bridged WebSockets one engine may have open (or opening) at once. */
+export const MAX_SOCKETS = 8;
+/** Largest frame on a bridged socket, either way: bytes, or characters for text. */
+export const MAX_SOCKET_FRAME = 16 * 1024 * 1024;
+/** Most a bridged socket may have waiting to be sent, as for MAX_SOCKET_FRAME. */
+export const MAX_SOCKET_QUEUE = 32 * 1024 * 1024;
+/** Longest close reason, as a page's WebSocket allows (bytes, so at most this many characters). */
+export const MAX_CLOSE_REASON = 123;
+const SOCKET_ID = /^[a-z0-9-]{1,64}$/;
 const MAX_HEADERS = 50;
 const METHODS = new Set(["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"]);
 const COLOR = /^#[0-9a-f]{6}$/i;
@@ -316,6 +345,38 @@ export function isEngineRequest(value: unknown): value is EngineRequest {
         value.end >= value.start &&
         value.end - value.start <= MAX_READ
       );
+    case "socketOpen":
+      return isText(value.url, 8192, 1);
+    case "socketSend":
+      return isSocketId(value.id) && isFrame(value.data);
+    case "socketClose":
+      return (
+        isSocketId(value.id) &&
+        (value.code === undefined || value.code === 1000 || (Number.isInteger(value.code) && (value.code as number) >= 3000 && (value.code as number) <= 4999)) &&
+        (value.reason === undefined || (typeof value.reason === "string" && new TextEncoder().encode(value.reason).byteLength <= MAX_CLOSE_REASON))
+      );
+    default:
+      return false;
+  }
+}
+
+const isSocketId = (value: unknown): value is string => typeof value === "string" && SOCKET_ID.test(value);
+
+/** A frame on a bridged socket: text or bytes, within MAX_SOCKET_FRAME. */
+export function isFrame(value: unknown): value is string | Uint8Array {
+  return (typeof value === "string" && value.length <= MAX_SOCKET_FRAME) || (value instanceof Uint8Array && value.byteLength <= MAX_SOCKET_FRAME);
+}
+
+/** Checked by the engine too: its bridge should only ever carry these. */
+export function isEngineSocketEvent(value: unknown): value is EngineSocketEvent {
+  if (!isRecord(value) || !isSocketId(value.id)) return false;
+  switch (value.type) {
+    case "open":
+      return true;
+    case "message":
+      return isFrame(value.data);
+    case "close":
+      return Number.isInteger(value.code) && (value.code as number) >= 1000 && (value.code as number) <= 4999 && isText(value.reason, MAX_CLOSE_REASON);
     default:
       return false;
   }

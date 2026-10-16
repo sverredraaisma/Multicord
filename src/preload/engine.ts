@@ -1,4 +1,4 @@
-import { ENGINE_IPC, type EngineCommand, type EngineEvent, type EngineRequest } from "../shared/engine";
+import { ENGINE_IPC, type EngineCommand, type EngineEvent, type EngineRequest, type EngineSocketEvent } from "../shared/engine";
 
 /** The IPC an engine preload uses: send, listen and request/response. */
 export interface EngineIpc {
@@ -19,6 +19,8 @@ export interface EngineBridge {
   onCommand(cb: (command: EngineCommand) => void): void;
   /** User actions from the module's own view, already validated by the shell. */
   onAction(cb: (action: unknown) => void): void;
+  /** What happens on the engine's bridged WebSockets (bridgeWebSocket), which the engine checks. */
+  onSocket(cb: (event: EngineSocketEvent) => void): void;
 }
 
 export function createEngineBridge(ipc: EngineIpc): EngineBridge {
@@ -28,5 +30,6 @@ export function createEngineBridge(ipc: EngineIpc): EngineBridge {
     render: (state) => ipc.send(ENGINE_IPC.render, state),
     onCommand: (cb) => ipc.on(ENGINE_IPC.command, (_event, command) => cb(command as EngineCommand)),
     onAction: (cb) => ipc.on(ENGINE_IPC.action, (_event, action) => cb(action)),
+    onSocket: (cb) => ipc.on(ENGINE_IPC.socket, (_event, event) => cb(event as EngineSocketEvent)),
   };
 }

@@ -3,7 +3,7 @@ import { bridgeFetch, bridgeSecrets, engineInfo, fileSource, lockHosts, pickFile
 import { createEngineBridge, type EngineBridge, type EngineIpc } from "../../src/preload/engine";
 import type { AccountRef, DirectConversation, HomeBadge, IncomingCall, PlatformNotification, RailServer } from "../../src/shared/adapter";
 import { BaseAdapter } from "../../src/shared/baseAdapter";
-import { ENGINE_IPC, type EngineCommand, type HttpResponse } from "../../src/shared/engine";
+import { ENGINE_IPC, type EngineCommand, type EngineSocketEvent, type HttpResponse } from "../../src/shared/engine";
 import type { AccountStatus, ServiceSettingStatus } from "../../src/shared/settings";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -26,26 +26,32 @@ describe("createEngineBridge", () => {
 
     const onCommand = vi.fn();
     const onAction = vi.fn();
+    const onSocket = vi.fn();
     bridge.onCommand(onCommand);
     bridge.onAction(onAction);
+    bridge.onSocket(onSocket);
     listeners.get(ENGINE_IPC.command)!({}, { type: "signOut" });
     listeners.get(ENGINE_IPC.action)!({}, { do: "it" });
     expect(onCommand).toHaveBeenCalledWith({ type: "signOut" });
     expect(onAction).toHaveBeenCalledWith({ do: "it" });
+    listeners.get(ENGINE_IPC.socket)!({}, { type: "open", id: "1" });
+    expect(onSocket).toHaveBeenCalledWith({ type: "open", id: "1" });
   });
 });
 
 function fakeBridge() {
   let command: (c: EngineCommand) => void = () => {};
   let action: (a: unknown) => void = () => {};
+  let socket: (e: EngineSocketEvent) => void = () => {};
   const bridge = {
     request: vi.fn(),
     emit: vi.fn(),
     render: vi.fn(),
     onCommand: (cb) => void (command = cb),
     onAction: (cb) => void (action = cb),
+    onSocket: (cb) => void (socket = cb),
   } satisfies EngineBridge;
-  return { bridge, command: (c: EngineCommand) => command(c), action: (a: unknown) => action(a) };
+  return { bridge, command: (c: EngineCommand) => command(c), action: (a: unknown) => action(a), socket: (e: unknown) => socket(e as EngineSocketEvent) };
 }
 
 describe("engineInfo and bridgeSecrets", () => {

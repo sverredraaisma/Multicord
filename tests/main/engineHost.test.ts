@@ -8,6 +8,7 @@ vi.mock("electron", () => import("../mocks/electron"));
 import * as electron from "../mocks/electron";
 import { engineStoragePartition, MAX_CRASHES, restartDelay } from "../../src/core/engineAdapter";
 import { EngineHub, ATTACH_WINDOW_MS, MAX_FILE_HANDLES, serveEngine, SIGN_IN_WINDOW_MS, type EngineSpec } from "../../src/main/engineHost";
+import type { RelaySocket, RelaySocketEvents } from "../../src/core/engineSockets";
 import { readRange } from "../../src/main/files";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
 import { NATIVE_IPC } from "../../src/shared/native";
@@ -31,9 +32,9 @@ afterEach(() => {
 
 const capabilities = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
 
-function setup(extra: Partial<EngineSpec> = {}) {
+function setup(extra: Partial<EngineSpec> = {}, openSocket?: (url: string, events: RelaySocketEvents) => RelaySocket) {
   const window = new BaseWindow({});
-  const hub = new EngineHub({ dist, os: "win32", window: window as never });
+  const hub = new EngineHub({ dist, os: "win32", window: window as never, openSocket });
   const view = new WebContentsView({ webPreferences: {} });
   const secrets = new Map<string, string>();
   const spec: EngineSpec = {
@@ -447,5 +448,79 @@ describe("engine health", () => {
       vi.advanceTimersByTime(2000);
       expect(engine.webContents.reload).toHaveBeenCalled();
     }
+  });
+});
+
+describe("bridged sockets", () => {
+  function withSockets(extra: Partial<EngineSpec> = {}) {
+    const opened: { url: string; events: RelaySocketEvents; socket: { send: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; bufferedAmount: number } }[] = [];
+    const parts = setup(extra, (url, events) => {
+      const socket = { send: vi.fn(), close: vi.fn(), bufferedAmount: 0 };
+      opened.push({ url, events, socket });
+      return socket;
+    });
+    const sent = () => parts.engine.webContents.send.mock.calls.filter(([channel]) => channel === ENGINE_IPC.socket).map(([, event]) => event);
+    return { ...parts, opened, sent };
+  }
+
+  it("opens the engine's sockets where its own would be allowed, and relays frames both ways", async () => {
+    const { ask, opened, sent } = withSockets({ hosts: ["*.demo.example"] });
+    await ask({ type: "info" });
+    const { id } = (await ask({ type: "socketOpen", url: "wss://gw.demo.example/?v=1" })) as { id: string };
+    expect(opened.map((o) => o.url)).toEqual(["wss://gw.demo.example/?v=1"]);
+    opened[0]!.events.open();
+    await ask({ type: "socketSend", id, data: "hello" });
+    expect(opened[0]!.socket.send).toHaveBeenCalledWith("hello");
+    opened[0]!.events.message("hi");
+    await ask({ type: "socketClose", id, code: 4000, reason: "done" });
+    expect(opened[0]!.socket.close).toHaveBeenCalledWith(4000, "done");
+    expect(sent()).toEqual([
+      { type: "open", id },
+      { type: "message", id, data: "hi" },
+      { type: "close", id, code: 4000, reason: "done" },
+    ]);
+    await expect(ask({ type: "socketSend", id, data: "again" })).rejects.toThrow("No such open socket");
+  });
+
+  it("refuses sockets the engine may not open: not wss, other hosts, private addresses", async () => {
+    const { ask, opened } = withSockets({ hosts: ["*.demo.example"] });
+    await expect(ask({ type: "socketOpen", url: "ws://gw.demo.example/" })).rejects.toThrow("Socket refused: ws: is not allowed");
+    await expect(ask({ type: "socketOpen", url: "wss://evil.example/" })).rejects.toThrow("not one of this module's hosts");
+    await expect(ask({ type: "socketOpen", url: "wss://127.0.0.1/" })).rejects.toThrow("local or private");
+    session.fromPartition("engine_demo").resolveHost.mockResolvedValue({ endpoints: [{ address: "10.0.0.5", family: "ipv4" }] });
+    await expect(ask({ type: "socketOpen", url: "wss://rebind.demo.example/" })).rejects.toThrow("resolves to a local or private address");
+    // A lock narrows bridged sockets as it does the engine's own.
+    await ask({ type: "lockHosts", hosts: ["api.demo.example"] });
+    await expect(ask({ type: "socketOpen", url: "wss://gw.demo.example/" })).rejects.toThrow("not one of this module's hosts");
+    await expect(ask({ type: "socketOpen", url: "https://api.demo.example/" })).rejects.toThrow("https: is not allowed");
+    await expect(ask({ type: "socketSend", id: "1", data: {} })).rejects.toThrow("Malformed engine request");
+    expect(opened).toHaveLength(0);
+  });
+
+  it("closes the engine's sockets when it reloads, crashes or goes away", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { ask, engine, opened } = withSockets();
+    const openOne = async () => {
+      await ask({ type: "socketOpen", url: "wss://gw.example/" });
+      return opened.at(-1)!.socket;
+    };
+    let socket = await openOne();
+    engine.webContents.emit("did-start-loading");
+    expect(socket.close).toHaveBeenCalledWith();
+    socket = await openOne();
+    engine.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+    expect(socket.close).toHaveBeenCalledWith();
+    socket = await openOne();
+    engine.webContents.emit("destroyed");
+    expect(socket.close).toHaveBeenCalledWith();
+  });
+
+  it("opens sockets on Node's WebSocket by default", async () => {
+    const { ask, engine } = setup();
+    const { id } = (await ask({ type: "socketOpen", url: "wss://gw.example/" })) as { id: string };
+    expect(id).toBe("1");
+    // Nothing answers in tests; closing it is enough.
+    await ask({ type: "socketClose", id });
+    engine.webContents.emit("destroyed");
   });
 });

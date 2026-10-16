@@ -3,6 +3,7 @@ import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { dialog, ipcMain, session, shell, WebContentsView, type BaseWindow, type Session, type WebContents } from "electron";
 import { crashesInARow, EngineAdapter, engineStoragePartition, isEngineId, MAX_CRASHES, restartDelay, type EngineHealth } from "../core/engineAdapter";
+import { EngineSockets, type RelaySocket, type RelaySocketEvents } from "../core/engineSockets";
 import type { PlatformDef } from "../core/platforms";
 import type { PlatformAdapter } from "../shared/adapter";
 import { ENGINE_IPC, ENGINE_SCHEME, isEngineEvent, isEngineRequest, type EngineInfo, type EngineRequest, type PickedFile } from "../shared/engine";
@@ -13,6 +14,7 @@ import type { SecretStore } from "./credentials";
 import { contentTypeFor, readRange } from "./files";
 import { checkUrl, createAddressGuard, narrowHosts, performHttp, type UrlPolicy } from "./netPolicy";
 import { isSsoUrl, receiveLoginToken } from "./ssoLoopback";
+import { openHostSocket } from "./webSockets";
 
 /** What the host needs to run one module instance in an engine. */
 export interface EngineSpec {
@@ -55,8 +57,9 @@ interface Running {
   allowed: { hosts?: readonly string[] };
   /** Messages for the engine, held until it has loaded. */
   queue: { channel: string; payload: unknown }[];
+  /** The WebSockets the shell opened for the engine (bridgeWebSocket). */
+  sockets: EngineSockets;
 }
-
 
 /** Picked-file handles kept per engine; the oldest are forgotten first. */
 export const MAX_FILE_HANDLES = 200;
@@ -108,7 +111,13 @@ export class EngineHub {
   private readonly byView = new Map<WebContents, Running>();
 
   constructor(
-    private readonly deps: { dist: string; os: string; window: BaseWindow },
+    private readonly deps: {
+      dist: string;
+      os: string;
+      window: BaseWindow;
+      /** Opens the sockets engines bridge; Node's WebSocket unless given. */
+      openSocket?: (url: string, events: RelaySocketEvents) => RelaySocket;
+    },
   ) {
     ipcMain.handle(ENGINE_IPC.invoke, (event, request) => {
       const running = this.byEngine.get(event.sender);
@@ -141,7 +150,15 @@ export class EngineHub {
     const partition = engineStoragePartition(spec.def.id, spec.persistent === true);
     const ses = session.fromPartition(partition);
     const allowed: Running["allowed"] = { hosts: spec.hosts };
-    this.lockDown(ses, spec, allowed);
+    // Engines reach the network only over WebSockets of their own or bridged ones: wss to their hosts, at public addresses.
+    const socketPolicy: UrlPolicy = {
+      schemes: ["wss:"],
+      get hosts() {
+        return allowed.hosts;
+      },
+    };
+    const socketAddress = createAddressGuard(async (host) => (await ses.resolveHost(host)).endpoints.map((e) => e.address));
+    this.lockDown(ses, spec, socketPolicy, socketAddress);
     const engine = new WebContentsView({
       webPreferences: {
         preload: path.join(this.deps.dist, "preload-engine.js"),
@@ -203,8 +220,13 @@ export class EngineHub {
       attachAskedAt: 0,
       signInAskedAt: 0,
       queue: [],
+      sockets: new EngineSockets({
+        check: async (url) => checkUrl(url, socketPolicy) ?? ((await socketAddress(url)) ? undefined : "it resolves to a local or private address"),
+        connect: (url, events) => (this.deps.openSocket ?? openHostSocket)(url, events),
+        emit: (event) => this.deliver(running, ENGINE_IPC.socket, event),
+      }),
     };
-    running.adapter = new EngineAdapter(spec.def.id, new URL(spec.def.url).host, spec.capabilities, (command) => this.deliver(running, ENGINE_IPC.command, command), spec.home);
+    running.adapter =new EngineAdapter(spec.def.id, new URL(spec.def.url).host, spec.capabilities, (command) => this.deliver(running, ENGINE_IPC.command, command), spec.home);
     this.byEngine.set(engine.webContents, running);
     this.byView.set(spec.view.webContents, running);
 
@@ -212,12 +234,18 @@ export class EngineHub {
       running.health = { ...running.health, ...change };
       running.adapter.setEngineHealth(running.health);
     };
-    engine.webContents.on("did-start-loading", () => (running.ready = false));
+    // A reloading, crashed or closed engine's bridged sockets close with it.
+    engine.webContents.on("did-start-loading", () => {
+      running.ready = false;
+      running.sockets.closeAll();
+    });
+    engine.webContents.on("destroyed", () => running.sockets.closeAll());
     engine.webContents.on("unresponsive", () => report({ responsive: false }));
     engine.webContents.on("responsive", () => report({ responsive: true }));
     // A crashing engine restarts with growing delays, and is left stopped if it keeps crashing.
     engine.webContents.on("render-process-gone", (_event, details) => {
       running.ready = false;
+      running.sockets.closeAll();
       running.crashes = crashesInARow(running.crashes, running.health, Date.now() - running.readyAt);
       if (running.crashes > MAX_CRASHES) {
         console.warn(`[engine ${spec.def.id}] stopped (${details.reason}); crashed ${MAX_CRASHES} times in a row, not restarting`);
@@ -233,18 +261,11 @@ export class EngineHub {
   }
 
   /** The engine session: no permissions, no navigation, and network only to the module's hosts. */
-  private lockDown(ses: Session, spec: EngineSpec, allowed: Running["allowed"]): void {
+  private lockDown(ses: Session, spec: EngineSpec, socketPolicy: UrlPolicy, publicAddress: (url: string) => Promise<boolean>): void {
     ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     ses.setPermissionCheckHandler(() => false);
     ses.protocol.handle(ENGINE_SCHEME, (request) => serveEngine(this.deps.dist, spec.engine, request.url));
     // HTTP goes through the bridge; engines open only WebSockets themselves.
-    const socketPolicy: UrlPolicy = {
-      schemes: ["wss:"],
-      get hosts() {
-        return allowed.hosts;
-      },
-    };
-    const publicAddress = createAddressGuard(async (host) => (await ses.resolveHost(host)).endpoints.map((e) => e.address));
     ses.webRequest.onBeforeRequest((details, callback) => {
       const { protocol } = new URL(details.url);
       const own = protocol === `${ENGINE_SCHEME}:` || protocol === "blob:" || protocol === "data:";
@@ -293,6 +314,12 @@ export class EngineHub {
         return this.pickFiles(running);
       case "ssoSignIn":
         return this.ssoSignIn(running, request.url);
+      case "socketOpen":
+        return running.sockets.open(request.url);
+      case "socketSend":
+        return running.sockets.send(request.id, request.data);
+      case "socketClose":
+        return running.sockets.close(request.id, request.code, request.reason);
       case "readFile": {
         const file = running.files.get(request.handle);
         if (!file) throw new Error("Unknown file");
