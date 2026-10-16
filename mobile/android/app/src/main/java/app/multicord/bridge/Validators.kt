@@ -2,7 +2,6 @@
 package app.multicord.bridge
 
 import app.multicord.net.WebUrl
-import java.util.regex.Pattern
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -235,17 +234,25 @@ object Validators {
     private val MEDIA_ID = Regex("^[A-Za-z0-9:._@!+=/-]{1,200}$")
     private val MEDIA_KEY = Regex("^[A-Za-z0-9:._-]{1,200}$")
     private val MEMBER_ID = Regex("^[A-Za-z0-9@:._=+/-]{1,255}$")
-    private val CONTROL = Pattern.compile("\\p{Cc}").toRegex()
-    private val JOIN_ADDRESS = Pattern.compile("^[^\\s\\p{Cc}\\p{Cf}]+$", Pattern.UNICODE_CHARACTER_CLASS).toRegex()
 
     private fun id(value: JsonElement?): Boolean = value.string()?.let(ID::matches) == true
     private fun promptId(value: JsonElement?): Boolean = value.string()?.let(PROMPT_ID::matches) == true
 
     /** What JavaScript's String.prototype.trim removes: its whitespace and line terminators. */
-    internal fun jsTrim(s: String): String = s.trim { c ->
-        val code = c.code
-        code in 9..13 || code == 0x20 || code == 0xa0 || code == 0x1680 || code in 0x2000..0x200a || code == 0x2028 ||
-            code == 0x2029 || code == 0x202f || code == 0x205f || code == 0x3000 || code == 0xfeff
+    internal fun jsTrim(s: String): String = s.trim { isJsSpace(it.code) }
+
+    /** JavaScript's \s: Unicode space separators, the ASCII whitespace controls, line terminators and BOM. */
+    private fun isJsSpace(code: Int): Boolean =
+        code in 9..13 || code == 0x20 || code == 0x2028 || code == 0x2029 || code == 0xfeff ||
+            Character.getType(code) == Character.SPACE_SEPARATOR.toInt()
+
+    /**
+     * /^[^\s\p{Cc}\p{Cf}]+$/u: one word of printable characters. Checked per code point, as Android's regex
+     * engine and the JVM's read \s differently.
+     */
+    private fun isOneWord(s: String): Boolean = s.isNotEmpty() && s.codePoints().noneMatch { code ->
+        val type = Character.getType(code)
+        isJsSpace(code) || type == Character.CONTROL.toInt() || type == Character.FORMAT.toInt()
     }
 
     private fun isPromptValues(value: JsonElement?): Boolean {
@@ -255,7 +262,7 @@ object Validators {
 
     private fun content(value: JsonElement?): Boolean = isText(value, MAX_MESSAGE_LENGTH, 1) && jsTrim(value.string()!!) != ""
     private fun pollText(value: JsonElement?, max: Int): Boolean =
-        isText(value, max, 1) && jsTrim(value.string()!!) != "" && !CONTROL.containsMatchIn(value.string()!!)
+        isText(value, max, 1) && jsTrim(value.string()!!) != "" && value.string()!!.codePoints().noneMatch { Character.getType(it) == Character.CONTROL.toInt() }
 
     private fun isPollAnswers(value: JsonElement?): Boolean {
         val list = value as? JsonArray ?: return false
@@ -291,7 +298,7 @@ object Validators {
             "forward" -> id(v["messageId"]) && id(v["channelId"])
             "join", "decline", "declineCall" -> id(v["channelId"])
             // One word of printable characters: the module reads it as an address of its own kind.
-            "joinAddress" -> v["address"].string()?.let { it.length <= MAX_JOIN_ADDRESS && JOIN_ADDRESS.matches(it) } == true
+            "joinAddress" -> v["address"].string()?.let { it.length <= MAX_JOIN_ADDRESS && isOneWord(it) } == true
             "search" -> isText(v["query"], MAX_SEARCH_QUERY)
             "pin" -> id(v["messageId"]) && isBoolean(v["pin"])
             "voiceState" -> listOf("mute", "deaf", "video", "stream").all { isBoolean(v[it]) }
