@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserPeerEnv, METER_MS, NO_RELAY, PeerCall, SPEAKING_LEVEL, type LevelMeter, type MicProcessor, type PeerCallEnv } from "../../src/renderer/peerCall";
 import { DEFAULT_SETTINGS, type VoiceSettings } from "../../src/shared/settings";
-import type { NativeCallPeer, NativeCallSignal, NativeVoiceSession, VoiceNoticeFlag, VoiceSignal } from "../../src/shared/native";
+import type { MeshSignal, NativeCallPeer, NativeCallSignal, NativeVoiceSession, VoiceNoticeFlag, VoiceSignal } from "../../src/shared/native";
 
 let nextId = 0;
 
@@ -55,7 +55,8 @@ class FakePC {
   connectionState = "new";
   localDescription: { type: string; sdp: string } | null = null;
   remoteDescription: { type: string; sdp: string } | null = null;
-  readonly transceivers: { mid: string | null; sender: FakeSender; kind: string }[] = [];
+  readonly transceivers: { mid: string | null; sender: FakeSender; kind: string; receiver?: { track: FakeTrack }; direction?: string }[] = [];
+  restarts = 0;
   readonly channels: { label: string; close: ReturnType<typeof vi.fn> }[] = [];
   readonly removed: FakeSender[] = [];
   readonly candidates: unknown[] = [];
@@ -84,15 +85,24 @@ class FakePC {
     this.removed.push(sender);
     sender.track = null;
   }
-  addTransceiver(kind: string) {
+  addTransceiver(kind: string, init?: { direction: string }) {
     if (this.fail === "transceiver") throw new Error("no");
-    this.transceivers.push({ mid: null, sender: { track: null, replaceTrack: vi.fn() }, kind });
+    const sender: FakeSender = {
+      track: null,
+      replaceTrack: vi.fn(async (next: FakeTrack | null) => {
+        sender.track = next;
+      }),
+    };
+    const transceiver = { mid: null, sender, kind, receiver: { track: new FakeTrack(kind as "audio" | "video") }, direction: init?.direction ?? "sendrecv" };
+    this.transceivers.push(transceiver);
+    return transceiver;
   }
   getTransceivers() {
     return this.transceivers;
   }
-  async createOffer() {
+  async createOffer(options?: { iceRestart?: boolean }) {
     if (this.fail === "offer") throw new Error("no offer");
+    if (options?.iceRestart) this.restarts++;
     return { type: "offer", sdp: `offer${++this.offers}` };
   }
   async createAnswer() {
@@ -105,6 +115,10 @@ class FakePC {
   async setRemoteDescription(description: { type: string; sdp: string }) {
     if (this.fail === "remote") throw new Error("bad sdp");
     this.remoteDescription = description;
+    // A Fluxer offer ("mesh:" and its kinds, in order) makes a transceiver for each, as the browser does on a fresh connection.
+    if (description.type === "offer" && description.sdp.startsWith("mesh:") && this.transceivers.length === 0) {
+      for (const kind of description.sdp.slice(5).split(",")) this.addTransceiver(kind, { direction: "recvonly" });
+    }
     // Offered m-lines take the transceivers addTrack made for their kind.
     for (const kind of ["audio", "video"]) {
       if (!description.sdp.includes(`m=${kind}`)) continue;
@@ -113,8 +127,8 @@ class FakePC {
     }
     this.setSignaling(description.type === "offer" ? "have-remote-offer" : "stable");
   }
-  async addIceCandidate(candidate: { candidate: string }) {
-    if (candidate.candidate === "bad") throw new Error("bad candidate");
+  async addIceCandidate(candidate: { candidate: string } | null) {
+    if (candidate?.candidate === "bad") throw new Error("bad candidate");
     this.candidates.push(candidate);
   }
   setSignaling(state: string) {
@@ -139,7 +153,7 @@ let speakers: HTMLElement;
 let roster: HTMLElement;
 type OnError = (message: string, notice?: { off?: VoiceNoticeFlag }) => void;
 let onError: ReturnType<typeof vi.fn<OnError>>;
-let sent: [string, VoiceSignal][];
+let sent: [string, VoiceSignal | MeshSignal][];
 let call: PeerCall;
 
 const peer = (id: string, offer = false, extra: Partial<NativeCallPeer> = {}): NativeCallPeer => ({ id, name: `User ${id}`, offer, ...extra });
@@ -206,7 +220,8 @@ afterEach(async () => {
 });
 
 const pc = (index = 0): FakePC => FakePC.all[index]!;
-const signalsTo = (id: string) => sent.filter(([to]) => to === id).map(([, s]) => s);
+const signalsTo = (id: string) => sent.filter(([to]) => to === id).map(([, s]) => s as VoiceSignal);
+const meshTo = (id: string) => sent.filter(([to]) => to === id).map(([, s]) => s as MeshSignal);
 
 describe("PeerCall: connecting", () => {
   it("waits for an earlier joiner's offer, answers it, and adds candidates once the offer is set", async () => {
@@ -424,6 +439,204 @@ describe("PeerCall: connecting", () => {
     expect(rows()[1]).toBe("User 2");
     pc().setConnection("disconnected");
     expect(rows()[1]).toBe("User 2Connection lost");
+  });
+});
+
+describe("PeerCall: Fluxer's calls", () => {
+  const STUN = [{ urls: ["stun:stun.fluxer.app:3478"] }];
+  const LAYOUT = "mesh:audio,video,video,audio";
+  let signals: NativeCallSignal[];
+  let peers: NativeCallPeer[];
+  let flags: Partial<NativeVoiceSession>;
+  const render = async () => {
+    const s = session({ peers, signals: [...signals], relayOnly: false, iceServers: STUN }, flags);
+    Object.assign(s.p2p!, { protocol: "fluxer-mesh", self: "a1" });
+    await call.sync(s);
+    await flush();
+  };
+  const say = (signal: MeshSignal) => {
+    signals.push({ seq: signals.length + 1, from: "b2", signal });
+    return render();
+  };
+  const last = (t: MeshSignal["t"]) => meshTo("b2").filter((s) => s.t === t).at(-1) as Record<string, unknown> | undefined;
+  const senders = (link = pc()) => link.transceivers.map((t) => t.sender.track);
+
+  beforeEach(() => {
+    signals = [];
+    flags = {};
+  });
+
+  it("offers where its connection id sorts first: four transceivers both ways, sending only what the peer wants", async () => {
+    peers = [peer("b2", true)];
+    await render();
+    const link = pc();
+    expect(link.config).toEqual({ iceServers: STUN, iceTransportPolicy: "all", bundlePolicy: "max-bundle" });
+    expect(link.transceivers.map((t) => [t.kind, t.direction])).toEqual([
+      ["audio", "sendrecv"],
+      ["video", "sendrecv"],
+      ["video", "sendrecv"],
+      ["audio", "sendrecv"],
+    ]);
+    expect(meshTo("b2")).toEqual([
+      { t: "tracks", v: expect.any(Number), tracks: [{ src: "microphone", sid: "TR_a1_microphone", m: false }] },
+      { t: "offer", g: expect.any(Number), sdp: "offer1" },
+    ]);
+    const g = last("offer")!.g as number;
+    expect(roster.textContent).toContain("Connecting…");
+    // Nothing is sent until the peer wants it; an older want changes nothing.
+    expect(senders()).toEqual([null, null, null, null]);
+    await say({ t: "want", v: 5, sids: ["TR_a1_microphone"] });
+    expect(senders()).toEqual([mics[0], null, null, null]);
+    await say({ t: "want", v: 4, sids: [] });
+    expect(senders()[0]).toBe(mics[0]);
+    // Their answer, for this generation only; candidates likewise.
+    await say({ t: "answer", g: g + 1, sdp: "a" });
+    expect(link.remoteDescription).toBeNull();
+    await say({ t: "answer", g, sdp: "a" });
+    expect(link.remoteDescription).toEqual({ type: "answer", sdp: "a" });
+    await say({ t: "ice", g, c: { candidate: "c1", sdpMid: "0", sdpMLineIndex: 0 } });
+    await say({ t: "ice", g: g - 1, c: { candidate: "old" } });
+    await say({ t: "ice", g, c: { candidate: "bad" } });
+    await say({ t: "ice", g, c: null });
+    expect(link.candidates).toEqual([{ candidate: "c1", sdpMid: "0", sdpMLineIndex: 0 }, null]);
+    link.onicecandidate!({ candidate: { candidate: "mine", sdpMid: "0", sdpMLineIndex: 0, usernameFragment: "u1" } });
+    expect(last("ice")).toEqual({ t: "ice", g, c: { candidate: "mine", sdpMid: "0", sdpMLineIndex: 0, usernameFragment: "u1" } });
+    link.onicecandidate!({ candidate: null });
+    expect(last("ice")).toEqual({ t: "ice", g, c: null });
+    // Their tracks: all wanted, played and shown; tracks not named as theirs, and older lists, are not taken.
+    await say({ t: "tracks", v: 1, tracks: [{ src: "microphone", sid: "TR_x_microphone", m: false }] });
+    expect(last("want")).toBeUndefined();
+    await say({ t: "tracks", v: 2, tracks: [{ src: "microphone", sid: "TR_b2_microphone", m: false }, { src: "camera", sid: "TR_b2_camera", m: false }] });
+    expect(last("want")).toEqual({ t: "want", v: expect.any(Number), sids: ["TR_b2_camera", "TR_b2_microphone"] });
+    expect(speakers.querySelectorAll("audio")).toHaveLength(1);
+    expect(stage.querySelector(".video-tile figcaption")!.textContent).toBe("User b2");
+    await say({ t: "tracks", v: 2, tracks: [] });
+    expect(speakers.querySelectorAll("audio")).toHaveLength(1);
+    link.setConnection("connected");
+    expect(roster.textContent).not.toContain("Connecting…");
+    // Failed: one ICE restart in the same generation, then given up.
+    link.setConnection("failed");
+    await flush();
+    expect(link.restarts).toBe(1);
+    expect(last("offer")).toEqual({ t: "offer", g, sdp: "offer2" });
+    link.setConnection("failed");
+    await flush();
+    expect(link.close).toHaveBeenCalled();
+    expect(roster.textContent).toContain("Could not connect");
+    expect(speakers.querySelectorAll("audio")).toHaveLength(0);
+    expect(stage.hidden).toBe(true);
+  });
+
+  it("asks for an offer where the peer offers, answers each generation laid out as Fluxer's, and gives up another", async () => {
+    peers = [peer("b2")];
+    flags = { mute: true };
+    await render();
+    expect(FakePC.all).toHaveLength(0);
+    expect(meshTo("b2")).toEqual([
+      { t: "need-offer", g: 0 },
+      { t: "tracks", v: expect.any(Number), tracks: [] },
+    ]);
+    await say({ t: "offer", g: 100, sdp: LAYOUT });
+    const link = pc();
+    expect(link.remoteDescription).toEqual({ type: "offer", sdp: LAYOUT });
+    expect(link.transceivers.map((t) => t.direction)).toEqual(["sendrecv", "sendrecv", "sendrecv", "sendrecv"]);
+    expect(meshTo("b2").slice(2)).toEqual([
+      { t: "tracks", v: expect.any(Number), tracks: [] },
+      { t: "answer", g: 100, sdp: "answer" },
+    ]);
+    await say({ t: "tracks", v: 1, tracks: [{ src: "microphone", sid: "TR_b2_microphone", m: false }] });
+    expect((speakers.querySelector("audio")!.srcObject as unknown as FakeStream).tracks[0]).toBe(link.transceivers[0]!.receiver!.track);
+    // The same generation again is an ICE restart, answered on the same connection; an older one is stale.
+    await say({ t: "offer", g: 100, sdp: LAYOUT });
+    await say({ t: "offer", g: 99, sdp: LAYOUT });
+    expect(FakePC.all).toHaveLength(1);
+    expect(meshTo("b2").filter((s) => s.t === "answer")).toHaveLength(2);
+    // What only an offerer acts on is not acted on.
+    await say({ t: "answer", g: 100, sdp: "a" });
+    await say({ t: "need-offer", g: 100 });
+    expect(FakePC.all).toHaveLength(1);
+    // Failed: it asks the offerer for an ICE restart.
+    link.setConnection("failed");
+    await flush();
+    expect(last("need-offer")).toEqual({ t: "need-offer", g: 100, restart: true });
+    // A newer generation: a new connection in place of the old.
+    await say({ t: "offer", g: 101, sdp: LAYOUT });
+    expect(link.close).toHaveBeenCalled();
+    expect(FakePC.all).toHaveLength(2);
+    expect((speakers.querySelector("audio")!.srcObject as unknown as FakeStream).tracks[0]).toBe(pc(1).transceivers[0]!.receiver!.track);
+    // An offer laid out otherwise is not Fluxer's: given up.
+    await say({ t: "offer", g: 102, sdp: "mesh:audio" });
+    expect(pc(2).close).toHaveBeenCalled();
+    expect(roster.textContent).toContain("Could not connect");
+    expect(speakers.querySelectorAll("audio")).toHaveLength(0);
+  });
+
+  it("wants no server-muted peer's microphone, and tells the peer of the user's mute and camera", async () => {
+    peers = [peer("b2", true, { muted: true })];
+    await render();
+    const g = last("offer")!.g as number;
+    await say({ t: "tracks", v: 1, tracks: [{ src: "microphone", sid: "TR_b2_microphone", m: false }, { src: "camera", sid: "TR_b2_camera", m: false }] });
+    expect(last("want")).toEqual({ t: "want", v: expect.any(Number), sids: ["TR_b2_camera"] });
+    expect(speakers.querySelectorAll("audio")).toHaveLength(0);
+    expect(stage.querySelectorAll(".video-tile")).toHaveLength(1);
+    peers = [peer("b2", true)];
+    await render();
+    expect(last("want")).toEqual({ t: "want", v: expect.any(Number), sids: ["TR_b2_camera", "TR_b2_microphone"] });
+    expect(speakers.querySelectorAll("audio")).toHaveLength(1);
+    await render();
+    expect(meshTo("b2").filter((s) => s.t === "want")).toHaveLength(2);
+    // The user mutes: the peer is told.
+    await say({ t: "want", v: 5, sids: ["TR_a1_microphone", "TR_a1_camera"] });
+    flags = { mute: true };
+    await render();
+    expect(last("tracks")).toEqual({ t: "tracks", v: expect.any(Number), tracks: [{ src: "microphone", sid: "TR_a1_microphone", m: true }] });
+    // The camera goes on the camera's transceiver, switches there in place, and comes off again.
+    flags = { mute: true, video: true };
+    await render();
+    expect(last("tracks")).toEqual({
+      t: "tracks",
+      v: expect.any(Number),
+      tracks: [
+        { src: "microphone", sid: "TR_a1_microphone", m: true },
+        { src: "camera", sid: "TR_a1_camera", m: false },
+      ],
+    });
+    expect(senders()).toEqual([mics[0], cameras[0], null, null]);
+    await call.configure({ ...DEFAULT_SETTINGS.voice, camera: { id: "x", label: "Cam B" } });
+    await flush();
+    expect(senders()[1]).toBe(cameras[1]);
+    flags = { mute: true, video: false };
+    await render();
+    expect(last("tracks")).toEqual({ t: "tracks", v: expect.any(Number), tracks: [{ src: "microphone", sid: "TR_a1_microphone", m: true }] });
+    expect(senders()[1]).toBeNull();
+    // The peer asks for an offer before answering: a new generation. A restart for another generation is stale.
+    await say({ t: "need-offer", g: 0 });
+    expect(FakePC.all).toHaveLength(2);
+    expect(last("offer")).toEqual({ t: "offer", g: g + 1, sdp: "offer1" });
+    await say({ t: "need-offer", g, restart: true });
+    expect(pc(1).restarts).toBe(0);
+    await say({ t: "need-offer", g: g + 1, restart: true });
+    expect(pc(1).restarts).toBe(1);
+    // Answered: asking again for this generation changes nothing.
+    await say({ t: "answer", g: g + 1, sdp: "a" });
+    await say({ t: "need-offer", g: g + 1 });
+    expect(FakePC.all).toHaveLength(2);
+    await call.sync(null);
+    expect(pc(1).close).toHaveBeenCalled();
+  });
+
+  it("gives up a connection whose offer cannot be made", async () => {
+    peers = [peer("b2", true)];
+    const connect = env.connect;
+    env.connect = (config) => {
+      const link = connect(config) as unknown as FakePC;
+      link.fail = "offer";
+      return link as unknown as RTCPeerConnection;
+    };
+    await render();
+    expect(pc().close).toHaveBeenCalled();
+    expect(roster.textContent).toContain("Could not connect");
+    expect(last("offer")).toBeUndefined();
   });
 });
 
