@@ -1,0 +1,25 @@
+<!doctype html>
+<!-- Multicord Android spike (phase 0). Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob: mediastream:; connect-src 'self'">
+  <title>Spike decode cost</title>
+  <link rel="stylesheet" href="spike.css">
+</head>
+<body>
+  <h1>Spike 0.4: MJPEG decode cost</h1>
+  <p>30 bundled 720p JPEG frames (about 100 KB each, like a webcam's MJPEG) decoded with ImageDecoder into VideoFrames. Keep the screen on and the phone unplugged from power-saving modes while it runs.</p>
+  <div class="buttons">
+    <button id="fast">A: as fast as possible</button>
+    <button id="realtime">B: 30 fps into a track, 10 s</button>
+    <button id="both">Run A then B</button>
+  </div>
+  <video id="preview" autoplay muted playsinline></video>
+  <pre id="log"></pre>
+  <script src="spike.js"></script>
+  <script src="decode.js"></script>
+</body>
+</html>
