@@ -237,3 +237,6 @@ html:has(.tooltip-body), .tooltip-body { background: transparent; overflow: hidd
 .unreachable-link { min-height: 36px; padding: 8px 4px; border: 0; background: none; color: #949cf7; font: inherit; text-decoration: underline; cursor: pointer; }
 .unreachable-primary:focus-visible, .unreachable-link:focus-visible { outline: 2px solid #00a8fc; outline-offset: 2px; }
 .unreachable .unreachable-code { font-size: 12px; }
+
+/* Where F6 put focus (scripts cannot ask for Chromium's keyboard ring when the key was pressed in another page). */
+[data-region-focus]:focus { outline: 2px solid #00a8fc; outline-offset: 2px; }

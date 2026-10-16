@@ -20,6 +20,7 @@ import {
   WebContentsView,
   type IpcMainEvent,
   type Session,
+  type WebContents,
 } from "electron";
 import { autoUpdater } from "electron-updater";
 import {
@@ -44,6 +45,7 @@ import { downloadMedia, FavouritesStore } from "./favourites";
 import { checkUrl, createAddressGuard, isPrivateHost } from "./netPolicy";
 import { createServiceReach } from "./serviceReach";
 import { LoadFailures } from "./unreachable";
+import { nextPage, regionStep } from "./focusCycle";
 import { filterShellRequests, installHardening } from "./hardening";
 import { computeLayout, splitContent, tooltipBounds } from "../core/layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
@@ -302,6 +304,34 @@ export async function createShell(
     unreachableView.webContents.send(IPC.unreachableState, state);
   };
 
+  /** The shell's own pages, which move focus between their own regions on F6 and say when it leaves them. */
+  const ownPages = new Set<WebContents>();
+  /** The pages on screen in F6 order: the rail, then the content area's (Settings, or the Messages list, then the service). */
+  const focusPages = (): WebContentsView[] => {
+    const shown = front();
+    const service = shown === undefined ? undefined : failures.get(shown) ? unreachableView : views.get(shown);
+    const page = mode === "settings" ? settingsView : mode === "messages" ? messagesView : undefined;
+    return [railView, page, service].filter((view): view is WebContentsView => view !== undefined);
+  };
+  /** F6 travel: focus the next page on screen; one of the shell's own focuses its first region (or last, going back). */
+  const moveFocus = (from: WebContents, direction: 1 | -1): void => {
+    const pages = focusPages();
+    const next = nextPage(pages.map((view) => view.webContents), from, direction)!;
+    next.focus();
+    if (ownPages.has(next)) next.send(IPC.focusEnter, direction);
+    // The rail's hover name follows its focus, which a page losing focus does not end.
+    if (next !== railView.webContents) hideTooltip();
+  };
+  /** A web service's page knows nothing of F6 travel: the shell takes the key before the page sees it. */
+  const takeRegionKeys = (contents: WebContents): void => {
+    contents.on("before-input-event", (event, input) => {
+      const direction = regionStep(input);
+      if (direction === undefined) return;
+      event.preventDefault();
+      moveFocus(contents, direction);
+    });
+  };
+
   // Linux screen-share sound: venmic, leaving out every process of ours.
   const systemAudio = new SystemAudio(loadVenmic, () => app.getAppMetrics().map((m) => m.pid));
   ipcMain.on(IPC.screenAudioEnd, (event) => {
@@ -413,6 +443,8 @@ export async function createShell(
 
     // A web service's page that fails to load gets the shell's own page over it; native views are the shell's already.
     if (module.load) failures.watch(def.id, view.webContents);
+    if (module.load) takeRegionKeys(view.webContents);
+    else ownPages.add(view.webContents);
     const host = new URL(def.url).hostname;
     const { adapter, start } = module.load
       ? module.load({
@@ -465,6 +497,11 @@ export async function createShell(
   unreachableView.webContents.on("did-finish-load", sendUnreachable);
   window.contentView.addChildView(unreachableView);
   prepareContentView(unreachableView);
+  ownPages.add(unreachableView.webContents);
+  ownPages.add(railView.webContents);
+  ipcMain.on(IPC.focusLeave, (event, direction) => {
+    if (ownPages.has(event.sender) && (direction === 1 || direction === -1)) moveFocus(event.sender, direction);
+  });
   void unreachableView.webContents.loadFile(path.join(paths.dist, "unreachable.html"));
   ipcMain.on(IPC.unreachableRetry, (event) => {
     if (event.sender !== unreachableView!.webContents) return;
@@ -564,6 +601,7 @@ export async function createShell(
     window.contentView.addChildView(tooltipView);
     void view.webContents.loadFile(path.join(paths.dist, page));
     prepareContentView(view);
+    ownPages.add(view.webContents);
     return view;
   };
 

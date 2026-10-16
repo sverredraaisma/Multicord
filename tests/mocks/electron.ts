@@ -11,6 +11,7 @@ export class FakeWebContents extends EventEmitter {
   loadFile = vi.fn(async (_file: string) => {});
   close = vi.fn();
   reload = vi.fn();
+  focus = vi.fn();
   sendInputEvent = vi.fn();
   setZoomFactor = vi.fn();
   windowOpenHandler?: (details: { url: string }) => { action: string };

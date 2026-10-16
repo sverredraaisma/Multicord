@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createShellApi } from "../../src/preload/shell";
+import { createFocusApi } from "../../src/preload/focus";
 import { IPC } from "../../src/shared/ipc";
 import { createNativeApi } from "../../src/preload/native";
 import { createSettingsApi } from "../../src/preload/settings";
@@ -141,5 +142,21 @@ describe("messages", () => {
     expect(onVoiceCommand.mock.calls).toEqual([["toggleMute"], ["talkStart"]]);
     api.screenAudioEnded();
     expect(ipc.send).toHaveBeenCalledWith(IPC.screenAudioEnd, null);
+  });
+});
+
+describe("createFocusApi", () => {
+  it("leaves the page in a direction and hears focus arrive, in either direction only", () => {
+    const listeners = new Map<string, (event: unknown, payload: unknown) => void>();
+    const ipc = { send: vi.fn(), on: (c: string, l: (e: unknown, p: unknown) => void) => listeners.set(c, l) };
+    const api = createFocusApi(ipc);
+    api.leave(-1);
+    expect(ipc.send).toHaveBeenCalledWith(IPC.focusLeave, -1);
+    const onEnter = vi.fn();
+    api.onEnter(onEnter);
+    listeners.get(IPC.focusEnter)!(null, 1);
+    listeners.get(IPC.focusEnter)!(null, -1);
+    listeners.get(IPC.focusEnter)!(null, 2);
+    expect(onEnter.mock.calls).toEqual([[1], [-1]]);
   });
 });

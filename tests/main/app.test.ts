@@ -339,6 +339,65 @@ describe("createShell", () => {
     expect(overlay.visible).toBe(false);
   });
 
+  it("moves focus between the window's pages on F6: the rail, Settings or the Messages list, and the service", async () => {
+    const { handle, discordView, railView } = await shellWith();
+    const fluxer = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;
+    const f6 = (view: InstanceType<typeof WebContentsView>, shift = false, key = "F6") => {
+      const event = { preventDefault: vi.fn() };
+      view.webContents.emit("before-input-event", event, { type: "keyDown", key, shift, alt: false, meta: false });
+      return event.preventDefault.mock.calls.length > 0;
+    };
+    // Discord's page knows nothing of it: the shell takes F6 there, and the rail (one of the shell's pages) is told.
+    expect(f6(discordView, false, "F5")).toBe(false);
+    expect(f6(discordView)).toBe(true);
+    expect(railView.webContents.focus).toHaveBeenCalled();
+    expect(railView.webContents.send).toHaveBeenCalledWith(IPC.focusEnter, 1);
+    // The rail says when focus leaves it; a web page is only focused (it is not told).
+    handle.tooltipView.setVisible(true);
+    ipcMain.emit(IPC.focusLeave, senderEvent(railView), 1);
+    expect(discordView.webContents.focus).toHaveBeenCalled();
+    expect((handle.tooltipView as unknown as InstanceType<typeof WebContentsView>).visible).toBe(false);
+    expect(discordView.webContents.send).not.toHaveBeenCalledWith(IPC.focusEnter, expect.anything());
+    // Only the shell's own pages may ask, and only with a direction.
+    discordView.webContents.focus.mockClear();
+    ipcMain.emit(IPC.focusLeave, senderEvent(discordView), 1);
+    ipcMain.emit(IPC.focusLeave, senderEvent(railView), 2);
+    expect(discordView.webContents.focus).not.toHaveBeenCalled();
+    // A native view is one of the shell's own pages: told, and it takes F6 itself.
+    ipcMain.emit(IPC.railOpen, senderEvent(railView), "fluxer:home");
+    await flush();
+    ipcMain.emit(IPC.focusLeave, senderEvent(railView), -1);
+    expect(fluxer.webContents.focus).toHaveBeenCalled();
+    expect(fluxer.webContents.send).toHaveBeenCalledWith(IPC.focusEnter, -1);
+    expect(f6(fluxer)).toBe(false);
+    // Settings: the rail, then the settings page.
+    handle.setSettingsOpen(true);
+    const settings = handle.settingsView() as unknown as InstanceType<typeof WebContentsView>;
+    ipcMain.emit(IPC.focusLeave, senderEvent(railView), 1);
+    expect(settings.webContents.send).toHaveBeenCalledWith(IPC.focusEnter, 1);
+    ipcMain.emit(IPC.focusLeave, senderEvent(settings), 1);
+    expect(railView.webContents.send).toHaveBeenLastCalledWith(IPC.focusEnter, 1);
+    // Messages with nothing open: the rail and the list; a page no longer on screen starts over at the rail.
+    handle.setMessagesOpen(true);
+    const messages = handle.messagesView() as unknown as InstanceType<typeof WebContentsView>;
+    ipcMain.emit(IPC.focusLeave, senderEvent(messages), -1);
+    expect(railView.webContents.send).toHaveBeenLastCalledWith(IPC.focusEnter, -1);
+    railView.webContents.focus.mockClear();
+    ipcMain.emit(IPC.focusLeave, senderEvent(settings), 1);
+    expect(railView.webContents.focus).toHaveBeenCalled();
+  });
+
+  it("moves focus to the couldn't-reach page over a service that did not load", async () => {
+    const { handle, discordView, railView } = await shellWith();
+    const overlay = handle.unreachableView as unknown as InstanceType<typeof WebContentsView>;
+    discordView.webContents.emit("did-fail-load", {}, -105, "ERR_NAME_NOT_RESOLVED", "https://discord.com/app", true);
+    ipcMain.emit(IPC.focusLeave, senderEvent(railView), 1);
+    expect(overlay.webContents.focus).toHaveBeenCalled();
+    expect(overlay.webContents.send).toHaveBeenCalledWith(IPC.focusEnter, 1);
+    ipcMain.emit(IPC.focusLeave, senderEvent(overlay), 1);
+    expect(railView.webContents.send).toHaveBeenCalledWith(IPC.focusEnter, 1);
+  });
+
   it("leaves native views' load failures to their own page", async () => {
     const { handle } = await shellWith();
     const fluxer = handle.views.get("fluxer") as unknown as InstanceType<typeof WebContentsView>;

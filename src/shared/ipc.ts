@@ -37,6 +37,10 @@ export const IPC = {
   unreachableRetry: "unreachable:retry",
   /** That page -> main: open Settings. */
   unreachableSettings: "unreachable:settings",
+  /** One of the shell's own pages -> main: F6 went past its last region (1) or Shift+F6 past its first (-1). */
+  focusLeave: "focus:leave",
+  /** Main -> one of the shell's own pages: focus arrives from the page before it (1) or after it (-1). */
+  focusEnter: "focus:enter",
 } as const;
 
 /** What the "couldn't reach" page says: which service, why in plain words, the error code, and whether a retry is under way. */
