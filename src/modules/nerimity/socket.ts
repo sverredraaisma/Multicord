@@ -44,6 +44,8 @@ export class NerimitySocket {
   private attempts = 0;
   private connected = false;
   private signedIn = false;
+  /** The socket.io session id of the connection now, from its connect packet; joining a call names it. */
+  id: string | undefined;
 
   constructor(
     /** The site's origin, e.g. https://nerimity.com. */
@@ -115,11 +117,14 @@ export class NerimitySocket {
   /** A socket.io packet on the default namespace. */
   private onPacket(packet: string): void {
     switch (packet[0]) {
-      case "0":
+      case "0": {
         if (this.connected) return;
         this.connected = true;
+        const connect = parseJson(packet.slice(1));
+        this.id = isRecord(connect) && typeof connect.sid === "string" && /^[A-Za-z0-9_-]{3,64}$/.test(connect.sid) ? connect.sid : undefined;
         this.socket!.send(`42${JSON.stringify(["user:authenticate", { token: this.token }])}`);
         return;
+      }
       case "1":
       case "4":
         // The server ended the namespace, or refused it.
@@ -170,6 +175,7 @@ export class NerimitySocket {
     this.socket = undefined;
     this.connected = false;
     this.signedIn = false;
+    this.id = undefined;
     socket?.close(code, reason);
   }
 

@@ -406,3 +406,67 @@ describe("NerimityState events", () => {
     expect(changed).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("NerimityState calls", () => {
+  it("knows who is in which call, in the order they joined, one call per person", () => {
+    const state = new NerimityState();
+    state.apply("user:authenticated", {
+      ...authenticatedPayload(),
+      voiceChannelUsers: [{ channelId: "900", userId: "2" }, { channelId: "111", userId: "3", serverId: "100" }, { channelId: "x", userId: "2" }, null],
+    });
+    expect(state.inCall("900")).toEqual(["2"]);
+    expect(state.inCall("111")).toEqual(["3"]);
+    expect(state.inCall("113")).toEqual([]);
+    state.apply("voice:user_joined", { channelId: "900", userId: "1" });
+    expect(state.inCall("900")).toEqual(["2", "1"]);
+    // Joining another call leaves the first; joining again goes last.
+    state.apply("voice:user_joined", { channelId: "111", userId: "2", serverId: "100" });
+    expect(state.inCall("900")).toEqual(["1"]);
+    expect(state.inCall("111")).toEqual(["3", "2"]);
+    state.apply("voice:user_joined", { channelId: "111", userId: "3" });
+    expect(state.inCall("111")).toEqual(["2", "3"]);
+    const changed = vi.fn();
+    state.changed.on(changed);
+    for (const left of [{ channelId: "111", userId: "9" }, { channelId: "999", userId: "2" }, { channelId: "111", userId: "x" }, { channelId: "x", userId: "2" }]) state.apply("voice:user_left", left);
+    state.apply("voice:user_joined", { channelId: "111" });
+    expect(changed).not.toHaveBeenCalled();
+    state.apply("voice:user_left", { channelId: "111", userId: "2" });
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(state.inCall("111")).toEqual(["3"]);
+    state.apply("voice:user_left", { channelId: "111", userId: "3" });
+    expect(state.voiceUsers.has("111")).toBe(false);
+  });
+
+  it("forgets calls with their channels, DMs and servers, and learns those of servers joined", () => {
+    const state = new NerimityState();
+    state.apply("user:authenticated", {
+      ...authenticatedPayload(),
+      voiceChannelUsers: ["111", "113", "211", "900"].map((channelId, i) => ({ channelId, userId: String(10 + i) })),
+    });
+    state.apply("server:channel_deleted", { channelId: "113" });
+    state.apply("inbox:closed", { channelId: "900" });
+    state.apply("server:left", { serverId: "100" });
+    expect([...state.voiceUsers.keys()]).toEqual(["211"]);
+    state.apply("server:joined", { server: { id: "300", name: "Gamma" }, channels: [{ id: "311", serverId: "300", type: 1, name: "talk" }], voiceChannelUsers: [{ channelId: "311", userId: "2" }] });
+    expect(state.inCall("311")).toEqual(["2"]);
+    state.reset();
+    expect(state.voiceUsers.size).toBe(0);
+  });
+
+  it("lets the user join calls where Nerimity's server would", () => {
+    const state = signedIn();
+    const channel = (id: string) => state.channels.get(id)!;
+    expect(state.canJoinVoice(channel("900"))).toBe(true);
+    expect(state.canJoinVoice(channel("211"))).toBe(true); // the server's owner
+    expect(state.canJoinVoice(channel("111"))).toBe(false);
+    state.apply("server:channel_permissions_updated", { channelId: "111", roleId: "101", permissions: 7 });
+    expect(state.canJoinVoice(channel("111"))).toBe(true);
+    expect(state.canJoinVoice(channel("112"))).toBe(false);
+    state.apply("server:member_updated", { serverId: "100", userId: "1", updated: { roleIds: ["120"] } });
+    expect(state.canJoinVoice(channel("112"))).toBe(true); // an admin
+    expect(state.canJoinVoice({ id: "5", type: 1, serverId: "404", order: 0, permissions: [] })).toBe(false);
+    // A server whose roles the session has none of.
+    state.apply("server:joined", { server: { id: "300", name: "Gamma", createdById: "2" }, channels: [{ id: "311", serverId: "300", type: 1, name: "talk" }] });
+    expect(state.canJoinVoice(channel("311"))).toBe(false);
+  });
+});

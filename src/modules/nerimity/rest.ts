@@ -178,6 +178,26 @@ export class NerimityRest {
     await this.request(pin ? "POST" : "DELETE", `/channels/${channelId}/messages/pins/${messageId}`);
   }
 
+  /**
+   * Joins a channel's call (a DM's, or a server channel's) with the socket
+   * that is to carry its signals, named by its socket.io id; the server
+   * leaves any other call first and tells the channel (voice:user_joined).
+   */
+  async joinVoice(channelId: string, socketId: string): Promise<void> {
+    await this.request("POST", `/channels/${channelId}/voice/join`, { socketId });
+  }
+
+  /** Leaves the call the user is in (the server names it; the channel only has to be one the user may see). */
+  async leaveVoice(channelId: string): Promise<void> {
+    await this.request("POST", `/channels/${channelId}/voice/leave`);
+  }
+
+  /** TURN credentials for calls (POST /voice/generate): what the server has its TURN provider make, a day's worth, unchecked here. */
+  async turnCredentials(): Promise<unknown> {
+    const data = await this.request("POST", "/voice/generate");
+    return isRecord(data) ? data.result : undefined;
+  }
+
   async typing(channelId: string): Promise<void> {
     await this.request("POST", `/channels/${channelId}/typing`);
   }

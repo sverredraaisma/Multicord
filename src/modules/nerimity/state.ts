@@ -21,6 +21,7 @@ import {
   parseRole,
   parseServer,
   parseUser,
+  parseVoiceUser,
   reactionKey,
   time,
   type NerimityChannel,
@@ -32,6 +33,7 @@ import {
   type NerimityRole,
   type NerimityServer,
   type NerimityUser,
+  type NerimityVoiceUser,
 } from "./types";
 
 /** Most messages kept per channel. */
@@ -70,6 +72,8 @@ export class NerimityState {
   readonly typing = new Map<string, Map<string, number>>();
   /** The user's ping mode (NotifyMode) per server or channel id; null or absent follows the server. */
   readonly pingModes = new Map<string, number | null>();
+  /** Who is in each channel's call (a DM's, or a server channel's), by user id in the order they joined. */
+  readonly voiceUsers = new Map<string, string[]>();
 
   readonly changed = new Emitter<void>();
   /** New messages from others, for marking read in the open channel and notifying. */
@@ -78,7 +82,7 @@ export class NerimityState {
   reset(): void {
     this.me = undefined;
     this.serverOrder = [];
-    for (const map of [this.servers, this.channels, this.roles, this.emojis, this.members, this.inbox, this.lastSeen, this.mentionCounts, this.presence, this.users, this.messages, this.latest, this.typing, this.pingModes]) map.clear();
+    for (const map of [this.servers, this.channels, this.roles, this.emojis, this.members, this.inbox, this.lastSeen, this.mentionCounts, this.presence, this.users, this.messages, this.latest, this.typing, this.pingModes, this.voiceUsers]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -142,9 +146,11 @@ export class NerimityState {
         this.inbox.delete(d.channelId);
         this.channels.delete(d.channelId);
         this.messages.delete(d.channelId);
+        this.voiceUsers.delete(d.channelId);
         break;
       case "server:joined":
         this.addServer(d.server, d.channels, d.roles, d.members);
+        this.addVoiceUsers(d.voiceChannelUsers);
         break;
       case "server:left":
         if (!isId(d.serverId)) return;
@@ -181,6 +187,7 @@ export class NerimityState {
         if (!isId(d.channelId)) return;
         this.channels.delete(d.channelId);
         this.messages.delete(d.channelId);
+        this.voiceUsers.delete(d.channelId);
         break;
       case "server:channel_order_updated": {
         const ids = list(d.orderedChannelIds).filter(isId);
@@ -278,6 +285,15 @@ export class NerimityState {
         if (!isRecord(d.updated) || !("notificationPingMode" in d.updated)) return;
         if (!this.setPingMode(isId(d.channelId) ? d.channelId : d.serverId, d.updated.notificationPingMode)) return;
         break;
+      case "voice:user_joined": {
+        const voice = parseVoiceUser(d);
+        if (!voice) return;
+        this.addVoiceUser(voice);
+        break;
+      }
+      case "voice:user_left":
+        if (!this.removeVoiceUser(d.channelId, d.userId)) return;
+        break;
       case "user:presence_update":
         if (!isId(d.userId) || typeof d.status !== "number") return;
         this.presence.set(d.userId, d.status);
@@ -323,6 +339,35 @@ export class NerimityState {
     }
     for (const p of list(d.presences)) if (isRecord(p) && isId(p.userId) && typeof p.status === "number") this.presence.set(p.userId, p.status);
     for (const s of list(d.notificationSettings)) if (isRecord(s)) this.setPingMode(isId(s.channelId) ? s.channelId : s.serverId, s.notificationPingMode);
+    this.addVoiceUsers(d.voiceChannelUsers);
+  }
+
+  private addVoiceUsers(value: unknown): void {
+    for (const v of list(value)) {
+      const voice = parseVoiceUser(v);
+      if (voice) this.addVoiceUser(voice);
+    }
+  }
+
+  /** Someone joined a call; joining one leaves any other, as Nerimity keeps one call per user. They go last, as the latest to join. */
+  private addVoiceUser({ channelId, userId }: NerimityVoiceUser): void {
+    for (const [id, users] of [...this.voiceUsers]) if (id !== channelId && users.includes(userId)) this.removeVoiceUser(id, userId);
+    this.voiceUsers.set(channelId, [...(this.voiceUsers.get(channelId) ?? []).filter((u) => u !== userId), userId]);
+  }
+
+  /** Someone left a call; whether they were in it. */
+  private removeVoiceUser(channelId: unknown, userId: unknown): boolean {
+    const users = isId(channelId) ? this.voiceUsers.get(channelId) : undefined;
+    if (!users || !isId(userId) || !users.includes(userId)) return false;
+    const rest = users.filter((u) => u !== userId);
+    if (rest.length > 0) this.voiceUsers.set(channelId as string, rest);
+    else this.voiceUsers.delete(channelId as string);
+    return true;
+  }
+
+  /** Who is in a channel's call, in the order they joined. */
+  inCall(channelId: string): string[] {
+    return this.voiceUsers.get(channelId) ?? [];
   }
 
   /** Records a server's or channel's ping mode: a NotifyMode, or null to follow the server. Returns whether it was one. */
@@ -360,6 +405,7 @@ export class NerimityState {
       if (channel.serverId !== serverId) continue;
       this.channels.delete(channel.id);
       this.messages.delete(channel.id);
+      this.voiceUsers.delete(channel.id);
     }
     this.serverOrder = this.serverOrder.filter((id) => id !== serverId);
   }
@@ -497,6 +543,22 @@ export class NerimityState {
     const roleIds = this.ownRoleIds(server);
     const granted = channel.permissions.filter((p) => roleIds.includes(p.roleId)).reduce((bits, p) => bits | p.permissions, 0);
     if (granted & ChannelPermission.Public) return true;
+    return (this.roles.get(server.id) ?? []).some((r) => roleIds.includes(r.id) && (r.permissions & RolePermission.Admin) !== 0);
+  }
+
+  /**
+   * Whether the user may join a channel's call, as Nerimity's server decides
+   * it: any DM (a block is the server's to refuse), and in a server its
+   * owner, admins, or a role the channel gives Join Voice.
+   */
+  canJoinVoice(channel: NerimityChannel): boolean {
+    if (!channel.serverId) return true;
+    const server = this.servers.get(channel.serverId);
+    if (!server) return false;
+    if (this.me && server.createdById === this.me.id) return true;
+    const roleIds = this.ownRoleIds(server);
+    const granted = channel.permissions.filter((p) => roleIds.includes(p.roleId)).reduce((bits, p) => bits | p.permissions, 0);
+    if (granted & ChannelPermission.JoinVoice) return true;
     return (this.roles.get(server.id) ?? []).some((r) => roleIds.includes(r.id) && (r.permissions & RolePermission.Admin) !== 0);
   }
 

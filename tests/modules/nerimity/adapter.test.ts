@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HEALTH_INTERVAL_MS, NerimityAdapter, mediaKind, presenceOf, type NerimityAdapterDeps } from "../../../src/modules/nerimity/adapter";
+import { HEALTH_INTERVAL_MS, NO_RELAY, NerimityAdapter, mediaKind, presenceOf, type NerimityAdapterDeps } from "../../../src/modules/nerimity/adapter";
 import type { EventSocket } from "../../../src/modules/nerimity/socket";
 import type { FileSource } from "../../../src/engine/runtime";
 import type { NativeViewState } from "../../../src/shared/native";
@@ -97,7 +97,7 @@ function setup(options: { token?: string; routes?: Handler[]; files?: NerimityAd
   const goOnline = async (payload: unknown = authenticatedPayload()) => {
     const socket = sockets.at(-1)!;
     socket.receive('0{"sid":"e","pingInterval":25000,"pingTimeout":20000}');
-    socket.receive("40");
+    socket.receive(`40{"sid":"sock-${sockets.length}"}`);
     socket.event("user:authenticated", payload);
     await vi.advanceTimersByTimeAsync(100);
   };
@@ -888,6 +888,7 @@ describe("NerimityAdapter messages", () => {
       { type: "sendFile", file: { handle: "h", name: "a.png", size: 1, type: "image/png" } },
       { type: "removeAttachment", index: 0 },
       { type: "joinVoice", channelId: "1" },
+      { type: "picker", open: true },
       { type: "pins", open: true },
       { type: "pin", messageId: "1", pin: true },
       { type: "search", query: "x" },
@@ -1127,5 +1128,324 @@ describe("NerimityAdapter members and profiles", () => {
     await ctx.adapter.openHome();
     await ctx.adapter.handleAction({ type: "profile", id: "2" });
     expect(ctx.chat().profile!.name).toBe("ana");
+  });
+});
+
+describe("NerimityAdapter calls", () => {
+  const CLOUDFLARE = {
+    urls: ["stun:stun.cloudflare.com:3478", "turn:turn.cloudflare.com:3478?transport=udp", "turn:evil.example.org:3478"],
+    username: "u",
+    credential: "c",
+  };
+  const ICE = [{ urls: ["stun:stun.cloudflare.com:3478", "turn:turn.cloudflare.com:3478?transport=udp"], username: "u", credential: "c" }];
+  const ANA_AVATAR = `${CDN}/avatars/2/9.webp`;
+  const voiceRoutes = (generate: Reply | Error = { status: 200, body: { result: CLOUDFLARE } }, join: Reply | Error = { status: 200, body: { success: true } }): Handler[] => [
+    (url) => (url === `${API}/voice/generate` ? generate : undefined),
+    (url) => (url.endsWith("/voice/join") ? join : undefined),
+  ];
+  const withCalls = (calls: { channelId: string; userId: string }[]) => ({ ...authenticatedPayload(), voiceChannelUsers: calls });
+  const posts = (calls: { url: string; init: RequestInit }[], path: string) => calls.filter((c) => c.url === `${API}${path}`);
+
+  async function inCall(options: Parameters<typeof setup>[0] = {}, calls = [{ channelId: "900", userId: "2" }]) {
+    const ctx = setup({ token: "t", routes: voiceRoutes(), ...options });
+    await ctx.adapter.start();
+    await ctx.goOnline(withCalls(calls));
+    return ctx;
+  }
+
+  it("shows who is in a conversation's call, and offers a call where the user may join one", async () => {
+    const { adapter, chat, channel, dispatch } = await inCall();
+    await adapter.openHome();
+    expect(chat().sidebar.find((i) => i.id === "900")!.members).toEqual([{ name: "ana", avatarUrl: ANA_AVATAR, muted: false, video: false }]);
+    await adapter.openConversation("900");
+    expect(channel().can.call).toBe(true);
+    await adapter.openServer("100");
+    expect(channel().id).toBe("113");
+    expect(channel().can.call).toBe(false);
+    expect(chat().sidebar.every((i) => i.members === undefined)).toBe(true);
+    // Someone the session does not know, in a server channel; members under their nickname where they have one.
+    await dispatch("voice:user_joined", { channelId: "113", userId: "2", serverId: "100" });
+    await dispatch("voice:user_joined", { channelId: "113", userId: "55", serverId: "100" });
+    expect(chat().sidebar.find((i) => i.id === "113")!.members).toEqual([
+      { name: "Anna", avatarUrl: ANA_AVATAR, muted: false, video: false },
+      { name: "Someone", muted: false, video: false },
+    ]);
+    expect(chat().incomingCall).toBeUndefined();
+  });
+
+  it("joins a DM's call with Nerimity's TURN servers and this connection's socket, and passes signals both ways", async () => {
+    const { adapter, calls, chat, sockets, renders } = await inCall();
+    await adapter.openConversation("900");
+    const joining = adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    // Connecting: no peer-to-peer call yet.
+    expect(chat().voice).toEqual({ channelId: "900", channelName: "ana", guildName: "", mute: false, deaf: false, video: false, stream: false });
+    await joining;
+    expect(posts(calls, "/voice/generate")).toHaveLength(1);
+    expect(body(posts(calls, "/channels/900/voice/join")[0]!.init)).toEqual({ socketId: "sock-1" });
+    expect(chat().voice!.p2p).toEqual({ callId: expect.any(String), self: "1", peers: [{ id: "2", name: "ana", avatarUrl: ANA_AVATAR, offer: false }], iceServers: ICE, relayOnly: true, signals: [] });
+    // Joining again changes nothing.
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(posts(calls, "/channels/900/voice/join")).toHaveLength(1);
+
+    // Ana was there first: her offer comes in, checked and cut to its fields, and goes to the view once.
+    const socket = sockets.at(-1)!;
+    socket.event("voice:user_joined", { channelId: "900", userId: "1" });
+    socket.event("voice:signal_received", { fromUserId: "2", channelId: "900", signal: { type: "offer", sdp: "v=0", extra: 1 } });
+    expect(chat().voice!.p2p!.signals).toEqual([{ seq: 1, from: "2", signal: { type: "offer", sdp: "v=0" } }]);
+    const seen = renders.length;
+    for (const stray of [
+      { fromUserId: "3", channelId: "900", signal: { type: "offer", sdp: "v=0" } },
+      { fromUserId: "2", channelId: "111", signal: { type: "offer", sdp: "v=0" } },
+      { fromUserId: "2", channelId: "900", signal: { type: "nope" } },
+      "junk",
+    ])
+      socket.event("voice:signal_received", stray);
+    expect(renders.length).toBe(seen);
+    adapter.applySettings({}); // any render
+    expect(chat().voice!.p2p!.signals).toEqual([]);
+
+    // The view's answer goes out as Nerimity's client sends it; to anyone outside the call, nothing goes.
+    await adapter.handleAction({ type: "voiceSignal", to: "2", signal: { type: "answer", sdp: "v=1" } });
+    await adapter.handleAction({ type: "voiceSignal", to: "3", signal: { type: "answer", sdp: "v=1" } });
+    await adapter.handleAction({ type: "voiceSignal", to: "2", signal: { type: "bogus" } as never });
+    expect(socket.emitted().filter((e) => (e as unknown[])[0] === "voice:signal_send")).toEqual([["voice:signal_send", { channelId: "900", toUserId: "2", signal: { type: "answer", sdp: "v=1" } }]]);
+  });
+
+  it("keeps only the latest signals while the view takes none", async () => {
+    const { adapter, chat, sockets } = await inCall();
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    const call = (adapter as unknown as { voice: { signals: unknown[] } }).voice;
+    const render = vi.spyOn(adapter as unknown as { render(): void }, "render").mockImplementation(() => {});
+    for (let i = 0; i < 140; i++) sockets.at(-1)!.event("voice:signal_received", { fromUserId: "2", channelId: "900", signal: { type: "renegotiate", renegotiate: true } });
+    expect(call.signals).toHaveLength(128);
+    render.mockRestore();
+    adapter.applySettings({});
+    expect(chat().voice!.p2p!.signals[0]).toMatchObject({ seq: 13 });
+  });
+
+  it("offers to whoever joins after the user, drops whoever leaves at once, and caps the call", async () => {
+    const { adapter, chat, sockets, renders, calls } = await inCall({}, [{ channelId: "211", userId: "2" }]);
+    await adapter.openServer("200");
+    await adapter.handleAction({ type: "joinVoice", channelId: "211" });
+    const socket = sockets.at(-1)!;
+    // Until the server says the user joined, everyone counts as there first.
+    socket.event("voice:user_joined", { channelId: "211", userId: "3", serverId: "200" });
+    expect(chat().voice!.p2p!.peers.map((p) => [p.id, p.offer])).toEqual([
+      ["2", false],
+      ["3", false],
+    ]);
+    socket.event("voice:user_left", { channelId: "211", userId: "3" });
+    socket.event("voice:user_joined", { channelId: "211", userId: "1", serverId: "200" });
+    const before = renders.length;
+    socket.event("voice:user_joined", { channelId: "211", userId: "3", serverId: "200" });
+    expect(renders.length).toBe(before + 1);
+    expect(chat().voice!.p2p!.peers.map((p) => [p.id, p.name, p.offer])).toEqual([
+      ["2", "ana", false],
+      ["3", "bob", true],
+    ]);
+    expect(chat().voice).toMatchObject({ channelName: "chat", guildName: "Beta" });
+    // The server saying so again changes nothing about who offers.
+    socket.event("voice:user_joined", { channelId: "211", userId: "1", serverId: "200" });
+    expect(chat().voice!.p2p!.peers.map((p) => p.offer)).toEqual([false, true]);
+    socket.event("voice:user_left", { channelId: "211", userId: "3" });
+    expect(chat().voice!.p2p!.peers.map((p) => p.id)).toEqual(["2"]);
+    // More than the view connects to: the rest are counted.
+    for (let i = 10; i < 18; i++) socket.event("voice:user_joined", { channelId: "211", userId: String(i), serverId: "200" });
+    expect(chat().voice!.p2p!.peers).toHaveLength(7);
+    expect(chat().voice!.p2p!.over).toBe(2);
+    // A full call is not joined.
+    await adapter.handleAction({ type: "leaveVoice" });
+    expect(posts(calls, "/channels/211/voice/leave")).toHaveLength(1);
+    await adapter.handleAction({ type: "joinVoice", channelId: "211" });
+    expect(chat().voice).toBeNull();
+    expect(chat().error).toBe("This call has 9 people in it: Multicord connects to each person in a call directly, at most 8 with you.");
+  });
+
+  it("joins only conversations the user may call in", async () => {
+    const { adapter, calls, chat } = await inCall();
+    for (const channelId of ["110", "111", "112", "404"]) await adapter.handleAction({ type: "joinVoice", channelId });
+    expect(chat().voice).toBeNull();
+    expect(posts(calls, "/voice/generate")).toHaveLength(0);
+  });
+
+  it("says when it is not connected", async () => {
+    const ctx = setup({ token: "t", routes: voiceRoutes() });
+    await ctx.adapter.start();
+    const socket = ctx.sockets.at(-1)!;
+    socket.receive("0");
+    socket.receive("40");
+    socket.event("user:authenticated", authenticatedPayload());
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(ctx.chat().error).toBe("Not connected to Nerimity; try again in a moment.");
+  });
+
+  it("says why a join failed: the server's refusal, no TURN credentials, or no relay for a relay-only call", async () => {
+    const refused = await inCall({ routes: voiceRoutes(undefined, { status: 400, body: { message: "You must confirm your email to join voice." } }) });
+    await refused.adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(refused.chat().voice).toBeNull();
+    expect(refused.chat().error).toBe("Could not join the call: You must confirm your email to join voice.");
+
+    const noTurn = await inCall({ routes: voiceRoutes({ status: 403, body: { message: "Failed to generate TURN credentials" } }) });
+    await noTurn.adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(noTurn.chat().error).toBe("Could not join the call: Failed to generate TURN credentials");
+    expect(posts(noTurn.calls, "/channels/900/voice/join")).toHaveLength(0);
+
+    const stunOnly = await inCall({ routes: voiceRoutes({ status: 200, body: { result: [{ urls: "stun:stun.cloudflare.com:3478" }] } }) });
+    await stunOnly.adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(stunOnly.chat().error).toBe(`Could not join the call: ${NO_RELAY}`);
+  });
+
+  it("connects directly when relay-only is off, with or without TURN servers, and reuses credentials for an hour", async () => {
+    const { adapter, chat, calls } = await inCall({ settings: { relayOnly: false }, routes: voiceRoutes({ status: 403, body: { message: "Failed" } }) });
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(chat().voice!.p2p).toMatchObject({ relayOnly: false, iceServers: [] });
+    expect(posts(calls, "/voice/generate")).toHaveLength(1);
+
+    const reuse = await inCall();
+    await reuse.adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await reuse.adapter.handleAction({ type: "leaveVoice" });
+    reuse.adapter.applySettings({ relayOnly: false });
+    await reuse.adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(reuse.chat().voice!.p2p).toMatchObject({ relayOnly: false, iceServers: ICE });
+    expect(posts(reuse.calls, "/voice/generate")).toHaveLength(1);
+    await reuse.adapter.handleAction({ type: "leaveVoice" });
+    vi.setSystemTime(Date.now() + 60 * 60_000);
+    await reuse.adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(posts(reuse.calls, "/voice/generate")).toHaveLength(2);
+  });
+
+  it("leaves on the server a call given up while joining, unless another call was joined", async () => {
+    const { adapter, calls, chat } = await inCall({}, [{ channelId: "211", userId: "2" }]);
+    let joining = adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await adapter.handleAction({ type: "leaveVoice" });
+    await joining;
+    expect(chat().voice).toBeNull();
+    expect(posts(calls, "/channels/900/voice/leave")).toHaveLength(1);
+    joining = adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await adapter.handleAction({ type: "joinVoice", channelId: "211" });
+    await joining;
+    expect(chat().voice!.channelId).toBe("211");
+    expect(posts(calls, "/channels/900/voice/leave")).toHaveLength(1);
+  });
+
+  it("goes on when leaving fails on the server", async () => {
+    const { adapter, routes, calls, chat } = await inCall();
+    routes.unshift((url) => (url.endsWith("/voice/leave") ? new Error("offline") : undefined));
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await adapter.handleAction({ type: "leaveVoice" });
+    await vi.advanceTimersByTimeAsync(0);
+    const joining = adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await adapter.handleAction({ type: "leaveVoice" });
+    await joining;
+    expect(posts(calls, "/channels/900/voice/leave")).toHaveLength(2);
+    expect(chat().voice).toBeNull();
+  });
+
+  it("forgets a join given up while it failed", async () => {
+    const { adapter, chat } = await inCall({ routes: voiceRoutes(undefined, { status: 400, body: { message: "No" } }) });
+    const joining = adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await adapter.handleAction({ type: "leaveVoice" });
+    await joining;
+    expect(chat().error).toBeUndefined();
+  });
+
+  it("keeps mute, deafen and the camera for the view, and leaves on a call failure", async () => {
+    const { adapter, chat, calls } = await inCall();
+    // Outside a call these do nothing.
+    await adapter.handleAction({ type: "voiceState", mute: true, deaf: false, video: false, stream: false });
+    await adapter.handleAction({ type: "voiceNotice", message: "x", off: "video" });
+    await adapter.handleAction({ type: "voiceSignal", to: "2", signal: { type: "renegotiate", renegotiate: true } });
+    expect(chat().error).toBeUndefined();
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await adapter.handleAction({ type: "voiceState", mute: true, deaf: true, video: true, stream: true });
+    expect(chat().voice).toMatchObject({ mute: true, deaf: true, video: true, stream: false });
+    await adapter.handleAction({ type: "voiceNotice", message: "No speakers", off: "stream" });
+    expect(chat()).toMatchObject({ error: "No speakers", voice: { video: true } });
+    await adapter.handleAction({ type: "voiceNotice", message: "The camera could not start: busy", off: "video" });
+    expect(chat()).toMatchObject({ error: "The camera could not start: busy", voice: { video: false } });
+    await adapter.handleAction({ type: "voiceError", message: "ICE failed" });
+    expect(chat()).toMatchObject({ voice: null, error: "Call failed: ICE failed" });
+    expect(posts(calls, "/channels/900/voice/leave")).toHaveLength(1);
+  });
+
+  it("ends the call here when the server says the user left it", async () => {
+    const { adapter, chat, sockets, calls } = await inCall();
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    sockets.at(-1)!.event("voice:user_left", { channelId: "111", userId: "1" });
+    expect(chat().voice).not.toBeNull();
+    sockets.at(-1)!.event("voice:user_left", { channelId: "900", userId: "1" });
+    expect(chat().voice).toBeNull();
+    expect(posts(calls, "/channels/900/voice/leave")).toHaveLength(0);
+  });
+
+  it("joins the call again after a reconnect, as it was", async () => {
+    const { adapter, chat, sockets, goOnline, calls } = await inCall();
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await adapter.handleAction({ type: "voiceState", mute: true, deaf: false, video: true, stream: false });
+    const before = chat().voice!.p2p!.callId;
+    sockets.at(-1)!.serverClose();
+    await vi.advanceTimersByTimeAsync(1000);
+    await goOnline(withCalls([{ channelId: "900", userId: "2" }]));
+    expect(posts(calls, "/channels/900/voice/join").map((c) => body(c.init))).toEqual([{ socketId: "sock-1" }, { socketId: "sock-2" }]);
+    expect(chat().voice).toMatchObject({ mute: true, video: true, p2p: { self: "1" } });
+    expect(chat().voice!.p2p!.callId).not.toBe(before);
+  });
+
+  it("ends the call on signing out", async () => {
+    const { adapter, last } = await inCall();
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    await adapter.handleAction({ type: "logout" });
+    expect(last().screen).toBe("prompt");
+    expect((adapter as unknown as { voice: unknown }).voice).toBeUndefined();
+  });
+
+  it("names a call whose conversation went away", async () => {
+    const { adapter, chat, dispatch } = await inCall({}, [{ channelId: "211", userId: "2" }]);
+    await adapter.handleAction({ type: "joinVoice", channelId: "211" });
+    await dispatch("server:channel_deleted", { channelId: "211" });
+    expect(chat().voice).toMatchObject({ channelName: "Call", guildName: "", p2p: { peers: [] } });
+  });
+
+  it("rings for a DM call that starts, until it is joined, declined or over", async () => {
+    const { adapter, chat, sockets } = await inCall({}, []);
+    const rings: unknown[] = [];
+    adapter.onIncomingCall((call) => rings.push(call));
+    const socket = sockets.at(-1)!;
+    // A server channel's call, or the user's own, does not ring.
+    socket.event("voice:user_joined", { channelId: "211", userId: "2", serverId: "200" });
+    socket.event("voice:user_joined", { channelId: "900", userId: "1" });
+    socket.event("voice:user_left", { channelId: "900", userId: "1" });
+    expect(rings).toEqual([]);
+    socket.event("voice:user_joined", { channelId: "900", userId: "2" });
+    expect(rings).toEqual([{ conversationKey: "900", from: "ana", video: false }]);
+    expect(chat().incomingCall).toEqual({ channelId: "900", from: "ana" });
+    // Declining stops it here; Nerimity has no answer to send.
+    await adapter.handleAction({ type: "declineCall", channelId: "111" });
+    await adapter.handleAction({ type: "declineCall", channelId: "900" });
+    expect(chat().incomingCall).toBeUndefined();
+    // Over, then started again: it rings again.
+    socket.event("voice:user_left", { channelId: "900", userId: "2" });
+    socket.event("voice:user_joined", { channelId: "900", userId: "2" });
+    expect(rings).toHaveLength(2);
+    expect(chat().incomingCall).toEqual({ channelId: "900", from: "ana" });
+    // Joining answers it.
+    await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(chat().incomingCall).toBeUndefined();
+    // A ring whose caller is gone after a reconnect rings no more.
+    await adapter.handleAction({ type: "leaveVoice" });
+    socket.event("voice:user_left", { channelId: "900", userId: "2" });
+    socket.event("voice:user_joined", { channelId: "900", userId: "2" });
+    expect(chat().incomingCall).toBeDefined();
+    socket.event("user:authenticated", withCalls([]));
+    expect(chat().incomingCall).toBeUndefined();
+  });
+
+  it("ignores call events it cannot read", async () => {
+    const { chat, sockets, renders } = await inCall();
+    const before = renders.length;
+    sockets.at(-1)!.event("voice:user_joined", { channelId: "900" });
+    sockets.at(-1)!.event("voice:user_left", "x");
+    expect(renders.length).toBe(before);
+    expect(chat().incomingCall).toBeUndefined();
   });
 });

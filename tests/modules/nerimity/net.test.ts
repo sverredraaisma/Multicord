@@ -47,7 +47,7 @@ function setupSocket() {
   /** Engine.IO open, socket.io connect and sign-in. */
   const handshake = (socket = last()) => {
     socket.receive('0{"sid":"e1","upgrades":[],"pingInterval":25000,"pingTimeout":20000}');
-    socket.receive('40{"sid":"s1"}');
+    socket.receive('40{"sid":"sid1"}');
     socket.receive(`42${JSON.stringify(["user:authenticated", { user: ANA }])}`);
   };
   return { client, sockets, handlers, last, handshake };
@@ -69,8 +69,11 @@ describe("Nerimity socket", () => {
     expect(handlers.status).toHaveBeenLastCalledWith("connecting");
     // Nothing is emitted before sign-in.
     client.emit("notification:dismiss", { channelId: "1" });
+    expect(client.id).toBeUndefined();
     handshake();
     expect(last().sent.slice(0, 2)).toEqual(["40", '42["user:authenticate",{"token":"tok"}]']);
+    // The socket.io session id, which joining a call names.
+    expect(client.id).toBe("sid1");
     expect(handlers.status).toHaveBeenLastCalledWith("ready");
     expect(handlers.event).toHaveBeenCalledWith("user:authenticated", { user: ANA });
     // A second connect packet does not sign in again.
@@ -91,6 +94,17 @@ describe("Nerimity socket", () => {
     client.disconnect();
     expect(last().closed).toEqual([1000]);
     expect(handlers.status).toHaveBeenLastCalledWith("closed");
+    expect(client.id).toBeUndefined();
+  });
+
+  it("takes only a plausible socket.io session id", () => {
+    for (const [packet, id] of [["40", undefined], ['40{"sid":"ab"}', undefined], ['40{"sid":"a b c"}', undefined], ['40{"sid":5}', undefined], ['40{"sid":"Xy_9-z0123"}', "Xy_9-z0123"]] as const) {
+      const { client, last } = setupSocket();
+      client.connect();
+      last().receive("0");
+      last().receive(packet);
+      expect(client.id).toBe(id);
+    }
   });
 
   it("reports its place in the sign-in queue", () => {
@@ -288,6 +302,23 @@ describe("Nerimity REST", () => {
     expect(json(calls.at(-1)!.init)).toEqual({ content: "new" });
     await rest.deleteMessage("9", "6");
     expect(calls.at(-1)!.init.method).toBe("DELETE");
+  });
+
+  it("joins and leaves calls, and asks for TURN credentials", async () => {
+    const servers = { urls: ["turn:turn.cloudflare.com:3478"], username: "u", credential: "c" };
+    const { fetch, calls } = fakeFetch({
+      [`POST ${API}/channels/9/voice/join`]: { status: 200, body: { success: true } },
+      [`POST ${API}/channels/9/voice/leave`]: { status: 200, body: { success: true } },
+      [`POST ${API}/voice/generate`]: { status: 200, body: { result: servers } },
+    });
+    const rest = new NerimityRest(API, { fetch, sleep: async () => {} });
+    await rest.joinVoice("9", "sock1");
+    expect(json(calls.at(-1)!.init)).toEqual({ socketId: "sock1" });
+    await rest.leaveVoice("9");
+    expect(calls.at(-1)!.init.method).toBe("POST");
+    expect(await rest.turnCredentials()).toEqual(servers);
+    const other = new NerimityRest(API, { fetch: fakeFetch({ [`POST ${API}/voice/generate`]: { status: 200, body: "nope" } }).fetch, sleep: async () => {} });
+    expect(await other.turnCredentials()).toBeUndefined();
   });
 
   it("adds and removes reactions, naming custom emoji by id and file kind", async () => {

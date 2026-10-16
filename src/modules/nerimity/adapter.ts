@@ -1,7 +1,17 @@
 import type { DirectConversation, HealthCheck, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
 import {
   MAX_ATTACHMENTS,
+  MAX_CALL_PARTICIPANTS,
+  MAX_CALL_SIGNALS,
+  voiceSignal,
   type NativeAction,
+  type NativeCallPeer,
+  type NativeCallSignal,
+  type NativeIceServer,
+  type NativeIncomingCall,
+  type NativeVoiceMember,
+  type NativeVoiceSession,
+  type VoiceSignal,
   type NativeAttachment,
   type NativeCustomEmoji,
   type NativeEmbed,
@@ -25,6 +35,7 @@ import { emojiMarkup, toMarkdown, toPlainLine, type MarkupNames } from "./markup
 import { MAX_SEARCH, NerimityApiError, NerimityRest, PAGE_SIZE, PIN_PAGE, type ReactionTarget, type RestOptions } from "./rest";
 import { NerimitySocket, type SocketFactory, type SocketStatus } from "./socket";
 import { NerimityState, TYPING_MS } from "./state";
+import { CLOUDFLARE_ICE_HOSTS, hasRelay, iceServersFrom, TURN_REUSE_MS } from "./voice";
 import {
   ChannelType,
   MessageType,
@@ -34,6 +45,7 @@ import {
   displayName,
   emojiFile,
   isRecord,
+  parseVoiceUser,
   reactionKey,
   type NerimityChannel,
   type NerimityLinkEmbed,
@@ -61,8 +73,34 @@ const TOKEN_PROMPT = "token";
 /** How often the server is asked whether its API and CDN answer. */
 export const HEALTH_INTERVAL_MS = 5 * 60_000;
 
-/** What the module offers the shell; its manifest must declare the same (tested). Nerimity's calls are peer-to-peer WebRTC of its own, not offered (see the README). */
-export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+/** What the module offers the shell; its manifest must declare the same (tested). Calls are Nerimity's own peer-to-peer WebRTC, with the microphone and camera; no screen sharing. */
+export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: true, screenShare: false };
+
+/** The service setting that keeps calls to Nerimity's TURN relay, so peers never learn the user's addresses (on unless turned off). */
+export const RELAY_SETTING = "relayOnly";
+/** People in a call the sidebar lists under its conversation. */
+const CALL_MEMBERS_SHOWN = 25;
+export const NO_RELAY = "Nerimity gave no relay (TURN) server, and this service's calls go through a relay only (Settings > Services).";
+
+/** The call the user is in, or joining. */
+interface NerimityCall {
+  channelId: string;
+  /** New with each join, so the view starts its connections afresh. */
+  callId: string;
+  /** The server took the join: the view may connect. */
+  joined: boolean;
+  mute: boolean;
+  deaf: boolean;
+  video: boolean;
+  /** The relay setting as it was at the join. */
+  relayOnly: boolean;
+  iceServers: NativeIceServer[];
+  /** Who was in the call before the user, once the server said the user joined: they make the offers, and the user offers to anyone after. */
+  existing?: Set<string>;
+  /** Signals from peers not yet rendered. */
+  signals: NativeCallSignal[];
+  seq: number;
+}
 
 /** Which instance this is: the engine's own info. */
 export interface NerimityInstanceDef {
@@ -187,6 +225,16 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
   /** The open channel's search results, until the search ends; and a count that drops answers to earlier searches. */
   private search: { channelId: string; results: NativeSearchResults } | undefined;
   private searchCount = 0;
+  /** Settings' "Calls through a relay only" for this service. */
+  private relayOnly: boolean;
+  private voice: NerimityCall | undefined;
+  /** Counts joins and leaves, so the answer to a join given up is not taken for the call now. */
+  private voiceJoins = 0;
+  /** TURN credentials from the server, while they may be reused. */
+  private turn: { servers: NativeIceServer[]; at: number } | undefined;
+  /** DM calls that started while signed in: they ring until joined, declined or over. */
+  private readonly ringing = new Set<string>();
+  private readonly declined = new Set<string>();
 
   constructor(private readonly deps: NerimityAdapterDeps) {
     const url = new URL(deps.def.url);
@@ -195,6 +243,7 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     this.cdn = `https://cdn.${url.host}`;
     this.rest = new NerimityRest(`${this.origin}/api`, { fetch: deps.fetch, ...deps.rest });
     this.typingIndicators = deps.settings?.[TYPING_SETTING] !== false;
+    this.relayOnly = deps.settings?.[RELAY_SETTING] !== false;
     this.state.changed.on(() => this.schedulePublish());
     // Typing indicators expire on their own; re-render when they may have.
     this.state.changed.on(() => {
@@ -207,9 +256,10 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
-  /** Settings changed: whether to send typing indicators. One already sent runs out by itself. */
+  /** Settings changed: whether to send typing indicators (one already sent runs out by itself), and whether calls go through a relay only (from the next join). */
   applySettings(values: ServiceSettingValues): void {
     this.typingIndicators = values[TYPING_SETTING] !== false;
+    this.relayOnly = values[RELAY_SETTING] !== false;
     this.render();
   }
 
@@ -272,6 +322,20 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
         return this.mute(action.channelId, action.mute);
       case "forward":
         return this.forward(action.messageId, action.channelId);
+      case "joinVoice":
+        return this.joinVoice(action.channelId);
+      case "leaveVoice":
+        return this.leaveVoice(undefined);
+      case "voiceState":
+        return this.setVoiceFlags(action);
+      case "voiceError":
+        return this.leaveVoice(`Call failed: ${action.message}`);
+      case "voiceNotice":
+        return this.voiceNotice(action.message, action.off === "video");
+      case "voiceSignal":
+        return this.sendSignal(action.to, action.signal);
+      case "declineCall":
+        return this.declineCall(action.channelId);
       case "logout":
         return this.logout();
       default:
@@ -435,10 +499,14 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private onEvent(name: string, data: unknown): void {
+    // Someone else joining a DM's call that no one was in starts a call there, which rings.
+    const starting = name === "voice:user_joined" && this.callStarting(data);
     this.state.apply(name, data);
     // Someone pinned or unpinned in the channel whose pins are listed.
     if (name === "message:updated" && this.pins && isRecord(data) && data.channelId === this.pins.channelId && isRecord(data.updated) && typeof data.updated.pinned === "boolean")
       void this.loadPins(this.pins.channelId);
+    if (name === "voice:user_joined" || name === "voice:user_left") return this.onVoiceUser(name, data, starting);
+    if (name === "voice:signal_received") return this.receiveSignal(data);
     if (name !== "user:authenticated") return;
     // The server may hand out a new token with the session; later connections use it.
     const fresh = isRecord(data) ? data.newToken : undefined;
@@ -449,7 +517,11 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     }
     this.queuePosition = 0;
     this.screen = "chat";
-    this.render();
+    // The server ended the call with the old connection: join it again on this one, as Nerimity's client does.
+    const voice = this.voice;
+    if (!voice) return this.render();
+    this.voice = undefined;
+    void this.joinVoice(voice.channelId, voice);
   }
 
   private async logout(): Promise<void> {
@@ -470,6 +542,12 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     this.search = undefined;
     this.pending.clear();
     this.cdnTokens.clear();
+    // The server ends the call with the connection.
+    this.voice = undefined;
+    this.voiceJoins++;
+    this.turn = undefined;
+    this.ringing.clear();
+    this.declined.clear();
     this.selection = { kind: "home" };
     this.selectedChannelId = undefined;
     this.lastChannel.clear();
@@ -824,6 +902,206 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
+  // --- Calls -----------------------------------------------------------------
+
+  /**
+   * Joins a DM's or a server channel's call as Nerimity's client does: TURN
+   * credentials from the server, then the join with this connection's
+   * socket id. The view then connects to each person in the call itself
+   * (NativePeerCall), its signals passing through here and the socket. A
+   * call rejoined after a reconnect keeps its mute, deafen and camera.
+   */
+  private async joinVoice(channelId: string, keep?: Pick<NerimityCall, "mute" | "deaf" | "video">): Promise<void> {
+    const channel = this.state.channels.get(channelId);
+    if (!channel || !TEXT_CHANNEL_TYPES.has(channel.type) || !this.state.canSee(channel) || !this.state.canJoinVoice(channel) || this.voice?.channelId === channelId) return;
+    const socketId = this.socket?.id;
+    const others = this.state.inCall(channelId).filter((id) => id !== this.state.me?.id).length;
+    if (!socketId || others >= MAX_CALL_PARTICIPANTS) {
+      this.error = socketId
+        ? `This call has ${others} people in it: Multicord connects to each person in a call directly, at most ${MAX_CALL_PARTICIPANTS} with you.`
+        : "Not connected to Nerimity; try again in a moment.";
+      return this.render();
+    }
+    if (this.voice) this.leaveVoice(undefined);
+    const join = ++this.voiceJoins;
+    const voice: NerimityCall = { channelId, callId: String(join), joined: false, mute: keep?.mute ?? false, deaf: keep?.deaf ?? false, video: keep?.video ?? false, relayOnly: this.relayOnly, iceServers: [], signals: [], seq: 0 };
+    this.voice = voice;
+    this.ringing.delete(channelId);
+    this.declined.delete(channelId);
+    this.error = undefined;
+    this.render();
+    try {
+      voice.iceServers = await this.iceServers(voice.relayOnly);
+      await this.rest.joinVoice(channelId, socketId);
+    } catch (error) {
+      if (join !== this.voiceJoins) return;
+      this.voice = undefined;
+      this.error = `Could not join the call: ${messageOf(error)}`;
+      return this.render();
+    }
+    // Given up while the server was being asked: leave there too, unless another call stands now (joining it left this one).
+    if (join !== this.voiceJoins) {
+      if (!this.voice) await this.rest.leaveVoice(channelId).catch(() => undefined);
+      return;
+    }
+    voice.joined = true;
+    this.render();
+  }
+
+  /**
+   * TURN and STUN servers for a call: Cloudflare's, which Nerimity's server
+   * hands out, or the site's own hosts, and nothing else; reused for an
+   * hour, as Nerimity's client does. A relay-only call cannot go without a
+   * relay; otherwise a call without one may still connect directly.
+   */
+  private async iceServers(relayOnly: boolean, now: number = Date.now()): Promise<NativeIceServer[]> {
+    let servers = this.turn && now - this.turn.at < TURN_REUSE_MS ? this.turn.servers : undefined;
+    if (!servers) {
+      try {
+        servers = iceServersFrom(await this.rest.turnCredentials(), [...CLOUDFLARE_ICE_HOSTS, new URL(this.origin).hostname, new URL(this.cdn).hostname]);
+      } catch (error) {
+        if (relayOnly) throw error;
+        servers = [];
+      }
+      if (servers.length > 0) this.turn = { servers, at: now };
+    }
+    if (relayOnly && !hasRelay(servers)) throw new Error(NO_RELAY);
+    return servers;
+  }
+
+  /** Leaves the call: at once here, then on the server where it was joined. */
+  private leaveVoice(error: string | undefined): void {
+    const voice = this.voice;
+    this.voiceJoins++;
+    this.voice = undefined;
+    if (error) this.error = error;
+    this.render();
+    if (voice?.joined) void this.rest.leaveVoice(voice.channelId).catch(() => undefined);
+  }
+
+  /** Mute, deafen and camera, which the view applies; Nerimity's server keeps none of them. */
+  private setVoiceFlags(flags: { mute: boolean; deaf: boolean; video: boolean }): void {
+    if (!this.voice) return;
+    Object.assign(this.voice, { mute: flags.mute, deaf: flags.deaf, video: flags.video });
+    this.render();
+  }
+
+  /** A problem the call survives: shown, with a camera that failed turned off. */
+  private voiceNotice(message: string, cameraOff: boolean): void {
+    if (!this.voice) return;
+    this.error = message;
+    if (cameraOff) this.voice.video = false;
+    this.render();
+  }
+
+  /** The view's signal for one person in the call, passed on over the socket as Nerimity's client sends it. */
+  private sendSignal(to: string, signal: VoiceSignal): void {
+    const voice = this.voice;
+    const clean = voiceSignal(signal);
+    if (!voice?.joined || !clean || !this.callPeers(voice).peers.some((p) => p.id === to)) return;
+    this.socket?.emit("voice:signal_send", { channelId: voice.channelId, toUserId: to, signal: clean });
+  }
+
+  /** A signal from someone in the user's call, checked and kept for the view, which gets each once. */
+  private receiveSignal(data: unknown): void {
+    const voice = this.voice;
+    const d = isRecord(data) ? data : {};
+    const signal = voiceSignal(d.signal);
+    if (!voice || !signal || d.channelId !== voice.channelId || !this.callPeers(voice).peers.some((p) => p.id === d.fromUserId)) return;
+    voice.signals.push({ seq: ++voice.seq, from: d.fromUserId as string, signal });
+    // Should the view stop taking them, only the latest are kept.
+    voice.signals.splice(0, voice.signals.length - MAX_CALL_SIGNALS);
+    this.render();
+  }
+
+  /** Whether a voice:user_joined starts a DM's call: someone else, in a DM whose call nobody was in. */
+  private callStarting(data: unknown): boolean {
+    const user = parseVoiceUser(data);
+    const channel = user ? this.state.channels.get(user.channelId) : undefined;
+    return channel !== undefined && !channel.serverId && user!.userId !== this.state.me?.id && this.state.inCall(channel.id).length === 0;
+  }
+
+  /** Someone joined or left a call (the session's state already has it). */
+  private onVoiceUser(name: string, data: unknown, starting: boolean): void {
+    const user = parseVoiceUser(data);
+    if (!user) return;
+    const voice = this.voice;
+    const me = this.state.me?.id;
+    if (starting) {
+      this.ringing.add(user.channelId);
+      this.incomingCalls.emit({ conversationKey: user.channelId, from: this.person(user.userId, undefined).name, video: false });
+    }
+    if (name === "voice:user_left") {
+      if (this.state.inCall(user.channelId).every((id) => id === me)) {
+        this.ringing.delete(user.channelId);
+        this.declined.delete(user.channelId);
+      }
+      // Gone from the call on the server (it was joined elsewhere, or ended): over here too.
+      if (user.userId === me && voice?.joined && voice.channelId === user.channelId) {
+        this.voice = undefined;
+        this.voiceJoins++;
+      }
+    } else if (user.userId === me && voice?.channelId === user.channelId && !voice.existing) {
+      voice.existing = new Set(this.state.inCall(user.channelId).filter((id) => id !== me));
+    }
+    // The view opens and drops connections as people come and go: at once, not with the next update.
+    if (voice?.channelId === user.channelId || starting) this.render();
+  }
+
+  /** Declines a DM call ringing for the user: Nerimity has no such answer, so it only stops ringing here, until the next call there. */
+  private declineCall(channelId: string): void {
+    if (!this.ringing.has(channelId)) return;
+    this.declined.add(channelId);
+    this.render();
+  }
+
+  /** A DM call ringing for the user: one that started while signed in, with someone in it, neither joined nor declined. */
+  private incomingCall(): NativeIncomingCall | undefined {
+    const me = this.state.me?.id;
+    for (const channelId of this.ringing) {
+      const caller = this.state.inCall(channelId).find((id) => id !== me);
+      if (caller && !this.declined.has(channelId)) return { channelId, from: this.person(caller, undefined).name };
+    }
+    return undefined;
+  }
+
+  /** Someone in a call as the view shows them: their name where the call is, and their picture. */
+  private person(id: string, serverId: string | undefined): { name: string; avatarUrl?: string } {
+    const user = this.state.users.get(id);
+    if (!user) return { name: "Someone" };
+    const avatarUrl = this.avatarUrl(user);
+    return avatarUrl ? { name: this.authorName(user, serverId), avatarUrl } : { name: this.authorName(user, serverId) };
+  }
+
+  /** The others in the user's call the view connects to (the first who joined, up to the cap), and how many more there are. */
+  private callPeers(voice: NerimityCall): { peers: NativeCallPeer[]; over: number } {
+    const others = this.state.inCall(voice.channelId).filter((id) => id !== this.state.me?.id);
+    const serverId = this.state.channels.get(voice.channelId)?.serverId;
+    const peers = others.slice(0, MAX_CALL_PARTICIPANTS - 1).map((id) => ({ id, ...this.person(id, serverId), offer: voice.existing !== undefined && !voice.existing.has(id) }));
+    return { peers, over: others.length - peers.length };
+  }
+
+  /** Who is in a conversation's call, for its sidebar row; Nerimity does not say who is muted or on camera. */
+  private callMembers(channel: NerimityChannel): NativeVoiceMember[] {
+    return this.state
+      .inCall(channel.id)
+      .slice(0, CALL_MEMBERS_SHOWN)
+      .map((id) => ({ ...this.person(id, channel.serverId), muted: false, video: false }));
+  }
+
+  private voiceSession(): NativeVoiceSession | null {
+    const voice = this.voice;
+    if (!voice) return null;
+    const channel = this.state.channels.get(voice.channelId);
+    const server = channel?.serverId ? this.state.servers.get(channel.serverId) : undefined;
+    const session: NativeVoiceSession = { channelId: voice.channelId, channelName: channel ? this.channelTitle(channel) : "Call", guildName: server?.name ?? "", mute: voice.mute, deaf: voice.deaf, video: voice.video, stream: false };
+    if (voice.joined) {
+      const { peers, over } = this.callPeers(voice);
+      session.p2p = { callId: voice.callId, self: this.state.me!.id, peers, iceServers: voice.iceServers, relayOnly: voice.relayOnly, signals: voice.signals, ...(over > 0 ? { over } : {}) };
+    }
+    return session;
+  }
+
   // --- Members and profiles --------------------------------------------------
 
   /** A member row: nickname, picture, presence, the colour of their highest coloured role, and how to mention them. */
@@ -1087,6 +1365,8 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
       // Muted in Nerimity (the channel, or its server); the bell changes the channel's own setting where that can.
       ...(kind === "text" && this.state.isMuted(channel) ? { muted: true } : {}),
       ...(kind === "text" && this.canMute(channel) ? { canMute: true } : {}),
+      // Who is in its call, if anyone.
+      ...(kind !== "category" && this.state.inCall(channel.id).length > 0 ? { members: this.callMembers(channel) } : {}),
     });
     if (this.selection.kind === "home") return this.state.dms().map(({ channel }) => item(channel, "dm"));
     return this.state
@@ -1135,6 +1415,7 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
         const channel = this.selectedChannelId ? this.state.channels.get(this.selectedChannelId) : undefined;
         const server = this.selection.kind === "server" ? this.state.servers.get(this.selection.serverId) : undefined;
         const members = channel ? this.memberView(channel) : undefined;
+        const ringing = this.incomingCall();
         return {
           screen: "chat",
           platform,
@@ -1155,13 +1436,14 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(members ? { members } : {}),
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
                 ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
-                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true, search: true, forward: true },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true, search: true, forward: true, call: this.state.canJoinVoice(channel) },
               }
             : null,
-          voice: null,
+          voice: this.voiceSession(),
           emojiBase: `${this.cdn}/emojis`,
           customEmoji: this.customEmoji(channel?.serverId),
           ...(this.profile ? { profile: this.profile } : {}),
+          ...(ringing ? { incomingCall: ringing } : {}),
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };
       }
@@ -1169,6 +1451,9 @@ export class NerimityAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private render(): void {
-    this.deps.render(this.viewState());
+    const state = this.viewState();
+    this.deps.render(state);
+    // Each render carries the signals since the last one to the view, once.
+    if (state.screen === "chat" && state.voice?.p2p) this.voice!.signals = [];
   }
 }

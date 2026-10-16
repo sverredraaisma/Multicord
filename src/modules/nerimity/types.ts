@@ -14,7 +14,7 @@ export const MessageType = { Content: 0, JoinServer: 1, LeaveServer: 2, KickUser
 /** Role permission bits (ROLE_PERMISSIONS in Nerimity's server). */
 export const RolePermission = { Admin: 1, SendMessage: 2, ManageChannels: 4, MentionEveryone: 64, MentionRoles: 256 } as const;
 /** Channel permission bits a role is given per channel (CHANNEL_PERMISSIONS). */
-export const ChannelPermission = { Public: 1, SendMessage: 2 } as const;
+export const ChannelPermission = { Public: 1, SendMessage: 2, JoinVoice: 4 } as const;
 
 /** Notification modes, for pings (badges and mentions) and sounds alike; null on a channel follows its server. */
 export const NotifyMode = { All: 0, MentionsOnly: 1, Mute: 2 } as const;
@@ -370,6 +370,16 @@ export function parseEmbed(value: unknown): NerimityLinkEmbed | undefined {
     if (color) embed.color = color;
   }
   return embed.title || embed.description || embed.image ? embed : undefined;
+}
+
+/** Someone in a channel's call, as the session (voiceChannelUsers) and voice:user_joined and voice:user_left name them. */
+export interface NerimityVoiceUser {
+  channelId: string;
+  userId: string;
+}
+
+export function parseVoiceUser(value: unknown): NerimityVoiceUser | undefined {
+  return isRecord(value) && isId(value.channelId) && isId(value.userId) ? { channelId: value.channelId, userId: value.userId } : undefined;
 }
 
 /** An inbox entry (a DM), with its channel when the payload carries it. */
