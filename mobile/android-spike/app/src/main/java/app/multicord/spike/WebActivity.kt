@@ -13,10 +13,12 @@ import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
 import android.view.View
+import android.webkit.ConsoleMessage
 import android.webkit.PermissionRequest
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -26,6 +28,7 @@ import android.widget.TextView
 import androidx.webkit.ProfileStore
 import androidx.webkit.UserAgentMetadata
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 
@@ -42,7 +45,15 @@ class WebActivity : Activity() {
         val startUrl: String,
         /** Hosts that may load inside the WebView; other https links go to the browser. */
         val navigableHosts: Set<String>,
+        /** Whether the origin is ours, served from assets/ by WebViewAssetLoader (no server, no network). */
+        val servesAssets: Boolean,
     )
+
+    private val assetLoader by lazy {
+        WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
+            .build()
+    }
 
     private lateinit var target: Target
     private lateinit var webView: WebView
@@ -170,6 +181,13 @@ class WebActivity : Activity() {
     private fun asset(path: String): String = assets.open(path).bufferedReader().use { it.readText() }
 
     private inner class Client : WebViewClient() {
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+            if (!target.servesAssets) return null
+            // Our pages load nothing from the network: anything the loader does not serve is a 404.
+            return assetLoader.shouldInterceptRequest(request.url)
+                ?: WebResourceResponse("text/plain", "utf-8", 404, "Not Found", emptyMap(), null)
+        }
+
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val url = request.url
             if (url.scheme == "https" && hostAllowed(url.host)) return false
@@ -204,6 +222,13 @@ class WebActivity : Activity() {
         host != null && target.navigableHosts.any { host == it || host.endsWith(".$it") }
 
     private inner class Chrome : WebChromeClient() {
+        override fun onConsoleMessage(message: ConsoleMessage): Boolean {
+            // Only our own pages' console: Discord's is noise and none of our business.
+            if (!target.servesAssets) return false
+            SpikeLog.add(target.section, "console ${message.messageLevel()}: ${message.message()}")
+            return true
+        }
+
         override fun onPermissionRequest(request: PermissionRequest) {
             val asked = request.resources.toList()
             if (!sameOrigin(request.origin, target.origin)) {
@@ -260,8 +285,11 @@ class WebActivity : Activity() {
         private const val REQUEST_MEDIA = 1
         private const val EXTRA_TARGET = "target"
         private const val EXTRA_DESKTOP_UA = "desktopUa"
+        private const val EXTRA_PAGE = "page"
         private const val TARGET_DISCORD = "discord"
+        private const val TARGET_PAGE = "page"
         private const val DISCORD_ORIGIN = "https://discord.com"
+        private const val PAGE_ORIGIN = "https://" + WebViewAssetLoader.DEFAULT_DOMAIN
 
         private val GRANTABLE = mapOf(
             PermissionRequest.RESOURCE_VIDEO_CAPTURE to Manifest.permission.CAMERA,
@@ -273,14 +301,34 @@ class WebActivity : Activity() {
                 .putExtra(EXTRA_TARGET, TARGET_DISCORD)
                 .putExtra(EXTRA_DESKTOP_UA, desktopUa)
 
+        /** A bundled test page from assets/web, served on an https origin (a secure context). */
+        fun page(context: Context, page: String): Intent =
+            Intent(context, WebActivity::class.java)
+                .putExtra(EXTRA_TARGET, TARGET_PAGE)
+                .putExtra(EXTRA_PAGE, page)
+
         private fun targetFrom(intent: Intent): Target =
-            Target(
-                section = "discord",
-                origin = DISCORD_ORIGIN,
-                profile = "spike-discord",
-                startUrl = "$DISCORD_ORIGIN/app",
-                navigableHosts = setOf("discord.com", "discord.gg", "discordapp.com", "hcaptcha.com"),
-            )
+            if (intent.getStringExtra(EXTRA_TARGET) == TARGET_DISCORD) {
+                Target(
+                    section = "discord",
+                    origin = DISCORD_ORIGIN,
+                    profile = "spike-discord",
+                    startUrl = "$DISCORD_ORIGIN/app",
+                    navigableHosts = setOf("discord.com", "discord.gg", "discordapp.com", "hcaptcha.com"),
+                    servesAssets = false,
+                )
+            } else {
+                // Only plain file names from our own assets/web folder.
+                val page = intent.getStringExtra(EXTRA_PAGE)?.takeIf { it.matches(Regex("[a-z0-9-]+\\.html")) } ?: "camera.html"
+                Target(
+                    section = page.removeSuffix(".html"),
+                    origin = PAGE_ORIGIN,
+                    profile = "spike-pages",
+                    startUrl = "$PAGE_ORIGIN/assets/web/$page",
+                    navigableHosts = setOf(WebViewAssetLoader.DEFAULT_DOMAIN),
+                    servesAssets = true,
+                )
+            }
 
         /** Exact https origin match on the default port. */
         fun sameOrigin(uri: Uri, origin: String): Boolean {

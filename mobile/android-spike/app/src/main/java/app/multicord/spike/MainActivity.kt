@@ -8,6 +8,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.hardware.camera2.CameraManager
 import android.os.Bundle
 import android.view.View
 import android.widget.Button
@@ -22,6 +23,7 @@ class MainActivity : Activity() {
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
     private val onLog: () -> Unit = { refreshLog() }
+    private var cameraWatch: CameraManager.AvailabilityCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,10 +44,12 @@ class MainActivity : Activity() {
 
         SpikeLog.listen(onLog)
         if (savedInstanceState == null) Features.report(this)
+        cameraWatch = NativeCameras.watch(this)
         refreshLog()
     }
 
     override fun onDestroy() {
+        cameraWatch?.let { NativeCameras.unwatch(this, it) }
         SpikeLog.unlisten(onLog)
         super.onDestroy()
     }
@@ -55,6 +59,10 @@ class MainActivity : Activity() {
         into.addView(Ui.row(this,
             button("0.1 Discord") { startActivity(WebActivity.discord(this, desktopUa.isChecked)) },
             desktopUa,
+        ))
+        into.addView(Ui.row(this,
+            button("0.2 Camera page") { startActivity(WebActivity.page(this, "camera.html")) },
+            button("Camera2 + USB") { NativeCameras.report(this) },
         ))
         into.addView(Ui.row(this,
             button("Grant camera + mic") { requestMedia() },

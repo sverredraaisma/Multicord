@@ -1,0 +1,30 @@
+<!doctype html>
+<!-- Multicord Android spike (phase 0). Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob: data:; media-src 'self' blob: mediastream:; connect-src 'self'">
+  <title>Spike cameras</title>
+  <link rel="stylesheet" href="spike.css">
+</head>
+<body>
+  <h1>Spike 0.2: cameras in the WebView</h1>
+  <p>Plug the USB camera in first (or press "List devices" again after). Allow camera access when asked; labels only appear after that.</p>
+  <div class="buttons">
+    <button id="list">List devices</button>
+    <button id="permission">Ask permission</button>
+    <button id="openAll">Open each camera</button>
+    <select id="size" aria-label="Requested size">
+      <option value="640x480">640x480</option>
+      <option value="1280x720" selected>1280x720</option>
+      <option value="1920x1080">1920x1080</option>
+    </select>
+  </div>
+  <video id="preview" autoplay muted playsinline></video>
+  <pre id="log"></pre>
+  <script src="spike.js"></script>
+  <script src="camera.js"></script>
+</body>
+</html>
