@@ -72,6 +72,7 @@ describe("login and MFA screens", () => {
     const identity = root.querySelector<HTMLInputElement>('input[name="identity"]')!;
     const password = root.querySelector<HTMLInputElement>('input[name="password"]')!;
     expect(root.querySelector("h1")!.textContent).toBe("Sign in to Fluxer");
+    expect(root.querySelector("main.card")).not.toBeNull();
     expect(identity.type).toBe("email");
     expect(root.textContent).toContain("Email");
     expect(root.textContent).toContain("third-party client");
@@ -298,6 +299,19 @@ describe("chat screen", () => {
     view.update(login);
     expect(root.querySelector(".chat")).toBeNull();
     expect(root.querySelector("form.auth")).not.toBeNull();
+  });
+});
+
+describe("composer name", () => {
+  it("is named for the conversation, also while read only or with nothing open", () => {
+    const composer = () => root.querySelector<HTMLTextAreaElement>(".composer")!;
+    view.update(chat());
+    expect(composer().getAttribute("aria-label")).toBe("Message general");
+    view.update(chat({ channel: { ...chat().channel!, locked: "Read only" } }));
+    expect(composer().placeholder).toBe("");
+    expect(composer().getAttribute("aria-label")).toBe("Message general");
+    view.update(chat({ channel: null }));
+    expect(composer().getAttribute("aria-label")).toBe("Message");
   });
 });
 

@@ -80,7 +80,7 @@ html, body { overflow: hidden; }
 .drawer-heading { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 16px; border: 0; background: none; color: var(--muted); font: inherit; font-size: 12px; font-weight: 700; text-align: left; text-transform: uppercase; }
 .drawer-heading.active { color: var(--text); }
 .drawer-heading-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.drawer-module { padding: 0 6px; border-radius: 8px; background: var(--module-color, var(--item)); color: #fff; font-size: 11px; text-transform: none; }
+.drawer-module { padding: 0 6px; border-radius: 8px; background: color-mix(in srgb, var(--module-color, var(--item)) 55%, #000); color: #fff; font-size: 11px; text-transform: none; }
 .drawer-list { margin: 0; padding: 0; list-style: none; }
 .drawer-row { position: relative; display: flex; align-items: center; gap: 12px; padding: 4px 16px; }
 .drawer-row.drawer-child { padding-left: 40px; }

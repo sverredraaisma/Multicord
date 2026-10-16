@@ -234,7 +234,8 @@ export class NativeView {
     this.threadObserver?.disconnect();
     this.threadObserver = undefined;
     const doc = this.doc;
-    const card = el(doc, "section", "card");
+    // The whole screen: its main landmark.
+    const card = el(doc, "main", "card");
     switch (state.screen) {
       case "login":
         this.login = loginForm(doc, state.platform, (identity, password) => this.api.act({ type: "login", identity, password }));
@@ -1543,6 +1544,8 @@ export class NativeView {
     // New messages or members may change who fits the mention being typed.
     if (this.mention) this.updateMention(true);
     field.placeholder = channel && !locked ? `Message ${channel.name}` : "";
+    // Named also when the placeholder is empty (nothing open, or read only).
+    field.setAttribute("aria-label", channel ? `Message ${channel.name}` : "Message");
     this.parts.pending!.replaceChildren(
       ...pendingFiles(this.doc, channel?.pending ?? [], uploading, (index) => this.api.act({ type: "removeAttachment", index })),
     );

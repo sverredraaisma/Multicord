@@ -1,6 +1,6 @@
 import { EMOJI, EMOJI_GROUPS, searchEmoji } from "../../shared/emoji";
 import type { PickerEmoji } from "../../shared/native";
-import { el } from "./dom";
+import { el, setColor } from "./dom";
 
 /** A platform's custom emoji as the pickers show it (customEmojiList in shared/native). */
 export type CustomEmoji = Pick<PickerEmoji, "id" | "name" | "animated" | "url" | "source" | "text" | "key">;
@@ -25,7 +25,8 @@ const SEARCH_LIMIT = 120;
 /** The module's badge, saying where something comes from. */
 export function sourceBadge(doc: Document, badge: SourceBadge): HTMLElement {
   const span = el(doc, "span", "source-badge", badge.label);
-  span.style.backgroundColor = badge.color;
+  // The module's colour, darkened in CSS so the white label stays readable on any of them.
+  setColor(span, "--module-color", badge.color);
   span.title = badge.name;
   span.setAttribute("aria-label", badge.name);
   return span;

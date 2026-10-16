@@ -169,8 +169,9 @@ li.archivable:hover > .archive-toggle, li.archivable:focus-within > .archive-tog
 .call-bar { display: flex; gap: 8px; align-items: center; padding: 6px 16px; background: var(--accent); color: #fff; }
 .call-bar[hidden] { display: none; }
 .call-from { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.call-bar button { padding: 4px 12px; border: 0; border-radius: 4px; background: rgba(255, 255, 255, 0.2); color: inherit; font: inherit; cursor: pointer; }
-.call-bar button:hover, .call-bar button:focus-visible { background: rgba(255, 255, 255, 0.35); }
+/* Darker than the bar, not lighter: white on them stays readable. */
+.call-bar button { padding: 4px 12px; border: 0; border-radius: 4px; background: rgba(0, 0, 0, 0.3); color: inherit; font: inherit; cursor: pointer; }
+.call-bar button:hover, .call-bar button:focus-visible { background: rgba(0, 0, 0, 0.45); }
 .unread-text { flex: 1; font-weight: 600; }
 .jump-unread, .dismiss-unread { padding: 2px 8px; border: 0; border-radius: 4px; background: none; color: #fff; font: inherit; cursor: pointer; }
 .jump-unread:hover, .dismiss-unread:hover, .jump-unread:focus-visible, .dismiss-unread:focus-visible { background: rgba(255, 255, 255, 0.2); }
@@ -411,9 +412,9 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
   font-size: 12px;
   cursor: pointer;
 }
-.voice-controls button.on { background: var(--danger); }
+.voice-controls button.on { background: var(--danger); color: #fff; }
 .voice-controls button:disabled { opacity: 0.5; cursor: default; }
-.voice-controls .leave { background: var(--danger); }
+.voice-controls .leave { background: var(--danger); color: #fff; }
 .voice-stage {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -621,7 +622,7 @@ button.thread-summary:hover { text-decoration: underline; }
 }
 
 /* Profile cards */
-.meta button.author { padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
+.meta button.author { min-width: 24px; min-height: 24px; padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: 700; cursor: pointer; }
 .meta button.author:hover, .meta button.author:focus-visible { text-decoration: underline; }
 .avatar-button { flex: none; align-self: flex-start; padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; }
 .profile-card {
@@ -699,7 +700,8 @@ button.thread-summary:hover { text-decoration: underline; }
 .picker-heading .picker-note { margin-left: auto; }
 .picker-error { color: var(--danger-text); font-size: 12px; }
 .picker-empty { color: var(--muted); text-align: center; }
-.source-badge { flex: none; padding: 0 4px; border-radius: 3px; color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; }
+/* A module's colour mixed with black: white text on it reads at 4.5:1 or more, whatever the colour. */
+.source-badge { flex: none; padding: 0 4px; border-radius: 3px; background: color-mix(in srgb, var(--module-color, #80848e) 55%, #000); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; }
 .picker-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; }
 .picker-cell { position: relative; }
 .picker-item { position: relative; display: flex; align-items: center; justify-content: center; width: 100%; aspect-ratio: 1; padding: 2px; border: 2px solid transparent; border-radius: 6px; background: var(--surface); cursor: pointer; }
@@ -799,5 +801,5 @@ button.thread-summary:hover { text-decoration: underline; }
   white-space: nowrap;
 }
 .mobile .call-strip .call-return.connected { color: var(--ok-text); }
-.mobile .call-strip button.on, .mobile .call-strip .leave { background: var(--danger); }
+.mobile .call-strip button.on, .mobile .call-strip .leave { background: var(--danger); color: #fff; }
 .mobile .call-strip button:disabled { opacity: 0.5; }

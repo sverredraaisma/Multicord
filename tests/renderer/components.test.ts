@@ -617,7 +617,7 @@ describe("emoji picker", () => {
     const picker = emojiPicker(document, vi.fn(), [{ ...custom[0]!, source: "Cats" }, { ...custom[0]!, id: "56", name: "wave", source: "Dogs" }, { ...custom[0]!, id: "57", name: "loose" }], badge);
     expect([...picker.querySelectorAll(".picker-heading")].map((h) => h.textContent)).toEqual(["FXCats", "FXDogs", "FXCustom emoji"]);
     const badgeEl = picker.querySelector<HTMLElement>(".source-badge")!;
-    expect(badgeEl.style.backgroundColor).toBeTruthy();
+    expect(badgeEl.style.getPropertyValue("--module-color")).toBeTruthy();
     expect(badgeEl.getAttribute("aria-label")).toBe("Fluxer");
     expect(picker.querySelector<HTMLButtonElement>(".emoji-option.custom")!.title).toBe(":party: from Cats, Fluxer");
     expect(picker.querySelector(".emoji-tab")!.getAttribute("aria-label")).toBe("Custom emoji from Fluxer");

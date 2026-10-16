@@ -8,6 +8,8 @@
   --danger: #da373c;
   --danger-text: #fa777a;
   --ok: #23a55a;
+  /* The green as text on the dark panels. */
+  --ok-text: #2dc770;
 }
 
 .settings-body, #settings { height: 100%; }
@@ -172,7 +174,8 @@
   border-radius: 8px;
   background: var(--panel);
 }
-.service.off .service-icon, .service.off .service-info { opacity: 0.55; }
+/* A service that is off: its icon fades and its status says so; its text and buttons stay readable. */
+.service.off .service-icon { opacity: 0.55; }
 .service-icon {
   --module-color: #80848e;
   display: grid;
@@ -200,7 +203,7 @@
   text-transform: uppercase;
 }
 .service-status { margin-top: 2px; color: var(--muted); font-size: 13px; }
-.service-status[data-state="signed-in"] { color: var(--ok); }
+.service-status[data-state="signed-in"] { color: var(--ok-text); }
 .service-status[data-state="signed-out"] { color: #f0b232; }
 .service-notice { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .service-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
@@ -262,7 +265,7 @@
 .health-check { display: grid; grid-template-columns: 20px 1fr; padding: 6px 0; border-bottom: 1px solid var(--border); }
 .health-check .hint { grid-column: 2; }
 .health-mark { font-weight: 700; }
-.health-check.ok .health-mark { color: var(--ok); }
+.health-check.ok .health-mark { color: var(--ok-text); }
 .health-check.failed .health-mark { color: var(--danger-text); }
 
 /* Keybinds */
