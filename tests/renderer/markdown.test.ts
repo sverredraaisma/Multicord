@@ -51,7 +51,9 @@ describe("renderMarkdown", () => {
 
   it("renders blocks", () => {
     const root = render("# Title\n-# small\n> quoted\n```js\nlet x;\n```\n- a\n- b\n2. c\n1. d");
-    expect(root.querySelector("h1")!.textContent).toBe("Title");
+    // Below the conversation's heading: "#" is an h3, sized as a first-level heading.
+    expect(root.querySelector("h3.md-h1")!.textContent).toBe("Title");
+    expect(render("## Two\n### Three").querySelector("h4.md-h2 + h5.md-h3")!.textContent).toBe("Three");
     expect(root.querySelector("small")!.textContent).toBe("small");
     expect(root.querySelector("blockquote")!.textContent).toBe("quoted");
     expect(root.querySelector("pre code")!.textContent).toBe("let x;");

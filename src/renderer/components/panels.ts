@@ -217,7 +217,7 @@ const pollLine = (value: string): string => value.replace(/\p{Cc}/gu, " ").trim(
  */
 export function pollForm(doc: Document, anonymity: boolean, handlers: { onCreate(poll: NewPoll): void; onCancel(): void }): HTMLFormElement {
   const form = el(doc, "form", "poll-form");
-  const title = el(doc, "h3", "profile-name", "New poll");
+  const title = el(doc, "h2", "profile-name", "New poll");
   title.id = "poll-title";
   const question = el(doc, "input", "poll-question-input");
   question.name = "question";

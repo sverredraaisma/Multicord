@@ -264,7 +264,8 @@ export class NativeView {
       }
       case "connecting": {
         const status = el(doc, "p", "status");
-        card.append(el(doc, "div", "spinner"), status);
+        // The screen's heading, for screen readers' heading navigation; the status line says the rest.
+        card.append(el(doc, "h1", "visually-hidden", "Connecting"), el(doc, "div", "spinner"), status);
         this.parts.status = status;
         break;
       }
@@ -278,6 +279,11 @@ export class NativeView {
     const doc = this.doc;
     const sidebar = el(doc, "nav", "sidebar");
     const title = el(doc, "h2", "sidebar-title");
+    // The screen's heading, for screen readers: the sidebar (and its title) is out of sight on a phone's conversation pane.
+    // In a banner landmark of its own, as everything on the page sits in one.
+    const pageTitle = el(doc, "h1");
+    const pageHeader = el(doc, "header", "visually-hidden");
+    pageHeader.append(pageTitle);
     const list = el(doc, "ul", "channels");
     const me = el(doc, "span", "me");
     const logout = el(doc, "button", "link", "Sign out");
@@ -311,7 +317,7 @@ export class NativeView {
 
     const main = el(doc, "main", "conversation");
     const header = el(doc, "header", "conversation-title");
-    const heading = el(doc, "span", "conversation-name");
+    const heading = el(doc, "h2", "conversation-name");
     // Shows and hides who is here, where the conversation lists them.
     const membersToggle = el(doc, "button", "members-toggle");
     membersToggle.type = "button";
@@ -559,7 +565,7 @@ export class NativeView {
       threadComposer.value = "";
       this.setThreadReply(undefined);
     });
-    threadPanel.append(threadClose, el(doc, "h3", "member-section", "Thread"), threadStatus, threadMessages, threadNotice, threadReply, threadComposer);
+    threadPanel.append(threadClose, el(doc, "h2", "member-section", "Thread"), threadStatus, threadMessages, threadNotice, threadReply, threadComposer);
     // The new poll form, over the conversation like the forward dialog.
     const pollDialog = el(doc, "section", "profile-card poll-dialog");
     pollDialog.setAttribute("role", "dialog");
@@ -568,10 +574,11 @@ export class NativeView {
     area.append(main, messagePanel, threadPanel, members, profile, forward, pollDialog);
 
     const layout = el(doc, "div", "chat");
-    layout.append(sidebar, area);
+    layout.append(pageHeader, sidebar, area);
     this.root.replaceChildren(layout);
     Object.assign(this.parts, {
       title,
+      pageTitle,
       list,
       folders,
       joinForm,
@@ -1280,7 +1287,7 @@ export class NativeView {
     close.type = "button";
     close.setAttribute("aria-label", "Close");
     close.addEventListener("click", () => this.closeForward());
-    const title = el(doc, "h3", "profile-name", "Forward to");
+    const title = el(doc, "h2", "profile-name", "Forward to");
     title.id = "forward-title";
     const what = el(doc, "p", "forward-what", `${message.author}: ${message.content.slice(0, 100) || "(attachments)"}`);
     // Not to an invitation the user has not accepted: they are not in that conversation yet.
@@ -1390,7 +1397,7 @@ export class NativeView {
     close.addEventListener("click", () => (searching ? this.closeSearch() : this.api.act({ type: "pins", open: false })));
     const title = searching ? "Search" : "Pinned messages";
     panel.setAttribute("aria-label", title);
-    const parts: HTMLElement[] = [close, el(doc, "h3", "member-section", title)];
+    const parts: HTMLElement[] = [close, el(doc, "h2", "member-section", title)];
     if (searching) parts.push(this.parts.searchForm!);
     if (this.jumpNote) parts.push(el(doc, "p", "member-error", this.jumpNote));
     const excerpts = { customEmojiUrl: (id: string, animated: boolean) => this.emojiUrl(id, animated) };
@@ -1530,6 +1537,7 @@ export class NativeView {
       (this.parts.searchInput as HTMLInputElement).value = "";
     }
     title!.textContent = state.title;
+    this.parts.pageTitle!.textContent = state.title;
     me!.textContent = state.me;
     this.renderSidebar(list!, state);
     const folders = chatFolders(state.folders);

@@ -156,7 +156,7 @@ li.archivable:hover > .archive-toggle, li.archivable:focus-within > .archive-tog
 
 .conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); }
 .conversation-title { display: flex; gap: 8px; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--bg); font-weight: 600; }
-.conversation-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-name { flex: 1; margin: 0; font: inherit; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .banner { padding: 6px 16px; background: var(--danger); color: #fff; }
 .locked-notice { margin: 0 16px 16px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); }
 .message-area { position: relative; display: flex; flex: 1; flex-direction: column; min-height: 0; }
@@ -437,9 +437,9 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
 .markdown { overflow-wrap: anywhere; }
 .markdown .md-p { white-space: pre-wrap; }
 .markdown .md-heading { margin: 8px 0 4px; line-height: 1.25; }
-.markdown h1.md-heading { font-size: 24px; }
-.markdown h2.md-heading { font-size: 20px; }
-.markdown h3.md-heading { font-size: 16px; }
+.markdown .md-h1 { font-size: 24px; }
+.markdown .md-h2 { font-size: 20px; }
+.markdown .md-h3 { font-size: 16px; }
 .markdown .md-subtext { display: block; color: var(--muted); font-size: 12px; }
 .markdown .md-quote { margin: 4px 0; padding-left: 12px; border-left: 4px solid var(--border); }
 .markdown .md-code { padding: 0 4px; border-radius: 4px; background: var(--panel); font-family: ui-monospace, Consolas, monospace; font-size: 0.875em; }

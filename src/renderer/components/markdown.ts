@@ -76,7 +76,8 @@ function renderBlock(doc: Document, block: Block, options: MarkdownOptions): HTM
       return p;
     }
     case "heading": {
-      const h = el(doc, `h${block.level}` as "h1" | "h2" | "h3", "md-heading");
+      // A message sits under the conversation's own heading (h2): its headings start a level below that, at h3.
+      const h = el(doc, `h${block.level + 2}` as "h3" | "h4" | "h5", `md-heading md-h${block.level}`);
       h.append(...renderInline(doc, block.children, options));
       return h;
     }

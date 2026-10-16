@@ -116,6 +116,7 @@ describe("login and MFA screens", () => {
   it("shows connection progress", () => {
     view.update({ screen: "connecting", platform: "Fluxer", status: "Connecting…" });
     expect(root.querySelector(".spinner")).not.toBeNull();
+    expect(root.querySelector("h1")!.textContent).toBe("Connecting");
     view.update({ screen: "connecting", platform: "Fluxer", status: "Reconnecting…" });
     expect(root.querySelector(".status")!.textContent).toBe("Reconnecting…");
   });
@@ -125,6 +126,9 @@ describe("chat screen", () => {
   it("renders the sidebar with categories, channels, DMs and badges", () => {
     view.update(chat());
     expect(root.querySelector(".sidebar-title")!.textContent).toBe("Alpha");
+    // Headings in order: the screen (h1, for screen readers), the sidebar and the conversation (h2).
+    expect(root.querySelector("header.visually-hidden > h1")!.textContent).toBe("Alpha");
+    expect([...root.querySelectorAll(".sidebar-title, .conversation-name")].map((h) => h.tagName)).toEqual(["H2", "H2"]);
     expect(root.querySelector(".me")!.textContent).toBe("me");
     expect(root.querySelector(".category")!.textContent).toBe("Text");
     const channels = root.querySelectorAll<HTMLButtonElement>("button.channel");

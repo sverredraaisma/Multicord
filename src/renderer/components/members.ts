@@ -90,7 +90,7 @@ export function profileCard(doc: Document, profile: ProfileCardData, onClose: ()
   close.type = "button";
   close.setAttribute("aria-label", "Close");
   close.addEventListener("click", onClose);
-  const name = el(doc, "h3", "profile-name", profile.name);
+  const name = el(doc, "h2", "profile-name", profile.name);
   name.id = "profile-name";
   setColor(name, "--member-color", profile.color);
   const parts: HTMLElement[] = [close, presenceAvatar(doc, profile.avatarUrl, profile.name, profile.presence), name];
