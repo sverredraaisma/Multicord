@@ -104,7 +104,7 @@ val bundleWeb = tasks.register<BundleWeb>("bundleWeb") {
     dist.set(distDir)
     // Matrix first; the other engines follow once their hosts' needs are met (mobile/android/README.md).
     engines.from(distDir.resolve("engines/matrix.js"))
-    // The shell's pages come with the shell.
+    shell.from(listOf("native.html", "native.js", "native.css", "shell.css", "audio/rnnoise-worklet.js", "livekit-e2ee-worker.js").map { distDir.resolve(it) })
     outputDir.set(layout.buildDirectory.dir("generated/web"))
 }
 

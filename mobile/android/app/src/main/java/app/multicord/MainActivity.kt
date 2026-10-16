@@ -11,22 +11,26 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.webkit.WebViewFeature
+import app.multicord.bridge.Validators
 import app.multicord.engine.EngineHost
 import app.multicord.engine.EngineListener
 import app.multicord.engine.EngineSpec
 import app.multicord.secrets.KeystoreCipher
 import app.multicord.secrets.SecretStore
+import app.multicord.shell.ShellView
 import java.io.File
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
 /**
- * Phase 2, milestone 1: one module instance (Matrix) in its engine. A status line shows the engine's
- * state and account; the module's view comes with the shell.
+ * Phase 2, milestone 1: one module instance (Matrix) in its engine, and its native chat view in the shell,
+ * one view at a time. No rail yet; a status line shows the engine's state and account.
  */
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private var engine: EngineHost? = null
+    private var shell: ShellView? = null
     private var engineState = "starting"
     private var account = "unknown"
 
@@ -61,8 +65,9 @@ class MainActivity : Activity() {
                 }
             }
 
+            // Render state goes only to this instance's view.
             override fun onRender(host: EngineHost, state: JsonObject) {
-                if (BuildConfig.DEBUG) Log.d(EngineHost.TAG, "[engine ${host.spec.instanceId}] rendered ${(state["screen"] as? JsonPrimitive)?.content}")
+                if (host === engine) shell?.showState(state)
             }
 
             override fun onHealth(host: EngineHost, state: String) {
@@ -72,8 +77,20 @@ class MainActivity : Activity() {
             }
         })
         engine = host
+        shell = ShellView(this, content, ::onViewAction) { engine?.allowedHosts }.also { it.start() }
         host.start()
+        // The view is on screen: the engine may show its home and keep its state fresh.
+        host.command(JsonObject(mapOf("type" to JsonPrimitive("visible"), "visible" to JsonPrimitive(true))))
         showStatus()
+    }
+
+    /** An action from the shown view: checked, then to that view's engine only. */
+    private fun onViewAction(action: JsonElement?) {
+        if (!Validators.isNativeAction(action)) {
+            Log.w(EngineHost.TAG, "[shell] dropped a malformed view action")
+            return
+        }
+        engine?.action(action as JsonObject)
     }
 
     private fun showStatus() {
@@ -82,7 +99,9 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         engine?.destroy()
+        shell?.destroy()
         engine = null
+        shell = null
         super.onDestroy()
     }
 
