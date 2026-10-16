@@ -81,6 +81,9 @@ describe("module registry", () => {
     expect(keys("matrix-native")).toEqual(Object.values(SETTING).filter((key) => key !== TYPING_SETTING));
     const { FORGET_API_ID } = await import("../../src/modules/telegram/adapter");
     expect(keys("telegram")).toEqual([FORGET_API_ID]);
+    const { RELAY_SETTING } = await import("../../src/modules/fluxer/adapter");
+    expect(keys("fluxer")).toEqual([RELAY_SETTING]);
+    expect(findModule("fluxer")!.manifest.peerToPeerCalls).toBe(true);
   });
 
   it("builds an engine bundle for every native module, and none for anything else", async () => {

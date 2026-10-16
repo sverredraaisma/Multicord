@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FluxerAdapter, type FluxerAdapterDeps } from "../../../src/modules/fluxer/adapter";
+import { FluxerAdapter, MAX_SIGNAL_BYTES, P2P_NO_RELAY, type FluxerAdapterDeps } from "../../../src/modules/fluxer/adapter";
 import type { GatewaySocket } from "../../../src/modules/fluxer/gateway";
 import { FLUXER, type PlatformDef } from "../../../src/core/platforms";
 import type { NativeViewState } from "../../../src/shared/native";
@@ -1300,8 +1300,8 @@ describe("FluxerAdapter voice", () => {
 });
 
 describe("FluxerAdapter DM and group calls", () => {
-  async function online(routes: Handler[] = []) {
-    const ctx = setup({ token: "flx", routes });
+  async function online(routes: Handler[] = [], settings?: FluxerAdapterDeps["settings"]) {
+    const ctx = setup({ token: "flx", routes, settings });
     const incoming = vi.fn();
     ctx.adapter.onIncomingCall(incoming);
     await ctx.adapter.start();
@@ -1405,7 +1405,7 @@ describe("FluxerAdapter DM and group calls", () => {
     await dispatch("CALL_CREATE", { channel_id: "900", ringing: [] });
     await adapter.handleAction({ type: "joinVoice", channelId: "900" });
     socket().receive({ op: 12, d: { code: "VOICE_P2P_CONSENT_REQUIRED", message: "This call is peer-to-peer" } });
-    expect(chat()).toMatchObject({ voice: null, error: "This call connects people directly (peer-to-peer), which Multicord does not support." });
+    expect(chat()).toMatchObject({ voice: null, error: P2P_NO_RELAY });
     await adapter.handleAction({ type: "joinVoice", channelId: "900" });
     socket().receive({ op: 12, d: { code: "VOICE_CHANNEL_FULL" } });
     expect(chat()).toMatchObject({ voice: null, error: "Could not join: the call is full." });
@@ -1428,6 +1428,122 @@ describe("FluxerAdapter DM and group calls", () => {
     // A grant for an abandoned call is left without a guild.
     await dispatch("VOICE_SERVER_UPDATE", { channel_id: "901", token: "lk", endpoint: "voice.fx", connection_id: "c3" });
     expect(voiceOps().at(-1)).toEqual({ guild_id: null, channel_id: null, connection_id: "c3" });
+  });
+
+  describe("peer-to-peer", () => {
+    const AVATAR = "https://media.fx/avatars/2/av.png?size=64";
+    const p2pState = (user: string, connection: string, extra: Record<string, unknown> = {}) => ({ user_id: user, channel_id: "900", connection_id: connection, p2p: true, ...extra });
+    const signalOps = (socket: () => { sent: { op: number; d: unknown }[] }) => socket().sent.filter((p) => p.op === 13).map((p) => p.d);
+
+    /** In the DM's call, which Ana started peer-to-peer, with relay-only off. */
+    async function inCall() {
+      const ctx = await online([], { relayOnly: false });
+      await ctx.dispatch("CALL_CREATE", { channel_id: "900", ringing: [], voice_states: [p2pState("2", "b2")] });
+      await ctx.adapter.handleAction({ type: "joinVoice", channelId: "900" });
+      ctx.socket().receive({ op: 12, d: { code: "VOICE_P2P_CONSENT_REQUIRED" } });
+      return ctx;
+    }
+
+    it("joins a call others started peer-to-peer, agreeing to it as Fluxer's client does, with Fluxer's STUN servers only", async () => {
+      const { adapter, chat, voiceOps, dispatch } = await inCall();
+      expect(voiceOps().at(-1)).toEqual({ guild_id: null, channel_id: "900", self_mute: false, self_deaf: false, self_video: false, self_stream: false, p2p: true });
+      expect(chat().voice).toMatchObject({ channelId: "900", url: undefined, token: undefined });
+      expect(chat().voice!.p2p).toBeUndefined();
+      // Signals before the grant are not the call's.
+      await dispatch("VOICE_SIGNAL", { channel_id: "900", from: "b2", user_id: "2", data: { t: "need-offer", g: 0 } });
+      await dispatch("VOICE_SERVER_UPDATE", { channel_id: "900", connection_id: "a1", p2p: true, ice_servers: [{ urls: ["stun:stun.fluxer.app:3478", "turn:relay.example.org"] }, { urls: ["turn:only.example.org"] }] });
+      expect(chat().voice!.p2p).toEqual({
+        callId: "1",
+        self: "a1",
+        protocol: "fluxer-mesh",
+        peers: [{ id: "b2", name: "Ana", avatarUrl: AVATAR, offer: true }],
+        iceServers: [{ urls: ["stun:stun.fluxer.app:3478"] }],
+        relayOnly: false,
+        signals: [],
+      });
+      // No voice server will answer, and none is waited for.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(chat().voice!.p2p).toBeDefined();
+      expect(voiceOps().at(-1)).toMatchObject({ p2p: true });
+      // Mute and deafen still go to Fluxer, for the others' lists.
+      await adapter.handleAction({ type: "voiceState", mute: true, deaf: false, video: false, stream: false });
+      expect(voiceOps().at(-1)).toEqual({ guild_id: null, channel_id: "900", connection_id: "a1", self_mute: true, self_deaf: false, self_video: false, self_stream: false });
+    });
+
+    it("passes signals both ways: from connections in the call by their own users, to them as op 13 within Fluxer's frame size", async () => {
+      const { adapter, chat, socket, dispatch, renders } = await inCall();
+      await dispatch("VOICE_SERVER_UPDATE", { channel_id: "900", connection_id: "c9", p2p: true, ice_servers: [] });
+      await dispatch("VOICE_STATE_UPDATE", p2pState("1", "c9"));
+      const signal = { t: "answer", g: 5, sdp: "v=0" };
+      await dispatch("VOICE_SIGNAL", { channel_id: "900", from: "b2", user_id: "2", data: { ...signal, extra: 1 } });
+      expect(chat().voice!.p2p!.signals).toEqual([{ seq: 1, from: "b2", signal }]);
+      // Each once.
+      await adapter.handleAction({ type: "voiceState", mute: false, deaf: false, video: false, stream: false });
+      expect(chat().voice!.p2p!.signals).toEqual([]);
+      // Not from another user, call, guild or form, nor the user's own connection.
+      const before = renders.length;
+      for (const d of [
+        { channel_id: "900", from: "b2", user_id: "3", data: signal },
+        { channel_id: "901", from: "b2", user_id: "2", data: signal },
+        { guild_id: "100", channel_id: "900", from: "b2", user_id: "2", data: signal },
+        { channel_id: "900", from: "b2", user_id: "2", data: { type: "offer", sdp: "v=0" } },
+        { channel_id: "900", from: "c9", user_id: "1", data: signal },
+        { channel_id: "900", from: 5, user_id: "2", data: signal },
+        "junk",
+      ]) await dispatch("VOICE_SIGNAL", d);
+      expect(renders.slice(before).some((r) => r.screen === "chat" && r.voice?.p2p?.signals.length)).toBe(false);
+      // From a connection not yet in the call: held until it is, as many as Fluxer's client holds.
+      for (let g = 0; g < 70; g++) await dispatch("VOICE_SIGNAL", { channel_id: "900", from: "d4", user_id: "3", data: { t: "need-offer", g } });
+      expect(chat().voice!.p2p!.peers.map((p) => p.id)).toEqual(["b2"]);
+      const mark = renders.length;
+      await dispatch("VOICE_STATE_UPDATE", p2pState("3", "d4", { mute: true }));
+      const released = renders.slice(mark).flatMap((r) => (r.screen === "chat" ? (r.voice?.p2p?.signals ?? []) : []));
+      expect(released).toHaveLength(64);
+      expect(released.every((s) => s.from === "d4")).toBe(true);
+      expect(chat().voice!.p2p!.peers.at(-1)).toEqual({ id: "d4", name: "Unknown user", offer: true, muted: true });
+      // Connections not peer-to-peer are no peers.
+      await dispatch("VOICE_STATE_UPDATE", { user_id: "3", channel_id: "900", connection_id: "e5" });
+      expect(chat().voice!.p2p!.peers.map((p) => p.id)).toEqual(["b2", "d4"]);
+      // To the view's peers, as Fluxer's client sends them.
+      await adapter.handleAction({ type: "voiceSignal", to: "b2", signal: { t: "offer", g: 7, sdp: "v=0" } });
+      expect(signalOps(socket)).toEqual([{ guild_id: null, channel_id: "900", to: "b2", data: { t: "offer", g: 7, sdp: "v=0" } }]);
+      await adapter.handleAction({ type: "voiceSignal", to: "zz", signal: { t: "offer", g: 7, sdp: "v=0" } });
+      await adapter.handleAction({ type: "voiceSignal", to: "b2", signal: { type: "offer", sdp: "v=0" } });
+      expect(signalOps(socket)).toHaveLength(1);
+      await adapter.handleAction({ type: "voiceSignal", to: "b2", signal: { t: "offer", g: 7, sdp: "x".repeat(MAX_SIGNAL_BYTES) } });
+      expect(signalOps(socket)).toHaveLength(1);
+      expect(chat().error).toBe("A call signal was too large for Fluxer to pass on.");
+    });
+
+    it("follows the call: server mutes, a move to a voice server, and its end", async () => {
+      const { chat, dispatch } = await inCall();
+      await dispatch("VOICE_SERVER_UPDATE", { channel_id: "900", connection_id: "c9", p2p: true, ice_servers: [] });
+      await dispatch("CALL_UPDATE", { channel_id: "900", ringing: [], voice_states: [p2pState("2", "b2", { mute: true }), p2pState("1", "c9")] });
+      expect(chat().voice!.p2p!.peers).toEqual([{ id: "b2", name: "Ana", avatarUrl: AVATAR, offer: false, muted: true }]);
+      // Converted to a voice server: the view moves there.
+      await dispatch("VOICE_SERVER_UPDATE", { channel_id: "900", connection_id: "c9", token: "lk", endpoint: "voice.fx" });
+      expect(chat().voice).toMatchObject({ url: "wss://voice.fx", token: "lk" });
+      expect(chat().voice!.p2p).toBeUndefined();
+      // Back in a peer-to-peer call, which the server then ends.
+      const second = await inCall();
+      await second.dispatch("VOICE_SERVER_UPDATE", { channel_id: "900", connection_id: "c9", p2p: true, ice_servers: [] });
+      await second.dispatch("VOICE_STATE_UPDATE", p2pState("1", "c9"));
+      await second.dispatch("VOICE_STATE_UPDATE", { user_id: "1", channel_id: null, connection_id: "c9" });
+      expect(second.chat()).toMatchObject({ voice: null, error: "The call ended." });
+    });
+
+    it("does not join where relay-only went back on, nor where Fluxer declines", async () => {
+      const { adapter, chat, voiceOps, dispatch, socket } = await inCall();
+      adapter.applySettings({ relayOnly: true });
+      await dispatch("VOICE_SERVER_UPDATE", { channel_id: "900", connection_id: "c9", p2p: true, ice_servers: [] });
+      expect(chat()).toMatchObject({ voice: null, error: P2P_NO_RELAY });
+      expect(voiceOps().at(-1)).toEqual({ guild_id: null, channel_id: null, connection_id: "c9" });
+      adapter.applySettings({ relayOnly: false });
+      await adapter.handleAction({ type: "joinVoice", channelId: "900" });
+      socket().receive({ op: 12, d: { code: "VOICE_P2P_CONSENT_REQUIRED" } });
+      socket().receive({ op: 12, d: { code: "VOICE_P2P_UNAVAILABLE" } });
+      expect(chat()).toMatchObject({ voice: null, error: "Fluxer would not connect you to this call directly (peer-to-peer) right now." });
+    });
   });
 
   it("offers no calls where the instance runs no voice", async () => {

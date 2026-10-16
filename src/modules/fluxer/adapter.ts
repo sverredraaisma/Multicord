@@ -1,8 +1,17 @@
 import type { DirectConversation, HealthCheck, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
 import {
   MAX_ATTACHMENTS,
+  MAX_CALL_PARTICIPANTS,
+  MAX_CALL_SIGNALS,
   MAX_LISTED_MESSAGES,
+  iceServers,
+  meshSignal,
+  type MeshSignal,
   type NativeAction,
+  type NativeCallPeer,
+  type NativeCallSignal,
+  type NativeIceServer,
+  type VoiceSignal,
   type NativeAttachment,
   type NativeCustomEmoji,
   type NativeGifResults,
@@ -69,8 +78,19 @@ const MEMBER_LIST_TIMEOUT_MS = 15_000;
 /** Pages of 50 pins fetched at most, as the pins panel lists MAX_LISTED_MESSAGES. */
 const PIN_PAGES = 2;
 
-/** Why a peer-to-peer call cannot be joined from here. */
-const P2P_UNSUPPORTED = "This call connects people directly (peer-to-peer), which Multicord does not support.";
+/** The service setting that keeps Multicord out of peer-to-peer calls, where peers learn the user's address (on unless turned off). */
+export const RELAY_SETTING = "relayOnly";
+/** Why a peer-to-peer call is not joined while that setting is on: Fluxer has no relay for them. */
+export const P2P_NO_RELAY =
+  "This call connects people directly (peer-to-peer), which shows them your IP address, and Fluxer has no relay for it. Multicord joins such calls only with \"Calls through a relay only\" turned off for this service (Settings > Services).";
+/** Fluxer refused a peer-to-peer join (VOICE_P2P_UNAVAILABLE). */
+const P2P_UNAVAILABLE = "Fluxer would not connect you to this call directly (peer-to-peer) right now.";
+/** Op 13: a signal for another connection of a peer-to-peer call. */
+const VOICE_SIGNAL = 13;
+/** The largest op 13 frame Fluxer's own client sends (VOICE_SIGNAL_MAX_JSON_BYTES in its GatewaySocket.ts). */
+export const MAX_SIGNAL_BYTES = 16_000;
+/** Signals held per connection not yet known as in the call, as Fluxer's client holds them (INBOX_LIMIT). */
+const HELD_SIGNALS = 64;
 
 /** How often the instance's health endpoints are asked whether its services run. */
 export const HEALTH_INTERVAL_MS = 5 * 60_000;
@@ -91,6 +111,21 @@ interface VoiceConnection {
   deaf: boolean;
   video: boolean;
   stream: boolean;
+  /** The join was sent again with p2p, as the call is peer-to-peer. */
+  askedP2p?: boolean;
+  /** The server published this connection's voice state. */
+  stateSeen?: boolean;
+  /** A peer-to-peer grant: the view connects to the others itself. */
+  p2p?: {
+    /** New with each grant, so the view starts its connections afresh. */
+    callId: string;
+    iceServers: NativeIceServer[];
+    /** Signals from peers not yet rendered. */
+    signals: NativeCallSignal[];
+    seq: number;
+    /** Signals from connections not (yet) known as in the call, by connection, with who sent them. */
+    held: Map<string, { userId: string; signal: MeshSignal }[]>;
+  };
 }
 
 /** Which instance this is: the engine's own info. */
@@ -198,6 +233,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   /** DM and group calls the user declined while they rang, and those already announced to the shell. */
   private readonly declined = new Set<string>();
   private readonly announced = new Set<string>();
+  /** Settings' "Calls through a relay only" for this service: Fluxer has no relay, so on, peer-to-peer calls are not joined. */
+  private relayOnly: boolean;
+  /** Counts peer-to-peer grants, for their call ids. */
+  private p2pGrants = 0;
   /** Whether the instance's services answered their health checks last time. */
   private checks: HealthCheck[] = [];
   private healthTimer: ReturnType<typeof setInterval> | undefined;
@@ -205,6 +244,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   constructor(private readonly deps: FluxerAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
     this.typingIndicators = deps.settings?.[TYPING_SETTING] !== false;
+    this.relayOnly = deps.settings?.[RELAY_SETTING] !== false;
     this.state.changed.on(() => this.schedulePublish());
     // Typing indicators expire on their own; re-render when they may have.
     this.state.changed.on(() => {
@@ -217,9 +257,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
-  /** Settings changed: whether to send typing indicators. Fluxer has no way to end one early; it runs out by itself. */
+  /** Settings changed: whether to send typing indicators (Fluxer has no way to end one early; it runs out by itself), and whether to join peer-to-peer calls (from the next join). */
   applySettings(values: ServiceSettingValues): void {
     this.typingIndicators = values[TYPING_SETTING] !== false;
+    this.relayOnly = values[RELAY_SETTING] !== false;
   }
 
   /** The secret store is this instance's own, so two accounts on one Fluxer instance stay apart. */
@@ -286,6 +327,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         return this.leaveVoice(`Voice failed: ${action.message}`);
       case "voiceNotice":
         return this.voiceNotice(action.message, action.off);
+      case "voiceSignal":
+        return this.sendSignal(action.to, action.signal);
       case "declineCall":
         return this.declineCall(action.channelId);
       case "mute":
@@ -492,6 +535,8 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
         dispatch: (event, data) => {
           this.state.apply(event, data);
           if (event === "VOICE_SERVER_UPDATE") this.onVoiceServer(data);
+          if (event === "VOICE_SIGNAL") this.receiveSignal(data);
+          if (event === "VOICE_STATE_UPDATE" || event.startsWith("CALL_")) this.onCallChange();
           if (event === "READY" || event.startsWith("CALL_")) this.announceRinging();
           // Someone pinned or unpinned in the channel whose pins are listed.
           if (event === "CHANNEL_PINS_UPDATE" && this.pins && typeof data === "object" && data !== null && (data as { channel_id?: unknown }).channel_id === this.pins.channelId) void this.loadPins(this.pins.channelId);
@@ -769,7 +814,7 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       self_stream: false,
     });
     this.voiceTimer = setTimeout(() => {
-      if (this.voice && !this.voice.token) this.leaveVoice("Could not join voice: the server did not answer.");
+      if (this.voice && !this.voice.token && !this.voice.p2p) this.leaveVoice("Could not join voice: the server did not answer.");
     }, VOICE_JOIN_TIMEOUT_MS);
     this.render();
   }
@@ -785,9 +830,10 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       return;
     }
     if (typeof d.connection_id === "string") voice.connectionId = d.connection_id;
-    // A peer-to-peer grant (asked for only with p2p, which Multicord never sends) has no voice server to connect to.
-    if (d.p2p === true) return this.leaveVoice(P2P_UNSUPPORTED);
+    if (d.p2p === true) return this.onPeerGrant(voice, d.ice_servers);
     if (typeof d.token !== "string" || typeof d.endpoint !== "string") return;
+    // A voice server's grant for a peer-to-peer call: someone converted it (Fluxer's Voice Server Update); the view moves to the server.
+    voice.p2p = undefined;
     // Fluxer's end-to-end encrypted voice scheme is not documented; never connect unencrypted to a channel that asks for it.
     if (d.e2ee_key !== undefined && d.e2ee_key !== null) {
       return this.leaveVoice("This channel uses end-to-end encrypted voice, which Multicord does not support yet.");
@@ -814,15 +860,124 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
     this.render();
   }
 
-  /** A join Fluxer refused and said why (Gateway Error): one still waiting for its grant is given up. */
+  /**
+   * A join Fluxer refused and said why (Gateway Error): one still waiting
+   * for its grant is given up. A call that is peer-to-peer refuses a join
+   * that did not agree to that (VOICE_P2P_CONSENT_REQUIRED); with "Calls
+   * through a relay only" off, the join is sent again agreeing, as Fluxer's
+   * own client does once its user agrees.
+   */
   private voiceRefused(code: string): void {
-    if (!this.voice || this.voice.token) return;
+    const voice = this.voice;
+    if (!voice || voice.token || voice.p2p) return;
+    if (code === "VOICE_P2P_CONSENT_REQUIRED" && !voice.askedP2p && !this.relayOnly) {
+      voice.askedP2p = true;
+      this.gateway?.command(VOICE_STATE_UPDATE, {
+        guild_id: voice.guildId ?? null,
+        channel_id: voice.channelId,
+        self_mute: voice.mute,
+        self_deaf: voice.deaf,
+        self_video: false,
+        self_stream: false,
+        p2p: true,
+      });
+      return;
+    }
     const reasons: Record<string, string> = {
-      VOICE_P2P_CONSENT_REQUIRED: P2P_UNSUPPORTED,
-      VOICE_P2P_UNAVAILABLE: P2P_UNSUPPORTED,
+      VOICE_P2P_CONSENT_REQUIRED: P2P_NO_RELAY,
+      VOICE_P2P_UNAVAILABLE: P2P_UNAVAILABLE,
       VOICE_CHANNEL_FULL: "Could not join: the call is full.",
     };
     this.leaveVoice(reasons[code] ?? `Could not join voice (${code}).`);
+  }
+
+  /**
+   * A peer-to-peer grant, for a join that agreed to one: the view connects
+   * to each other connection in the call itself (NativePeerCall, as
+   * Fluxer's own client does), with only the STUN servers Fluxer named, as
+   * Fluxer hands out no relay. Not taken where the setting went back on.
+   */
+  private onPeerGrant(voice: VoiceConnection, servers: unknown): void {
+    if (!voice.askedP2p || this.relayOnly) return this.leaveVoice(P2P_NO_RELAY);
+    clearTimeout(this.voiceTimer);
+    // Fluxer names STUN servers only (its ICE server object); nothing else is used.
+    const stun = iceServers(servers).flatMap((server) => {
+      const urls = server.urls.filter((url) => url.startsWith("stun:"));
+      return urls.length > 0 ? [{ urls }] : [];
+    });
+    voice.url = undefined;
+    voice.token = undefined;
+    voice.p2p = { callId: String(++this.p2pGrants), iceServers: stun, signals: [], seq: 0, held: new Map() };
+    this.render();
+  }
+
+  /** The others in the user's peer-to-peer call: its other connections that are peer-to-peer, the first up to the cap, and how many more. */
+  private callPeers(voice: VoiceConnection): { peers: (NativeCallPeer & { userId: string })[]; over: number } {
+    const others = this.state.voiceMembers(voice.channelId).filter(({ state }) => state.guildId === voice.guildId && state.p2p && state.connectionId !== voice.connectionId);
+    const peers = others.slice(0, MAX_CALL_PARTICIPANTS - 1).map(({ user, state }) => {
+      const avatarUrl = this.iconUrl("avatars", user.id, user.avatar, 64);
+      // The connection whose id sorts first offers, as in Fluxer's client.
+      return { id: state.connectionId, userId: user.id, name: displayName(user), ...(avatarUrl ? { avatarUrl } : {}), offer: voice.connectionId! < state.connectionId, ...(state.serverMute ? { muted: true } : {}) };
+    });
+    return { peers, over: others.length - peers.length };
+  }
+
+  /** The view's signal for one connection in the call, passed on as op 13 (Fluxer relays it unread), within the frame size Fluxer's client keeps to. */
+  private sendSignal(to: string, signal: VoiceSignal | MeshSignal): void {
+    const voice = this.voice;
+    const data = meshSignal(signal);
+    if (!voice?.p2p || !data || !this.callPeers(voice).peers.some((p) => p.id === to)) return;
+    const d = { guild_id: voice.guildId ?? null, channel_id: voice.channelId, to, data };
+    if (new TextEncoder().encode(JSON.stringify({ op: VOICE_SIGNAL, d })).byteLength > MAX_SIGNAL_BYTES) {
+      this.error = "A call signal was too large for Fluxer to pass on.";
+      return this.render();
+    }
+    this.gateway?.command(VOICE_SIGNAL, d);
+  }
+
+  /**
+   * A signal from another connection of the user's call (VOICE_SIGNAL),
+   * checked and kept for the view, which gets each once. One from a
+   * connection not yet known as in the call waits for it, as in Fluxer's
+   * client; one whose sender is not that connection's user is dropped.
+   */
+  private receiveSignal(data: unknown): void {
+    const voice = this.voice;
+    const d = (typeof data === "object" && data !== null ? data : {}) as Record<string, unknown>;
+    const signal = meshSignal(d.data);
+    const guildId = typeof d.guild_id === "string" ? d.guild_id : undefined;
+    if (!voice?.p2p || !signal || d.channel_id !== voice.channelId || guildId !== voice.guildId || typeof d.from !== "string" || !isId(d.user_id) || d.from === voice.connectionId) return;
+    const held = voice.p2p.held.get(d.from) ?? [];
+    if (held.length === HELD_SIGNALS) return;
+    held.push({ userId: d.user_id, signal });
+    voice.p2p.held.set(d.from, held);
+    this.releaseSignals(voice);
+  }
+
+  /** Hands the view the held signals of connections now in the call, from their own users. */
+  private releaseSignals(voice: VoiceConnection): void {
+    const call = voice.p2p!;
+    let released = false;
+    for (const peer of this.callPeers(voice).peers) {
+      const held = call.held.get(peer.id);
+      if (!held) continue;
+      call.held.delete(peer.id);
+      for (const { userId, signal } of held) if (userId === peer.userId) call.signals.push({ seq: ++call.seq, from: peer.id, signal });
+      released = true;
+    }
+    // Should the view stop taking them, only the latest are kept.
+    call.signals.splice(0, call.signals.length - MAX_CALL_SIGNALS);
+    if (released) this.render();
+  }
+
+  /** Voice states or calls changed: held signals may now be the view's, and a peer-to-peer call the server ended is over here too. */
+  private onCallChange(): void {
+    const voice = this.voice;
+    if (!voice?.p2p) return;
+    // Its voice state may come after the grant; once there, its going means the call is over.
+    if (this.state.voiceStates.has(voice.connectionId!)) voice.stateSeen = true;
+    else if (voice.stateSeen) return this.dropVoice("The call ended.");
+    this.releaseSignals(voice);
   }
 
   /** Declines a DM or group call ringing for the user: Fluxer stops ringing them, and the bar goes at once. */
@@ -906,6 +1061,23 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
       deaf: voice.deaf,
       video: voice.video,
       stream: voice.stream,
+      ...(voice.p2p ? { p2p: this.peerCall(voice) } : {}),
+    };
+  }
+
+  /** The user's peer-to-peer call as the view gets it: Fluxer's mesh, with the user's own connection as `self`; Fluxer gives no relay. */
+  private peerCall(voice: VoiceConnection): NativeVoiceSession["p2p"] {
+    const call = voice.p2p!;
+    const { peers, over } = this.callPeers(voice);
+    return {
+      callId: call.callId,
+      self: voice.connectionId!,
+      protocol: "fluxer-mesh",
+      peers: peers.map(({ userId: _user, ...peer }) => peer),
+      ...(over > 0 ? { over } : {}),
+      iceServers: call.iceServers,
+      relayOnly: false,
+      signals: call.signals,
     };
   }
 
@@ -1646,6 +1818,9 @@ export class FluxerAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private render(): void {
-    this.deps.render(this.viewState());
+    const state = this.viewState();
+    this.deps.render(state);
+    // Each render carries the signals since the last one to the view, once.
+    if (state.screen === "chat" && state.voice?.p2p) this.voice!.p2p!.signals = [];
   }
 }

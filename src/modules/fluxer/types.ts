@@ -458,6 +458,10 @@ export interface FluxerVoiceState {
   selfDeaf: boolean;
   selfVideo: boolean;
   selfStream: boolean;
+  /** Its media goes peer-to-peer, not through a voice server (Fluxer's p2p); set only when it does. */
+  p2p?: true;
+  /** Muted by a moderator (`mute`); set only when it is. */
+  serverMute?: true;
 }
 
 export function parseVoiceState(value: unknown, guildId?: string): FluxerVoiceState | undefined {
@@ -472,6 +476,8 @@ export function parseVoiceState(value: unknown, guildId?: string): FluxerVoiceSt
     selfDeaf: value.self_deaf === true,
     selfVideo: value.self_video === true,
     selfStream: value.self_stream === true,
+    ...(value.p2p === true ? { p2p: true as const } : {}),
+    ...(value.mute === true ? { serverMute: true as const } : {}),
   };
 }
 
