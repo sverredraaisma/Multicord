@@ -94,6 +94,10 @@ export interface RelayedNotification {
   body: string;
 }
 
+/** The longest title and body a relayed notification may have. */
+export const MAX_NOTIFICATION_TITLE = 200;
+export const MAX_NOTIFICATION_BODY = 2000;
+
 export function isRelayedNotification(value: unknown): value is RelayedNotification {
   return (
     typeof value === "object" &&
@@ -101,9 +105,9 @@ export function isRelayedNotification(value: unknown): value is RelayedNotificat
     typeof (value as RelayedNotification).id === "string" &&
     /^\d{1,10}$/.test((value as RelayedNotification).id) &&
     typeof (value as RelayedNotification).title === "string" &&
-    (value as RelayedNotification).title.length <= 200 &&
+    (value as RelayedNotification).title.length <= MAX_NOTIFICATION_TITLE &&
     typeof (value as RelayedNotification).body === "string" &&
-    (value as RelayedNotification).body.length <= 2000
+    (value as RelayedNotification).body.length <= MAX_NOTIFICATION_BODY
   );
 }
 
@@ -299,17 +303,18 @@ export interface TooltipRequest {
 
 export const MAX_GUILDS = 1000;
 export const MAX_DMS = 200;
-const MAX_TEXT = 200;
+/** The longest name, title or line of text Discord's page may report. */
+export const MAX_DISCORD_TEXT = 200;
 const SNOWFLAKE = /^\d{1,20}$/;
 const COLOR = /^#[0-9a-f]{6}$/i;
-const MAX_PREVIEWS = 4;
-const MAX_FOLDER_GUILDS = 200;
+export const MAX_FOLDER_PREVIEWS = 4;
+export const MAX_FOLDER_GUILDS = 200;
 /** Control, line-separator and bidirectional characters: page text must not carry them (the store bridge strips the same set). */
 const UNSAFE_TEXT = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/;
 
 /** Message text from Discord's page: one non-empty line, capped, with nothing that could reorder or break the text around it. */
 export function isPreviewText(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0 && value.length <= MAX_TEXT && !UNSAFE_TEXT.test(value);
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_DISCORD_TEXT && !UNSAFE_TEXT.test(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -349,13 +354,13 @@ export function isDiscordFolder(value: unknown): value is DiscordFolder {
     isRecord(value) &&
     isSnowflake(value.id) &&
     typeof value.name === "string" &&
-    value.name.length <= MAX_TEXT &&
+    value.name.length <= MAX_DISCORD_TEXT &&
     isOptionalColor(value.color) &&
     typeof value.expanded === "boolean" &&
     typeof value.unread === "boolean" &&
     isCount(value.mentions) &&
     Array.isArray(value.iconUrls) &&
-    value.iconUrls.length <= MAX_PREVIEWS &&
+    value.iconUrls.length <= MAX_FOLDER_PREVIEWS &&
     value.iconUrls.every(isHttpsUrl) &&
     isCount(value.index)
   );
@@ -366,7 +371,7 @@ export function isDiscordDm(value: unknown): value is DiscordDm {
     isRecord(value) &&
     isSnowflake(value.id) &&
     typeof value.title === "string" &&
-    value.title.length <= MAX_TEXT &&
+    value.title.length <= MAX_DISCORD_TEXT &&
     (value.avatarUrl === undefined || isHttpsUrl(value.avatarUrl)) &&
     typeof value.unread === "boolean" &&
     isCount(value.mentions) &&
@@ -384,7 +389,7 @@ export function isGuildInfo(value: unknown): value is GuildInfo {
     isRecord(value) &&
     isSnowflake(value.id) &&
     typeof value.name === "string" &&
-    value.name.length <= MAX_TEXT &&
+    value.name.length <= MAX_DISCORD_TEXT &&
     (value.iconUrl === undefined || isHttpsUrl(value.iconUrl)) &&
     (value.unread === undefined || typeof value.unread === "boolean") &&
     (value.mentions === undefined || isCount(value.mentions))
@@ -395,7 +400,7 @@ export function isLayoutEntry(value: unknown): value is LayoutEntry {
   return (
     isRecord(value) &&
     (value.folderId === undefined || isSnowflake(value.folderId)) &&
-    (value.name === undefined || (typeof value.name === "string" && value.name.length <= MAX_TEXT)) &&
+    (value.name === undefined || (typeof value.name === "string" && value.name.length <= MAX_DISCORD_TEXT)) &&
     isOptionalColor(value.color) &&
     (value.expanded === undefined || typeof value.expanded === "boolean") &&
     Array.isArray(value.guildIds) &&
@@ -405,7 +410,7 @@ export function isLayoutEntry(value: unknown): value is LayoutEntry {
 }
 
 export function isDiscordUser(value: unknown): value is DiscordUser | null | undefined {
-  return value === undefined || value === null || (isRecord(value) && typeof value.name === "string" && value.name.length <= MAX_TEXT);
+  return value === undefined || value === null || (isRecord(value) && typeof value.name === "string" && value.name.length <= MAX_DISCORD_TEXT);
 }
 
 export function isDiscordCallList(value: unknown): value is DiscordCall[] | undefined {
@@ -413,13 +418,15 @@ export function isDiscordCallList(value: unknown): value is DiscordCall[] | unde
     value === undefined ||
     (Array.isArray(value) &&
       value.length <= MAX_CALLS &&
-      value.every((c) => isRecord(c) && isSnowflake(c.channelId) && typeof c.from === "string" && c.from.length <= MAX_TEXT))
+      value.every((c) => isRecord(c) && isSnowflake(c.channelId) && typeof c.from === "string" && c.from.length <= MAX_DISCORD_TEXT))
   );
 }
 
 const STORE_NAME = /^[A-Za-z]{1,40}$/;
+/** The most store names the bridge may list. */
+export const MAX_STORES = 20;
 const isStoreList = (value: unknown): value is string[] | undefined =>
-  value === undefined || (Array.isArray(value) && value.length <= 20 && value.every((s) => typeof s === "string" && STORE_NAME.test(s)));
+  value === undefined || (Array.isArray(value) && value.length <= MAX_STORES && value.every((s) => typeof s === "string" && STORE_NAME.test(s)));
 
 export function isBridgePayload(value: unknown): value is BridgePayload {
   return (
@@ -469,7 +476,7 @@ export function isTooltipRequest(value: unknown): value is TooltipRequest | null
     (isRecord(value) &&
       typeof value.text === "string" &&
       value.text.length > 0 &&
-      value.text.length <= MAX_TEXT &&
+      value.text.length <= MAX_DISCORD_TEXT &&
       typeof value.y === "number" &&
       Number.isFinite(value.y))
   );

@@ -153,6 +153,7 @@ Milestone 2 on the Android 16 emulator (WebView 134, 1.5 GB), checked over the d
 - `WebUrlTest`: the URL parser against browser behaviour (IPv4 and IPv6 forms, IDN, relative redirects).
 - `HttpBridgeTest`: the HTTP bridge with a scripted network (redirect checks, limits, cookies, PublicDns).
 - `ValidatorsTest` runs **every case of `tests/fixtures/engine-validator-cases.json`** (over 300 engine requests, HTTP requests, engine events, image URLs and view actions, each to accept or refuse), which `tests/shared/validatorCases.test.ts` runs against the TypeScript validators; the fixture states the limits it relies on, and both sides check them against their own constants. Copied in by `copyFixtures` as the network policy's cases are.
+- `DiscordValidatorsTest` runs **every case of `tests/fixtures/discord-bridge-cases.json`** (what Discord's page reports, `isDiscordState` and `isRelayedNotification`; the store bridge's `isBridgePayload`; navigation targets and Discord's own pages), which `tests/shared/discordCases.test.ts` runs against the desktop's validators (`src/shared/ipc.ts`).
 - `ShellCommandsTest` runs every `isShellCommand` case of `tests/fixtures/shell-bridge-cases.json`, which `tests/mobile/protocol.test.ts` runs against the TypeScript; `ValidatorsTest` also runs the shared `isEngineCommand` cases.
 - `ShellFilesTest`: the shell's files (names, sizes) and reading the module table (engines and web clients).
 - `WebClientPolicyTest`: the web clients' own pages (`isPlatformPage`'s cases), navigation, and which permissions a page gets.
