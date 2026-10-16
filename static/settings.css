@@ -88,7 +88,8 @@
   padding: 10px 12px;
   border-radius: 6px;
 }
-.restart-banner { background: color-mix(in srgb, var(--accent) 25%, var(--panel)); }
+/* Stays in sight while scrolling: adding a service happens at the bottom of a long page. */
+.restart-banner { position: sticky; top: 0; z-index: 1; background: color-mix(in srgb, var(--accent) 25%, var(--panel)); }
 .settings-error { background: color-mix(in srgb, var(--danger) 25%, var(--panel)); }
 
 /* Buttons and form controls */
@@ -250,6 +251,9 @@
   .settings-nav { flex-direction: row; flex-wrap: wrap; width: auto; padding: 12px; }
   .settings-nav h2 { display: none; }
   .settings-main { padding: 20px 16px 60px; }
+  /* A service's own settings: the control goes under its label rather than squeezing it to a word a line. */
+  .service-setting:not(:has(> .switch-row)) { flex-wrap: wrap; }
+  .service-setting:not(:has(> .switch-row)) > :first-child { flex: 1 1 14em; }
 }
 
 /* Diagnostics */
