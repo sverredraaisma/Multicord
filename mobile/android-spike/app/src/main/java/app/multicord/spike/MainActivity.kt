@@ -98,6 +98,7 @@ class MainActivity : Activity() {
             button("Start") { firstCamera()?.let { UsbCamera.start(it, UsbCamera.choices[sizeChoice.selectedItemPosition]) } },
             button("Stop") { UsbCamera.stop() },
             sizeChoice,
+            button("Replay test frames") { UsbCamera.startReplay() },
         ))
         usbView = TextView(this).apply {
             textSize = 12f
@@ -126,17 +127,23 @@ class MainActivity : Activity() {
     private fun addButtons(into: LinearLayout) {
         val desktopUa = CheckBox(this).apply { text = "Desktop user agent"; isChecked = true }
         val testCamera = CheckBox(this).apply { text = "Test camera in Discord (0.3)" }
+        val usbCamera = CheckBox(this).apply { text = "USB camera in Discord (0.5)" }
         into.addView(Ui.row(this,
-            button("0.1 Discord") { startActivity(WebActivity.discord(this, desktopUa.isChecked, testCamera.isChecked)) },
+            button("0.1 Discord") {
+                startActivity(WebActivity.discord(this, desktopUa.isChecked, testCamera.isChecked, usbCamera.isChecked))
+            },
             desktopUa,
             testCamera,
+            usbCamera,
         ))
         into.addView(Ui.row(this,
             button("0.2 Camera page") { startActivity(WebActivity.page(this, "camera.html")) },
             button("Camera2 + USB") { NativeCameras.report(this) },
         ))
         into.addView(Ui.row(this,
-            button("0.3 Camera page + test camera") { startActivity(WebActivity.page(this, "camera.html", testCamera = true)) },
+            button("0.3/0.5 Camera page + virtual cameras") {
+                startActivity(WebActivity.page(this, "camera.html", testCamera = true, usbCamera = true))
+            },
             button("0.4 Decode cost") { startActivity(WebActivity.page(this, "decode.html")) },
         ))
         into.addView(Ui.row(this,

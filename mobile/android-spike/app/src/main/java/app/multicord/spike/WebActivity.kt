@@ -12,6 +12,8 @@ import android.content.pm.PackageManager
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.webkit.ConsoleMessage
 import android.webkit.PermissionRequest
@@ -27,10 +29,14 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.webkit.ProfileStore
 import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebMessageCompat
+import androidx.webkit.WebMessagePortCompat
 import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
+import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * One WebView in a Profile of its own, with the spike's document-start scripts and message listener
@@ -59,6 +65,10 @@ class WebActivity : Activity() {
     private lateinit var webView: WebView
     private lateinit var logPanel: TextView
     private var pendingPermission: PermissionRequest? = null
+    private val main = Handler(Looper.getMainLooper())
+    /** Spike 0.5: whether this WebView gets the USB camera (camera page always; Discord when ticked). */
+    private var usbCamera = false
+    private var usbSink: PortSink? = null
     private val onLog: () -> Unit = { if (logPanel.visibility == View.VISIBLE) logPanel.text = SpikeLog.tail(12) }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -66,6 +76,8 @@ class WebActivity : Activity() {
         super.onCreate(savedInstanceState)
         target = targetFrom(intent)
         val desktopUa = intent.getBooleanExtra(EXTRA_DESKTOP_UA, false)
+        usbCamera = intent.getBooleanExtra(EXTRA_USB_CAMERA, false)
+        if (usbCamera) UsbCamera.init(this)
 
         webView = WebView(this)
         // The Profile must be set before anything else touches the WebView.
@@ -117,6 +129,7 @@ class WebActivity : Activity() {
 
     override fun onDestroy() {
         SpikeLog.unlisten(onLog)
+        disconnectUsbCamera()
         pendingPermission?.deny()
         pendingPermission = null
         webView.destroy()
@@ -162,10 +175,13 @@ class WebActivity : Activity() {
             SpikeLog.add(target.section, "WEB_MESSAGE_LISTENER missing: no reports from the page")
             return
         }
-        WebViewCompat.addWebMessageListener(webView, LISTENER, setOf(target.origin)) { _, message, sourceOrigin, _, _ ->
+        WebViewCompat.addWebMessageListener(webView, LISTENER, setOf(target.origin)) { _, message, sourceOrigin, isMainFrame, _ ->
             // The rules already restrict the origin; check again, and treat the text as untrusted.
             if (sameOrigin(sourceOrigin, target.origin)) {
-                SpikeLog.add(target.section, "page: ${message.data ?: "(non-text message)"}")
+                val text = message.data
+                SpikeLog.add(target.section, "page: ${text ?: "(non-text message)"}")
+                // A new document with the USB camera patch: hand it a fresh channel.
+                if (text == USB_HELLO && isMainFrame && usbCamera) connectUsbCamera()
             }
         }
     }
@@ -177,9 +193,82 @@ class WebActivity : Activity() {
         }
         val origins = setOf(target.origin)
         WebViewCompat.addDocumentStartJavaScript(webView, asset("web/report-start.js"), origins)
-        if (intent.getBooleanExtra(EXTRA_TEST_CAMERA, false)) {
-            WebViewCompat.addDocumentStartJavaScript(webView, asset("web/fakecam.js"), origins)
-            SpikeLog.add(target.section, "test camera patch registered for ${target.origin}")
+        val testCamera = intent.getBooleanExtra(EXTRA_TEST_CAMERA, false)
+        if (testCamera || usbCamera) {
+            val config = JSONObject().put("testCamera", testCamera).put("usbCamera", usbCamera).toString()
+            val script = CONFIG.replace(asset("web/fakecam.js")) { "/*MULTICORD_CONFIG*/$config/*END_MULTICORD_CONFIG*/" }
+            WebViewCompat.addDocumentStartJavaScript(webView, script, origins)
+            SpikeLog.add(target.section, "virtual camera patch registered for ${target.origin} (test camera $testCamera, USB camera $usbCamera)")
+        }
+    }
+
+    /**
+     * Spike 0.5's transport: a MessageChannel per document. One port stays here; the other is posted to the
+     * main frame, only if it is on the target origin. Frames go as ArrayBuffers, and only while the page has
+     * a USB camera track open ("want"); status changes go as JSON text.
+     */
+    private fun connectUsbCamera() {
+        disconnectUsbCamera()
+        val missing = listOf(
+            WebViewFeature.CREATE_WEB_MESSAGE_CHANNEL, WebViewFeature.POST_WEB_MESSAGE, WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER,
+        ).filter { !Features.isSupported(it) }
+        if (missing.isNotEmpty()) {
+            SpikeLog.add(target.section, "USB camera unavailable, WebView lacks $missing")
+            return
+        }
+        val (mine, theirs) = WebViewCompat.createWebMessageChannel(webView)
+        val sink = PortSink(mine)
+        mine.setWebMessageCallback(main, object : WebMessagePortCompat.WebMessageCallbackCompat() {
+            override fun onMessage(port: WebMessagePortCompat, message: WebMessageCompat?) {
+                // Only two words are understood; anything else from the page is ignored.
+                when (if (message?.type == WebMessageCompat.TYPE_STRING) message.data else null) {
+                    "want" -> sink.wanted = true
+                    "idle" -> sink.wanted = false
+                }
+            }
+        })
+        WebViewCompat.postWebMessage(webView, WebMessageCompat(USB_PORT_MESSAGE, arrayOf(theirs)), Uri.parse(target.origin))
+        usbSink = sink
+        UsbCamera.addSink(sink)
+        SpikeLog.add(target.section, "USB camera channel handed to ${target.origin}")
+    }
+
+    private fun disconnectUsbCamera() {
+        val sink = usbSink ?: return
+        usbSink = null
+        UsbCamera.removeSink(sink)
+        sink.close()
+    }
+
+    /** Posts the stream to one page's port, on the main thread, never more than two frames behind. */
+    private inner class PortSink(private val port: WebMessagePortCompat) : UsbCamera.Sink {
+        @Volatile var wanted = false
+        @Volatile private var closed = false
+        private val queued = AtomicInteger()
+
+        override fun onStatus(status: UsbCamera.Status?) {
+            if (closed) return
+            val json = JSONObject().put("type", "status").put("streaming", status != null)
+            if (status != null) json.put("name", status.name.take(100)).put("width", status.width).put("height", status.height).put("fps", status.fps)
+            port.postMessage(WebMessageCompat(json.toString()))
+        }
+
+        override fun onFrame(jpeg: ByteArray) {
+            if (closed || !wanted || jpeg.size > UvcNative.MAX_FRAME_BYTES) return
+            if (queued.get() >= 2) {
+                UsbCamera.countPageDrop()
+                return
+            }
+            queued.incrementAndGet()
+            main.post {
+                queued.decrementAndGet()
+                if (!closed) port.postMessage(WebMessageCompat(jpeg))
+            }
+        }
+
+        fun close() {
+            closed = true
+            port.close()
         }
     }
 
@@ -292,6 +381,11 @@ class WebActivity : Activity() {
         private const val EXTRA_DESKTOP_UA = "desktopUa"
         private const val EXTRA_PAGE = "page"
         private const val EXTRA_TEST_CAMERA = "testCamera"
+        private const val EXTRA_USB_CAMERA = "usbCamera"
+        /** What the patch says when it starts, and what the app's port handover carries (fakecam.js). */
+        private const val USB_HELLO = "usb-camera:hello"
+        private const val USB_PORT_MESSAGE = "multicord-usb-camera"
+        private val CONFIG = Regex("/\\*MULTICORD_CONFIG\\*/.*?/\\*END_MULTICORD_CONFIG\\*/")
         private const val TARGET_DISCORD = "discord"
         private const val TARGET_PAGE = "page"
         private const val DISCORD_ORIGIN = "https://discord.com"
@@ -302,18 +396,20 @@ class WebActivity : Activity() {
             PermissionRequest.RESOURCE_AUDIO_CAPTURE to Manifest.permission.RECORD_AUDIO,
         )
 
-        fun discord(context: Context, desktopUa: Boolean, testCamera: Boolean): Intent =
+        fun discord(context: Context, desktopUa: Boolean, testCamera: Boolean, usbCamera: Boolean): Intent =
             Intent(context, WebActivity::class.java)
                 .putExtra(EXTRA_TARGET, TARGET_DISCORD)
                 .putExtra(EXTRA_DESKTOP_UA, desktopUa)
                 .putExtra(EXTRA_TEST_CAMERA, testCamera)
+                .putExtra(EXTRA_USB_CAMERA, usbCamera)
 
         /** A bundled test page from assets/web, served on an https origin (a secure context). */
-        fun page(context: Context, page: String, testCamera: Boolean = false): Intent =
+        fun page(context: Context, page: String, testCamera: Boolean = false, usbCamera: Boolean = false): Intent =
             Intent(context, WebActivity::class.java)
                 .putExtra(EXTRA_TARGET, TARGET_PAGE)
                 .putExtra(EXTRA_PAGE, page)
                 .putExtra(EXTRA_TEST_CAMERA, testCamera)
+                .putExtra(EXTRA_USB_CAMERA, usbCamera)
 
         private fun targetFrom(intent: Intent): Target =
             if (intent.getStringExtra(EXTRA_TARGET) == TARGET_DISCORD) {

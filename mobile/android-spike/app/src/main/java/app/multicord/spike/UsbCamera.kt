@@ -65,6 +65,17 @@ object UsbCamera {
         val started = System.nanoTime()
     }
 
+    /** Spike 0.4's bundled JPEGs played as if a camera sent them: checks transport and page without one. */
+    private class Replay(val status: Status, val frames: List<ByteArray>) {
+        @Volatile var running = true
+        var thread: Thread? = null
+        @Volatile var sent = 0L
+        @Volatile var bytes = 0L
+        var previousSent = 0L
+        var previousBytes = 0L
+        var previousAt = System.nanoTime()
+    }
+
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadScheduledExecutor { r -> Thread(r, "uvc-worker") }
     private val sinks = CopyOnWriteArrayList<Sink>()
@@ -73,6 +84,7 @@ object UsbCamera {
     private val pageDrops = AtomicLong()
 
     @Volatile private var session: Session? = null
+    @Volatile private var replay: Replay? = null
     @Volatile var rates: Rates? = null
         private set
     private var app: Context? = null
@@ -125,8 +137,8 @@ object UsbCamera {
 
     fun addSink(sink: Sink) {
         sinks.add(sink)
-        val status = session?.status
-        main.post { sink.onStatus(status) }
+        val current = status
+        main.post { sink.onStatus(current) }
     }
 
     fun removeSink(sink: Sink) {
@@ -138,7 +150,7 @@ object UsbCamera {
         pageDrops.incrementAndGet()
     }
 
-    val status: Status? get() = session?.status
+    val status: Status? get() = session?.status ?: replay?.status
 
     private fun manager(): UsbManager? = app?.getSystemService(UsbManager::class.java)
 
@@ -249,6 +261,7 @@ object UsbCamera {
     fun start(d: UsbDevice, choice: Status) {
         worker.execute {
             closeSession("restarting")
+            closeReplay()
             UvcNative.loadError?.let {
                 SpikeLog.add(SECTION, "native libraries missing: $it")
                 return@execute
@@ -293,7 +306,53 @@ object UsbCamera {
     }
 
     fun stop(reason: String = "stopped") {
-        worker.execute { closeSession(reason) }
+        worker.execute {
+            closeSession(reason)
+            closeReplay()
+        }
+    }
+
+    /** Plays the 30 bundled 720p test JPEGs at 30 fps through the same sinks, as "test frames (replay)". */
+    fun startReplay() {
+        worker.execute {
+            closeSession("replay instead")
+            closeReplay()
+            val context = app ?: return@execute
+            val frames = (0 until 30).map { i -> context.assets.open("web/frames/frame%02d.jpg".format(i)).use { it.readBytes() } }
+            val r = Replay(Status("test frames (replay)", 1280, 720, 30), frames)
+            r.thread = Thread({
+                var i = 0
+                var next = System.nanoTime()
+                while (r.running) {
+                    val jpeg = r.frames[i++ % r.frames.size]
+                    if (sinks.isNotEmpty()) {
+                        for (sink in sinks) sink.onFrame(jpeg)
+                        r.sent++
+                        r.bytes += jpeg.size
+                    }
+                    next += 1_000_000_000L / 30
+                    val wait = (next - System.nanoTime()) / 1_000_000
+                    if (wait > 0) Thread.sleep(wait) else next = System.nanoTime()
+                }
+            }, "uvc-replay").apply { start() }
+            replay = r
+            pageDrops.set(0)
+            SpikeLog.add(SECTION, "replaying ${frames.size} test frames at 1280x720 @ 30 as a USB camera")
+            main.post { sinks.forEach { it.onStatus(r.status) } }
+            changed()
+        }
+    }
+
+    /** On the worker. */
+    private fun closeReplay() {
+        val r = replay ?: return
+        replay = null
+        r.running = false
+        r.thread?.join(1000)
+        rates = null
+        SpikeLog.add(SECTION, "replay ended after ${r.sent} frames to pages, ${pageDrops.get()} page drops")
+        main.post { sinks.forEach { it.onStatus(null) } }
+        changed()
     }
 
     /** The capture thread: native ring to one reused direct buffer, then a copy per frame for the pages. */
@@ -341,6 +400,17 @@ object UsbCamera {
     private fun tick() {
         val s = session
         if (s == null) {
+            replay?.let { r ->
+                val now = System.nanoTime()
+                val seconds = (now - r.previousAt) / 1e9
+                val sent = r.sent
+                val bytes = r.bytes
+                rates = Rates((sent - r.previousSent) / seconds, (sent - r.previousSent) / seconds, 0, ((bytes - r.previousBytes) / seconds).toLong(), pageDrops.get())
+                r.previousSent = sent
+                r.previousBytes = bytes
+                r.previousAt = now
+                changed()
+            }
             if (app != null && UvcNative.loadError == null) drainNativeLog()
             return
         }
