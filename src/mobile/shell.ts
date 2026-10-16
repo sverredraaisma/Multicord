@@ -151,7 +151,7 @@ export class MobileShell {
         console.warn(`[platforms] ${def.id}: module "${def.module}" does not run on this phone`);
         continue;
       }
-      await this.startService(def, module.manifest);
+      await this.startService(def, module);
     }
     this.running = true;
     const first = [...this.services.keys()][0];
@@ -224,8 +224,14 @@ export class MobileShell {
     return this.general().notifications && serviceSettings(this.store.get(), id).notifications;
   }
 
-  private settingValues(manifest: ModuleManifest, id: string): ServiceSettingValues {
-    const values = serviceSettingValues(manifest.settings, serviceSettings(this.store.get(), id).options);
+  /** The fields of a module's settings its engine takes: all but those native code applies (hostSettings). */
+  private engineFields(module: MobileModule) {
+    return module.manifest.settings?.filter((field) => !module.hostSettings?.includes(field.key));
+  }
+
+  private settingValues(module: MobileModule, id: string): ServiceSettingValues {
+    const manifest = module.manifest;
+    const values = serviceSettingValues(this.engineFields(module), serviceSettings(this.store.get(), id).options);
     if (manifest.sendsTyping) values[TYPING_SETTING] = typingIndicators(this.store.get(), id);
     return values;
   }
@@ -235,8 +241,9 @@ export class MobileShell {
     this.send({ type: "viewSettings", instance: id, mediaAutoLoad: Number.isFinite(limit) ? limit : null });
   }
 
-  private async startService(def: PlatformDef, manifest: ModuleManifest): Promise<void> {
+  private async startService(def: PlatformDef, module: MobileModule): Promise<void> {
     const id = def.id;
+    const manifest = module.manifest;
     const adapter = new EngineAdapter(
       id,
       new URL(def.url).host,
@@ -250,11 +257,18 @@ export class MobileShell {
     this.manifests.set(id, manifest);
     this.defs.set(id, def);
     await this.registry.add(adapter, def.name, { label: manifest.label, color: manifest.color });
-    const takesSettings = (manifest.settings?.length ?? 0) > 0 || manifest.sendsTyping === true;
+    const takesSettings = (this.engineFields(module)?.length ?? 0) > 0 || manifest.sendsTyping === true;
     if (takesSettings) {
       this.store.changed.on(({ patch }) => {
         const typing = manifest.sendsTyping === true && patch.general?.typingIndicators !== undefined;
-        if (typing || (patch.services && Object.hasOwn(patch.services, id))) adapter.applySettings(this.settingValues(manifest, id));
+        if (typing || (patch.services && Object.hasOwn(patch.services, id))) adapter.applySettings(this.settingValues(module, id));
+      });
+    }
+    // Settings for its views (the USB camera), which native code applies: after the start, and as they change.
+    const hostSettings = (module.hostSettings?.length ?? 0) > 0;
+    if (hostSettings) {
+      this.store.changed.on(({ patch }) => {
+        if (patch.services && Object.hasOwn(patch.services, id)) this.send({ type: "hostSettings", instance: id, settings: this.hostValues(module, id) });
       });
     }
     if (manifest.holdsMedia) {
@@ -265,8 +279,9 @@ export class MobileShell {
     this.alerts(def, adapter);
     adapter.onSettingsStatusChanged(() => this.refreshSettings());
     const start: ShellCommand = { type: "start", instance: id, module: def.module, name: def.name, url: def.url };
-    if (takesSettings) start.settings = this.settingValues(manifest, id);
+    if (takesSettings) start.settings = this.settingValues(module, id);
     this.send(start);
+    if (hostSettings) this.send({ type: "hostSettings", instance: id, settings: this.hostValues(module, id) });
     if (manifest.holdsMedia) this.viewSettings(id);
   }
 

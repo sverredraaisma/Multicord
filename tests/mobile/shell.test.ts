@@ -174,7 +174,7 @@ describe("Discord", () => {
 
   it("starts as Discord's own web app with its view's settings, and shows in the drawer", async () => {
     const { of, last, shell } = await started({ platforms: DISCORD });
-    expect(of("start")[0]).toEqual({ type: "start", instance: "dc", module: "discord", name: "Discord", url: "https://discord.com/app", settings: { desktopSite: true } });
+    expect(of("start")[0]).toEqual({ type: "start", instance: "dc", module: "discord", name: "Discord", url: "https://discord.com/app", settings: { desktopSite: true, usbCamera: false } });
     expect(last().screen).toEqual({ page: "service", instance: "dc" });
     expect(last().services[0]).toEqual({ id: "dc", name: "Discord", label: "Discord", color: "#5865f2" });
     expect([...shell.discordAdapters.keys()]).toEqual(["dc"]);
@@ -226,9 +226,9 @@ describe("Discord", () => {
   it("passes its view's settings to native code as they change", async () => {
     const { of, shell } = await started({ platforms: DISCORD });
     await shell.settingsAction({ type: "update", patch: { services: { dc: { options: { desktopSite: false } } } } });
-    expect(of("hostSettings")).toEqual([{ type: "hostSettings", instance: "dc", settings: { desktopSite: false } }]);
+    expect(of("hostSettings").filter((c) => c.instance === "dc")).toEqual([{ type: "hostSettings", instance: "dc", settings: { desktopSite: false, usbCamera: false } }]);
     await shell.settingsAction({ type: "update", patch: { services: { tg: { notifications: false } } } });
-    expect(of("hostSettings")).toHaveLength(1);
+    expect(of("hostSettings").filter((c) => c.instance === "dc")).toHaveLength(1);
   });
 });
 
@@ -422,6 +422,16 @@ describe("settings", () => {
     const { of, last } = await started();
     expect(of("theme")).toEqual([{ type: "theme", theme: "system" }]);
     expect(last().theme).toBe("system");
+  });
+
+  it("keeps the USB camera setting from engines: native code takes it for the views of services with calls", async () => {
+    const { shell, of } = await started();
+    expect(of("hostSettings")).toEqual([{ type: "hostSettings", instance: "matrix", settings: { usbCamera: false } }]);
+    await shell.settingsAction({ type: "update", patch: { services: { matrix: { options: { usbCamera: true } } } } });
+    expect(of("hostSettings").at(-1)).toEqual({ type: "hostSettings", instance: "matrix", settings: { usbCamera: true } });
+    expect(of("command").at(-1)).toEqual({ type: "command", instance: "matrix", command: { type: "settings", values: { readReceipts: true, slidingSync: true, typing: true } } });
+    // Telegram has no calls here: no such setting.
+    expect(of("hostSettings").some((c) => c.instance === "tg")).toBe(false);
   });
 
   it("sends a service's settings to its engine, and its media limit to its view", async () => {

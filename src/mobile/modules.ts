@@ -38,24 +38,34 @@ export const DESKTOP_SITE: ServiceSettingField = {
   default: true,
 };
 
+/** A UVC camera plugged into the phone, offered in the service's calls (src/mobile/usbCamera.ts, CameraPort.kt). */
+export const USB_CAMERA: ServiceSettingField = {
+  kind: "toggle",
+  key: "usbCamera",
+  label: "USB camera in calls",
+  hint: "Offer a camera plugged into the phone's USB port as \"USB camera\" in this service's calls, for phones whose own camera service does not list USB cameras. Android asks you to allow the camera the first time a call uses it.",
+  default: false,
+};
+
 /** Discord on the phone: the desktop's manifest, with the phone's own settings for its view. */
 const DISCORD_MODULE: MobileModule = {
-  manifest: { ...discordManifest, settings: [DESKTOP_SITE] },
+  manifest: { ...discordManifest, settings: [DESKTOP_SITE, USB_CAMERA] },
   discord: true,
-  hostSettings: [DESKTOP_SITE.key],
+  hostSettings: [DESKTOP_SITE.key, USB_CAMERA.key],
 };
+
+/** A native module whose chat views hold calls gets the USB camera setting, which native code applies to its view. */
+function withUsbCamera({ manifest }: { manifest: ModuleManifest }): MobileModule {
+  if (manifest.capabilities?.voice !== true) return { manifest };
+  return { manifest: { ...manifest, settings: [...(manifest.settings ?? []), USB_CAMERA] }, hostSettings: [USB_CAMERA.key] };
+}
 
 /** The web-client modules: Element, Stoat, Fluxer, Spacebar and Nerimity's own web apps, and any web app at an address the user gives. */
 const WEB_MODULES: readonly MobileModule[] = [matrixModule, stoatModule, fluxerWebModule, spacebarModule, nerimityModule, webModule].map(({ manifest }) => ({ manifest, web: true }));
 
 export const MOBILE_MODULES: readonly MobileModule[] = [
   DISCORD_MODULE,
-  matrixNativeModule,
-  fluxerModule,
-  telegramModule,
-  stoatNativeModule,
-  spacebarNativeModule,
-  nerimityNativeModule,
+  ...[matrixNativeModule, fluxerModule, telegramModule, stoatNativeModule, spacebarNativeModule, nerimityNativeModule].map(withUsbCamera),
   ...WEB_MODULES,
 ];
 

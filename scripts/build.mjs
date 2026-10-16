@@ -99,6 +99,8 @@ await Promise.all([
       // Discord's page on the phone: the main-world scripts, and the relay native code puts beside its message listener.
       "mobile/discord-page": "src/entries/mobile-discord-page.ts",
       "mobile/discord-relay": "src/entries/mobile-discord-relay.ts",
+      // The USB camera in a page: Discord's and the chat views' (CameraPort.kt hands it the frames).
+      "mobile/usb-camera": "src/entries/mobile-usb-camera.ts",
     },
     platform: "browser",
     format: "iife",
