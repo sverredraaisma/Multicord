@@ -11,6 +11,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  nativeTheme,
   Notification,
   protocol,
   safeStorage,
@@ -195,6 +196,10 @@ export async function createShell(
   );
   for (const error of errors) console.warn(`[platforms] ${error}`);
 
+  // The shell's pages follow the theme setting through prefers-color-scheme; so does the window behind them.
+  const settingsStore = fileSettingsStore(path.join(paths.userData, "settings.json"));
+  nativeTheme.themeSource = settingsStore.get().general.theme;
+  const windowColour = (): string => (nativeTheme.shouldUseDarkColors ? "#1e1f22" : "#e3e5e8");
   const stateFile = path.join(paths.userData, "window-state.json");
   const saved = parseWindowState(readOptional(stateFile));
   const window = new BaseWindow({
@@ -205,7 +210,7 @@ export async function createShell(
     height: saved.height,
     minWidth: 600,
     minHeight: 400,
-    backgroundColor: "#1e1f22",
+    backgroundColor: windowColour(),
   });
   if (saved.maximized) window.maximize();
 
@@ -221,7 +226,6 @@ export async function createShell(
   const views = new Map<string, WebContentsView>();
   const adapters = new Map<string, PlatformAdapter>();
   const credentials = new CredentialStore(path.join(paths.userData, "credentials.json"), services.secrets);
-  const settingsStore = fileSettingsStore(path.join(paths.userData, "settings.json"));
   const favourites = createFavourites(paths.userData);
   const general = () => settingsStore.get().general;
   /** Notifications from this service: on in general and not turned off for it. */
@@ -612,6 +616,7 @@ export async function createShell(
     adapters,
     secretsPersistent: () => credentials.persistent,
     launchAtLoginSupported: platform !== "linux",
+    themes: true,
     version: app.getVersion(),
     streaming,
     updates: {
@@ -767,6 +772,7 @@ export async function createShell(
       publishMessages();
     }
     if (patch.general?.zoom !== undefined) for (const view of contentViews) view.webContents.setZoomFactor(next.general.zoom);
+    if (patch.general?.theme !== undefined) nativeTheme.themeSource = next.general.theme;
     if (patch.general?.spellcheck !== undefined) for (const ses of platformSessions) ses.setSpellCheckerEnabled(next.general.spellcheck);
     if (patch.general?.launchAtLogin === undefined || platform === "linux") return;
     // Unpackaged (development) runs need the app path, or Electron starts without the app.
@@ -847,6 +853,8 @@ export async function createShell(
     }
   });
 
+  // The system's setting changed, or the theme setting did.
+  nativeTheme.on("updated", () => window.setBackgroundColor(windowColour()));
   window.on("resize", layout);
   window.on("close", (event) => {
     fs.mkdirSync(paths.userData, { recursive: true });

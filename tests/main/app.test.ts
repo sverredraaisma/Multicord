@@ -1399,6 +1399,23 @@ describe("incoming calls", () => {
   });
 });
 
+describe("theme", () => {
+  it("applies the theme setting to the shell's pages and the window behind them, and offers it in Settings", async () => {
+    fs.writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ general: { theme: "light" } }));
+    const { handle, window } = await shellWith();
+    expect(electron.nativeTheme.themeSource).toBe("light");
+    expect(window.options.backgroundColor).toBe("#e3e5e8");
+    expect(handle.settings.state().themes).toBe(true);
+    handle.settingsStore.update({ general: { theme: "dark" } });
+    expect(electron.nativeTheme.themeSource).toBe("dark");
+    electron.nativeTheme.emit("updated");
+    expect(window.setBackgroundColor).toHaveBeenLastCalledWith("#1e1f22");
+    // Other changes leave it.
+    handle.settingsStore.update({ general: { zoom: 1.1 } });
+    expect(electron.nativeTheme.themeSource).toBe("dark");
+  });
+});
+
 describe("zoom, spell check and grouping", () => {
   it("applies the settings to every content view and session, and follows changes", async () => {
     fs.writeFileSync(path.join(userData, "settings.json"), JSON.stringify({ general: { zoom: 1.25, spellcheck: false, railGrouping: "platform" } }));

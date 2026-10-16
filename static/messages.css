@@ -1,9 +1,4 @@
 /* Unified Messages page. Builds on shell.css tokens. */
-:root {
-  --panel: #2b2d31;
-  --border: #3f4147;
-}
-
 .messages-body { background: var(--panel); }
 #messages { display: flex; flex-direction: column; height: 100%; }
 #messages [hidden] { display: none !important; }
@@ -42,8 +37,8 @@
   text-align: left;
   cursor: pointer;
 }
-.conversation-button:hover { background: #35373c; color: var(--text); }
-.conversation-button.active { background: #404249; color: #fff; }
+.conversation-button:hover { background: var(--hover); color: var(--text); }
+.conversation-button.active { background: var(--selected); color: var(--selected-text); }
 .conversation-button.unread { color: var(--text); }
 .conversation-button .avatar {
   display: grid;
@@ -71,7 +66,7 @@
   padding: 0 5px;
   border-radius: 4px;
   background: color-mix(in srgb, var(--module-color) 30%, transparent);
-  color: #fff;
+  color: var(--module-tag-text);
   font-size: 10px;
   font-weight: 700;
   line-height: 16px;

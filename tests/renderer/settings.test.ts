@@ -478,8 +478,8 @@ describe("banners", () => {
 describe("general and about", () => {
   it("general switches reflect state and send updates", () => {
     const state = viewState();
-    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, streamerMode: "on", openLinks: false, autoUpdate: false, richPresence: false, mediaAutoLoad: "5mb", typingIndicators: false };
-    mount(state);
+    state.settings.general = { closeToTray: false, launchAtLogin: true, notifications: false, spellcheck: false, railGrouping: "platform", zoom: 1.25, theme: "light", streamerMode: "on", openLinks: false, autoUpdate: false, richPresence: false, mediaAutoLoad: "5mb", typingIndicators: false };
+    const page = mount(state);
     expect(switchFor("tray").checked).toBe(false);
     expect(switchFor("Start with").checked).toBe(true);
     change(switchFor("tray"), true);
@@ -501,6 +501,21 @@ describe("general and about", () => {
     expect([...zoom.options].map((o) => o.textContent)).toContain("100%");
     change(zoom, "1.5");
     expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { zoom: 1.5 } } });
+    // The theme is offered only where the host applies it.
+    const theme = q<HTMLSelectElement>("select[aria-label=Theme]");
+    expect(theme.closest<HTMLElement>(".field")!.hidden).toBe(true);
+    page.render({ ...state, themes: true });
+    expect(theme.closest<HTMLElement>(".field")!.hidden).toBe(false);
+    expect(theme.value).toBe("light");
+    expect([...theme.options].map((o) => o.textContent)).toEqual(["As the system", "Light", "Dark"]);
+    change(theme, "dark");
+    expect(act).toHaveBeenLastCalledWith({ type: "update", patch: { general: { theme: "dark" } } });
+    const calls = act.mock.calls.length;
+    const bogus = theme.ownerDocument.createElement("option");
+    bogus.value = "neon";
+    theme.append(bogus);
+    change(theme, "neon");
+    expect(act.mock.calls.length).toBe(calls);
     const streamer = q<HTMLSelectElement>("select[aria-label='Streamer mode']");
     expect(streamer.value).toBe("on");
     expect(q(".streaming-note").hidden).toBe(true);

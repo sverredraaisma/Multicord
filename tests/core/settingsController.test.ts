@@ -88,6 +88,11 @@ describe("settings state", () => {
     expect(state.modules.filter((m) => m.calls).map((m) => m.id)).toEqual(["fluxer", "matrix-native", "stoat-native"]);
     expect(state).toMatchObject({ settings: DEFAULT_SETTINGS, restartNeeded: false, secretsPersistent: true, launchAtLoginSupported: true, version: "1.2.3" });
     expect(state).not.toHaveProperty("error");
+    expect(state).not.toHaveProperty("themes");
+  });
+
+  it("offers the theme where the host applies it", () => {
+    expect(controller({}, { themes: true }).settings.state().themes).toBe(true);
   });
 
   it("passes on each service's health checks", () => {

@@ -1,6 +1,6 @@
 import type { SettingsApi } from "../preload/settings";
 import { keyNameForCode } from "../shared/keys";
-import { isAccelerator, MEDIA_AUTO_LOAD, serviceSettings, serviceSettingValues, ZOOM_LEVELS, type MediaAutoLoad, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
+import { isAccelerator, isTheme, MEDIA_AUTO_LOAD, serviceSettings, serviceSettingValues, ZOOM_LEVELS, type MediaAutoLoad, type ShortcutAction, type UpdateStatus, type AccountStatus, type DeviceChoice, type ModuleInfo, type ServiceInfo, type SettingsPatch, type SettingsViewState, type VoiceSettings } from "../shared/settings";
 import type { FavouritesSummary } from "../shared/favourites";
 import { el, initials, setColor } from "./components/dom";
 import { formatSize } from "./components/format";
@@ -219,6 +219,8 @@ export class SettingsPage {
     general: Record<"closeToTray" | "launchAtLogin" | "notifications" | "spellcheck", HTMLInputElement>;
     grouped: HTMLInputElement;
     zoom: HTMLSelectElement;
+    theme: HTMLSelectElement;
+    themeRow: HTMLElement;
     autoLoad: HTMLSelectElement;
     streamer: HTMLSelectElement;
     streamingNote: HTMLElement;
@@ -452,6 +454,23 @@ export class SettingsPage {
     zoom.addEventListener("change", () => this.update({ general: { zoom: Number(zoom.value) } }));
     const zoomRow = el(doc, "div", "field");
     zoomRow.append(el(doc, "span", "field-label", "Zoom"), zoom, el(doc, "small", "hint", "Also Ctrl and + or −, and Ctrl and 0 to reset."));
+    const theme = el(doc, "select");
+    theme.setAttribute("aria-label", "Theme");
+    for (const [value, label] of [
+      ["system", "As the system"],
+      ["light", "Light"],
+      ["dark", "Dark"],
+    ] as const) {
+      const option = el(doc, "option", undefined, label);
+      option.value = value;
+      theme.append(option);
+    }
+    theme.addEventListener("change", () => {
+      if (isTheme(theme.value)) this.update({ general: { theme: theme.value } });
+    });
+    const themeRow = el(doc, "div", "field");
+    themeRow.hidden = true;
+    themeRow.append(el(doc, "span", "field-label", "Theme"), theme, el(doc, "small", "hint", "Multicord's own pages: the rail, Messages, Settings and the chat views. Web services such as Discord keep their own theme."));
     const streamer = el(doc, "select");
     streamer.setAttribute("aria-label", "Streamer mode");
     for (const [value, label] of [
@@ -511,6 +530,7 @@ export class SettingsPage {
       streamerRow,
       typing.row,
       el(doc, "h2", undefined, "Appearance"),
+      themeRow,
       zoomRow,
     );
     const launchHint = el(doc, "p", "hint", "Starting with your computer is not available on this system.");
@@ -583,6 +603,8 @@ export class SettingsPage {
       general: generalInputs,
       grouped: grouping.input,
       zoom,
+      theme,
+      themeRow,
       autoLoad,
       streamer,
       streamingNote,
@@ -649,6 +671,8 @@ export class SettingsPage {
     for (const key of ["closeToTray", "launchAtLogin", "notifications", "spellcheck"] as const) parts.general[key].checked = general[key];
     parts.grouped.checked = general.railGrouping === "platform";
     parts.zoom.value = String(general.zoom);
+    parts.theme.value = general.theme;
+    parts.themeRow.hidden = state.themes !== true;
     parts.autoLoad.value = general.mediaAutoLoad;
     parts.streamer.value = general.streamerMode;
     parts.streamingNote.hidden = state.streaming !== true;

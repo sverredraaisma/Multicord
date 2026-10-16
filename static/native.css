@@ -1,18 +1,4 @@
 /* Native chat view (Fluxer and later native adapters). Builds on shell.css tokens. */
-:root {
-  --panel: #2b2d31;
-  --surface: #313338;
-  --border: #3f4147;
-  --accent: #5865f2;
-  /* Fills behind white text (4.5:1 or more); --danger-text is the red for text on the dark panels. */
-  --danger: #da373c;
-  --danger-text: #fa777a;
-  /* The accent and green as text on the dark panels, where the fills would be too dim to read. */
-  --accent-text: #949cf7;
-  --ok-text: #2dc770;
-  --mention: #f0b232;
-}
-
 .native-body, #app { height: 100%; }
 /* Read by screen readers, not shown. */
 .visually-hidden { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
@@ -108,12 +94,12 @@
   cursor: pointer;
 }
 .channel:hover { background: var(--surface); color: var(--text); }
-.channel.active { background: var(--border); color: var(--text); }
+.channel.active { background: var(--selected); color: var(--text); }
 .channel.unread { color: var(--text); font-weight: 600; }
 .channel .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .channel .badge { position: static; border: 0; }
 /* Muted conversations: dimmer, with a crossed-out bell; the bell beside a row mutes or unmutes it. */
-.channel.muted, .channel.muted.unread { color: var(--muted); font-weight: normal; opacity: 0.8; }
+.channel.muted, .channel.muted.unread { color: var(--muted); font-weight: normal; opacity: var(--dim); }
 .muted-mark { display: inline-flex; }
 .muted-icon, .mute-icon { width: 14px; height: 14px; fill: currentColor; }
 .channels li.mutable { position: relative; }
@@ -131,7 +117,7 @@
   color: var(--muted);
   cursor: pointer;
 }
-.mute-toggle:hover, .archive-toggle:hover { background: var(--border); color: var(--text); }
+.mute-toggle:hover, .archive-toggle:hover { background: var(--selected); color: var(--text); }
 li.mutable:hover > .mute-toggle, li.mutable:focus-within > .mute-toggle { display: inline-flex; }
 /* The archive button beside a row, left of the bell where there is one. */
 .channels li.archivable { position: relative; }
@@ -151,7 +137,7 @@ li.archivable:hover > .archive-toggle, li.archivable:focus-within > .archive-tog
 .join-form { display: flex; gap: 6px; padding: 8px; border-top: 1px solid var(--bg); }
 .join-form[hidden] { display: none; }
 .join-input { flex: 1; min-width: 0; padding: 4px 8px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
-.account { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: #232428; }
+.account { display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; background: var(--raised); }
 .me { overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 
 .conversation { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--surface); }
@@ -180,7 +166,7 @@ li.archivable:hover > .archive-toggle, li.archivable:focus-within > .archive-tog
 .jump-unread:hover, .dismiss-unread:hover, .jump-unread:focus-visible, .dismiss-unread:focus-visible { background: rgba(255, 255, 255, 0.2); }
 .jump-present { position: absolute; right: 24px; bottom: 8px; z-index: 2; padding: 6px 12px; border: 1px solid var(--border); border-radius: 16px; background: var(--panel); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; }
 .jump-present[hidden] { display: none; }
-.jump-present:hover { background: var(--border); }
+.jump-present:hover { background: var(--selected); }
 .older-row { display: flex; justify-content: center; padding-bottom: 12px; color: var(--muted); }
 .older { padding: 6px 12px; border: 1px solid var(--border); border-radius: 4px; background: none; color: var(--text); cursor: pointer; }
 .message { display: flex; gap: 12px; padding: 6px 0; }
@@ -197,11 +183,11 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
 .attachment-audio { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; max-width: 400px; }
 .attachment-audio audio { width: 100%; }
 .attachment-name { color: var(--muted); font-size: 13px; }
-.attachment.load { margin-top: 6px; padding: 8px 12px; border: 0; border-radius: 4px; background: #2b2d31; color: var(--text); cursor: pointer; text-align: left; }
+.attachment.load { margin-top: 6px; padding: 8px 12px; border: 0; border-radius: 4px; background: var(--panel); color: var(--text); cursor: pointer; text-align: left; }
 .attachment.load:disabled { cursor: progress; opacity: 0.7; }
 .attachment.loading { color: var(--muted); font-style: italic; }
 .attachment.sticker-name { color: var(--muted); }
-.attachment { display: block; margin-top: 6px; color: #00a8fc; }
+.attachment { display: block; margin-top: 6px; color: var(--link); }
 .attachment.expired { color: var(--muted); }
 /* Link previews the platform made: a card with a coloured bar. */
 .embed { display: flex; gap: 12px; max-width: 432px; margin-top: 6px; padding: 8px 12px; border-left: 4px solid var(--embed-color, var(--border)); border-radius: 4px; background: var(--panel); }
@@ -209,7 +195,7 @@ span.avatar { display: flex; align-items: center; justify-content: center; backg
 .embed-text { display: flex; flex: 1; flex-direction: column; gap: 2px; min-width: 0; overflow-wrap: anywhere; }
 .embed-site { color: var(--muted); font-size: 12px; }
 .embed-title { color: var(--text); font-weight: 600; }
-a.embed-title { color: #00a8fc; text-decoration: none; }
+a.embed-title { color: var(--link); text-decoration: none; }
 a.embed-title:hover { text-decoration: underline; }
 .embed-description { color: var(--text); font-size: 14px; }
 .embed .embed-thumbnail { flex: none; max-width: 80px; max-height: 80px; }
@@ -222,7 +208,7 @@ a.embed-title:hover { text-decoration: underline; }
 button.poll-option { cursor: pointer; }
 button.poll-option:hover { border-color: var(--accent); }
 .poll-option.chosen { border-color: var(--accent); font-weight: 600; }
-.poll-option.correct { border-color: #23a55a; }
+.poll-option.correct { border-color: var(--ok); }
 .poll-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .poll-share, .poll-meta { color: var(--muted); font-size: 12px; }
 .poll-retract { align-self: flex-start; }
@@ -231,7 +217,7 @@ button.poll-option:hover { border-color: var(--accent); }
   padding: 11px 14px;
   border: 0;
   border-radius: 8px;
-  background: #383a40;
+  background: var(--field);
   color: var(--text);
   font: inherit;
   resize: none;
@@ -309,7 +295,7 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
   padding: 8px;
   border: 0;
   border-radius: 6px;
-  background: #383a40;
+  background: var(--field);
   color: var(--text);
   font: inherit;
   resize: vertical;
@@ -335,7 +321,7 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
   height: 40px;
   border: 0;
   border-radius: 50%;
-  background: #383a40;
+  background: var(--field);
   color: var(--text);
   font-size: 20px;
   cursor: pointer;
@@ -399,7 +385,7 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
 .voice-members li.muted .name { text-decoration: line-through; }
 .voice-members .avatar { width: 20px; height: 20px; font-size: 9px; }
 .voice-members .live { padding: 0 4px; border-radius: 4px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; }
-.voice-panel { padding: 10px 12px; border-top: 1px solid var(--bg); background: #232428; }
+.voice-panel { padding: 10px 12px; border-top: 1px solid var(--bg); background: var(--raised); }
 .voice-panel[hidden] { display: none; }
 .voice-status { color: var(--muted); font-size: 12px; font-weight: 700; }
 .voice-status.connected { color: var(--ok-text); }
@@ -455,11 +441,11 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
   white-space: pre;
 }
 .markdown .md-list { margin: 4px 0; padding-left: 24px; }
-.markdown .md-link { color: #00a8fc; text-decoration: none; }
+.markdown .md-link { color: var(--link); text-decoration: none; }
 .markdown .md-link:hover { text-decoration: underline; }
-.markdown .spoiler { border-radius: 4px; background: #1e1f22; color: transparent; cursor: pointer; }
+.markdown .spoiler { border-radius: 4px; background: var(--spoiler); color: transparent; cursor: pointer; }
 .markdown .spoiler * { visibility: hidden; }
-.markdown .spoiler.revealed { background: rgba(255, 255, 255, 0.1); color: inherit; cursor: auto; }
+.markdown .spoiler.revealed { background: var(--spoiler-revealed); color: inherit; cursor: auto; }
 .markdown .spoiler.revealed * { visibility: visible; }
 .markdown .emoji { font-size: 1.375em; line-height: 1; vertical-align: -0.2em; }
 .markdown img.emoji { width: 1.375em; height: 1.375em; object-fit: contain; }
@@ -520,7 +506,7 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
   height: 40px;
   border: 0;
   border-radius: 50%;
-  background: #383a40;
+  background: var(--field);
   font-size: 20px;
   cursor: pointer;
 }
@@ -572,7 +558,8 @@ button.member { cursor: pointer; }
 button.member:hover, button.member:focus-visible { background: var(--surface); color: var(--text); }
 .member-text { display: flex; flex-direction: column; min-width: 0; }
 .member-name, .member-status { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.member-name { color: var(--member-color, inherit); }
+/* A role's colour as the service gives it, shaded where the theme needs it to read (--role-mix, --role-shade). */
+.member-name { color: color-mix(in srgb, var(--member-color, currentColor) var(--role-mix), var(--role-shade)); }
 .member-status { font-size: 12px; }
 .member-note, .member-error { margin: 8px; color: var(--muted); font-size: 12px; }
 .member-error { color: var(--danger-text); }
@@ -654,7 +641,7 @@ button.thread-summary:hover { text-decoration: underline; }
 .profile-card .presence { width: 14px; height: 14px; }
 .profile-close { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; border: 0; border-radius: 4px; background: none; color: var(--muted); font-size: 20px; cursor: pointer; }
 .profile-close:hover, .profile-close:focus-visible { background: var(--surface); color: var(--text); }
-.profile-name { margin: 8px 0 0; color: var(--member-color, var(--text)); font-size: 18px; overflow-wrap: anywhere; }
+.profile-name { margin: 8px 0 0; color: color-mix(in srgb, var(--member-color, var(--text)) var(--role-mix), var(--role-shade)); font-size: 18px; overflow-wrap: anywhere; }
 .profile-username, .profile-status { margin: 0; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .profile-roles { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0; padding: 0; list-style: none; }
 .profile-role { padding: 2px 8px; border: 1px solid var(--role-color, var(--border)); border-radius: 10px; font-size: 12px; }
@@ -787,7 +774,7 @@ button.thread-summary:hover { text-decoration: underline; }
   padding: 6px 8px;
   overflow-x: auto;
   border-bottom: 1px solid var(--bg);
-  background: #232428;
+  background: var(--raised);
 }
 .mobile .call-strip button {
   flex: none;

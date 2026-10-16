@@ -64,6 +64,7 @@ export class BaseWindow extends EventEmitter {
   flashFrame = vi.fn();
   setOverlayIcon = vi.fn();
   setTitle = vi.fn();
+  setBackgroundColor = vi.fn();
   isMaximized = vi.fn(() => false);
   isMinimized = vi.fn(() => false);
   isVisible = vi.fn(() => true);
@@ -156,6 +157,15 @@ export const nativeImage = {
   createFromBitmap: (bitmap: Buffer, size: { width: number; height: number }) => ({ bitmap, size }),
 };
 export const protocol = { registerSchemesAsPrivileged: vi.fn() };
+/** The system's colours: dark unless a test says otherwise, and themeSource as the shell set it. */
+class FakeNativeTheme extends EventEmitter {
+  themeSource: "system" | "light" | "dark" = "system";
+  systemDark = true;
+  get shouldUseDarkColors(): boolean {
+    return this.themeSource === "system" ? this.systemDark : this.themeSource === "dark";
+  }
+}
+export const nativeTheme = new FakeNativeTheme();
 export const clipboard = { writeText: vi.fn() };
 export const globalShortcut = {
   callbacks: new Map<string, () => void>(),
@@ -214,6 +224,9 @@ export const app = new FakeApp();
 export function resetElectron(): void {
   WebContentsView.instances = [];
   BaseWindow.instances = [];
+  nativeTheme.removeAllListeners();
+  nativeTheme.themeSource = "system";
+  nativeTheme.systemDark = true;
   Tray.instances = [];
   Notification.instances = [];
   Notification.isSupported.mockImplementation(() => true);

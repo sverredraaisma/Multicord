@@ -31,6 +31,8 @@ export interface SettingsDeps {
   adapters: ReadonlyMap<string, PlatformAdapter>;
   secretsPersistent(): boolean;
   launchAtLoginSupported: boolean;
+  /** Whether the host applies the theme setting. */
+  themes?: boolean;
   version: string;
   /** Whether streamer mode is hiding content right now. */
   streaming?(): boolean;
@@ -158,6 +160,7 @@ export class SettingsController {
       launchAtLoginSupported: this.deps.launchAtLoginSupported,
       version: this.deps.version,
     };
+    if (this.deps.themes) state.themes = true;
     if (this.deps.streaming?.()) state.streaming = true;
     if (this.deps.linkSchemes?.length) state.linkSchemes = this.deps.linkSchemes;
     if (this.deps.updates) state.update = this.deps.updates.status;

@@ -1,17 +1,4 @@
 /* Settings page. Builds on shell.css tokens. */
-:root {
-  --panel: #2b2d31;
-  --surface: #313338;
-  --border: #3f4147;
-  --accent: #5865f2;
-  /* A fill behind white text; --danger-text is the red for text on the dark panels. */
-  --danger: #da373c;
-  --danger-text: #fa777a;
-  --ok: #23a55a;
-  /* The green as text on the dark panels. */
-  --ok-text: #2dc770;
-}
-
 .settings-body, #settings { height: 100%; }
 /* Components set display; hidden must still win. */
 .settings [hidden] { display: none !important; }
@@ -52,7 +39,7 @@
   cursor: pointer;
 }
 .settings-tab:hover { background: var(--surface); color: var(--text); }
-.settings-tab.active { background: #404249; color: #fff; }
+.settings-tab.active { background: var(--selected); color: var(--selected-text); }
 
 /* Content */
 .settings-main {
@@ -106,7 +93,7 @@
   white-space: nowrap;
 }
 .primary { background: var(--accent); }
-.primary:hover { background: #4752c4; }
+.primary:hover { background: var(--accent-hover); }
 .secondary { background: #4e5058; }
 .secondary:hover { background: #6d6f78; }
 .danger { background: transparent; color: var(--danger-text); box-shadow: inset 0 0 0 1px var(--danger-text); }
@@ -196,7 +183,7 @@
   padding: 0 6px;
   border-radius: 4px;
   background: color-mix(in srgb, var(--module-color) 30%, transparent);
-  color: #fff;
+  color: var(--module-tag-text);
   font-size: 11px;
   font-weight: 700;
   line-height: 18px;
@@ -204,7 +191,7 @@
 }
 .service-status { margin-top: 2px; color: var(--muted); font-size: 13px; }
 .service-status[data-state="signed-in"] { color: var(--ok-text); }
-.service-status[data-state="signed-out"] { color: #f0b232; }
+.service-status[data-state="signed-out"] { color: var(--warn-text); }
 .service-notice { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.4; }
 .service-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
 .service-actions button { padding: 4px 12px; font-size: 13px; }

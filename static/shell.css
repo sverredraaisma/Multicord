@@ -1,11 +1,83 @@
+/* Colour tokens for every page of the shell. Dark is the default; the light set follows the system or the
+   user's choice (Settings > General > Appearance), which the main process passes on as prefers-color-scheme.
+   Text tokens meet WCAG AA (4.5:1) on --bg, --panel and --surface in both sets; fills marked "behind white"
+   carry white text at 4.5:1 or more. */
 :root {
+  color-scheme: dark;
   --bg: #1e1f22;
+  --panel: #2b2d31;
+  --surface: #313338;
   --item: #313338;
   --item-hover: #5865f2;
+  /* Rows under the pointer, form fields and the composer, bars that sit a step lower, the selected tab or row. */
+  --hover: #35373c;
+  --field: #383a40;
+  --raised: #232428;
+  --selected: #404249;
+  --selected-text: #fff;
+  --border: #3f4147;
+  --divider: #2b2d31;
   --text: #f2f3f5;
   --muted: #b5bac1;
+  /* Behind white. */
+  --accent: #5865f2;
+  --accent-hover: #4752c4;
+  --danger: #da373c;
   --badge: #da373c;
-  color-scheme: dark;
+  /* As text on the panels. */
+  --accent-text: #949cf7;
+  --danger-text: #fa777a;
+  --ok-text: #2dc770;
+  --warn-text: #f0b232;
+  --link: #00a8fc;
+  /* Controls and marks (3:1 or more as non-text). */
+  --ok: #23a55a;
+  --mention: #f0b232;
+  --focus-ring: #00a8fc;
+  --module-tag-text: #fff;
+  --spoiler: #1e1f22;
+  --spoiler-revealed: rgba(255, 255, 255, 0.1);
+  --scrim: rgba(0, 0, 0, 0.85);
+  --tooltip: #111214;
+  --tooltip-text: #f2f3f5;
+  /* Muted conversations fade this far; colours a service picks (roles) mix this much of themselves with the shade. */
+  --dim: 0.8;
+  --role-mix: 100%;
+  --role-shade: #fff;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --bg: #e3e5e8;
+    --panel: #f2f3f5;
+    --surface: #ffffff;
+    --item: #ffffff;
+    --hover: #e3e5e8;
+    --field: #e3e5e8;
+    --raised: #ebedef;
+    --selected: #d4d7dc;
+    --selected-text: #060607;
+    --border: #c4c9ce;
+    --divider: #d4d7dc;
+    --text: #060607;
+    --muted: #4e5058;
+    --accent-text: #4049b8;
+    --danger-text: #b3242a;
+    --ok-text: #0f6230;
+    --warn-text: #7a5000;
+    --link: #0058b3;
+    --ok: #1d8a4b;
+    --mention: #f0b232;
+    --focus-ring: #0058b3;
+    --module-tag-text: #060607;
+    --spoiler: #b5bac1;
+    --spoiler-revealed: rgba(0, 0, 0, 0.08);
+    --scrim: rgba(242, 243, 245, 0.94);
+    --dim: 0.9;
+    --role-mix: 55%;
+    --role-shade: #000;
+  }
 }
 
 * { box-sizing: border-box; }
@@ -28,7 +100,7 @@ html, body {
   flex: none;
   justify-content: center;
   padding: 12px 0 8px;
-  border-bottom: 1px solid #2b2d31;
+  border-bottom: 1px solid var(--divider);
 }
 
 .rail-messages svg { width: 24px; height: 24px; fill: var(--muted); transition: fill 0.15s; }
@@ -40,12 +112,12 @@ html, body {
   flex: none;
   justify-content: center;
   padding: 8px 0 12px;
-  border-top: 1px solid #2b2d31;
+  border-top: 1px solid var(--divider);
 }
 
-.rail-settings svg { width: 24px; height: 24px; fill: #23a55a; transition: fill 0.15s; }
+.rail-settings svg { width: 24px; height: 24px; fill: var(--ok); transition: fill 0.15s; }
 .rail-settings:hover svg, .rail-settings.active svg { fill: #fff; }
-.rail-settings:hover, .rail-settings.active { background: #23a55a; }
+.rail-settings:hover, .rail-settings.active { background: var(--ok); }
 
 #rail {
   display: flex;
@@ -75,7 +147,7 @@ html, body {
 
 /* A service's home: tinted in its module's colour (set on the button), so services tell apart. */
 .rail-item[data-kind="home"] { background: color-mix(in srgb, var(--module-color, #80848e) 45%, var(--item)); }
-.rail-item:hover, .rail-item.active { border-radius: 16px; background: var(--item-hover); }
+.rail-item:hover, .rail-item.active { border-radius: 16px; background: var(--item-hover); color: #fff; }
 .rail-item img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 .rail-item .initials { font-weight: 600; font-size: 15px; }
 
@@ -110,7 +182,7 @@ html, body {
 
 .rail-separator { width: 32px; margin: 0; border: 0; border-top: 2px solid var(--item); }
 
-.picker-body { background: rgba(0, 0, 0, 0.85); }
+.picker-body { background: var(--scrim); }
 #picker { max-width: 960px; margin: 0 auto; padding: 32px; }
 .sources { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 16px; }
 .source {
@@ -138,8 +210,8 @@ html:has(.tooltip-body), .tooltip-body { background: transparent; overflow: hidd
   max-width: 260px;
   padding: 6px 10px;
   border-radius: 6px;
-  background: #111214;
-  color: var(--text);
+  background: var(--tooltip);
+  color: var(--tooltip-text);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -154,7 +226,7 @@ html:has(.tooltip-body), .tooltip-body { background: transparent; overflow: hidd
   top: 50%;
   border: 5px solid transparent;
   border-left: 0;
-  border-right-color: #111214;
+  border-right-color: var(--tooltip);
   transform: translateY(-50%);
 }
 
@@ -225,18 +297,18 @@ html:has(.tooltip-body), .tooltip-body { background: transparent; overflow: hidd
 .drop-after { box-shadow: 0 4px 0 -1px var(--text); }
 
 /* "Couldn't reach" page: the shell's own, over a web service whose page did not load. */
-.unreachable-body { display: flex; align-items: center; justify-content: center; padding: 16px; background: #2b2d31; }
+.unreachable-body { display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--panel); }
 .unreachable { display: flex; flex-direction: column; align-items: center; gap: 12px; max-width: 440px; text-align: center; }
 .unreachable-icon { width: 48px; height: 48px; fill: var(--muted); }
 .unreachable h1 { margin: 0; font-size: 20px; }
 .unreachable p { margin: 0; color: var(--muted); overflow-wrap: anywhere; }
 .unreachable-actions { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: center; margin-top: 4px; }
-.unreachable-primary { min-height: 36px; padding: 8px 20px; border: 0; border-radius: 4px; background: #5865f2; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
-.unreachable-primary:hover { background: #4752c4; }
+.unreachable-primary { min-height: 36px; padding: 8px 20px; border: 0; border-radius: 4px; background: var(--accent); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+.unreachable-primary:hover { background: var(--accent-hover); }
 .unreachable-primary[aria-disabled="true"] { cursor: progress; opacity: 0.8; }
-.unreachable-link { min-height: 36px; padding: 8px 4px; border: 0; background: none; color: #949cf7; font: inherit; text-decoration: underline; cursor: pointer; }
-.unreachable-primary:focus-visible, .unreachable-link:focus-visible { outline: 2px solid #00a8fc; outline-offset: 2px; }
+.unreachable-link { min-height: 36px; padding: 8px 4px; border: 0; background: none; color: var(--accent-text); font: inherit; text-decoration: underline; cursor: pointer; }
+.unreachable-primary:focus-visible, .unreachable-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .unreachable .unreachable-code { font-size: 12px; }
 
 /* Where F6 put focus (scripts cannot ask for Chromium's keyboard ring when the key was pressed in another page). */
-[data-region-focus]:focus { outline: 2px solid #00a8fc; outline-offset: 2px; }
+[data-region-focus]:focus { outline: 2px solid var(--focus-ring); outline-offset: 2px; }

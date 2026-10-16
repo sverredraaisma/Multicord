@@ -66,6 +66,8 @@ export interface GeneralSettings {
   railGrouping: "mixed" | "platform";
   /** Zoom of the content area, one of ZOOM_LEVELS. */
   zoom: number;
+  /** The shell's colours: as the system's light or dark setting, or always one of them. Web services keep their own. */
+  theme: Theme;
   /** Hide message content in notifications and previews: always, never, or while streaming software runs. */
   streamerMode: "auto" | "on" | "off";
   /** Open app links (e.g. discord://) in Multicord; off by default, as an installed app may want them. */
@@ -79,6 +81,11 @@ export interface GeneralSettings {
   /** Native modules tell others while the user types; services may choose their own. */
   typingIndicators: boolean;
 }
+
+/** The shell's colour themes: following the system, or always light or dark. */
+export const THEMES = ["system", "light", "dark"] as const;
+export type Theme = (typeof THEMES)[number];
+export const isTheme = (value: unknown): value is Theme => (THEMES as readonly unknown[]).includes(value);
 
 /** How much held-back media loads by itself: nothing, up to a size, or anything. */
 export const MEDIA_AUTO_LOAD = ["off", "1mb", "5mb", "10mb", "25mb", "all"] as const;
@@ -300,6 +307,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     spellcheck: true,
     railGrouping: "mixed",
     zoom: 1,
+    theme: "system",
     streamerMode: "auto",
     openLinks: false,
     autoUpdate: true,
@@ -347,6 +355,7 @@ const GENERAL_CHECKS: { [K in keyof GeneralSettings]: (value: unknown) => value 
   spellcheck: (v): v is boolean => typeof v === "boolean",
   railGrouping: (v): v is GeneralSettings["railGrouping"] => v === "mixed" || v === "platform",
   zoom: (v): v is number => (ZOOM_LEVELS as readonly unknown[]).includes(v),
+  theme: isTheme,
   streamerMode: (v): v is GeneralSettings["streamerMode"] => v === "auto" || v === "on" || v === "off",
   openLinks: (v): v is boolean => typeof v === "boolean",
   autoUpdate: (v): v is boolean => typeof v === "boolean",
@@ -538,6 +547,8 @@ export interface SettingsViewState {
   /** False when the OS has no secret store, so sign-ins are not remembered. */
   secretsPersistent: boolean;
   launchAtLoginSupported: boolean;
+  /** The host applies the theme setting (the desktop); without it the choice is not offered. */
+  themes?: boolean;
   version: string;
   /** Streamer mode is hiding message content right now. */
   streaming?: boolean;
