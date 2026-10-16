@@ -75,7 +75,16 @@ export async function ssoSignIn(bridge: EngineBridge, url: string): Promise<stri
   return answer.loginToken;
 }
 
-type SocketListener = (event: { type: string; data?: unknown; code?: number; reason?: string; wasClean?: boolean }) => void;
+/** The events a BridgedWebSocket dispatches, by type, shaped as a page's WebSocket events as far as modules read them. */
+export interface BridgedSocketEvents {
+  open: { type: "open" };
+  message: { type: "message"; data: string | ArrayBuffer };
+  error: { type: "error" };
+  close: { type: "close"; code: number; reason: string; wasClean: boolean };
+}
+
+type BridgedSocketEvent = BridgedSocketEvents[keyof BridgedSocketEvents];
+type SocketListener = (event: BridgedSocketEvent) => void;
 
 /**
  * A WebSocket the shell opens and relays for the engine (bridgeWebSocket).
@@ -99,14 +108,14 @@ export class BridgedWebSocket {
     private readonly bridge: EngineBridge,
   ) {}
 
-  addEventListener(type: string, listener: SocketListener): void {
+  addEventListener<K extends keyof BridgedSocketEvents>(type: K, listener: (event: BridgedSocketEvents[K]) => void): void {
     let set = this.listeners.get(type);
     if (!set) this.listeners.set(type, (set = new Set()));
-    set.add(listener);
+    set.add(listener as SocketListener);
   }
 
-  removeEventListener(type: string, listener: SocketListener): void {
-    this.listeners.get(type)?.delete(listener);
+  removeEventListener<K extends keyof BridgedSocketEvents>(type: K, listener: (event: BridgedSocketEvents[K]) => void): void {
+    this.listeners.get(type)?.delete(listener as SocketListener);
   }
 
   send(data: string | ArrayBuffer | ArrayBufferView): void {
@@ -145,7 +154,7 @@ export class BridgedWebSocket {
       case "message": {
         if (this.readyState !== BridgedWebSocket.OPEN) return;
         const { data } = event;
-        return this.dispatch({ type: "message", data: typeof data === "string" ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) });
+        return this.dispatch({ type: "message", data: typeof data === "string" ? data : (data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer) });
       }
       case "close":
         return this.closed(event.code, event.reason);
@@ -174,7 +183,7 @@ export class BridgedWebSocket {
     this.dispatch({ type: "close", code, reason, wasClean: code !== 1006 });
   }
 
-  private dispatch(event: Parameters<SocketListener>[0]): void {
+  private dispatch(event: BridgedSocketEvent): void {
     for (const listener of [...(this.listeners.get(event.type) ?? [])]) listener(event);
   }
 }

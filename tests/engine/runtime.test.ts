@@ -415,7 +415,7 @@ describe("bridgeWebSocket", () => {
     const open = bridgeWebSocket(fake.bridge);
     const log = (socket: BridgedWebSocket) => {
       const events: unknown[] = [];
-      for (const type of ["open", "message", "error", "close"]) socket.addEventListener(type, (event) => events.push(event));
+      for (const type of ["open", "message", "error", "close"] as const) socket.addEventListener(type, (event) => events.push(event));
       return events;
     };
     return { ...fake, open, log };
