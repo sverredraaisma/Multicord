@@ -50,6 +50,28 @@ jobs:
         run: npm run smoke
         timeout-minutes: 5
 
+  # Multicord for Android (mobile/android): its JVM unit tests (the shared network-policy fixture among them)
+  # and a debug build, which bundles the desktop build's engine and native view (hence npm run build first).
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+      # Caches Gradle and checks the committed wrapper jar against Gradle's published checksums.
+      - uses: gradle/actions/setup-gradle@v5
+      - run: ./gradlew testDebugUnitTest assembleDebug --no-daemon
+        working-directory: mobile/android
+        timeout-minutes: 15
+
   # The phase-0 Android spike (mobile/android-spike): only that it still builds.
   android-spike:
     runs-on: ubuntu-latest
