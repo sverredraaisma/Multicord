@@ -1,4 +1,4 @@
-# Typecheck, tests with the 95% coverage gate, a build and a smoke test of the built app, on every push and pull request.
+# Typecheck, tests with the 95% coverage gate, a build, a smoke test and an accessibility check (axe) of the built app, on every push and pull request.
 name: CI
 
 on:
@@ -48,6 +48,13 @@ jobs:
         timeout-minutes: 5
       - if: runner.os != 'Linux'
         run: npm run smoke
+        timeout-minutes: 5
+      # Accessibility: axe-core on the built pages with sample states (scripts/a11y.mjs); serious or critical fails.
+      - if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" npm run a11y
+        timeout-minutes: 5
+      - if: runner.os != 'Linux'
+        run: npm run a11y
         timeout-minutes: 5
 
   # Multicord for Android (mobile/android): its JVM unit tests (the shared network-policy fixture among them),
