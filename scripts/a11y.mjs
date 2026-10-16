@@ -2,8 +2,10 @@
 // built pages in a scratch Electron, with sample states instead of accounts:
 // the native chat view's screens and populated chat states (scripts/a11y/fixtures.ts)
 // at desktop and phone width, the settings page on every tab at desktop and
-// phone width, the component gallery, and the phone's shell page (drawer,
-// Messages, settings). Fails on serious or critical violations that
+// phone width, the component gallery, the phone's shell page (drawer,
+// Messages, settings), the rail, the Messages page and the couldn't-reach page;
+// all of them in the dark and the light theme (colour contrast in both), the
+// light ones named "[light]". Fails on serious or critical violations that
 // scripts/a11y-baseline.json does not list with a reason.
 //
 //   npm run build && npm run a11y        (or: node scripts/a11y.mjs [--all] [--json <file>])
@@ -27,7 +29,7 @@ const DIST = path.join(REPO, "dist");
 const argv = process.argv.slice(2);
 const ALL = argv.includes("--all");
 const JSON_OUT = argv.includes("--json") ? argv[argv.indexOf("--json") + 1] : undefined;
-const DEADLINE_MS = 240_000;
+const DEADLINE_MS = 420_000;
 const FAILING = new Set(["serious", "critical"]);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const out = (line) => process.stdout.write(`[a11y] ${line}\n`);
@@ -47,8 +49,10 @@ async function fixtures() {
 
 // The scratch Electron: one window per page, each with a fake bridge in place of its preload.
 const MAIN = `"use strict";
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, nativeTheme } = require("electron");
 const path = require("node:path");
+// The theme under test, as the shell passes the user's choice on: through prefers-color-scheme.
+nativeTheme.themeSource = process.env.A11Y_THEME;
 app.whenReady().then(() => {
   const open = (file, hash, width, height, preload) => {
     const win = new BrowserWindow({ width, height, useContentSize: true, show: false, paintWhenInitiallyHidden: true,
@@ -62,7 +66,26 @@ app.whenReady().then(() => {
   open(path.join(dist, "settings.html"), "phone", 390, 844, "settings.js");
   open(path.join(dist, "gallery.html"), "desktop", 1280, 800);
   open(path.join(shell, "shell.html"), "phone", 390, 844, "shell.js");
+  open(path.join(dist, "rail.html"), "desktop", 72, 800, "shell-page.js");
+  open(path.join(dist, "unreachable.html"), "desktop", 1208, 800, "shell-page.js");
+  open(path.join(dist, "messages.html"), "desktop", 1208, 800, "messages.js");
 });
+`;
+
+/** The rail and the couldn't-reach page share the shell's preload: their parts of it, fed by the check. */
+const SHELL_PAGE_PRELOAD = `"use strict";
+const { contextBridge } = require("electron");
+const listeners = {};
+const on = (name) => (cb) => { listeners[name] = cb; };
+contextBridge.exposeInMainWorld("multicord", { onRail: on("rail"), onUnreachable: on("unreachable"), open() {}, ready() {}, tooltip() {}, reorder() {}, settings() {}, messages() {}, retry() {}, openSettings() {} });
+contextBridge.exposeInMainWorld("a11y", { push: (name, state) => listeners[name] && listeners[name](state) });
+`;
+
+const MESSAGES_PRELOAD = `"use strict";
+const { contextBridge } = require("electron");
+let listener;
+contextBridge.exposeInMainWorld("multicordMessages", { onState: (cb) => { listener = cb; }, open() {}, ready() {} });
+contextBridge.exposeInMainWorld("a11y", { push: (state) => listener && listener(state) });
 `;
 
 const NATIVE_PRELOAD = `"use strict";
@@ -136,7 +159,11 @@ async function reload(page) {
 }
 
 const results = [];
-async function check(page, name) {
+/** The colour themes every page is checked in; the light theme's checks are named with "[light]". */
+const THEMES = ["dark", "light"];
+let theme = THEMES[0];
+async function check(page, base) {
+  const name = theme === "dark" ? base : `${base} [${theme}]`;
   if ((await evaluateIn(page, `typeof axe`, 10_000)) === "undefined") await evaluateIn(page, `${AXE};true`, 20_000);
   const violations = await evaluateIn(page, AXE_RUN, 60_000);
   results.push({ name, violations });
@@ -169,14 +196,25 @@ async function main() {
   writeFileSync(path.join(app, "native.js"), NATIVE_PRELOAD);
   writeFileSync(path.join(app, "settings.js"), SETTINGS_PRELOAD);
   writeFileSync(path.join(app, "shell.js"), SHELL_PRELOAD);
+  writeFileSync(path.join(app, "shell-page.js"), SHELL_PAGE_PRELOAD);
+  writeFileSync(path.join(app, "messages.js"), MESSAGES_PRELOAD);
   writeFileSync(path.join(app, "package.json"), JSON.stringify({ name: "multicord-a11y", main: "main.js" }));
 
-  const port = await freePort();
-  const env = { ...process.env, A11Y_DIST: DIST, A11Y_SHELL: shellDir };
-  delete env.ELECTRON_RUN_AS_NODE;
-  child = launch([app, `--user-data-dir=${path.join(dir, "profile")}`, `--remote-debugging-port=${port}`, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost"], { cwd: app, logFile: path.join(dir, "electron.log"), env });
-  out(`checking the built pages (DevTools port ${port})`);
+  // Every page in each theme: a scratch Electron of its own per theme.
+  for (const current of THEMES) {
+    theme = current;
+    const port = await freePort();
+    const env = { ...process.env, A11Y_DIST: DIST, A11Y_SHELL: shellDir, A11Y_THEME: theme };
+    delete env.ELECTRON_RUN_AS_NODE;
+    child = launch([app, `--user-data-dir=${path.join(dir, `profile-${theme}`)}`, `--remote-debugging-port=${port}`, "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE localhost"], { cwd: app, logFile: path.join(dir, `electron-${theme}.log`), env });
+    out(`checking the built pages in the ${theme} theme (DevTools port ${port})`);
+    await pages(port, data);
+    stop(child);
+  }
+}
 
+/** Every page state, in the theme the scratch Electron runs with. */
+async function pages(port, data) {
   // The native chat view.
   for (const width of ["desktop", "phone"]) {
     const page = await target(port, new RegExp(`/native\\.html#${width}$`));
@@ -226,6 +264,23 @@ async function main() {
   await evaluateIn(shell, `document.getElementById("settings-button").click(), true`);
   await sleep(500);
   await check(shell, "phone shell: settings");
+
+  // The rail, the couldn't-reach page and the Messages list on the desktop.
+  const rail = await target(port, /\/rail\.html#desktop$/);
+  await reload(rail);
+  await evaluateIn(rail, `a11y.push("rail", ${JSON.stringify(data.RAIL)}), true`);
+  await sleep(300);
+  await check(rail, "rail");
+  const unreachable = await target(port, /\/unreachable\.html#desktop$/);
+  await reload(unreachable);
+  await evaluateIn(unreachable, `a11y.push("unreachable", ${JSON.stringify(data.UNREACHABLE)}), true`);
+  await sleep(200);
+  await check(unreachable, "couldn't-reach page");
+  const messages = await target(port, /\/messages\.html#desktop$/);
+  await reload(messages);
+  await evaluateIn(messages, `a11y.push(${JSON.stringify(data.MESSAGES_PAGE)}), true`);
+  await sleep(300);
+  await check(messages, "Messages page");
 }
 
 /** Whether a baseline entry covers a violation on a page: same rule, page and (if given) element. */

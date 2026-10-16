@@ -52,10 +52,10 @@ jobs:
       # Accessibility: axe-core on the built pages with sample states (scripts/a11y.mjs); serious or critical fails.
       - if: runner.os == 'Linux'
         run: xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" npm run a11y
-        timeout-minutes: 5
+        timeout-minutes: 8
       - if: runner.os != 'Linux'
         run: npm run a11y
-        timeout-minutes: 5
+        timeout-minutes: 8
 
   # Multicord for Android (mobile/android): its JVM unit tests (the shared network-policy fixture among them),
   # a debug build and an unsigned release build (R8), which bundle the desktop build's engines, native view and

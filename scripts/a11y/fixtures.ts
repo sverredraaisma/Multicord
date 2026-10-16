@@ -4,6 +4,7 @@
 // the rest of the repository, so they follow the real contracts.
 import type { FavouritesState } from "../../src/shared/favourites";
 import type { NativeChannelCan, NativeMemberList, NativeMessage, NativeSidebarItem, NativeViewState } from "../../src/shared/native";
+import type { MessagesState, RailState, UnreachableState } from "../../src/shared/ipc";
 import { DEFAULT_SETTINGS, type SettingsViewState } from "../../src/shared/settings";
 
 type Chat = Extract<NativeViewState, { screen: "chat" }>;
@@ -168,6 +169,36 @@ export const SETTINGS: SettingsViewState = {
   restartNeeded: true,
   secretsPersistent: true,
   launchAtLoginSupported: true,
+  themes: true,
   version: "0.1.0",
   favourites: { categories: [], items: 0, cacheBytes: 0, pinned: 0 },
 };
+
+const FLUXER = { label: "Fluxer", color: "#4f8cf7" };
+const DISCORD = { label: "Discord", color: "#5865f2" };
+
+/** The rail with two services, a folder, servers with unread news and mentions, and a DM. */
+export const RAIL: RailState = {
+  entries: [
+    { key: "discord:home", platform: "discord", kind: "home", name: "Discord", unread: false, mentions: 0, module: DISCORD },
+    { key: "discord:dm:1", platform: "discord", kind: "dm", name: "Ana", iconUrl: ANA, unread: true, mentions: 2, module: DISCORD },
+    { key: "fluxer:home", platform: "fluxer", kind: "home", name: "Fluxer", unread: false, mentions: 0, module: FLUXER },
+    { key: "discord:g1", platform: "discord", kind: "server", name: "Open Source Hub", iconUrl: image("#16a085", "O"), unread: true, mentions: 3, module: DISCORD },
+    { key: "fluxer:g2", platform: "fluxer", kind: "server", name: "Board games", unread: false, mentions: 0, module: FLUXER },
+    { key: "discord:f1", platform: "discord", kind: "group", name: "Work", color: "#e67e22", expanded: false, previewIconUrls: [BO], unread: true, mentions: 0, module: DISCORD },
+  ],
+  activeKey: "discord:g1",
+  messagesBadge: { unread: true, mentions: 2 },
+};
+
+/** The unified Messages list: conversations from two services, one open. */
+export const MESSAGES_PAGE: MessagesState = {
+  conversations: [
+    { key: "discord:dm:1", platform: "discord", title: "Ana", avatarUrl: ANA, preview: "See you at eight!", lastActivity: Date.parse("2026-10-14T12:00:00Z"), unread: true, mentions: 2, module: DISCORD },
+    { key: "fluxer:dm:2", platform: "fluxer", title: "Bo", avatarUrl: BO, preview: "Thanks!", lastActivity: Date.parse("2026-10-13T09:00:00Z"), unread: false, mentions: 0, module: FLUXER },
+  ],
+  activeKey: "fluxer:dm:2",
+};
+
+/** The couldn't-reach page over Discord, offline. */
+export const UNREACHABLE: UnreachableState = { service: "Discord", reason: "the server's address could not be found; check your internet connection", code: "ERR_NAME_NOT_RESOLVED", retrying: false };
