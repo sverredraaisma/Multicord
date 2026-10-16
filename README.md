@@ -289,6 +289,7 @@ src/
   core/services.ts       edits to platforms.json
   core/modules.ts        the module manifest and the list of modules users may add
   main/modules/          platform module manifests (discord, fluxer, telegram, matrix, stoat, spacebar, nerimity, web clients) and their registry
+  core/engineAdapter.ts  the shell's stand-in for an engine: what it reported, commands to it, its health
   main/engineHost.ts     runs module engines: sandboxed views, the validated bridge, session lockdown
   main/netPolicy.ts      what engines may contact, and the HTTP bridge
   shared/engine.ts       the engine protocol and its validators

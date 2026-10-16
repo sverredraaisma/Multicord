@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("electron", () => import("../mocks/electron"));
 
 import * as electron from "../mocks/electron";
-import { EngineAdapter, EngineHub, engineStoragePartition, ATTACH_WINDOW_MS, MAX_CRASHES, MAX_FILE_HANDLES, restartDelay, serveEngine, SIGN_IN_WINDOW_MS, type EngineSpec } from "../../src/main/engineHost";
+import { engineStoragePartition, MAX_CRASHES, restartDelay } from "../../src/core/engineAdapter";
+import { EngineHub, ATTACH_WINDOW_MS, MAX_FILE_HANDLES, serveEngine, SIGN_IN_WINDOW_MS, type EngineSpec } from "../../src/main/engineHost";
 import { readRange } from "../../src/main/files";
 import { ENGINE_IPC, ENGINE_SCHEME } from "../../src/shared/engine";
 import { NATIVE_IPC } from "../../src/shared/native";
@@ -50,91 +51,6 @@ function setup(extra: Partial<EngineSpec> = {}) {
   const ask = (request: unknown) => ipcMain.invoke(ENGINE_IPC.invoke, fromEngine, request);
   return { hub, adapter, engine: engineView, view, start, secrets, fromEngine, ask, window };
 }
-
-describe("EngineAdapter", () => {
-  it("keeps what the engine reports and turns shell calls into commands", async () => {
-    const send = vi.fn();
-    const adapter = new EngineAdapter("demo", "demo.example", capabilities, send, true);
-    const servers = vi.fn();
-    const directs = vi.fn();
-    const notes = vi.fn();
-    const calls = vi.fn();
-    const accounts = vi.fn();
-    adapter.onServersChanged(servers);
-    adapter.onDirectsChanged(directs);
-    adapter.onNotification(notes);
-    adapter.onIncomingCall(calls);
-    adapter.onAccountChanged(accounts);
-
-    adapter.handle({ type: "servers", servers: [{ key: "g", name: "G", unread: false, mentions: 0, kind: "group", children: [{ key: "1", name: "One", unread: true, mentions: 1 }] }] });
-    const account = { platform: "demo", instance: "demo.example", accountId: "default" };
-    expect(await adapter.listServers()).toEqual([
-      { key: "g", name: "G", unread: false, mentions: 0, kind: "group", account, children: [{ key: "1", name: "One", unread: true, mentions: 1, account }] },
-    ]);
-    adapter.handle({ type: "directs", directs: [{ key: "5", title: "Ana", lastActivity: 1, unread: true, mentions: 1 }] });
-    expect(await adapter.listDirectConversations()).toEqual([{ key: "5", title: "Ana", lastActivity: 1, unread: true, mentions: 1, account }]);
-    expect(directs).toHaveBeenCalled();
-    adapter.handle({ type: "notification", notification: { title: "Ana", body: "hi", target: "5" } });
-    adapter.handle({ type: "call", call: { conversationKey: "5", from: "Ana", video: false } });
-    expect(notes).toHaveBeenCalledWith({ title: "Ana", body: "hi", target: "5" });
-    expect(calls).toHaveBeenCalledWith({ conversationKey: "5", from: "Ana", video: false });
-    expect(adapter.accountStatus()).toEqual({ state: "unknown" });
-    adapter.handle({ type: "account", account: { state: "signed-in", name: "me" } });
-    expect(adapter.accountStatus()).toEqual({ state: "signed-in", name: "me" });
-    expect(accounts).toHaveBeenCalledWith({ state: "signed-in", name: "me" });
-    servers.mockClear();
-    adapter.handle({ type: "homeBadge", badge: { unread: true, mentions: 2 } });
-    expect(adapter.homeBadge()).toEqual({ unread: true, mentions: 2 });
-    expect(servers).toHaveBeenCalled(); // so the rail picks the badge up
-
-    await adapter.openHome!();
-    await adapter.openServer("1");
-    await adapter.openConversation("5");
-    await adapter.toggleGroup("g");
-    adapter.setVisible(true);
-    await adapter.signOut();
-    expect(send.mock.calls.map((c) => c[0])).toEqual([
-      { type: "openHome" },
-      { type: "openServer", key: "1" },
-      { type: "openConversation", key: "5" },
-      { type: "toggleGroup", key: "g" },
-      { type: "visible", visible: true },
-      { type: "signOut" },
-    ]);
-    expect(adapter.mode).toBe("native");
-    expect(new EngineAdapter("x", "x", capabilities, send, false).openHome).toBeUndefined();
-  });
-
-  it("adds the module's own checks of its service after the engine's, while the engine runs", () => {
-    const adapter = new EngineAdapter("demo", "demo.example", capabilities, vi.fn(), false);
-    adapter.handle({ type: "health", checks: [{ name: "API", ok: true, extra: 1 } as never, { name: "Gateway", ok: false, detail: "Down" }] });
-    expect(adapter.health().map((c) => c.name)).toEqual(["Engine running"]);
-    adapter.setEngineHealth({ state: "running", responsive: true, restarts: 0 });
-    expect(adapter.health()).toEqual([
-      { name: "Engine running", ok: true },
-      { name: "Engine responsive", ok: true },
-      { name: "API", ok: true },
-      { name: "Gateway", ok: false, detail: "Down" },
-    ]);
-  });
-
-  it("passes Settings values and actions on as commands, and keeps the settings status the engine reports", async () => {
-    const send = vi.fn();
-    const adapter = new EngineAdapter("demo", "demo.example", capabilities, send, false);
-    const changed = vi.fn();
-    adapter.onSettingsStatusChanged(changed);
-    expect(adapter.settingsStatus()).toEqual({});
-    adapter.handle({ type: "settingsStatus", status: { forget: { text: "Remembered: a.org" } } });
-    expect(adapter.settingsStatus()).toEqual({ forget: { text: "Remembered: a.org" } });
-    expect(changed).toHaveBeenCalledOnce();
-    adapter.applySettings({ typing: false });
-    await adapter.runSettingAction("forget");
-    expect(send.mock.calls.map((c) => c[0])).toEqual([
-      { type: "settings", values: { typing: false } },
-      { type: "settingAction", key: "forget" },
-    ]);
-  });
-});
 
 describe("serveEngine", () => {
   it("serves only the engine page and bundle, with a strict CSP", async () => {
