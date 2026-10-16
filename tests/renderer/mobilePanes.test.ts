@@ -135,4 +135,56 @@ describe("calls on a phone", () => {
     routes({ current: "loud", available: ["loud", "speaker"] });
     expect(document.querySelector(".audio-route")!.textContent).toBe("Bluetooth");
   });
+
+  const strip = () => document.querySelector<HTMLElement>(".call-strip");
+  const stripButton = (name: string) => [...document.querySelectorAll<HTMLButtonElement>(".call-strip button")].find((b) => b.textContent === name)!;
+
+  it("shows compact call controls over the conversation while in a call", () => {
+    const { api, state, routes } = phone(true);
+    state(chat("1"));
+    expect(strip()!.hidden).toBe(true);
+    state(inCall());
+    expect(strip()!.hidden).toBe(false);
+    expect(strip()!.closest(".conversation")).not.toBeNull();
+    routes({ current: "earpiece", available: ["earpiece", "speaker"] });
+    expect([...strip()!.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Lounge", "Mute", "Camera", "Earpiece", "Hang up"]);
+    expect(stripButton("Lounge").classList.contains("connected")).toBe(true);
+    stripButton("Mute").click();
+    expect(api.act).toHaveBeenLastCalledWith({ type: "voiceState", mute: true, deaf: false, video: false, stream: false });
+    stripButton("Camera").click();
+    expect(api.act).toHaveBeenLastCalledWith({ type: "voiceState", mute: false, deaf: false, video: true, stream: false });
+    stripButton("Earpiece").click();
+    expect(api.setAudioRoute).toHaveBeenLastCalledWith("speaker");
+    stripButton("Hang up").click();
+    expect(api.act).toHaveBeenLastCalledWith({ type: "leaveVoice" });
+    state({ ...inCall(), voice: { ...(inCall() as { voice: object }).voice, token: undefined, mute: true } } as NativeViewState);
+    expect(stripButton("Unmute").disabled).toBe(true);
+    expect(stripButton("Lounge").classList.contains("connected")).toBe(false);
+    state(chat("1"));
+    expect(strip()!.hidden).toBe(true);
+  });
+
+  it("returns to a voice channel's call in the list, and to a conversation's call by opening it", () => {
+    const { api, state } = phone(false);
+    const withSidebar = (sidebar: object[]) => ({ ...inCall(), sidebar }) as unknown as NativeViewState;
+    state(withSidebar([{ id: "1", name: "general", kind: "text", unread: false, mentions: 0 }, { id: "v", name: "Lounge", kind: "voice", unread: false, mentions: 0 }]));
+    expect(document.documentElement.dataset.pane).toBe("conversation");
+    stripButton("Lounge").click();
+    expect(document.documentElement.dataset.pane).toBe("list");
+    expect(api.act).not.toHaveBeenCalledWith({ type: "select", channelId: "v" });
+    // A direct message's call: its conversation opens.
+    state(withSidebar([{ id: "1", name: "general", kind: "text", unread: false, mentions: 0 }, { id: "v", name: "Ana", kind: "dm", unread: false, mentions: 0 }]));
+    stripButton("Lounge").click();
+    expect(api.act).toHaveBeenLastCalledWith({ type: "select", channelId: "v" });
+  });
+
+  it("never shows the strip on the desktop", () => {
+    document.body.innerHTML = '<div id="app"></div>';
+    let push: (s: NativeViewState) => void = () => {};
+    const api = { onState: (cb: (s: NativeViewState) => void) => void (push = cb), act: vi.fn(), screenAudioEnded: vi.fn(), onVoiceSettings: vi.fn(), onMediaAutoLoad: vi.fn(), onCompact: vi.fn(), onVoiceCommand: vi.fn(), onFavourites: vi.fn(), favourites: vi.fn() } satisfies NativeApi;
+    startNative(document, api);
+    push(inCall());
+    expect(strip()).toBeNull();
+    expect(labels()).toEqual(["Mute", "Deafen", "Camera", "Share screen", "Leave"]);
+  });
 });

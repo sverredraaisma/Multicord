@@ -14,46 +14,77 @@ export interface VoicePanelOptions {
   screenShare?: boolean;
   /** The phone's audio routes; a button switches to the next available one. */
   audio?: { routes: AudioRoutes; onRoute(route: AudioRoute): void };
+  /**
+   * Phones only: compact call controls over the open conversation (callStrip), since the full panel sits
+   * in the conversation list, a pane away. `onReturn` goes back to the call.
+   */
+  strip?: { onReturn(): void };
+}
+
+export type VoiceHandlers = { onChange(flags: VoiceFlags): void; onLeave(): void };
+
+/** A call toggle: pressed while `on`, off until the voice server has connected us; reports the flags after the change. */
+function voiceToggle(doc: Document, voice: NativeVoiceSession, handlers: VoiceHandlers, label: string, on: boolean, change: Partial<VoiceFlags>): HTMLButtonElement {
+  const current: VoiceFlags = { mute: voice.mute, deaf: voice.deaf, video: voice.video, stream: voice.stream };
+  const button = el(doc, "button", undefined, label);
+  button.type = "button";
+  button.classList.toggle("on", on);
+  button.setAttribute("aria-pressed", String(on));
+  button.disabled = !voice.token;
+  button.addEventListener("click", () => handlers.onChange({ ...current, ...change }));
+  return button;
+}
+
+/** The phone's audio route button, switching to the next available route; none with only one. */
+function routeButton(doc: Document, audio: VoicePanelOptions["audio"]): HTMLButtonElement[] {
+  if (!audio || audio.routes.available.length <= 1) return [];
+  const { current: playing, available } = audio.routes;
+  const next = available[(available.indexOf(playing) + 1) % available.length]!;
+  const route = el(doc, "button", "audio-route", ROUTE_NAMES[playing]);
+  route.type = "button";
+  route.title = `Playing through the ${ROUTE_NAMES[playing].toLowerCase()}; switch to the ${ROUTE_NAMES[next].toLowerCase()}`;
+  route.addEventListener("click", () => audio.onRoute(next));
+  return [route];
 }
 
 /** The call controls: connection status, where, and toggles that report the new flags. */
-export function voicePanel(
-  doc: Document,
-  voice: NativeVoiceSession,
-  handlers: { onChange(flags: VoiceFlags): void; onLeave(): void },
-  options: VoicePanelOptions = {},
-): HTMLElement[] {
+export function voicePanel(doc: Document, voice: NativeVoiceSession, handlers: VoiceHandlers, options: VoicePanelOptions = {}): HTMLElement[] {
   const status = el(doc, "div", "voice-status", voice.token ? "Voice connected" : "Connecting…");
   status.classList.toggle("connected", Boolean(voice.token));
   const where = el(doc, "div", "voice-where", voice.guildName ? `${voice.channelName} / ${voice.guildName}` : voice.channelName);
   const controls = el(doc, "div", "voice-controls");
-  const current: VoiceFlags = { mute: voice.mute, deaf: voice.deaf, video: voice.video, stream: voice.stream };
-  const toggle = (label: string, on: boolean, change: Partial<VoiceFlags>) => {
-    const button = el(doc, "button", undefined, label);
-    button.classList.toggle("on", on);
-    button.setAttribute("aria-pressed", String(on));
-    button.disabled = !voice.token;
-    button.addEventListener("click", () => handlers.onChange({ ...current, ...change }));
-    controls.append(button);
-  };
+  const toggle = (label: string, on: boolean, change: Partial<VoiceFlags>) => controls.append(voiceToggle(doc, voice, handlers, label, on, change));
   toggle(voice.mute ? "Unmute" : "Mute", voice.mute, { mute: !voice.mute });
   toggle(voice.deaf ? "Undeafen" : "Deafen", voice.deaf, { deaf: !voice.deaf });
   toggle(voice.video ? "Camera off" : "Camera", voice.video, { video: !voice.video });
   if (options.screenShare !== false) toggle(voice.stream ? "Stop sharing" : "Share screen", voice.stream, { stream: !voice.stream });
-  const audio = options.audio;
-  if (audio && audio.routes.available.length > 1) {
-    const { current: playing, available } = audio.routes;
-    const next = available[(available.indexOf(playing) + 1) % available.length]!;
-    const route = el(doc, "button", "audio-route", ROUTE_NAMES[playing]);
-    route.type = "button";
-    route.title = `Playing through the ${ROUTE_NAMES[playing].toLowerCase()}; switch to the ${ROUTE_NAMES[next].toLowerCase()}`;
-    route.addEventListener("click", () => audio.onRoute(next));
-    controls.append(route);
-  }
+  controls.append(...routeButton(doc, options.audio));
   const leave = el(doc, "button", "leave", "Leave");
   leave.addEventListener("click", handlers.onLeave);
   controls.append(leave);
   return [status, where, controls];
+}
+
+/**
+ * A phone's compact call controls over the open conversation: back to the call (named after it, green once
+ * connected), mute, camera, the audio route and hang up. The full panel stays in the conversation list.
+ */
+export function callStrip(doc: Document, voice: NativeVoiceSession, handlers: VoiceHandlers & { onReturn(): void }, options: VoicePanelOptions = {}): HTMLElement[] {
+  const back = el(doc, "button", "call-return", voice.channelName);
+  back.type = "button";
+  back.classList.toggle("connected", Boolean(voice.token));
+  back.title = voice.token ? `In a call in ${voice.channelName}; return to the call` : `Connecting to ${voice.channelName}; return to the call`;
+  back.addEventListener("click", handlers.onReturn);
+  const hangUp = el(doc, "button", "leave", "Hang up");
+  hangUp.type = "button";
+  hangUp.addEventListener("click", handlers.onLeave);
+  return [
+    back,
+    voiceToggle(doc, voice, handlers, voice.mute ? "Unmute" : "Mute", voice.mute, { mute: !voice.mute }),
+    voiceToggle(doc, voice, handlers, voice.video ? "Camera off" : "Camera", voice.video, { video: !voice.video }),
+    ...routeButton(doc, options.audio),
+    hangUp,
+  ];
 }
 
 /** A forum's posts as buttons, newest activity first; a placeholder when there are none. */

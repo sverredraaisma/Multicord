@@ -14,7 +14,7 @@ import { typingText } from "./components/format";
 import { memberPanel, profileCard, type ProfileCardData } from "./components/members";
 import { matchMentions, mentionCandidates, mentionOptionId, mentionOptions, mentionQuery, type MentionCandidate } from "./components/mentions";
 import { autoLoads, favouriteKind, messageItem, type MessageHandlers } from "./components/message";
-import { forumPosts, listedMessages, pendingFiles, pollForm, postForm, replyBar, voicePanel, type VoicePanelOptions } from "./components/panels";
+import { callStrip, forumPosts, listedMessages, pendingFiles, pollForm, postForm, replyBar, voicePanel, type VoiceHandlers, type VoicePanelOptions } from "./components/panels";
 import { isOwnReaction } from "./components/reactions";
 import { attachMobilePanes } from "./mobilePanes";
 import { VoiceCall } from "./voice";
@@ -824,6 +824,42 @@ export class NativeView {
   }
 
   /**
+   * A phone's compact call controls over the conversation, while the user is
+   * in a call (only where the host asked for them: the desktop never does).
+   * Made on first use, above the ringing bar, and kept with the chat screen.
+   */
+  private updateCallStrip(state: ChatState, handlers: VoiceHandlers): void {
+    if (!this.voiceOptions.strip) return;
+    let strip = this.parts.callStrip;
+    if (!strip) {
+      strip = el(this.doc, "div", "call-strip");
+      strip.setAttribute("role", "group");
+      strip.setAttribute("aria-label", "Call");
+      this.parts.callBar!.before(strip);
+      this.parts.callStrip = strip;
+    }
+    const voice = state.voice;
+    strip.hidden = !voice;
+    strip.replaceChildren(...(voice ? callStrip(this.doc, voice, { ...handlers, onReturn: () => this.returnToCall(state, voice.channelId) }, this.voiceOptions) : []));
+  }
+
+  /**
+   * Back to the call from a phone's strip: the conversation the call is in,
+   * where it is one the list opens (a direct message's or a room's call);
+   * else the conversation list with the full call panel (a voice channel's).
+   */
+  private returnToCall(state: ChatState, channelId: string): void {
+    const row = state.sidebar.find((item) => item.id === channelId);
+    if (row && row.kind !== "voice" && row.kind !== "category" && state.channel?.id !== channelId) {
+      this.api.act({ type: "select", channelId });
+      return;
+    }
+    this.voiceOptions.strip?.onReturn();
+    const panel = this.parts.voice;
+    if (panel && typeof panel.scrollIntoView === "function") panel.scrollIntoView({ block: "nearest" });
+  }
+
+  /**
    * The call button, where the conversation takes calls and the user is not
    * in its call already; and the bar for a call ringing for the user.
    */
@@ -1442,15 +1478,13 @@ export class NativeView {
     );
 
     const voice = this.parts.voice!;
+    const voiceHandlers: VoiceHandlers = {
+      onChange: (flags) => this.api.act({ type: "voiceState", ...flags }),
+      onLeave: () => this.api.act({ type: "leaveVoice" }),
+    };
     voice.hidden = !state.voice;
-    voice.replaceChildren(
-      ...(state.voice
-        ? voicePanel(this.doc, state.voice, {
-            onChange: (flags) => this.api.act({ type: "voiceState", ...flags }),
-            onLeave: () => this.api.act({ type: "leaveVoice" }),
-          }, this.voiceOptions)
-        : []),
-    );
+    voice.replaceChildren(...(state.voice ? voicePanel(this.doc, state.voice, voiceHandlers, this.voiceOptions) : []));
+    this.updateCallStrip(state, voiceHandlers);
     void this.call?.sync(state.voice);
 
     const scroller = messages!;
@@ -1526,13 +1560,15 @@ export function startNative(
   api.onState((state) => view.update(state));
   // The phone's bridge: one pane at a time, and the system's back.
   if (api.onBack) {
-    attachMobilePanes(doc, { onState: (cb) => api.onState(cb), onBack: api.onBack });
+    const panes = attachMobilePanes(doc, { onState: (cb) => api.onState(cb), onBack: api.onBack });
     // A phone's WebView has no getDisplayMedia: no screen sharing. Calls play where the phone routes them.
-    view.setVoiceOptions({ screenShare: false });
+    // The full call panel is in the conversation list; over a conversation, compact controls stand in for it.
+    const phone = { screenShare: false, strip: { onReturn: () => panes.showList() } };
+    view.setVoiceOptions(phone);
     const { onAudioRoutes, setAudioRoute } = api;
     if (onAudioRoutes && setAudioRoute) {
       onAudioRoutes((routes) => {
-        if (isAudioRoutes(routes)) view.setVoiceOptions({ screenShare: false, audio: { routes, onRoute: (route) => setAudioRoute(route) } });
+        if (isAudioRoutes(routes)) view.setVoiceOptions({ ...phone, audio: { routes, onRoute: (route) => setAudioRoute(route) } });
       });
     }
   }

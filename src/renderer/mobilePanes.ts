@@ -18,7 +18,7 @@ export interface PaneApi {
  * returns to the list. Only the mobile host's bridge has onBack, so the
  * desktop never gets here; native.css styles the panes under `.mobile`.
  */
-export function attachMobilePanes(doc: Document, api: PaneApi): { pane(): "list" | "conversation" } {
+export function attachMobilePanes(doc: Document, api: PaneApi): { pane(): "list" | "conversation"; showList(): void } {
   const root = doc.documentElement;
   root.classList.add("mobile");
   const back = el(doc, "button", "mobile-back");
@@ -50,5 +50,5 @@ export function attachMobilePanes(doc: Document, api: PaneApi): { pane(): "list"
     show("list");
     return true;
   });
-  return { pane: () => pane };
+  return { pane: () => pane, showList: () => show("list") };
 }

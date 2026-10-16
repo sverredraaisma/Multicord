@@ -748,3 +748,39 @@ button.thread-summary:hover { text-decoration: underline; }
 .mobile[data-pane="conversation"] .conversation-title { padding-left: 52px; }
 .mobile .channels .channel { min-height: 44px; }
 .mobile .composer { font-size: 16px; }
+/* A phone's compact call controls over the open conversation (callStrip); the full panel is in the list. */
+.call-strip { display: none; }
+.mobile .call-strip:not([hidden]) {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 8px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--bg);
+  background: #232428;
+}
+.mobile .call-strip button {
+  flex: none;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.mobile .call-strip .call-return {
+  flex: 1 1 auto;
+  min-width: 48px;
+  overflow: hidden;
+  background: none;
+  color: var(--muted);
+  font-weight: 700;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mobile .call-strip .call-return.connected { color: #23a55a; }
+.mobile .call-strip button.on, .mobile .call-strip .leave { background: var(--danger); }
+.mobile .call-strip button:disabled { opacity: 0.5; }
