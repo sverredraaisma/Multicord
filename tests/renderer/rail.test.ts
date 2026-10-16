@@ -33,7 +33,7 @@ describe("renderRail", () => {
 
     const items = root.querySelectorAll<HTMLButtonElement>(".rail-item");
     expect(items).toHaveLength(3);
-    expect(items[0]!.textContent).toBe("DM2");
+    expect(items[0]!.textContent).toBe("D2");
     expect(items[0]!.classList.contains("unread")).toBe(true);
     expect(items[1]!.classList.contains("active")).toBe(true);
     expect(items[1]!.querySelector("img")!.getAttribute("src")).toBe("https://x/icon.png");
@@ -49,6 +49,19 @@ describe("renderRail", () => {
 
     items[2]!.click();
     expect(onOpen).toHaveBeenCalledWith("element:app");
+  });
+
+  it("tells services' homes apart: their initials, tinted in the module's colour", () => {
+    const root = document.getElementById("rail")!;
+    const home = (key: string, name: string, color?: string): RailState["entries"][number] => ({
+      key, platform: key.split(":")[0]!, kind: "home", name, unread: false, mentions: 0, ...(color ? { module: { label: "M", color } } : {}),
+    });
+    renderRail(root, { activeKey: null, entries: [home("tg:home", "Telegram direct messages", "#2aabee"), home("work:home", "Work chat direct messages"), home("x:home", "Big Team Chat Space direct messages")] }, vi.fn());
+    const items = root.querySelectorAll<HTMLButtonElement>(".rail-item");
+    expect([...items].map((b) => b.querySelector(".initials")!.textContent)).toEqual(["T", "WC", "BT"]);
+    expect(items[0]!.style.getPropertyValue("--module-color")).toBe("#2aabee");
+    expect(items[1]!.style.getPropertyValue("--module-color")).toBe("");
+    expect(items[0]!.getAttribute("aria-label")).toBe("Telegram direct messages");
   });
 
   it("replaces previous content on re-render", () => {
@@ -178,6 +191,21 @@ describe("attachTooltips", () => {
     item.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
     root.dispatchEvent(new Event("scroll"));
     expect(tooltip).toHaveBeenCalledTimes(6);
+    expect(tooltip).toHaveBeenLastCalledWith(null);
+  });
+
+  it("follows keyboard focus through the rail, and hides when focus leaves it", () => {
+    const { root, item, tooltip } = setup();
+    const other = root.querySelector<HTMLElement>('[data-key="element:app"]')!;
+    item.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(tooltip).toHaveBeenLastCalledWith({ text: "Gaming Club", y: 124 });
+    // Moving within the rail: the next item's label, without hiding in between.
+    item.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: other }));
+    other.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    expect(tooltip).toHaveBeenLastCalledWith({ text: "Element", y: expect.any(Number) });
+    expect(tooltip).not.toHaveBeenCalledWith(null);
+    // Leaving it: hidden.
+    other.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
     expect(tooltip).toHaveBeenLastCalledWith(null);
   });
 

@@ -122,15 +122,21 @@ export function attachTooltips(root: HTMLElement, tooltip: ShellApi["tooltip"]):
     current = null;
     tooltip(null);
   };
-  root.addEventListener("mouseover", (event) => {
-    const item = (event.target as Element).closest<HTMLElement>(".rail-item");
+  const show = (target: EventTarget | null): void => {
+    const item = target instanceof Element ? target.closest<HTMLElement>(".rail-item") : null;
     if (item === current) return;
     if (!item) return hide();
     current = item;
     const rect = item.getBoundingClientRect();
     tooltip({ text: item.dataset.tooltip ?? item.getAttribute("aria-label") ?? "", y: rect.top + rect.height / 2 });
-  });
+  };
+  root.addEventListener("mouseover", (event) => show(event.target));
   root.addEventListener("mouseleave", hide);
+  // Keyboard users see the names too: the label follows focus through the rail.
+  root.addEventListener("focusin", (event) => show(event.target));
+  root.addEventListener("focusout", (event) => {
+    if (!(event.relatedTarget instanceof Node && root.contains(event.relatedTarget))) hide();
+  });
   root.addEventListener("scroll", hide);
   root.addEventListener("dragstart", hide);
 }

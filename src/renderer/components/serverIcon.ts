@@ -28,6 +28,14 @@ function groupFace(doc: Document, entry: RailEntry): Element {
   return grid;
 }
 
+/**
+ * A service's home bubble: the initials of the service's name, which the
+ * rail calls "<service> direct messages" (two at most, so they fit).
+ */
+export function homeInitials(name: string): string {
+  return [...initials(name.replace(/ direct messages$/, ""))].slice(0, 2).join("");
+}
+
 /** Tooltip text: the name, plus which module it comes from. */
 export function serverTooltip(entry: Pick<RailEntry, "name" | "module">): string {
   return entry.module ? `${entry.name} · ${entry.module.label}` : entry.name;
@@ -58,8 +66,12 @@ export function serverIcon(doc: Document, entry: RailEntry, options: { active?: 
     img.src = entry.iconUrl;
     img.alt = "";
     button.append(img);
+  } else if (entry.kind === "home") {
+    // One per service: its initial, tinted in its module's colour, so the services' homes tell apart at a glance.
+    button.append(el(doc, "span", "initials", homeInitials(entry.name)));
+    setColor(button, "--module-color", entry.module?.color);
   } else {
-    button.append(el(doc, "span", "initials", entry.kind === "home" ? "DM" : initials(entry.name)));
+    button.append(el(doc, "span", "initials", initials(entry.name)));
   }
 
   const badge = countBadge(doc, entry.mentions);

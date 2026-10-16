@@ -73,6 +73,8 @@ html, body {
   transition: border-radius 0.15s, background 0.15s;
 }
 
+/* A service's home: tinted in its module's colour (set on the button), so services tell apart. */
+.rail-item[data-kind="home"] { background: color-mix(in srgb, var(--module-color, #80848e) 45%, var(--item)); }
 .rail-item:hover, .rail-item.active { border-radius: 16px; background: var(--item-hover); }
 .rail-item img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; }
 .rail-item .initials { font-weight: 600; font-size: 15px; }
