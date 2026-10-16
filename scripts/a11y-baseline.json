@@ -1,0 +1,4 @@
+{
+  "//": "Known serious or critical axe violations that scripts/a11y.mjs accepts, each with why: { rule, page (a pattern for the check's name), target (part of the element's selector), why }. Empty: every one found so far was fixed.",
+  "entries": []
+}
