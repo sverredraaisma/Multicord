@@ -42,7 +42,7 @@ import { downloadMedia, FavouritesStore } from "./favourites";
 import { checkUrl, createAddressGuard, isPrivateHost } from "./netPolicy";
 import { createServiceReach } from "./serviceReach";
 import { filterShellRequests, installHardening } from "./hardening";
-import { computeLayout, splitContent, tooltipBounds } from "./layout";
+import { computeLayout, splitContent, tooltipBounds } from "../core/layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
 import type { PlatformModule, ShellServices } from "./modules/types";
 import { loadPlatforms, type PlatformDef } from "./platforms";

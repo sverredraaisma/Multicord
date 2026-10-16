@@ -10,7 +10,14 @@ export default defineConfig({
       // Entry files only call into tested modules; adapter.ts holds types only.
       exclude: ["src/entries/**", "src/shared/adapter.ts"],
       reporter: ["text", "html"],
-      thresholds: { lines: 95, statements: 95, functions: 95, branches: 95 },
+      thresholds: {
+        lines: 95,
+        statements: 95,
+        functions: 95,
+        branches: 95,
+        // The logic both the desktop and a mobile host run: fully covered.
+        "src/core/**": { lines: 100, statements: 100, functions: 100, branches: 100 },
+      },
     },
   },
 });

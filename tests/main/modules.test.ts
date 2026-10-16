@@ -141,4 +141,19 @@ describe("module boundaries", () => {
       }
     }
   });
+
+  it("keeps core free of Electron, Node and main-process imports, so a mobile host can run it", async () => {
+    const fs = await import("node:fs");
+    const { builtinModules } = await import("node:module");
+    const builtIn = new Set(builtinModules);
+    for (const file of await filesUnder("src/core")) {
+      for (const from of importsOf(fs.readFileSync(file, "utf8"))) {
+        expect(from, file).toMatch(/^\.\.?\//);
+        expect(from, file).not.toMatch(/^(electron|node:)|\/main\//);
+        expect(builtIn.has(from), `${file}: ${from}`).toBe(false);
+      }
+      // Node's globals are as much Node as its imports.
+      expect(fs.readFileSync(file, "utf8"), file).not.toMatch(/\b(process\.|Buffer\.|require\(|__dirname|NodeJS\.)/);
+    }
+  });
 });
