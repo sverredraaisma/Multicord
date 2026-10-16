@@ -18,8 +18,6 @@ export const telegramModule: PlatformModule = {
     preload: "preload-native.js",
     engine: "telegram",
     hosts: ["*.web.telegram.org"],
-    // GramJS opens its MTProto sockets itself (a "binary" subprotocol, on* handlers), so they are not bridged.
-    ownSockets: true,
     home: true,
     // Media is downloaded over MTProto in the engine when the view asks.
     holdsMedia: true,

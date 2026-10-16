@@ -45,10 +45,6 @@ describe("module registry", () => {
     }
   });
 
-  it("bridges every engine's sockets but Telegram's, whose GramJS opens its own", () => {
-    expect(MODULES.filter((m) => m.manifest.ownSockets).map((m) => m.manifest.id)).toEqual(["telegram"]);
-  });
-
   it("lets only native modules hold media back, those whose adapters use loadMedia keys", async () => {
     const holding = MODULES.filter((m) => m.manifest.holdsMedia);
     expect(holding.map((m) => m.manifest.id)).toEqual(["telegram", "matrix-native"]);

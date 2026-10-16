@@ -26,8 +26,6 @@ export interface EngineSpec {
   hosts?: readonly string[];
   /** Keep the engine's web storage on disk (see ModuleManifest.storage); otherwise it lives in memory. */
   persistent?: boolean;
-  /** The engine opens WebSockets itself rather than through bridgeWebSocket (see ModuleManifest.ownSockets). */
-  ownSockets?: boolean;
   home: boolean;
   capabilities: PlatformAdapter["capabilities"];
   /** The module's own view; it gets the engine's display state and sends user actions. */
@@ -72,14 +70,13 @@ export const MAX_FILE_HANDLES = 200;
 export const ATTACH_WINDOW_MS = 10_000;
 /** How long after the user submits a sign-in step the engine may start single sign-on in the browser. */
 export const SIGN_IN_WINDOW_MS = 10_000;
-/** The engine page's CSP: it connects only to itself, or for an engine with sockets of its own (ownSockets) to wss: as well. */
-const csp = (ownSockets: boolean): string =>
-  ["default-src 'none'", "script-src 'self' 'wasm-unsafe-eval'", `connect-src 'self'${ownSockets ? " wss:" : ""}`, "worker-src 'self' blob:", "img-src 'self' data: blob:"].join("; ");
+/** The engine page's CSP: it connects only to itself; its sockets come from its relay page. */
+const CSP = ["default-src 'none'", "script-src 'self' 'wasm-unsafe-eval'", "connect-src 'self'", "worker-src 'self' blob:", "img-src 'self' data: blob:"].join("; ");
 const ENGINE_PAGE = `<!doctype html><html><head><meta charset="utf-8"><title>engine</title></head><body><script src="engine.js"></script></body></html>`;
 
 /** Serves an engine's page and bundle; nothing else exists on its origin. */
-export async function serveEngine(dist: string, engine: string, url: string, ownSockets = false): Promise<Response> {
-  const headers = { "Content-Security-Policy": csp(ownSockets), "X-Content-Type-Options": "nosniff" };
+export async function serveEngine(dist: string, engine: string, url: string): Promise<Response> {
+  const headers = { "Content-Security-Policy": CSP, "X-Content-Type-Options": "nosniff" };
   const parsed = new URL(url);
   if (parsed.host !== engine) return new Response("Not found", { status: 404, headers });
   switch (parsed.pathname) {
@@ -155,7 +152,7 @@ export class EngineHub {
     const partition = engineStoragePartition(spec.def.id, spec.persistent === true);
     const ses = session.fromPartition(partition);
     const allowed: Running["allowed"] = { hosts: spec.hosts };
-    // Engines reach the network only over bridged WebSockets (or, with ownSockets, their own): wss to their hosts, at public addresses.
+    // Engines reach the network only over bridged WebSockets: wss to their hosts, at public addresses.
     const socketPolicy: UrlPolicy = {
       schemes: ["wss:"],
       get hosts() {
@@ -163,9 +160,8 @@ export class EngineHub {
       },
     };
     const socketAddress = createAddressGuard(async (host) => (await ses.resolveHost(host)).endpoints.map((e) => e.address));
-    // Sockets in the engine's session come from its relay page, or from the engine itself only when it opens its own.
-    const mayOpenSockets = (contents: unknown): boolean => spec.ownSockets === true || running.relay.owns(contents);
-    this.lockDown(ses, spec, socketPolicy, socketAddress, mayOpenSockets);
+    // Sockets in the engine's session come from its relay page alone.
+    this.lockDown(ses, spec, socketPolicy, socketAddress, (contents) => running.relay.owns(contents));
     const engine = new WebContentsView({
       webPreferences: {
         preload: path.join(this.deps.dist, "preload-engine.js"),
@@ -276,8 +272,8 @@ export class EngineHub {
     ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     ses.setPermissionCheckHandler(() => false);
     // The engine's page, and on a host of its own the page of its socket relay.
-    ses.protocol.handle(ENGINE_SCHEME, async (request) => (new URL(request.url).host === relayHost(spec.engine) ? serveRelay(request.url) : serveEngine(this.deps.dist, spec.engine, request.url, spec.ownSockets === true)));
-    // HTTP goes through the bridge; WebSockets through the relay page, or the engine's own with ownSockets.
+    ses.protocol.handle(ENGINE_SCHEME, async (request) => (new URL(request.url).host === relayHost(spec.engine) ? serveRelay(request.url) : serveEngine(this.deps.dist, spec.engine, request.url)));
+    // HTTP goes through the bridge; WebSockets through the relay page.
     ses.webRequest.onBeforeRequest((details, callback) => {
       const { protocol } = new URL(details.url);
       const own = protocol === `${ENGINE_SCHEME}:` || protocol === "blob:" || protocol === "data:";

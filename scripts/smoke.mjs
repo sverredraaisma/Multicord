@@ -363,18 +363,20 @@ async function main() {
       })`,
       30_000,
     ).catch((error) => `error: ${error.message}`);
-    // The engine page itself may not connect anywhere: its CSP refuses its own WebSocket.
-    const blocked = await evaluate(
-      port,
-      "^multicord-engine://fluxer/",
-      `new Promise((resolve) => {
-        const timer = setTimeout(() => resolve("no CSP violation within 5s"), 5000);
-        document.addEventListener("securitypolicyviolation", (e) => { clearTimeout(timer); resolve(e.effectiveDirective); }, { once: true });
-        try { new WebSocket("wss://1.1.1.1/"); } catch (error) { clearTimeout(timer); resolve("threw " + error.name); }
-      })`,
-      15_000,
-    ).catch((error) => `error: ${error.message}`);
-    check("an engine page cannot open a WebSocket itself", blocked === "connect-src", String(blocked));
+    // No engine page may connect anywhere itself: its CSP refuses its own WebSocket.
+    for (const engine of NATIVE) {
+      const blocked = await evaluate(
+        port,
+        `^multicord-engine://${engine}/`,
+        `new Promise((resolve) => {
+          const timer = setTimeout(() => resolve("no CSP violation within 5s"), 5000);
+          document.addEventListener("securitypolicyviolation", (e) => { clearTimeout(timer); resolve(e.effectiveDirective); }, { once: true });
+          try { new WebSocket("wss://1.1.1.1/"); } catch (error) { clearTimeout(timer); resolve("threw " + error.name); }
+        })`,
+        15_000,
+      ).catch((error) => `error: ${error.message}`);
+      check(`engine "${engine}" cannot open a WebSocket itself`, blocked === "connect-src", String(blocked));
+    }
     const relayPage = (await targets(port)).some((t) => t.type === "page" && t.url === "multicord-engine://fluxer.relay/relay.html");
     check("a bridged socket goes through the engine's relay page", relayPage && /^closed \d+$/.test(String(relayed)), `${relayed}; relay page ${relayPage ? "up" : "missing"}`);
   }

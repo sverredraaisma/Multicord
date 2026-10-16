@@ -351,7 +351,6 @@ export async function createShell(
       engine: manifest.engine!,
       hosts: manifest.hosts,
       persistent: manifest.storage === true,
-      ownSockets: manifest.ownSockets === true,
       home: manifest.home === true,
       capabilities: manifest.capabilities ?? { directMessages: false, messagePreviews: false, voice: false, screenShare: false },
       view,

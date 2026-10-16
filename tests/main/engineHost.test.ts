@@ -60,9 +60,6 @@ describe("serveEngine", () => {
     expect(page.status).toBe(200);
     expect(await page.text()).toContain('<script src="engine.js">');
     expect(page.headers.get("content-security-policy")).toBe("default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; worker-src 'self' blob:; img-src 'self' data: blob:");
-    // Only an engine that opens its own sockets may connect to wss: from its page.
-    const own = await serveEngine(dist, "demo", `${ENGINE_SCHEME}://demo/engine.html`, true);
-    expect(own.headers.get("content-security-policy")).toContain("connect-src 'self' wss:;");
     expect(page.headers.get("x-content-type-options")).toBe("nosniff");
     expect((await serveEngine(dist, "demo", `${ENGINE_SCHEME}://demo/`)).status).toBe(200);
     const script = await serveEngine(dist, "demo", `${ENGINE_SCHEME}://demo/engine.js`);
@@ -118,11 +115,13 @@ describe("EngineHub", () => {
     expect(response.status).toBe(200);
   });
 
-  it("lets an engine with sockets of its own open only WebSockets to allowed public hosts", async () => {
-    setup({ hosts: ["*.demo.example"], ownSockets: true });
+  it("lets the relay page open only WebSockets to allowed public hosts", async () => {
+    const { ask } = setup({ hosts: ["*.demo.example"] });
+    await ask({ type: "socketOpen", url: "wss://gw.demo.example/" });
+    const relay = WebContentsView.instances.at(-1)!;
     const filter = session.fromPartition("engine_demo").beforeRequest!;
     const decide = (url: string) => {
-      return new Promise<boolean>((resolve) => filter({ url }, (response) => resolve(response.cancel)));
+      return new Promise<boolean>((resolve) => filter({ url, webContents: relay.webContents } as { url: string }, (response) => resolve(response.cancel)));
     };
     expect(await decide(`${ENGINE_SCHEME}://demo/engine.js`)).toBe(false);
     expect(await decide("blob:multicord-engine://demo/1")).toBe(false);
@@ -133,7 +132,7 @@ describe("EngineHub", () => {
     expect(await decide("file:///C:/Users/me/credentials.json")).toBe(true);
   });
 
-  it("lets only the relay page open WebSockets in an engine's session, unless the engine opens its own", async () => {
+  it("lets only the relay page open WebSockets in an engine's session", async () => {
     const { engine, ask } = setup();
     const filter = session.fromPartition("engine_demo").beforeRequest!;
     const cancelled = (url: string, webContents?: unknown) => new Promise<boolean>((resolve) => filter({ url, webContents } as { url: string }, (response) => resolve(response.cancel)));
@@ -149,11 +148,13 @@ describe("EngineHub", () => {
   });
 
   it("checks what host names resolve to, for the bridge, the engine's sockets and its view", async () => {
-    const { view } = setup({ ownSockets: true });
+    const { view, ask } = setup();
+    await ask({ type: "socketOpen", url: "wss://gw.example/" });
+    const relay = WebContentsView.instances.at(-1)!;
     const filters = [session.fromPartition("engine_http_demo"), session.fromPartition("engine_demo"), view.webContents.session as unknown as ReturnType<typeof session.fromPartition>];
     for (const ses of filters) ses.resolveHost.mockResolvedValue({ endpoints: [{ address: "10.0.0.5", family: "ipv4" }] });
     for (const [ses, url] of [[filters[0]!, "https://rebind.example/"], [filters[1]!, "wss://rebind.example/"], [filters[2]!, "https://rebind.example/a.png"]] as const) {
-      const cancel = await new Promise<boolean>((resolve) => ses.beforeRequest!({ url }, (response) => resolve(response.cancel)));
+      const cancel = await new Promise<boolean>((resolve) => ses.beforeRequest!({ url, webContents: relay.webContents } as { url: string }, (response) => resolve(response.cancel)));
       expect(cancel).toBe(true);
     }
   });
@@ -178,11 +179,14 @@ describe("EngineHub", () => {
   });
 
   it("lets an engine lock itself to fewer hosts, for HTTP and WebSockets, but never widen", async () => {
-    const { ask } = setup({ ownSockets: true });
+    const { ask } = setup();
+    await ask({ type: "socketOpen", url: "wss://gw.example/" });
+    const relay = WebContentsView.instances.at(-1)!;
     const http = session.fromPartition("engine_http_demo");
     const sockets = session.fromPartition("engine_demo").beforeRequest!;
+    // As the relay page opens them; the HTTP bridge's requests come from no page.
     const cancelled = (filter: typeof sockets, url: string) => {
-      return new Promise<boolean>((resolve) => filter({ url }, (response) => resolve(response.cancel)));
+      return new Promise<boolean>((resolve) => filter({ url, webContents: relay.webContents } as { url: string }, (response) => resolve(response.cancel)));
     };
     expect(await cancelled(sockets, "wss://anywhere.example/")).toBe(false);
     expect(await ask({ type: "lockHosts", hosts: ["*.demo.example"] })).toEqual(["*.demo.example"]);

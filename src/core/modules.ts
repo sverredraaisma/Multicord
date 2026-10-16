@@ -46,13 +46,6 @@ export interface ModuleManifest {
    * and origin, and is cleared when the instance is removed.
    */
   storage?: boolean;
-  /**
-   * Engines only: the engine opens WebSockets itself (wss: to its hosts, at
-   * public addresses) instead of through bridgeWebSocket. Only for a library
-   * that cannot take a socket factory (Telegram's GramJS); every other
-   * engine's page may connect to nothing but itself.
-   */
-  ownSockets?: boolean;
   /** Engines only: whether the module has a home (DM) entry in the rail. */
   home?: boolean;
   /** Engines only: route screen sharing in the module's view through the shell's picker. */
