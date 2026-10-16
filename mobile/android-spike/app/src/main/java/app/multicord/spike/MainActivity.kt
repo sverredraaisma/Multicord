@@ -65,6 +65,8 @@ class MainActivity : Activity() {
         into.addView(Ui.row(this,
             button("0.2 Camera page") { startActivity(WebActivity.page(this, "camera.html")) },
             button("Camera2 + USB") { NativeCameras.report(this) },
+        ))
+        into.addView(Ui.row(this,
             button("0.3 Camera page + test camera") { startActivity(WebActivity.page(this, "camera.html", testCamera = true)) },
             button("0.4 Decode cost") { startActivity(WebActivity.page(this, "decode.html")) },
         ))

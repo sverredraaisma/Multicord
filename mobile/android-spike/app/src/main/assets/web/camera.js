@@ -79,6 +79,12 @@
   async function openAll() {
     var size = document.getElementById('size').value.split('x').map(Number);
     var cameras = (await list()).filter(function (d) { return d.kind === 'videoinput'; });
+    // Before permission the ids are empty and cannot be opened one by one: ask once, then list again.
+    if (cameras.some(function (d) { return !d.deviceId; })) {
+      var probe = await md.getUserMedia({ video: true });
+      probe.getTracks().forEach(function (t) { t.stop(); });
+      cameras = (await list()).filter(function (d) { return d.kind === 'videoinput'; });
+    }
     if (cameras.length === 0) log('no videoinput devices');
     for (var i = 0; i < cameras.length; i++) {
       try {

@@ -103,7 +103,8 @@
     var writer = generator.writable.getWriter();
     var video = document.getElementById('preview');
     video.srcObject = new MediaStream([generator]);
-    await video.play().catch(function () {});
+    // Not awaited: play() only settles once the first frame arrives, and the frames come below.
+    video.play().catch(function () {});
 
     var shown = 0;
     var canCount = typeof video.requestVideoFrameCallback === 'function';
@@ -146,7 +147,8 @@
         });
       }, 1000 / 30);
     });
-    while (busy) await spike.sleep(5);
+    for (var waited = 0; busy && waited < 2000; waited += 5) await spike.sleep(5);
+    if (busy) log('B: the last frame never finished writing');
     var wall = performance.now() - start;
     counting = false;
     var lag = stopLag();
