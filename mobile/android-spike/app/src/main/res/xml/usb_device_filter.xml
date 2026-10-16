@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Multicord Android spike (phase 0). Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later. -->
+<!-- Spike 0.5: devices that may open the app when plugged in. "class" matches the device class or any
+     interface class: 14 is USB video (UVC). The Logitech line is the test camera (046d = 1133). -->
+<resources>
+    <usb-device class="14" />
+    <usb-device vendor-id="1133" class="14" />
+</resources>

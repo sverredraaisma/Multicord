@@ -7,9 +7,6 @@ import android.content.pm.PackageManager
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
-import android.hardware.usb.UsbConstants
-import android.hardware.usb.UsbDevice
-import android.hardware.usb.UsbManager
 import android.os.Handler
 import android.os.Looper
 
@@ -69,25 +66,10 @@ object NativeCameras {
         return "facing $facing, hardware level $level, largest YUV sizes [$sizes], AE fps ranges [$fps]$physical"
     }
 
+    /** The USB side, with configurations, power and endpoints: the same dump as the USB camera section's. */
     private fun reportUsb(context: Context) {
-        val manager = context.getSystemService(UsbManager::class.java)
-        val devices = manager?.deviceList?.values.orEmpty()
-        SpikeLog.add("usb", "${devices.size} USB device(s) attached")
-        for (device in devices) SpikeLog.add("usb", describe(device))
-    }
-
-    private fun describe(d: UsbDevice): String {
-        val video = (0 until d.interfaceCount).count { d.getInterface(it).interfaceClass == UsbConstants.USB_CLASS_VIDEO }
-        // Names need the per-device USB permission on Android 10+; without it they read as null or throw.
-        val name = try {
-            listOfNotNull(d.manufacturerName, d.productName).joinToString(" ").ifEmpty { "(name needs USB permission)" }
-        } catch (_: SecurityException) {
-            "(name needs USB permission)"
-        }
-        return "vid %04x pid %04x, class %d, %d interface(s), %d video interface(s)%s, %s".format(
-            d.vendorId, d.productId, d.deviceClass, d.interfaceCount, video,
-            if (video > 0) " = UVC" else "", name,
-        )
+        UsbCamera.init(context)
+        UsbCamera.dump()
     }
 
     /** Logs cameras coming and going while the app runs, so plugging the UVC camera in shows up. */
