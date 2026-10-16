@@ -2,8 +2,12 @@
 <!-- Multicord for Android. Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later. -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- The only permission: engines' HTTP and WebSockets go out from native code, checked by NetPolicy. -->
+    <!-- Engines' HTTP and WebSockets go out from native code, checked by NetPolicy. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Notifications (asked at run time on Android 13+), and the foreground service that keeps services connected. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
 
     <application
         android:name=".MulticordApp"
@@ -28,6 +32,20 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Keeps the services' connections (native WebSockets and the engines that read them) running in the
+             background, as Element's and Conversations' F-Droid builds do. specialUse: none of the defined types fits.
+             dataSync is capped at 6 hours a day from Android 15, and remoteMessaging is for handing messages
+             between a user's devices; this keeps the user's own chat connections open so messages and calls
+             arrive, for services without push that needs no Google services (mobile/android/README.md). -->
+        <service
+            android:name=".background.ConnectionService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps the user's chat services connected (WebSocket and sync connections to their own servers) so incoming messages and calls are delivered; these services offer no push without Google Play Services." />
+        </service>
 
         <!-- Single sign-on comes back here from the browser: <applicationId>.sso:/<one-time path>?loginToken=...
              Any app could register the same scheme; SsoBroker accepts only its one waiting request's path. -->

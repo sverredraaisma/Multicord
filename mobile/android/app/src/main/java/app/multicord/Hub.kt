@@ -4,6 +4,7 @@ package app.multicord
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.MutableContextWrapper
 import android.os.Build
 import android.os.Handler
@@ -12,6 +13,9 @@ import android.util.Log
 import android.webkit.WebView
 import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewCompat
+import app.multicord.background.ConnectionService
+import app.multicord.background.NotificationTarget
+import app.multicord.background.Notifier
 import app.multicord.bridge.Validators
 import app.multicord.engine.EngineHost
 import app.multicord.engine.EngineListener
@@ -54,6 +58,9 @@ class Hub(private val app: Context) : EngineUi {
         fun openBrowser(url: String): Boolean
         /** The user went back past everything: the app leaves the screen, its services keep running. */
         fun leave()
+
+        /** The user quit: the screen goes too. */
+        fun close()
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -77,8 +84,21 @@ class Hub(private val app: Context) : EngineUi {
     var badge = 0
         private set
 
+    val notifier = Notifier(app)
+
+    /** Instances running now, and who wants to hear when that changes (the connected notification). */
+    val running: Int get() = instances.size
+    var onRunningChanged: ((Int) -> Unit)? = null
+    private var pendingOpen: NotificationTarget? = null
+
     fun start() {
         deletePendingProfiles()
+        // Keeps everything running while no activity is on screen (ConnectionService).
+        try {
+            app.startForegroundService(Intent(app, ConnectionService::class.java))
+        } catch (error: Exception) {
+            Log.w(TAG, "Could not start the background service: ${error.message}")
+        }
         shell = ShellHost(shellContext, ::onCommand, ::onBoot).also {
             it.onReplaced = { place() }
             it.start()
@@ -180,8 +200,16 @@ class Hub(private val app: Context) : EngineUi {
                 instance.media = limit
                 instance.view?.mediaAutoLoad(limit)
             }
-            "notify" -> Log.i(TAG, "[${text("instance")}] notification (notifications come with the background service)")
-            "badge" -> badge = (command["count"] as JsonPrimitive).content.toDouble().toInt()
+            "notify" -> {
+                val id = text("instance")
+                if (!instances.containsKey(id)) return
+                val railKey = (command["railKey"] as? JsonPrimitive)?.content
+                notifier.message(NotificationTarget(id, text("target"), railKey), text("title"), text("body"), (command["urgent"] as? JsonPrimitive)?.content == "true", badge)
+            }
+            "badge" -> {
+                badge = (command["count"] as JsonPrimitive).content.toDouble().toInt()
+                if (badge == 0) notifier.clearMessages()
+            }
             "clearSession" -> clearSession(text("instance"))
             "forgetSecrets" -> {
                 val id = text("instance")
@@ -197,6 +225,33 @@ class Hub(private val app: Context) : EngineUi {
             "copyText" -> (app.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager).setPrimaryClip(ClipData.newPlainText("Multicord", text("text")))
             "backUnhandled" -> screen?.leave()
         }
+    }
+
+    /** A notification the user tapped: the shell page opens its conversation. */
+    fun openNotification(target: NotificationTarget) {
+        // Tapped while the app was not running: once the shell page has started that instance.
+        if (!booted || !instances.containsKey(target.instance)) {
+            pendingOpen = target
+            return
+        }
+        val fields = mutableListOf("instance" to JsonPrimitive(target.instance), "target" to JsonPrimitive(target.target))
+        if (target.railKey != null) fields += "railKey" to JsonPrimitive(target.railKey)
+        event("openNotification", *fields.toTypedArray())
+    }
+
+    /** Stops everything: engines, views, the shell page and the background service. */
+    fun quit() {
+        booted = false
+        for (id in instances.keys.toList()) stop(id)
+        screen?.let {
+            it.place(null, null, true)
+            it.close()
+        }
+        screen = null
+        shell?.destroy()
+        shell = null
+        notifier.clearMessages()
+        app.stopService(Intent(app, ConnectionService::class.java))
     }
 
     private fun event(type: String, vararg fields: Pair<String, JsonElement>) {
@@ -247,6 +302,11 @@ class Hub(private val app: Context) : EngineUi {
         instance.engine = EngineHost(app, spec, secrets.scope(id), instance, this)
         instances[id] = instance
         instance.engine.start()
+        onRunningChanged?.invoke(instances.size)
+        pendingOpen?.takeIf { it.instance == id }?.let { target ->
+            pendingOpen = null
+            main.post { openNotification(target) }
+        }
         if (shown == id) place()
     }
 
@@ -254,6 +314,7 @@ class Hub(private val app: Context) : EngineUi {
         val instance = instances.remove(id) ?: return
         instance.engine.destroy()
         instance.view?.destroy()
+        onRunningChanged?.invoke(instances.size)
         if (shown == id) place()
     }
 

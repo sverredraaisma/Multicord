@@ -18,6 +18,7 @@ import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import androidx.browser.customtabs.CustomTabsIntent
 import androidx.webkit.WebViewFeature
+import app.multicord.background.NotificationTarget
 
 /**
  * The screen: the shell page (src/core with the bar, the drawer and the settings page) over the chat view
@@ -55,6 +56,9 @@ class MainActivity : Activity(), Hub.Screen {
         val hub = (application as MulticordApp).hub()
         this.hub = hub
         hub.attach(this, this)
+        NotificationTarget.from(intent)?.let(hub::openNotification)
+        // Android 13 and later ask before an app may notify; asked once, the system remembers a refusal.
+        if (Build.VERSION.SDK_INT >= 33 && !hub.notifier.allowed()) requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFY)
         if (Build.VERSION.SDK_INT >= 33) {
             backCallback = OnBackInvokedCallback { hub.back() }.also {
                 onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, it)
@@ -103,8 +107,17 @@ class MainActivity : Activity(), Hub.Screen {
         if (hub == null) super.onBackPressed() else hub.back()
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        NotificationTarget.from(intent)?.let { hub?.openNotification(it) }
+    }
+
     override fun leave() {
         moveTaskToBack(true)
+    }
+
+    override fun close() {
+        finishAndRemoveTask()
     }
 
     override fun pickDocuments(done: (List<String>) -> Unit): Boolean {
@@ -164,7 +177,8 @@ class MainActivity : Activity(), Hub.Screen {
     private companion object {
         const val TAG = "Multicord"
         const val REQUEST_PICK = 1
+        const val REQUEST_NOTIFY = 2
         val BACKGROUND = Color.rgb(0x1e, 0x1f, 0x22)
-        val REQUIRED_FEATURES = listOf(WebViewFeature.MULTI_PROFILE, WebViewFeature.WEB_MESSAGE_LISTENER, WebViewFeature.DOCUMENT_START_SCRIPT)
+        val REQUIRED_FEATURES = MulticordApp.REQUIRED_FEATURES
     }
 }
