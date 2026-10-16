@@ -4,12 +4,13 @@
 // goes through the shell bridge as a ShellCommand, and everything it reports
 // is checked with isNativeEvent first.
 import { EngineAdapter } from "../core/engineAdapter";
+import { GenericWebAdapter } from "../main/adapters/genericWebAdapter";
 import { configurableModules, findModule, type ModuleManifest } from "../core/modules";
 import { loadPlatforms, type PlatformDef } from "../core/platforms";
 import { PlatformRegistry } from "../core/registry";
 import { SettingsController, type PlatformsConfig } from "../core/settingsController";
 import { SettingsStore, type SettingsPersistence } from "../core/settingsStore";
-import type { PlatformNotification } from "../shared/adapter";
+import type { PlatformAdapter, PlatformNotification } from "../shared/adapter";
 import { MAX_BODY_TEXT, MAX_KEY, MAX_TEXT } from "../shared/engine";
 import { isRailOrder, type MessagesState, type RailState } from "../shared/ipc";
 import {
@@ -67,7 +68,12 @@ const clip = (text: string, max: number): string => (text.length > max ? `${text
 
 export class MobileShell {
   readonly registry = new PlatformRegistry();
+  /** The running native services' adapters, which their engines feed. */
   readonly adapters = new Map<string, EngineAdapter>();
+  /** The running web-client services' adapters, which read their page titles. */
+  readonly webAdapters = new Map<string, GenericWebAdapter>();
+  /** Every running service, native or web: what Settings and the screen know. */
+  private readonly services = new Map<string, PlatformAdapter>();
   private readonly manifests = new Map<string, ModuleManifest>();
   private readonly defs = new Map<string, PlatformDef>();
   private store!: SettingsStore;
@@ -117,15 +123,19 @@ export class MobileShell {
     const { platforms, errors } = loadPlatforms(() => this.platformsText, rules);
     for (const error of errors) console.warn(`[platforms] ${error}`);
     for (const def of platforms) {
-      const manifest = findModule(def.module, this.modules)?.manifest;
-      if (!manifest?.engine) {
+      const module = findModule(def.module, this.modules);
+      if (module?.web) {
+        await this.startWebService(def, module.manifest);
+        continue;
+      }
+      if (!module?.manifest.engine) {
         console.warn(`[platforms] ${def.id}: module "${def.module}" does not run on this phone`);
         continue;
       }
-      await this.startService(def, manifest);
+      await this.startService(def, module.manifest);
     }
     this.running = true;
-    const first = [...this.adapters.keys()][0];
+    const first = [...this.services.keys()][0];
     if (first) this.show(first);
     else this.setScreen({ page: "home" });
   }
@@ -148,7 +158,7 @@ export class MobileShell {
       platformsConfig,
       modules: this.modules,
       store: this.store,
-      adapters: this.adapters,
+      adapters: this.services,
       // Secrets are under a Keystore key: they always persist.
       secretsPersistent: () => true,
       // "Start with your phone": native code reads it from the settings file at boot or after an update (BootReceiver).
@@ -211,6 +221,7 @@ export class MobileShell {
       "tap Restart beside it in Settings to try again",
     );
     this.adapters.set(id, adapter);
+    this.services.set(id, adapter);
     this.manifests.set(id, manifest);
     this.defs.set(id, def);
     await this.registry.add(adapter, def.name, { label: manifest.label, color: manifest.color });
@@ -244,6 +255,21 @@ export class MobileShell {
     if (manifest.holdsMedia) this.viewSettings(id);
   }
 
+  /**
+   * A web-client service: the service's own web app, which native code shows in a WebView of its own with
+   * nothing injected. Its unread count comes from the page title, as on the desktop (GenericWebAdapter);
+   * it has no notifications and no DMs here. Its address is https (platforms.json takes no other).
+   */
+  private async startWebService(def: PlatformDef, manifest: ModuleManifest): Promise<void> {
+    const adapter = new GenericWebAdapter(def);
+    this.webAdapters.set(def.id, adapter);
+    this.services.set(def.id, adapter);
+    this.manifests.set(def.id, manifest);
+    this.defs.set(def.id, def);
+    await this.registry.add(adapter, def.name, { label: manifest.label, color: manifest.color });
+    this.send({ type: "start", instance: def.id, module: def.module, name: def.name, url: def.url });
+  }
+
   /** Whether the user is looking at this service's view right now. */
   private isFront(id: string): boolean {
     return this.appVisible && !this.drawer && this.screen.page === "service" && this.screen.instance === id;
@@ -273,6 +299,9 @@ export class MobileShell {
         this.refreshSettings();
         return;
       }
+      case "title":
+        this.webAdapters.get(event.instance)?.updateTitle(event.title);
+        return;
       case "appVisible":
         this.appVisible = event.visible;
         this.syncVisible();
@@ -325,7 +354,7 @@ export class MobileShell {
 
   /** Shows a service's chat view. */
   show(id: string): void {
-    if (!this.adapters.has(id)) return;
+    if (!this.services.has(id)) return;
     this.lastService = id;
     this.drawer = false;
     this.setScreen({ page: "service", instance: id });

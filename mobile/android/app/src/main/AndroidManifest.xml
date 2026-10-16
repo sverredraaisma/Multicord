@@ -8,6 +8,13 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Camera and microphone, for web-client modules' own pages only (their calls), asked when a page asks
+         (WebClientPolicy, the desktop's permission allowlist); WebRTC needs to set the audio mode. Neither is required. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
     <!-- "Start with your phone" (off by default): BootReceiver starts ConnectionService after a reboot or an update. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 

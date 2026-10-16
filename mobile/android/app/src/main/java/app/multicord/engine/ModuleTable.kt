@@ -7,8 +7,11 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 
-/** What a module's engine needs: its bundle, the only hosts it may reach (null: any public host), its storage. */
-data class NativeModule(val id: String, val engine: String, val hosts: List<String>?, val storage: Boolean)
+/**
+ * What a module needs: its engine's bundle, the only hosts the engine may reach (null: any public host), its
+ * storage; or, for a web-client module (`web`), nothing but that: the service's own web app in a plain WebView.
+ */
+data class NativeModule(val id: String, val engine: String?, val hosts: List<String>?, val storage: Boolean, val web: Boolean = false)
 
 /**
  * The modules the app runs, from dist/mobile/modules.json, which the desktop build writes from the
@@ -32,6 +35,11 @@ class ModuleTable(private val modules: Map<String, NativeModule>) {
             for (entry in entries) {
                 val e = entry as? JsonObject ?: continue
                 val id = (e["id"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: continue
+                if ((e["web"] as? JsonPrimitive)?.booleanOrNull == true) {
+                    // A web client has no engine and no host lock: an entry that names one is not one.
+                    if (ID.matches(id) && e["engine"] == null && e["hosts"] == null) modules[id] = NativeModule(id, null, null, storage = true, web = true)
+                    continue
+                }
                 val engine = (e["engine"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: continue
                 if (!ID.matches(id) || !ENGINE.matches(engine)) continue
                 val hosts = when (val h = e["hosts"]) {

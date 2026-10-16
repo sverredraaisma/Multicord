@@ -27,6 +27,7 @@ import app.multicord.secrets.SecretStore
 import app.multicord.shell.ChatView
 import app.multicord.shell.ShellFiles
 import app.multicord.shell.ShellHost
+import app.multicord.shell.WebClientView
 import java.io.File
 import java.util.concurrent.Executors
 import kotlinx.serialization.json.Json
@@ -38,7 +39,8 @@ import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * Everything that runs, for as long as the app runs (not only while an activity is on screen): the shell
- * page with src/core, an engine per service instance, and each instance's chat view. It does what
+ * page with src/core, an engine per native service instance and its chat view, and a plain WebView per
+ * web-client instance (the service's own web app, which gets nothing of Multicord's). It does what
  * Electron's main process does on the desktop besides core: it starts and stops engines and views as the
  * shell page says, keeps the shell's files, and routes between them. The routes are fixed here: an
  * engine's events go to the shell page (tagged with the instance native code started in that WebView),
@@ -49,13 +51,16 @@ import kotlinx.serialization.json.JsonPrimitive
  * ([attach]); the WebViews are made with a MutableContextWrapper, so the activity can be their context
  * while they are shown (pickers, selects) and the application while they are not.
  */
-class Hub(private val app: Context) : EngineUi {
+class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
     /** What an activity does for the hub: show the WebViews, open pickers and the browser, leave. */
     interface Screen {
         /** Shows the shell page (the whole screen, or just its bar over `view`) and the chat view; nulls remove them. */
         fun place(shell: WebView?, view: WebView?, shellFull: Boolean)
         fun pickDocuments(done: (List<String>) -> Unit): Boolean
         fun openBrowser(url: String): Boolean
+
+        /** Asks for Android permissions the user has not granted yet; `done` gets those granted. */
+        fun requestPermissions(permissions: List<String>, done: (Set<String>) -> Unit): Boolean
         /** The user went back past everything: the app leaves the screen, its services keep running. */
         fun leave()
 
@@ -132,7 +137,13 @@ class Hub(private val app: Context) : EngineUi {
      * then to the shell page (its drawer, its settings page), which says when there is nothing left.
      */
     fun back() {
-        val view = shown?.let { instances[it] }?.view
+        val instance = shown?.let { instances[it] }
+        // A web app goes back in its own history first.
+        instance?.web?.let { web ->
+            if (overlay || !web.back()) shellBack()
+            return
+        }
+        val view = instance?.view
         if (overlay || view == null || !view.ready) return shellBack()
         val id = ++nextBack
         waitingBack = id
@@ -217,8 +228,8 @@ class Hub(private val app: Context) : EngineUi {
                 stop(id)
                 io.execute { secrets.forget(id) }
             }
-            // The user's Restart for one service: its engine starts again, nothing else does.
-            "restartEngine" -> instances[text("instance")]?.engine?.restart()
+            // The user's Restart for one service: its engine starts again (or its web app loads again), nothing else does.
+            "restartEngine" -> instances[text("instance")]?.let { it.engine?.restart() ?: it.web?.restart() }
             "restart" -> {
                 booted = false
                 for (id in instances.keys.toList()) stop(id)
@@ -263,7 +274,10 @@ class Hub(private val app: Context) : EngineUi {
     // Instances -------------------------------------------------------------------------------------------
 
     private inner class Instance(val id: String) : EngineListener {
-        lateinit var engine: EngineHost
+        /** A native instance's engine; null for a web client. */
+        var engine: EngineHost? = null
+        /** A web-client instance's web app; null for a native one. */
+        var web: WebClientView? = null
         /** The chat view's context: the activity while there is one. */
         val context = MutableContextWrapper(screen?.let { shellContext.baseContext } ?: app)
         var view: ChatView? = null
@@ -290,7 +304,10 @@ class Hub(private val app: Context) : EngineUi {
         }
     }
 
-    /** Starts an instance's engine; its engine, hosts and storage are the module table's, not the page's. */
+    /**
+     * Starts an instance: a native module's engine, whose engine, hosts and storage are the module table's,
+     * not the page's; or a web-client module's web app at its address (https, checked by ShellCommands).
+     */
     private fun start(id: String, moduleId: String, name: String, url: String, settings: JsonObject?) {
         if (instances.containsKey(id)) return
         val module = modules[moduleId]
@@ -300,10 +317,20 @@ class Hub(private val app: Context) : EngineUi {
         }
         reclaimProfiles(id)
         val instance = Instance(id)
-        val spec = EngineSpec(instanceId = id, engine = module.engine, name = name, url = url, hosts = module.hosts, settings = settings, storage = module.storage)
-        instance.engine = EngineHost(app, spec, secrets.scope(id), instance, this)
-        instances[id] = instance
-        instance.engine.start()
+        if (module.web) {
+            val web = WebClientView(instance.context, id, url, onTitle = { title ->
+                if (instances[id] === instance) event("title", "instance" to JsonPrimitive(id), "title" to JsonPrimitive(title))
+            }, ui = this)
+            instance.web = web
+            instances[id] = instance
+            web.start()
+        } else {
+            val spec = EngineSpec(instanceId = id, engine = module.engine ?: return, name = name, url = url, hosts = module.hosts, settings = settings, storage = module.storage)
+            val engine = EngineHost(app, spec, secrets.scope(id), instance, this)
+            instance.engine = engine
+            instances[id] = instance
+            engine.start()
+        }
         onRunningChanged?.invoke(instances.size)
         pendingOpen?.takeIf { it.instance == id }?.let { target ->
             pendingOpen = null
@@ -314,17 +341,18 @@ class Hub(private val app: Context) : EngineUi {
 
     private fun stop(id: String) {
         val instance = instances.remove(id) ?: return
-        instance.engine.destroy()
+        instance.engine?.destroy()
         instance.view?.destroy()
+        instance.web?.destroy()
         onRunningChanged?.invoke(instances.size)
         if (shown == id) place()
     }
 
-    /** Stops an instance and deletes its web storage: its engine's and its view's Profiles. */
+    /** Stops an instance and deletes its web storage: its engine's and its view's Profiles, or its web app's. */
     private fun clearSession(id: String) {
         stop(id)
         val pending = readPending()
-        for (profile in listOf(EngineHost.profileName(id), ChatView.profileName(id))) {
+        for (profile in profilesOf(id)) {
             if (!deleteProfile(profile)) {
                 // Emptied now; the Profile itself goes at the next start.
                 wipe(profile)
@@ -340,7 +368,7 @@ class Hub(private val app: Context) : EngineUi {
      */
     private fun reclaimProfiles(id: String) {
         val pending = readPending()
-        val names = listOf(EngineHost.profileName(id), ChatView.profileName(id)).filter { it in pending }
+        val names = profilesOf(id).filter { it in pending }
         if (names.isEmpty()) return
         for (name in names) {
             if (!deleteProfile(name)) wipe(name)
@@ -348,6 +376,9 @@ class Hub(private val app: Context) : EngineUi {
         }
         writePending(pending)
     }
+
+    /** Every Profile an instance may have used: its engine's and chat view's, or its web app's. */
+    private fun profilesOf(id: String) = listOf(EngineHost.profileName(id), ChatView.profileName(id), WebClientView.profileName(id))
 
     private fun deleteProfile(name: String): Boolean = try {
         ProfileStore.getInstance().deleteProfile(name)
@@ -384,7 +415,8 @@ class Hub(private val app: Context) : EngineUi {
     // Views -----------------------------------------------------------------------------------------------
 
     /** The shown instance's chat view, made when first shown; at most MAX_VIEWS are kept, the least recently shown go. */
-    private fun viewOf(instance: Instance): ChatView {
+    private fun viewOf(instance: Instance): ChatView? {
+        val engine = instance.engine ?: return null
         instance.shownAt = ++shows
         instance.view?.let { return it }
         val view = ChatView(
@@ -392,11 +424,11 @@ class Hub(private val app: Context) : EngineUi {
             instance.id,
             onAction = { action ->
                 // Checked, then to this view's engine only.
-                if (Validators.isNativeAction(action)) instance.engine.action(action as JsonObject)
+                if (Validators.isNativeAction(action)) engine.action(action as JsonObject)
                 else Log.w(TAG, "[view ${instance.id}] dropped a malformed action")
             },
             onBack = ::onBackAnswer,
-            viewHosts = { instance.engine.allowedHosts },
+            viewHosts = { engine.allowedHosts },
         )
         view.start()
         instance.media?.let(view::mediaAutoLoad)
@@ -415,8 +447,8 @@ class Hub(private val app: Context) : EngineUi {
     private fun place() {
         val screen = screen ?: return
         val instance = shown?.let { instances[it] }
-        val view = instance?.let(::viewOf)
-        screen.place(shell?.webView, view?.webView, instance == null || overlay)
+        val view = instance?.web?.webView ?: instance?.let(::viewOf)?.webView
+        screen.place(shell?.webView, view, instance == null || overlay)
     }
 
     // What engines may ask of the screen ------------------------------------------------------------------
@@ -425,11 +457,15 @@ class Hub(private val app: Context) : EngineUi {
 
     override fun openBrowser(url: String): Boolean = screen?.openBrowser(url) ?: false
 
+    // What web apps may ask of the screen: uploads (pickDocuments, above), and camera and microphone (WebClientPolicy decides which).
+
+    override fun requestPermissions(permissions: List<String>, done: (Set<String>) -> Unit): Boolean = screen?.requestPermissions(permissions, done) ?: false
+
     companion object {
         private const val TAG = "Multicord"
         /** Chat views kept alive at once; others are made again when shown. */
         private const val MAX_VIEWS = 3
         private const val BACK_WAIT_MS = 400L
-        private val PROFILE = Regex("^(engine|view)-[a-z0-9][a-z0-9-]{0,31}$")
+        private val PROFILE = Regex("^(engine|view|web)-[a-z0-9][a-z0-9-]{0,31}$")
     }
 }

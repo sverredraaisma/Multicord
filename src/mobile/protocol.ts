@@ -36,9 +36,11 @@ export type ShellCommand =
   /** Keeps one of the shell's files. */
   | { type: "save"; file: ShellFile; text: string }
   /**
-   * Starts an instance's engine. Native code takes the engine, its hosts and
-   * storage from its own module table (dist/mobile/modules.json), never from
-   * the page; `settings` is what the engine gets with its info.
+   * Starts an instance: its engine, or for a web-client module its web app at
+   * `url`. Native code takes the engine, its hosts and storage, and whether
+   * the module is a web client, from its own module table
+   * (dist/mobile/modules.json), never from the page; `settings` is what the
+   * engine gets with its info.
    */
   | { type: "start"; instance: string; module: string; name: string; url: string; settings?: ServiceSettingValues }
   /** A command for an instance's engine. */
@@ -58,7 +60,7 @@ export type ShellCommand =
   | { type: "clearSession"; instance: string }
   /** Deletes an instance's secrets. */
   | { type: "forgetSecrets"; instance: string }
-  /** Starts an instance's engine again (the user's Restart in Settings), with a fresh crash count; the app keeps running. */
+  /** Starts an instance again (the user's Restart in Settings): its engine with a fresh crash count, or its web app reloaded; the app keeps running. */
   | { type: "restartEngine"; instance: string }
   /** Stops every engine and loads the shell page again, which starts them as its settings say. */
   | { type: "restart" }
@@ -73,6 +75,8 @@ export type NativeEvent =
   /** An event from an instance's engine, which native code checked with isEngineEvent first. */
   | { type: "engine"; instance: string; event: EngineEvent }
   | { type: "health"; instance: string; state: EngineState; restarts: number; lastExit?: string }
+  /** A web-client instance's page title changed (its unread count is read from it); clipped to MAX_TEXT. */
+  | { type: "title"; instance: string; title: string }
   /** Whether the app is on screen. */
   | { type: "appVisible"; visible: boolean }
   /** The user pressed back, and the shown chat view had nothing to go back to. */
@@ -155,6 +159,8 @@ export function isNativeEvent(value: unknown): value is NativeEvent {
         isCount(value.restarts, Number.MAX_SAFE_INTEGER) &&
         optional(value.lastExit, (v) => isText(v, MAX_EXIT))
       );
+    case "title":
+      return isInstanceId(value.instance) && isText(value.title, MAX_TEXT);
     case "appVisible":
       return typeof value.visible === "boolean";
     case "back":

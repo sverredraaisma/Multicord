@@ -4,6 +4,7 @@ package app.multicord
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
 import android.os.Build
@@ -30,6 +31,8 @@ class MainActivity : Activity(), Hub.Screen {
     private var hub: Hub? = null
     /** The open document picker's caller; one picker at a time. */
     private var picking: ((List<String>) -> Unit)? = null
+    /** The open permission request's caller and what it asked; one request at a time. */
+    private var permitting: Pair<List<String>, (Set<String>) -> Unit>? = null
     private var backCallback: OnBackInvokedCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -140,6 +143,26 @@ class MainActivity : Activity(), Hub.Screen {
         }
     }
 
+    override fun requestPermissions(permissions: List<String>, done: (Set<String>) -> Unit): Boolean {
+        val held = permissions.filter { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }.toSet()
+        if (held.size == permissions.size) {
+            done(held)
+            return true
+        }
+        if (permitting != null) return false
+        permitting = permissions to done
+        requestPermissions(permissions.toTypedArray(), REQUEST_PERMISSIONS)
+        return true
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != REQUEST_PERMISSIONS) return
+        val (asked, done) = permitting ?: return
+        permitting = null
+        done(asked.filter { checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }.toSet())
+    }
+
     override fun openBrowser(url: String): Boolean = try {
         CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(this, Uri.parse(url))
         true
@@ -172,6 +195,8 @@ class MainActivity : Activity(), Hub.Screen {
         // A picker this activity opened can no longer answer.
         picking?.invoke(emptyList())
         picking = null
+        permitting?.second?.invoke(emptySet())
+        permitting = null
         hub?.detach(this)
         hub = null
         super.onDestroy()
@@ -181,6 +206,7 @@ class MainActivity : Activity(), Hub.Screen {
         const val TAG = "Multicord"
         const val REQUEST_PICK = 1
         const val REQUEST_NOTIFY = 2
+        const val REQUEST_PERMISSIONS = 3
         val BACKGROUND = Color.rgb(0x1e, 0x1f, 0x22)
     }
 }

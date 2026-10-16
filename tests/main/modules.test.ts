@@ -142,21 +142,22 @@ describe("module boundaries", () => {
     }
   });
 
-  it("keeps the phone's shell page free of Electron and Node; from src/main it takes only native modules' manifests", async () => {
+  it("keeps the phone's shell page free of Electron and Node; from src/main it takes only modules' manifests and the web apps' adapter", async () => {
     const fs = await import("node:fs");
-    const manifests = /^\.\.\/main\/modules\/(fluxer|matrix|nerimity|spacebar|stoat|telegram)$/;
+    const manifests = /^\.\.\/main\/(modules\/(fluxer|matrix|nerimity|spacebar|stoat|telegram|web)|adapters\/genericWebAdapter)$/;
     for (const file of await filesUnder("src/mobile")) {
       for (const from of importsOf(fs.readFileSync(file, "utf8"))) {
         expect(from, file).toMatch(/^\.\.?\//);
         if (from.includes("/main/")) expect(from, file).toMatch(manifests);
       }
     }
-    // Those manifests load nothing at run time but core.
+    // Those manifests load nothing at run time but core; the web apps' module, only their adapter, which loads only shared code.
+    const runtimeImports = (file: string) => fs.readFileSync(file, "utf8").split("\n").filter((line) => /^\s*import\b/.test(line) && !/^\s*import type\b/.test(line));
     for (const name of ["fluxer", "matrix", "nerimity", "spacebar", "stoat", "telegram"]) {
-      const source = fs.readFileSync(`src/main/modules/${name}.ts`, "utf8");
-      const runtime = source.split("\n").filter((line) => /^\s*import\b/.test(line) && !/^\s*import type\b/.test(line));
-      for (const line of runtime) expect(line, name).toMatch(/from "\.\.\/\.\.\/core\//);
+      for (const line of runtimeImports(`src/main/modules/${name}.ts`)) expect(line, name).toMatch(/from "\.\.\/\.\.\/core\//);
     }
+    for (const line of runtimeImports("src/main/modules/web.ts")) expect(line, "web").toMatch(/from "\.\.\/adapters\/genericWebAdapter"/);
+    for (const line of runtimeImports("src/main/adapters/genericWebAdapter.ts")) expect(line, "genericWebAdapter").toMatch(/from "\.\.\/\.\.\/shared\/(ipc|baseAdapter)"/);
   });
 
   it("keeps core free of Electron, Node and main-process imports, so a mobile host can run it", async () => {

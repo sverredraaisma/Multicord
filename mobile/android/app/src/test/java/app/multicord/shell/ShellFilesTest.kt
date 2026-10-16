@@ -40,12 +40,17 @@ class ShellFilesTest {
               {"id": "no-hosts", "engine": "x", "hosts": []},
               {"id": "hosts-text", "engine": "x", "hosts": "a.b"},
               {"engine": "x"},
+              {"id": "web", "storage": true, "web": true},
+              {"id": "web-engine", "engine": "x", "storage": true, "web": true},
+              {"id": "web-hosts", "hosts": ["a.b"], "web": true},
+              {"id": "Web", "web": true},
               5
             ]""",
         )
         assertEquals(NativeModule("matrix-native", "matrix", null, true), table["matrix-native"])
         assertEquals(NativeModule("telegram", "telegram", listOf("*.web.telegram.org"), false), table["telegram"])
-        assertEquals(setOf("matrix-native", "telegram"), table.ids)
+        assertEquals(NativeModule("web", null, null, true, web = true), table["web"])
+        assertEquals(setOf("matrix-native", "telegram", "web"), table.ids)
         assertEquals(emptySet<String>(), ModuleTable.parse("{}").ids)
     }
 }

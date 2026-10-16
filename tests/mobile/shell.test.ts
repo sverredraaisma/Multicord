@@ -40,10 +40,15 @@ async function started(files: BootInfo["files"] = { platforms: TWO }) {
 }
 
 describe("module table", () => {
-  it("lists every native module the phone runs, with the engine's hosts and storage", () => {
+  it("lists every module the phone runs, with the engine's hosts and storage, or as a web client", () => {
     expect(nativeModuleTable().map((m) => m.id)).toEqual(MOBILE_MODULES.map((m) => m.manifest.id));
     expect(nativeModuleTable().find((m) => m.id === "telegram")).toEqual({ id: "telegram", engine: "telegram", storage: false, hosts: ["*.web.telegram.org"] });
     expect(nativeModuleTable().find((m) => m.id === "matrix-native")).toEqual({ id: "matrix-native", engine: "matrix", storage: true });
+    // Element, Stoat, Fluxer, Spacebar and Nerimity's own web apps, and any web app; Discord is not on the phone yet.
+    expect(nativeModuleTable().filter((m) => m.web).map((m) => m.id)).toEqual(["matrix", "stoat", "fluxer-web", "spacebar", "nerimity", "web"]);
+    expect(nativeModuleTable().find((m) => m.id === "web")).toEqual({ id: "web", storage: true, web: true });
+    expect(nativeModuleTable().some((m) => m.id === "discord")).toBe(false);
+    // A module with neither an engine nor a web app does not run.
     expect(nativeModuleTable([{ manifest: { id: "web", name: "Web", label: "W", color: "#000000", configurable: true } }])).toEqual([]);
   });
 });
@@ -82,7 +87,7 @@ describe("starting", () => {
 
   it("skips services whose module does not run here, and shows the home page when none is left", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const platforms = JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, { id: "el", name: "Element", url: "https://app.element.io" }]);
+    const platforms = JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]);
     const { of, last } = await started({ platforms });
     expect(of("start")).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('discord: module "discord" does not run on this phone'));
@@ -116,6 +121,40 @@ const DIRECTS = {
     ],
   },
 };
+
+describe("web-client services", () => {
+  const WEB = JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }, { id: "el", name: "Element", module: "matrix", url: "https://app.element.io" }, { id: "tg", name: "TG", module: "telegram" }]);
+
+  it("start as the service's own web app, with an entry in the drawer that shows it", async () => {
+    const { of, last, shell } = await started({ platforms: WEB });
+    expect(of("start")[0]).toEqual({ type: "start", instance: "el", module: "matrix", name: "Element", url: "https://app.element.io" });
+    expect(last().screen).toEqual({ page: "service", instance: "el" });
+    expect(last().services[0]).toEqual({ id: "el", name: "Element", label: "Matrix", color: "#0dbd8b" });
+    expect([...shell.webAdapters.keys()]).toEqual(["el"]);
+    // Web apps are told nothing about being seen; engines are.
+    expect(of("command").map((c) => c.instance)).toEqual(["tg"]);
+    shell.show("tg");
+    await shell.open("el:app");
+    expect(last().screen).toEqual({ page: "service", instance: "el" });
+  });
+
+  it("take their unread count from the page title, as on the desktop", async () => {
+    const { emit, last, of } = await started({ platforms: WEB });
+    await emit({ type: "title", instance: "el", title: "(3) Element" });
+    expect(last().rail.entries.find((e) => e.key === "el:app")).toMatchObject({ unread: true, mentions: 3 });
+    expect(of("badge").at(-1)).toEqual({ type: "badge", count: 3 });
+    await emit({ type: "title", instance: "tg", title: "(9) Telegram" });
+    await emit({ type: "title", instance: "gone", title: "(9) x" });
+    expect(last().mentions).toBe(3);
+  });
+
+  it("show in Settings with a Restart, which reloads the web app", async () => {
+    const { shell, of } = await started({ platforms: WEB });
+    expect(shell.settings.state().services.find((s) => s.id === "el")).toMatchObject({ restartable: true, account: { state: "unknown" } });
+    await shell.settingsAction({ type: "restartService", id: "el" });
+    expect(of("restartEngine")).toEqual([{ type: "restartEngine", instance: "el" }]);
+  });
+});
 
 describe("the unified Messages list", () => {
   it("lists every service's direct conversations, newest first, with the unread badge", async () => {
