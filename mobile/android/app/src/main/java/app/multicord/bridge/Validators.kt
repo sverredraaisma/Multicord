@@ -10,14 +10,14 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 
 /**
- * The desktop's validators for what engines and views send (src/shared/engine.ts: isEngineRequest,
- * isHttpRequest, isEngineEvent; src/shared/native.ts: isNativeAction; src/shared/settings.ts:
- * isServiceSettingStatus), ported to Kotlin so the native side checks every message before it acts on it
- * or passes it on. Messages arrive as JSON (see Wire), with byte arrays in a [Wire.BYTES] envelope.
+ * The desktop's validators, ported to Kotlin so the native side checks every message before it acts on it
+ * or passes it on: what engines and views send (src/shared/engine.ts: isEngineRequest, isHttpRequest,
+ * isEngineEvent; src/shared/native.ts: isNativeAction; src/shared/settings.ts: isServiceSettingStatus) and
+ * the engine commands the shell page sends (isEngineCommand, isServiceSettingValues). Messages arrive as
+ * JSON (see Wire), with byte arrays in a [Wire.BYTES] envelope.
  *
- * They mirror the TypeScript line by line and are tested with the same cases (ValidatorsTest). The plan
- * is to stop keeping two copies: run src/shared's validators in the shell WebView (docs/mobile.md,
- * section 5) or share a JSON fixture of cases, as the network policy does.
+ * They mirror the TypeScript line by line and are tested with the same cases (ValidatorsTest, with the
+ * shared fixture tests/fixtures/engine-validator-cases.json).
  */
 object Validators {
     private val HOST_PATTERN = Regex("^(\\*\\.)?[a-z0-9]([a-z0-9-]{0,62})(\\.[a-z0-9]([a-z0-9-]{0,62}))+$")
@@ -198,7 +198,30 @@ object Validators {
         return n
     }
 
+    /** A command for an engine, as the shell page sends it (isEngineCommand). */
+    fun isEngineCommand(value: JsonElement?): Boolean {
+        val v = value.record() ?: return false
+        return when (v["type"].string()) {
+            "openHome", "signOut" -> true
+            "openServer", "openConversation", "toggleGroup" -> isText(v["key"], Limits.MAX_KEY, 1)
+            "visible" -> isBoolean(v["visible"])
+            "settings" -> isServiceSettingValues(v["values"])
+            "settingAction" -> v["key"].string()?.let(FIELD_KEY::matches) == true
+            else -> false
+        }
+    }
+
     // src/shared/settings.ts ---------------------------------------------------------------------------------
+
+    private val CHOICE_VALUE = Regex("^[a-z0-9-]{1,32}$")
+
+    /** Settings values as a command carries them: known shapes only (isServiceSettingValues). */
+    fun isServiceSettingValues(value: JsonElement?): Boolean {
+        val v = value.record() ?: return false
+        return v.size <= Limits.MAX_SERVICE_FIELDS && v.all { (key, item) ->
+            FIELD_KEY.matches(key) && (isBoolean(item) || item.string()?.let(CHOICE_VALUE::matches) == true)
+        }
+    }
 
     fun isServiceSettingStatus(value: JsonElement?): Boolean {
         val v = value.record() ?: return false

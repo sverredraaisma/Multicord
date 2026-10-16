@@ -45,6 +45,7 @@ const validators: Record<string, (value: unknown) => boolean> = {
   isEngineEvent: engine.isEngineEvent,
   isHttpRequest: engine.isHttpRequest,
   isEngineRequest: engine.isEngineRequest,
+  isEngineCommand: engine.isEngineCommand,
   isNativeAction: native.isNativeAction,
 };
 

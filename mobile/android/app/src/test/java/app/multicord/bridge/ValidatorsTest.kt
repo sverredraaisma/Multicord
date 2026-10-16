@@ -72,6 +72,7 @@ class ValidatorsTest {
         "isEngineEvent" to Validators::isEngineEvent,
         "isHttpRequest" to Validators::isHttpRequest,
         "isEngineRequest" to Validators::isEngineRequest,
+        "isEngineCommand" to Validators::isEngineCommand,
         "isNativeAction" to Validators::isNativeAction,
     )
 

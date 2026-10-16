@@ -252,6 +252,43 @@
       []
     ]
   },
+  "isEngineCommand": {
+    "valid": [
+      { "type": "openHome" },
+      { "type": "signOut" },
+      { "type": "openServer", "key": "k" },
+      { "type": "openConversation", "key": { "$repeat": "a", "times": "MAX_KEY" } },
+      { "type": "toggleGroup", "key": "g" },
+      { "type": "visible", "visible": true },
+      { "type": "visible", "visible": false },
+      { "type": "settings", "values": {} },
+      { "type": "settings", "values": { "readReceipts": true, "mode": "fast-1" } },
+      { "type": "settings", "values": { "$object": ["k{i}", true], "times": 16 } },
+      { "type": "settingAction", "key": "forgetApiId" }
+    ],
+    "invalid": [
+      null,
+      "openHome",
+      [],
+      {},
+      { "type": "nope" },
+      { "type": "openServer" },
+      { "type": "openServer", "key": "" },
+      { "type": "openServer", "key": 5 },
+      { "type": "openConversation", "key": { "$repeat": "a", "times": "MAX_KEY+1" } },
+      { "type": "visible", "visible": "yes" },
+      { "type": "visible" },
+      { "type": "settings" },
+      { "type": "settings", "values": [] },
+      { "type": "settings", "values": { "Bad": true } },
+      { "type": "settings", "values": { "a": 1 } },
+      { "type": "settings", "values": { "a": "UPPER" } },
+      { "type": "settings", "values": { "a": "" } },
+      { "type": "settings", "values": { "$object": ["k{i}", true], "times": 17 } },
+      { "type": "settingAction", "key": "1a" },
+      { "type": "settingAction", "key": { "$repeat": "a", "times": 33 } }
+    ]
+  },
   "isNativeAction": {
     "valid": [
       { "type": "ready" },
