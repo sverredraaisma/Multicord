@@ -408,8 +408,8 @@ export class NativeView {
     composer.rows = 1;
     // Typing "@" and a name suggests people to mention, from the list below the composer.
     composer.setAttribute("aria-autocomplete", "list");
+    // A textarea takes no aria-expanded (no combobox role): the highlighted suggestion is its aria-activedescendant.
     composer.setAttribute("aria-controls", "mention-list");
-    composer.setAttribute("aria-expanded", "false");
     composer.addEventListener("keydown", (event) => {
       if (this.mention && this.mentionKey(event)) return;
       if (event.key === "Escape" && this.replyTo) return this.setReply(undefined);
@@ -748,7 +748,6 @@ export class NativeView {
     const list = this.parts.mentionList!;
     list.hidden = false;
     list.replaceChildren(...mentionOptions(this.doc, options, active, (picked) => this.pickMention(picked, start)));
-    this.parts.composer!.setAttribute("aria-expanded", "true");
     this.parts.composer!.setAttribute("aria-activedescendant", mentionOptionId(active));
   }
 
@@ -757,7 +756,6 @@ export class NativeView {
     const list = this.parts.mentionList!;
     list.hidden = true;
     list.replaceChildren();
-    this.parts.composer!.setAttribute("aria-expanded", "false");
     this.parts.composer!.removeAttribute("aria-activedescendant");
   }
 
@@ -1512,8 +1510,8 @@ export class NativeView {
     for (const message of channel?.messages ?? []) {
       // Where the news started when the conversation was opened.
       if (message.id === unread?.firstId) {
+        // A list item of its own (a separator role would leave the list with a child that is not an item).
         const divider = el(this.doc, "li", "unread-divider", newMessagesText(unread.count));
-        divider.setAttribute("role", "separator");
         items.push(divider);
       }
       items.push(this.messageItem(message));

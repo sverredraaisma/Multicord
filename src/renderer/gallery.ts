@@ -157,7 +157,7 @@ function section(doc: Document, title: string, description: string, ...content: 
   return block;
 }
 
-function wrap(doc: Document, tag: "ul" | "ol" | "div" | "nav", className: string, children: Node[]): HTMLElement {
+function wrap(doc: Document, tag: "ul" | "ol" | "li" | "div" | "nav", className: string, children: Node[]): HTMLElement {
   const element = el(doc, tag, className);
   element.append(...children);
   return element;
@@ -231,7 +231,7 @@ export function renderGallery(root: HTMLElement): void {
       "Forum",
       "The new-post form and a forum's posts.",
       wrap(doc, "ol", "messages", [
-        postForm(doc, log("new post")),
+        wrap(doc, "li", "post-form-row", [postForm(doc, log("new post"))]),
         ...forumPosts(doc, [
           { id: "1", name: "Dark mode", messageCount: 4, unread: true, mentions: 2 },
           { id: "2", name: "Bigger emoji", messageCount: 1, unread: false, mentions: 0 },

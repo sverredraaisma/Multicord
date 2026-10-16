@@ -657,7 +657,8 @@ describe("unread messages", () => {
     layout(2000, 500, 0);
     view.update(withUnread({ firstId: "11", count: 2 }));
     const divider = scroller().querySelector(".unread-divider")!;
-    expect(divider.getAttribute("role")).toBe("separator");
+    expect(divider.tagName).toBe("LI");
+    expect(divider.hasAttribute("role")).toBe(false);
     expect(divider.textContent).toBe("2 new messages");
     expect(divider.nextElementSibling!.getAttribute("data-id")).toBe("11");
     expect(scroller().scrollTop).toBe(292);
@@ -1027,7 +1028,6 @@ describe("mentions", () => {
     type(composer, "hi @");
     expect(list().hidden).toBe(false);
     expect(names()).toEqual(["Bo", "Ana"]);
-    expect(composer.getAttribute("aria-expanded")).toBe("true");
     expect(composer.getAttribute("aria-activedescendant")).toBe("mention-option-0");
     expect(key(composer, "ArrowUp").defaultPrevented).toBe(true);
     expect(active()).toBe("Ana");
@@ -1041,7 +1041,6 @@ describe("mentions", () => {
     expect(composer.value).toBe("hi <@a> ");
     expect(composer.selectionStart).toBe(8);
     expect(list().hidden).toBe(true);
-    expect(composer.getAttribute("aria-expanded")).toBe("false");
     expect(composer.hasAttribute("aria-activedescendant")).toBe(false);
     expect(act).not.toHaveBeenCalledWith(expect.objectContaining({ type: "send" }));
 
