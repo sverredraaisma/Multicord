@@ -94,7 +94,12 @@ await Promise.all([
   // The phone app's shell page (mobile/android): src/core with the mobile glue, beside static/mobile.
   build({
     ...common,
-    entryPoints: { "mobile/shell": "src/entries/mobile-shell.ts" },
+    entryPoints: {
+      "mobile/shell": "src/entries/mobile-shell.ts",
+      // Discord's page on the phone: the main-world scripts, and the relay native code puts beside its message listener.
+      "mobile/discord-page": "src/entries/mobile-discord-page.ts",
+      "mobile/discord-relay": "src/entries/mobile-discord-relay.ts",
+    },
     platform: "browser",
     format: "iife",
     outdir: "dist",
