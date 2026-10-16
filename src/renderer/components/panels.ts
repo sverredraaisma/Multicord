@@ -1,4 +1,4 @@
-import { MAX_MESSAGE_LENGTH, MAX_NEW_POLL_ANSWER, MAX_NEW_POLL_ANSWERS, MAX_NEW_POLL_QUESTION, MIN_NEW_POLL_ANSWERS, type NativeForumPost, type NativeListedMessage, type NativeMessageList, type AudioRoute, type AudioRoutes, type NativeVoiceSession } from "../../shared/native";
+import { MAX_MESSAGE_LENGTH, MAX_NEW_POLL_ANSWER, MAX_NEW_POLL_ANSWERS, MAX_NEW_POLL_QUESTION, MIN_NEW_POLL_ANSWERS, type NativeForumPost, type NativeListedMessage, type NativeMessageList, type AudioRoute, type AudioRoutes, type NativeVoiceSession, voiceConnected } from "../../shared/native";
 import { avatar } from "./avatar";
 import { countBadge, el } from "./dom";
 import { formatSize, formatTime } from "./format";
@@ -31,7 +31,7 @@ function voiceToggle(doc: Document, voice: NativeVoiceSession, handlers: VoiceHa
   button.type = "button";
   button.classList.toggle("on", on);
   button.setAttribute("aria-pressed", String(on));
-  button.disabled = !voice.token;
+  button.disabled = !voiceConnected(voice);
   button.addEventListener("click", () => handlers.onChange({ ...current, ...change }));
   return button;
 }
@@ -50,15 +50,17 @@ function routeButton(doc: Document, audio: VoicePanelOptions["audio"]): HTMLButt
 
 /** The call controls: connection status, where, and toggles that report the new flags. */
 export function voicePanel(doc: Document, voice: NativeVoiceSession, handlers: VoiceHandlers, options: VoicePanelOptions = {}): HTMLElement[] {
-  const status = el(doc, "div", "voice-status", voice.token ? "Voice connected" : "Connecting…");
-  status.classList.toggle("connected", Boolean(voice.token));
+  const connected = voiceConnected(voice);
+  const status = el(doc, "div", "voice-status", connected ? "Voice connected" : "Connecting…");
+  status.classList.toggle("connected", connected);
   const where = el(doc, "div", "voice-where", voice.guildName ? `${voice.channelName} / ${voice.guildName}` : voice.channelName);
   const controls = el(doc, "div", "voice-controls");
   const toggle = (label: string, on: boolean, change: Partial<VoiceFlags>) => controls.append(voiceToggle(doc, voice, handlers, label, on, change));
   toggle(voice.mute ? "Unmute" : "Mute", voice.mute, { mute: !voice.mute });
   toggle(voice.deaf ? "Undeafen" : "Deafen", voice.deaf, { deaf: !voice.deaf });
   toggle(voice.video ? "Camera off" : "Camera", voice.video, { video: !voice.video });
-  if (options.screenShare !== false) toggle(voice.stream ? "Stop sharing" : "Share screen", voice.stream, { stream: !voice.stream });
+  // Peer-to-peer calls carry the microphone and camera only.
+  if (options.screenShare !== false && !voice.p2p) toggle(voice.stream ? "Stop sharing" : "Share screen", voice.stream, { stream: !voice.stream });
   controls.append(...routeButton(doc, options.audio));
   const leave = el(doc, "button", "leave", "Leave");
   leave.addEventListener("click", handlers.onLeave);
@@ -73,8 +75,9 @@ export function voicePanel(doc: Document, voice: NativeVoiceSession, handlers: V
 export function callStrip(doc: Document, voice: NativeVoiceSession, handlers: VoiceHandlers & { onReturn(): void }, options: VoicePanelOptions = {}): HTMLElement[] {
   const back = el(doc, "button", "call-return", voice.channelName);
   back.type = "button";
-  back.classList.toggle("connected", Boolean(voice.token));
-  back.title = voice.token ? `In a call in ${voice.channelName}; return to the call` : `Connecting to ${voice.channelName}; return to the call`;
+  const connected = voiceConnected(voice);
+  back.classList.toggle("connected", connected);
+  back.title = connected ? `In a call in ${voice.channelName}; return to the call` : `Connecting to ${voice.channelName}; return to the call`;
   back.addEventListener("click", handlers.onReturn);
   const hangUp = el(doc, "button", "leave", "Hang up");
   hangUp.type = "button";

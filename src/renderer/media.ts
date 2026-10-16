@@ -1,6 +1,8 @@
 // Device tests for the settings page: a microphone level meter, a test tone
 // on the chosen speakers and a camera preview. Browser APIs come in through
 // MediaEnv, so tests can stand in for them.
+import type { DeviceChoice } from "../shared/settings";
+
 /** What enumerateDevices returns, as far as we use it. */
 export interface DeviceInfo {
   deviceId: string;
@@ -30,6 +32,17 @@ export function browserMediaEnv(win: Window): MediaEnv {
     frame: (cb) => win.requestAnimationFrame(cb),
     cancelFrame: (handle) => win.cancelAnimationFrame(handle),
   };
+}
+
+/**
+ * The id of a chosen device in a view. Chromium salts device ids per site,
+ * so the settings page's id may not exist there; the label decides then.
+ * Undefined means the system default.
+ */
+export function resolveDevice(devices: readonly DeviceInfo[], kind: MediaDeviceKind, choice: DeviceChoice | undefined): string | undefined {
+  if (!choice) return undefined;
+  const ofKind = devices.filter((d) => d.kind === kind);
+  return (ofKind.find((d) => d.deviceId === choice.id) ?? ofKind.find((d) => d.label === choice.label))?.deviceId;
 }
 
 export type Stop = () => void;

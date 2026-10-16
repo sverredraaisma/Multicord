@@ -2501,3 +2501,51 @@ describe("polls in the view", () => {
     });
   });
 });
+
+describe("peer-to-peer calls", () => {
+  it("runs a peer-to-peer session in a call of its own, with who is in it in the call panel", async () => {
+    const p2p = { callId: "c1", self: "1", peers: [{ id: "2", name: "Ana", offer: false }], iceServers: [{ urls: ["turn:turn.cloudflare.com:3478"], username: "u", credential: "c" }], relayOnly: true, signals: [] };
+    const voice = { channelId: "7", channelName: "Ana", guildName: "", mute: true, deaf: false, video: false, stream: false, p2p };
+    view.setVoiceSettings(DEFAULT_SETTINGS.voice);
+    view.update(chat({ voice }));
+    await vi.waitFor(() => expect(root.querySelector(".voice-panel .voice-roster")!.textContent).toContain("Ana"));
+    expect(root.querySelector(".voice-status")!.textContent).toBe("Voice connected");
+    const buttons = [...root.querySelectorAll(".voice-controls button")].map((b) => b.textContent);
+    expect(buttons).toEqual(["Unmute", "Deafen", "Camera", "Leave"]);
+    expect(root.querySelectorAll<HTMLButtonElement>(".voice-controls button:disabled")).toHaveLength(0);
+    // The shortcuts act on it like on any call.
+    view.voiceCommand("toggleMute");
+    expect(act).toHaveBeenLastCalledWith({ type: "voiceState", mute: false, deaf: false, video: false, stream: false });
+    // An offer from the peer is answered through the engine.
+    const created: { config: unknown; answer?: unknown }[] = [];
+    vi.stubGlobal(
+      "RTCPeerConnection",
+      class {
+        onicecandidate = null;
+        remoteDescription: unknown = null;
+        localDescription: unknown = null;
+        constructor(config: unknown) {
+          created.push({ config });
+        }
+        async setRemoteDescription(description: unknown) {
+          this.remoteDescription = description;
+        }
+        async createAnswer() {
+          return { type: "answer", sdp: "a" };
+        }
+        async setLocalDescription(description: unknown) {
+          this.localDescription = description;
+        }
+        getTransceivers() {
+          return [];
+        }
+        close() {}
+      },
+    );
+    view.update(chat({ voice: { ...voice, p2p: { ...p2p, signals: [{ seq: 1, from: "2", signal: { type: "offer", sdp: "o" } }] } } }));
+    await vi.waitFor(() => expect(act).toHaveBeenLastCalledWith({ type: "voiceSignal", to: "2", signal: { type: "answer", sdp: "a" } }));
+    expect(created[0]!.config).toEqual({ iceServers: p2p.iceServers, iceTransportPolicy: "relay" });
+    view.update(chat({ voice: null }));
+    expect(root.querySelector(".voice-roster")).toBeNull();
+  });
+});

@@ -3,7 +3,7 @@ import { SCREEN_AUDIO_END_EVENT, VIRTUAL_MIC } from "../shared/ipc";
 import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeChannelView, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
-import { channelCan, chatFolders, customEmojiList, emojiUrls, gifResults, incomingCall, isAudioRoutes, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
+import { channelCan, chatFolders, customEmojiList, emojiUrls, gifResults, incomingCall, isAudioRoutes, voiceConnected, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
 import { isTheme, type VoiceCommand, type VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, setPromptQr, type LoginForm } from "./components/auth";
 import { channelList, folderTabs } from "./components/channels";
@@ -18,6 +18,7 @@ import { callStrip, forumPosts, listedMessages, pendingFiles, pollForm, postForm
 import { isOwnReaction } from "./components/reactions";
 import { attachMobilePanes } from "./mobilePanes";
 import { relayWebSockets } from "./relaySockets";
+import { PeerCall } from "./peerCall";
 import { VoiceCall } from "./voice";
 
 export { formatSize, formatTime, typingText } from "./components/format";
@@ -82,6 +83,8 @@ export class NativeView {
   /** What opened the profile card or the forward dialog, for focus to return to when it closes. */
   private cardOpener: HTMLElement | undefined;
   private call: VoiceCall | undefined;
+  /** Peer-to-peer calls (Nerimity's), beside the voice-server ones. */
+  private peerCall: PeerCall | undefined;
   private voiceSettings: VoiceSettings | undefined;
   private voiceOptions: VoicePanelOptions = {};
   /** The shell's favourites, as last sent; the module never sees them. */
@@ -147,12 +150,13 @@ export class NativeView {
   setVoiceSettings(settings: VoiceSettings): void {
     this.voiceSettings = settings;
     void this.call?.configure(settings);
+    void this.peerCall?.configure(settings);
   }
 
   /** The call in progress, if the voice server has connected us. */
   private get liveCall() {
     const voice = this.screen === "chat" ? this.lastState?.voice : undefined;
-    return voice?.token ? voice : undefined;
+    return voice && voiceConnected(voice) ? voice : undefined;
   }
 
   private setVoice(change: { mute?: boolean; deaf?: boolean }): void {
@@ -223,6 +227,8 @@ export class NativeView {
     // Leaving the chat screen (e.g. signing out) ends any call.
     void this.call?.sync(null);
     this.call = undefined;
+    void this.peerCall?.sync(null);
+    this.peerCall = undefined;
     this.screen = state.screen;
     this.promptId = state.screen === "prompt" ? state.prompt.id : undefined;
     this.parts = {};
@@ -292,6 +298,11 @@ export class NativeView {
     footer.append(me, logout);
     const voice = el(doc, "section", "voice-panel");
     voice.hidden = true;
+    // Who is in a peer-to-peer call, kept by the call itself and shown in the call panel.
+    const roster = el(doc, "ul", "voice-roster");
+    roster.setAttribute("aria-label", "In the call");
+    roster.hidden = true;
+    this.parts.roster = roster;
     // Joining a conversation by its address, where the module offers it; kept across updates so typing is never lost.
     const joinForm = el(doc, "form", "join-form");
     joinForm.hidden = true;
@@ -417,6 +428,21 @@ export class NativeView {
     speakers.hidden = true;
     this.call = new VoiceCall(stage, speakers, (message, notice) => this.api.act(notice ? { type: "voiceNotice", message, ...notice } : { type: "voiceError", message }), undefined, undefined, this.denoiser, this.e2eeWorker);
     if (this.voiceSettings) void this.call.configure(this.voiceSettings);
+    // A peer-to-peer call shows and plays in places of its own, so neither call clears the other's.
+    const peerStage = el(doc, "div", "voice-stage");
+    peerStage.hidden = true;
+    const peerSpeakers = el(doc, "div", "voice-speakers");
+    peerSpeakers.hidden = true;
+    this.peerCall = new PeerCall(
+      peerStage,
+      peerSpeakers,
+      roster,
+      (message, notice) => this.api.act(notice ? { type: "voiceNotice", message, ...notice } : { type: "voiceError", message }),
+      (to, signal) => this.api.act({ type: "voiceSignal", to, signal }),
+      undefined,
+      this.denoiser,
+    );
+    if (this.voiceSettings) void this.peerCall.configure(this.voiceSettings);
     const reply = el(doc, "div", "reply-bar");
     reply.hidden = true;
 
@@ -484,7 +510,7 @@ export class NativeView {
     // Why the composer is off in a conversation that takes no messages from here.
     const notice = el(doc, "div", "locked-notice");
     notice.hidden = true;
-    main.append(header, banner, callBar, callAnnouncer, stage, messageArea, typing, announcer, reply, pending, notice, composerRow, speakers);
+    main.append(header, banner, callBar, callAnnouncer, stage, peerStage, messageArea, typing, announcer, reply, pending, notice, composerRow, speakers, peerSpeakers);
 
     // One edit box, reused across renders so an edit in progress survives updates.
     const editBox = el(doc, "textarea", "edit-box");
@@ -1588,9 +1614,12 @@ export class NativeView {
       onLeave: () => this.api.act({ type: "leaveVoice" }),
     };
     voice.hidden = !state.voice;
-    voice.replaceChildren(...(state.voice ? voicePanel(this.doc, state.voice, voiceHandlers, this.voiceOptions) : []));
+    voice.replaceChildren(...(state.voice ? [...voicePanel(this.doc, state.voice, voiceHandlers, this.voiceOptions), this.parts.roster!] : []));
     this.updateCallStrip(state, voiceHandlers);
-    void this.call?.sync(state.voice);
+    // A session is one kind of call or the other; each runtime leaves when it is not its kind.
+    const p2p = state.voice?.p2p !== undefined;
+    void this.call?.sync(p2p ? null : state.voice);
+    void this.peerCall?.sync(p2p ? state.voice : null);
 
     const scroller = messages!;
     const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 40;

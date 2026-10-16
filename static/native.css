@@ -385,6 +385,13 @@ button.reply:hover, button.reply:focus-visible { color: var(--text); text-decora
 .voice-members li.muted .name { text-decoration: line-through; }
 .voice-members .avatar { width: 20px; height: 20px; font-size: 9px; }
 .voice-members .live { padding: 0 4px; border-radius: 4px; background: var(--danger); color: #fff; font-size: 10px; font-weight: 700; }
+.voice-roster { margin: 8px 0 0; padding: 0; list-style: none; font-size: 12px; }
+.voice-roster[hidden] { display: none; }
+.roster-member { display: flex; gap: 6px; align-items: center; padding: 2px 0; }
+.roster-member .avatar { width: 20px; height: 20px; font-size: 9px; }
+.roster-member.speaking .avatar, .video-tile.speaking video { box-shadow: 0 0 0 2px var(--ok-text); }
+.roster-note { margin-left: auto; color: var(--muted); }
+.roster-over { padding-top: 4px; color: var(--muted); }
 .voice-panel { padding: 10px 12px; border-top: 1px solid var(--bg); background: var(--raised); }
 .voice-panel[hidden] { display: none; }
 .voice-status { color: var(--muted); font-size: 12px; font-weight: 700; }

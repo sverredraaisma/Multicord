@@ -12,19 +12,10 @@ import {
   type TrackProcessor,
 } from "livekit-client";
 import type { NativeMediaKey, NativeVoiceSession, VoiceNoticeFlag } from "../shared/native";
-import { DEFAULT_SETTINGS, type DeviceChoice, type VoiceSettings } from "../shared/settings";
-import type { DeviceInfo } from "./media";
+import { DEFAULT_SETTINGS, type VoiceSettings } from "../shared/settings";
+import { resolveDevice, type DeviceInfo } from "./media";
 
-/**
- * The id of a chosen device in this view. Chromium salts device ids per
- * site, so the settings page's id may not exist here; the label decides
- * then. Undefined means the system default.
- */
-export function resolveDevice(devices: readonly DeviceInfo[], kind: MediaDeviceKind, choice: DeviceChoice | undefined): string | undefined {
-  if (!choice) return undefined;
-  const ofKind = devices.filter((d) => d.kind === kind);
-  return (ofKind.find((d) => d.deviceId === choice.id) ?? ofKind.find((d) => d.label === choice.label))?.deviceId;
-}
+export { resolveDevice };
 
 const listDevices = async (): Promise<DeviceInfo[]> => (await globalThis.navigator?.mediaDevices?.enumerateDevices?.()) ?? [];
 
