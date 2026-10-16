@@ -1,5 +1,5 @@
 import type { DirectConversation, HomeBadge, PlatformAdapter, RailServer } from "../../shared/adapter";
-import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeListedMessage, type NativeMember, type NativeMemberList, type NativeMemberSection, type NativePresence, type NativeProfile, MEMBER_ROWS_SHOWN, type NativeMessage, type NativeMessageList, type NativeSearchResults, type NativeSidebarItem, type NativeUnread, type NativeViewState, type NativeVoiceSession, type VoiceNoticeFlag } from "../../shared/native";
+import { MAX_ATTACHMENTS, type NativeAction, type NativeCustomEmoji, type NativeEmbed, type NativeListedMessage, type NativeMember, type NativeMemberList, type NativeMemberSection, type NativePresence, type NativeProfile, MEMBER_ROWS_SHOWN, type NativeMessage, type NativeMessageList, type NativeSearchResults, type NativeSidebarItem, type NativeUnread, type NativeIncomingCall, type NativeViewState, type NativeVoiceMember, type NativeVoiceSession, type VoiceNoticeFlag } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
 import { TYPING_SETTING, type AccountStatus, type ServiceSettingValues } from "../../shared/settings";
 import type { AsyncSecretStore, EngineFiles, FileSource } from "../../engine/runtime";
@@ -56,6 +56,10 @@ export interface StoatAdapterDeps {
 type Selection = { kind: "home" } | { kind: "server"; serverId: string };
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+/** Where Stoat's server takes a call: DMs, groups, and server channels that are also voice channels. */
+const hasCall = (channel: StoatChannel): boolean => channel.voice === true || channel.type === ChannelType.DirectMessage || channel.type === ChannelType.Group;
+/** People in a call the sidebar lists under its conversation. */
+const CALL_MEMBERS_SHOWN = 25;
 
 /** What the module offers the shell; its manifest must declare the same (tested). */
 export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: true, screenShare: true };
@@ -117,7 +121,10 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   private readonly originals = new Map<string, StoatMessage | null>();
   private readonly fetchingOriginals = new Set<string>();
   /** The user's call: the channel, its grant once the voice server gave one, and the user's own flags. */
-  private voice: { channelId: string; serverId: string; url?: string; token?: string; mute: boolean; deaf: boolean; video: boolean; stream: boolean } | undefined;
+  private voice: { channelId: string; serverId?: string; url?: string; token?: string; mute: boolean; deaf: boolean; video: boolean; stream: boolean } | undefined;
+  /** DM and group calls the shell was told of (they ring once), and those declined here. */
+  private readonly announced = new Set<string>();
+  private readonly declined = new Set<string>();
   /** Counts joins and leaves, so a grant for a join since given up is dropped. */
   private voiceJoins = 0;
 
@@ -214,6 +221,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         return this.leaveVoice(`Voice failed: ${action.message}`);
       case "voiceNotice":
         return this.voiceNotice(action.message, action.off);
+      case "declineCall":
+        return this.declineCall(action.channelId);
       case "logout":
         return this.logout();
       default:
@@ -348,6 +357,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       dispatch: (type, data) => {
         this.state.apply(type, data);
         if (type === "Ready") this.onReady();
+        if (type === "Ready" || type === "VoiceCallUpdate") this.announceRinging();
         // A message in the channel whose pins are listed was pinned or unpinned.
         const changed = type === "MessageUpdate" && typeof data === "object" && data !== null ? (data as { channel?: unknown; data?: { pinned?: unknown }; clear?: unknown }) : undefined;
         if (this.pins && changed?.channel === this.pins.channelId && (changed.data?.pinned !== undefined || (Array.isArray(changed.clear) && changed.clear.includes("Pinned")))) void this.loadPins(this.pins.channelId);
@@ -400,6 +410,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
     this.profile = undefined;
     this.voice = undefined;
     this.voiceJoins++;
+    this.announced.clear();
+    this.declined.clear();
     this.selection = { kind: "home" };
     this.selectedChannelId = undefined;
     this.lastChannel.clear();
@@ -815,26 +827,29 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   // --- Voice -----------------------------------------------------------------
 
   /**
-   * Joins the call of a server channel that is also a voice channel: Stoat
-   * gives a grant for one of the instance's voice servers (LiveKit) through
-   * its documented join_call, and the view carries the audio and video.
-   * Who else is in a call is not shown, as Stoat does not document the
-   * events that would say.
+   * Joins the call of a DM, a group, or a server channel that is also a
+   * voice channel (Stoat's server takes join_call in those: Channel::voice()
+   * in its crates/core/database/src/models/channels/model.rs): Stoat gives a
+   * grant for one of the instance's voice servers (LiveKit), and the view
+   * carries the audio and video. Starting a DM's or group's call rings the
+   * others there (join_call's recipients, as Stoat's client sends them).
    */
   private async joinVoice(channelId: string): Promise<void> {
     const channel = this.state.channels.get(channelId);
     const nodes = this.instance?.voiceNodes ?? [];
-    if (!channel?.voice || !channel.serverId || !this.rest || this.voice?.channelId === channelId) return;
+    if (!channel || !hasCall(channel) || !this.rest || this.voice?.channelId === channelId) return;
     if (nodes.length === 0) {
       this.error = `This ${this.deps.def.name} instance runs no voice.`;
       return this.render();
     }
     const join = ++this.voiceJoins;
-    this.voice = { channelId, serverId: channel.serverId, mute: false, deaf: false, video: false, stream: false };
+    this.voice = { channelId, ...(channel.serverId ? { serverId: channel.serverId } : {}), mute: false, deaf: false, video: false, stream: false };
+    this.declined.delete(channelId);
     this.error = undefined;
     this.render();
+    const ring = !channel.serverId && this.state.inCall(channelId).length === 0 ? channel.recipients.filter((id) => id !== this.state.meId) : [];
     try {
-      const grant = await this.rest.joinCall(channelId, nodes[0]!.name);
+      const grant = await this.rest.joinCall(channelId, nodes[0]!.name, ring);
       // Only the instance's own voice servers, which the engine's host lock allows.
       if (!nodes.some((n) => new URL(n.url).hostname === new URL(grant.url).hostname)) throw new Error("the voice server is not one this instance names");
       if (join !== this.voiceJoins) return;
@@ -866,9 +881,48 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
   private voiceSession(): NativeVoiceSession | null {
     const voice = this.voice;
     if (!voice) return null;
-    const { serverId: _server, ...flags } = voice;
+    const { serverId, ...flags } = voice;
     const channel = this.state.channels.get(voice.channelId);
-    return { ...flags, channelName: channel ? this.channelTitle(channel) : "Voice", guildName: this.state.servers.get(voice.serverId)?.name ?? "" };
+    return { ...flags, channelName: channel ? this.channelTitle(channel) : "Voice", guildName: serverId ? (this.state.servers.get(serverId)?.name ?? "") : "Call" };
+  }
+
+  /** Who is in a channel's call, for its sidebar row: not sending their microphone counts as muted. */
+  private callMembers(channel: StoatChannel): NativeVoiceMember[] {
+    return this.state.inCall(channel.id).slice(0, CALL_MEMBERS_SHOWN).map((p) => {
+      const user = this.state.users.get(p.userId);
+      const avatarUrl = this.fileUrl(user?.avatar);
+      return { name: this.userName(p.userId), ...(avatarUrl ? { avatarUrl } : {}), muted: !p.publishing, video: p.camera || p.screensharing };
+    });
+  }
+
+  /**
+   * A DM or group call ringing for the user (Stoat's VoiceCallUpdate), which
+   * they have neither joined nor declined. Stoat has no way to decline, so
+   * Decline only stops it ringing here.
+   */
+  private incomingCall(): NativeIncomingCall | undefined {
+    for (const [channelId, call] of this.state.calls) {
+      const channel = this.state.channels.get(channelId);
+      if (!channel || call.initiator === this.state.meId || this.declined.has(channelId) || this.voice?.channelId === channelId) continue;
+      return { channelId, from: this.userName(call.initiator) };
+    }
+    return undefined;
+  }
+
+  /** Tells the shell of a call that has started ringing for the user, once a call, so it rings while the view is not in front. */
+  private announceRinging(): void {
+    for (const id of [...this.announced]) if (!this.state.calls.has(id)) this.announced.delete(id);
+    for (const id of [...this.declined]) if (!this.state.calls.has(id)) this.declined.delete(id);
+    const ringing = this.incomingCall();
+    if (!ringing || this.announced.has(ringing.channelId)) return;
+    this.announced.add(ringing.channelId);
+    this.incomingCalls.emit({ conversationKey: ringing.channelId, from: ringing.from, video: false });
+  }
+
+  private declineCall(channelId: string): void {
+    if (!this.state.calls.has(channelId)) return;
+    this.declined.add(channelId);
+    this.render();
   }
 
   // --- Members and profiles --------------------------------------------------
@@ -1220,6 +1274,8 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
       active: channel.id === this.selectedChannelId,
       muted: this.state.notifyLevel(channel) === "muted",
       canMute: true,
+      // Who is in its call, if anyone.
+      ...(hasCall(channel) && this.state.inCall(channel.id).length > 0 ? { members: this.callMembers(channel) } : {}),
     });
     if (this.selection.kind === "home") {
       // Saved Notes first, with the user's own picture; listed under their id until Stoat has made the channel.
@@ -1255,6 +1311,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
         const shown = new Set<string>();
         const members = channel ? this.memberView(channel) : undefined;
         const others = channel?.type !== ChannelType.SavedMessages;
+        const ringing = this.incomingCall();
         return {
           screen: "chat",
           platform,
@@ -1277,7 +1334,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(members ? { members } : {}),
                 // Files need the instance's file server (Autumn).
                 // Saved Notes has nobody else in it: no one to type to or list.
-                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: others && this.typingIndicators, members: others, pins: true, search: true, forward: true, call: Boolean(channel.voice && this.instance?.voiceNodes) },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined && Boolean(this.instance?.autumn), typing: others && this.typingIndicators, members: others, pins: true, search: true, forward: true, call: hasCall(channel) && Boolean(this.instance?.voiceNodes) },
               }
             : null,
           customEmoji: channel ? this.customEmoji(channel) : [],
@@ -1285,6 +1342,7 @@ export class StoatAdapter extends BaseAdapter implements PlatformAdapter {
           emojiUrls: Object.fromEntries([...shown].map((id) => [id, this.emojiUrl(id)!])),
           voice: this.voiceSession(),
           ...(this.profile ? { profile: this.profile } : {}),
+          ...(ringing ? { incomingCall: ringing } : {}),
           error: this.error ?? (this.connection === "reconnecting" ? "Connection lost. Reconnecting…" : undefined),
         };
       }

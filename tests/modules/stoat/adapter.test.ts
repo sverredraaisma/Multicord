@@ -1320,6 +1320,68 @@ describe("StoatAdapter voice", () => {
     expect(failing.chat()).toMatchObject({ voice: null, error: undefined });
   });
 
+  const person = (id: string, joined: string, extra: Record<string, unknown> = {}) => ({ id, joined_at: joined, is_receiving: true, is_publishing: true, screensharing: false, camera: false, ...extra });
+
+  it("calls in DMs and groups, ringing the others only when starting the call", async () => {
+    const { adapter, chat, requests, event } = await online();
+    await adapter.openConversation(DM);
+    expect(chat().channel!.can.call).toBe(true);
+    await adapter.handleAction({ type: "joinVoice", channelId: DM });
+    expect(JSON.parse(requests("/join_call")[0]!.init.body as string)).toEqual({ node: "hel1", recipients: [ANA_ID] });
+    expect(chat().voice).toMatchObject({ channelId: DM, channelName: "Ana", guildName: "Call", token: "lk" });
+    await adapter.handleAction({ type: "leaveVoice" });
+    // Someone is in the group's call already: joining it rings nobody.
+    await event({ type: "VoiceChannelJoin", id: GROUP, state: person(ANA_ID, "2026-10-14T11:00:00Z") });
+    await adapter.handleAction({ type: "joinVoice", channelId: GROUP });
+    expect(JSON.parse(requests("/join_call")[1]!.init.body as string)).toEqual({ node: "hel1" });
+    expect(chat().voice).toMatchObject({ channelId: GROUP, guildName: "Call" });
+    // Saved Notes has no call.
+    await adapter.handleAction({ type: "joinVoice", channelId: ulid(903) });
+    expect(requests("/join_call")).toHaveLength(2);
+  });
+
+  it("lists who is in each call under its conversation, from Ready and the voice events", async () => {
+    const { adapter, chat, event } = await online();
+    await event({ type: "VoiceChannelJoin", id: DM, state: person(ANA_ID, "2026-10-14T11:00:00Z", { is_publishing: false }) });
+    expect(chat().sidebar.find((i) => i.id === DM)!.members).toEqual([{ name: "Ana", avatarUrl: expect.stringContaining("av1"), muted: true, video: false }]);
+    await adapter.openConversation(LOBBY);
+    await event({ type: "VoiceChannelJoin", id: LOBBY, state: person(BOB_ID, "2026-10-14T11:00:00Z", { screensharing: true }) });
+    expect(chat().sidebar.find((i) => i.id === LOBBY)!.members).toEqual([{ name: "bob", muted: false, video: true }]);
+    expect(chat().sidebar.find((i) => i.id === GENERAL)!.members).toBeUndefined();
+    await event({ type: "VoiceChannelLeave", id: LOBBY, user: BOB_ID });
+    expect(chat().sidebar.find((i) => i.id === LOBBY)!.members).toBeUndefined();
+  });
+
+  it("rings for a DM or group call started by someone else until it is joined, declined or over", async () => {
+    const { adapter, chat, event } = await online();
+    const incoming = vi.fn();
+    adapter.onIncomingCall(incoming);
+    const ring = (channel: string, initiator = ANA_ID) => event({ type: "VoiceCallUpdate", initiator_id: initiator, channel_id: channel, started_at: "2026-10-14T12:00:00Z", ended: false });
+    const end = (channel: string) => event({ type: "VoiceCallUpdate", initiator_id: ANA_ID, channel_id: channel, started_at: null, ended: true });
+    await ring(DM);
+    expect(chat().incomingCall).toEqual({ channelId: DM, from: "Ana" });
+    expect(incoming).toHaveBeenCalledExactlyOnceWith({ conversationKey: DM, from: "Ana", video: false });
+    // The same call again does not ring the shell again.
+    await ring(DM);
+    expect(incoming).toHaveBeenCalledTimes(1);
+    // Declined: here only, as Stoat has no way to decline.
+    await adapter.handleAction({ type: "declineCall", channelId: DM });
+    expect(chat().incomingCall).toBeUndefined();
+    await adapter.handleAction({ type: "declineCall", channelId: GROUP });
+    await end(DM);
+    // A new call there rings again; joining it stops the ringing.
+    await ring(DM);
+    expect(incoming).toHaveBeenCalledTimes(2);
+    await adapter.handleAction({ type: "joinVoice", channelId: DM });
+    expect(chat().incomingCall).toBeUndefined();
+    await end(DM);
+    // Calls the user started, and calls in channels not known, do not ring.
+    await ring(GROUP, ME_ID);
+    await ring(ulid(999));
+    expect(chat().incomingCall).toBeUndefined();
+    expect(incoming).toHaveBeenCalledTimes(2);
+  });
+
   it("says when the instance runs no voice", async () => {
     const { adapter, chat } = await online(CONFIG);
     await adapter.openConversation(LOBBY);

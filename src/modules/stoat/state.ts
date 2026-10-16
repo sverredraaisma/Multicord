@@ -19,6 +19,8 @@ import {
   parseStatus,
   parseUnread,
   parseUser,
+  parseVoiceParticipant,
+  voiceChanges,
   MAX_CONTENT,
   MAX_NAME,
   type NotifyLevel,
@@ -30,6 +32,7 @@ import {
   type StoatServer,
   type StoatUnread,
   type StoatUser,
+  type StoatVoiceParticipant,
 } from "./types";
 
 const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
@@ -59,6 +62,10 @@ export class StoatState {
   readonly members = new Map<string, Map<string, StoatMember>>();
   /** The user's own roles in each server, for role mentions: from Ready's members, kept current by member events. */
   readonly ownRoles = new Map<string, string[]>();
+  /** Who is in each channel's call, by channel and user id: from Ready's voice_states, kept current by the voice events. */
+  readonly voice = new Map<string, Map<string, StoatVoiceParticipant>>();
+  /** DM and group calls ringing for the user (VoiceCallUpdate), by channel id: who started each. */
+  readonly calls = new Map<string, { initiator: string }>();
   /** Whether Ready carried unread state (older instances need /sync/unreads). */
   unreadsLoaded = false;
 
@@ -74,7 +81,7 @@ export class StoatState {
     this.meId = undefined;
     this.unreadsLoaded = false;
     this.notifySettings = { servers: new Map(), channels: new Map() };
-    for (const map of [this.users, this.servers, this.channels, this.unreads, this.messages, this.latest, this.emojis, this.typing, this.members, this.ownRoles]) map.clear();
+    for (const map of [this.users, this.servers, this.channels, this.unreads, this.messages, this.latest, this.emojis, this.typing, this.members, this.ownRoles, this.voice, this.calls]) map.clear();
   }
 
   apply(type: string, d: Record<string, unknown>): void {
@@ -95,6 +102,11 @@ export class StoatState {
           if (member && member.userId === this.meId && isId(server)) this.ownRoles.set(server, member.roles);
         }
         if (Array.isArray(d.channel_unreads)) this.loadUnreads(d.channel_unreads.flatMap((u) => parseUnread(u) ?? []));
+        // Who is in each call (ChannelVoiceState: the channel and its participants).
+        for (const raw of list(d.voice_states)) {
+          if (!isRecord(raw) || !isId(raw.id)) continue;
+          for (const p of list(raw.participants)) this.joinCall(raw.id, p);
+        }
         break;
       }
       case "Message":
@@ -187,6 +199,33 @@ export class StoatState {
         if (!isRecord(d.update) || d.id !== this.meId) return;
         this.notifySettings = parseNotifySettings(d.update.notifications) ?? this.notifySettings;
         break;
+      // The voice events of Stoat's server (EventV1 in its crates/core/database/src/events/client.rs).
+      case "VoiceChannelJoin":
+        if (!isId(d.id)) return;
+        this.joinCall(d.id, d.state);
+        break;
+      case "VoiceChannelLeave":
+        if (!isId(d.id) || !isId(d.user)) return;
+        this.leaveCall(d.id, d.user);
+        break;
+      case "VoiceChannelMove":
+        if (!isId(d.from) || !isId(d.to) || !isId(d.user)) return;
+        this.leaveCall(d.from, d.user);
+        this.joinCall(d.to, d.state);
+        break;
+      case "UserVoiceStateUpdate": {
+        const participant = isId(d.channel_id) && isId(d.id) ? this.voice.get(d.channel_id)?.get(d.id) : undefined;
+        if (!participant) return;
+        Object.assign(participant, voiceChanges(d.data));
+        break;
+      }
+      case "VoiceCallUpdate":
+        // Sent to those a DM or group call rings for as it starts, and to the channel once it is empty.
+        if (!isId(d.channel_id)) return;
+        if (d.ended === true) this.calls.delete(d.channel_id);
+        else if (isId(d.initiator_id)) this.calls.set(d.channel_id, { initiator: d.initiator_id });
+        else return;
+        break;
       case "EmojiCreate":
         this.addEmoji(parseEmoji(d));
         break;
@@ -197,6 +236,26 @@ export class StoatState {
         return; // Unhandled events do not change what we show.
     }
     this.changed.emit();
+  }
+
+  /** Who is in a channel's call, in the order they joined. */
+  inCall(channelId: string): StoatVoiceParticipant[] {
+    return [...(this.voice.get(channelId)?.values() ?? [])].sort((a, b) => a.joinedAt - b.joinedAt);
+  }
+
+  private joinCall(channelId: string, state: unknown): void {
+    const participant = parseVoiceParticipant(state);
+    if (!participant) return;
+    const call = this.voice.get(channelId) ?? new Map<string, StoatVoiceParticipant>();
+    call.set(participant.userId, participant);
+    this.voice.set(channelId, call);
+  }
+
+  private leaveCall(channelId: string, userId: string): void {
+    const call = this.voice.get(channelId);
+    if (!call) return;
+    call.delete(userId);
+    if (call.size === 0) this.voice.delete(channelId);
   }
 
   /** Unread state from /sync/unreads, for instances whose Ready lacks it. */

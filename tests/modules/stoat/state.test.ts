@@ -429,3 +429,59 @@ describe("StoatState notifications", () => {
     expect(state.shouldNotify(msg(900, DM, { mentions: [ME_ID] }))).toBe(true);
   });
 });
+
+describe("StoatState calls", () => {
+  const person = (id: string, joined: string, extra: Record<string, unknown> = {}) => ({ id, joined_at: joined, is_receiving: true, is_publishing: true, screensharing: false, camera: false, ...extra });
+
+  it("knows who is in each call from Ready, in the order they joined, and follows joins, moves, leaves and track changes", () => {
+    const state = ready({
+      voice_states: [
+        { id: LOBBY, participants: [person(BOB_ID, "2026-10-14T11:00:00Z"), person(ANA_ID, "2026-10-14T10:00:00Z", { camera: true }), { id: "bad" }] },
+        { id: "bad", participants: [person(ME_ID, "2026-10-14T10:00:00Z")] },
+        "junk",
+      ],
+    });
+    expect(state.inCall(LOBBY).map((p) => [p.userId, p.publishing, p.camera])).toEqual([
+      [ANA_ID, true, true],
+      [BOB_ID, true, false],
+    ]);
+    expect(state.inCall(GENERAL)).toEqual([]);
+    const changed = vi.fn();
+    state.changed.on(changed);
+    state.apply("VoiceChannelJoin", { id: DM, state: person(ME_ID, "nonsense") });
+    expect(state.inCall(DM)).toEqual([{ userId: ME_ID, joinedAt: 0, publishing: true, camera: false, screensharing: false }]);
+    state.apply("UserVoiceStateUpdate", { id: ME_ID, channel_id: DM, data: { is_publishing: false, screensharing: true, camera: "yes" } });
+    expect(state.inCall(DM)[0]).toMatchObject({ publishing: false, screensharing: true, camera: false });
+    state.apply("UserVoiceStateUpdate", { id: ME_ID, channel_id: DM });
+    expect(state.inCall(DM)[0]).toMatchObject({ publishing: false, screensharing: true });
+    state.apply("VoiceChannelMove", { user: BOB_ID, from: LOBBY, to: GENERAL, state: person(BOB_ID, "2026-10-14T11:30:00Z") });
+    expect(state.inCall(LOBBY).map((p) => p.userId)).toEqual([ANA_ID]);
+    expect(state.inCall(GENERAL).map((p) => p.userId)).toEqual([BOB_ID]);
+    state.apply("VoiceChannelLeave", { id: GENERAL, user: BOB_ID });
+    expect(state.voice.has(GENERAL)).toBe(false);
+    state.apply("VoiceChannelLeave", { id: GENERAL, user: BOB_ID });
+    expect(changed).toHaveBeenCalledTimes(6);
+    // Malformed events change nothing and say so.
+    for (const [type, d] of [
+      ["VoiceChannelJoin", { id: "bad", state: person(ME_ID, "") }],
+      ["VoiceChannelLeave", { id: LOBBY }],
+      ["VoiceChannelMove", { user: ANA_ID, from: LOBBY }],
+      ["UserVoiceStateUpdate", { id: BOB_ID, channel_id: LOBBY, data: { camera: true } }],
+      ["VoiceCallUpdate", { channel_id: "bad", ended: true }],
+      ["VoiceCallUpdate", { channel_id: DM, ended: false }],
+    ] as const) state.apply(type, d);
+    expect(changed).toHaveBeenCalledTimes(6);
+    expect(state.inCall(LOBBY).map((p) => p.userId)).toEqual([ANA_ID]);
+  });
+
+  it("keeps the DM and group calls ringing for the user until they end", () => {
+    const state = ready();
+    state.apply("VoiceCallUpdate", { initiator_id: ANA_ID, channel_id: DM, started_at: "2026-10-14T12:00:00Z", ended: false });
+    expect([...state.calls]).toEqual([[DM, { initiator: ANA_ID }]]);
+    state.apply("VoiceCallUpdate", { initiator_id: ANA_ID, channel_id: DM, started_at: null, ended: true });
+    expect(state.calls.size).toBe(0);
+    state.apply("VoiceCallUpdate", { initiator_id: ANA_ID, channel_id: GROUP, ended: false });
+    state.reset();
+    expect(state.calls.size).toBe(0);
+  });
+});

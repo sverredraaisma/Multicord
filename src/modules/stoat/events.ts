@@ -25,7 +25,7 @@ export interface EventsHandlers {
 export type ClientCommand = { type: "BeginTyping"; channel: string } | { type: "EndTyping"; channel: string };
 
 /** What Ready should carry. Members are left out: large servers have many, and messages bring their authors. */
-const READY_FIELDS = ["users", "servers", "channels", "emojis", "channel_unreads"];
+const READY_FIELDS = ["users", "servers", "channels", "emojis", "channel_unreads", "voice_states"];
 const AUTH_ERRORS = new Set(["InvalidSession", "NotAuthenticated", "UnknownUser"]);
 export const PING_INTERVAL_MS = 15_000;
 const MAX_BACKOFF_MS = 30_000;

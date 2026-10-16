@@ -501,3 +501,33 @@ export function withChannelLevel(value: unknown, channelId: string, level: Notif
 export function displayName(user: StoatUser): string {
   return user.displayName ?? user.username;
 }
+
+/**
+ * Someone in a channel's call, as Stoat's server keeps them (UserVoiceState
+ * in its crates/core/models/src/v0/users.rs): sending their microphone
+ * (is_publishing), their camera, their screen.
+ */
+export interface StoatVoiceParticipant {
+  userId: string;
+  /** When they joined (epoch ms), for the order they are listed in. */
+  joinedAt: number;
+  publishing: boolean;
+  camera: boolean;
+  screensharing: boolean;
+}
+
+export function parseVoiceParticipant(value: unknown): StoatVoiceParticipant | undefined {
+  if (!isRecord(value) || !isId(value.id)) return undefined;
+  const joined = typeof value.joined_at === "string" ? Date.parse(value.joined_at) : NaN;
+  return { userId: value.id, joinedAt: Number.isFinite(joined) ? joined : 0, publishing: value.is_publishing === true, camera: value.camera === true, screensharing: value.screensharing === true };
+}
+
+/** What UserVoiceStateUpdate changes (PartialUserVoiceState): only the fields it carries. */
+export function voiceChanges(value: unknown): Partial<StoatVoiceParticipant> {
+  const d = isRecord(value) ? value : {};
+  const changes: Partial<StoatVoiceParticipant> = {};
+  if (typeof d.is_publishing === "boolean") changes.publishing = d.is_publishing;
+  if (typeof d.camera === "boolean") changes.camera = d.camera;
+  if (typeof d.screensharing === "boolean") changes.screensharing = d.screensharing;
+  return changes;
+}

@@ -211,9 +211,11 @@ export class StoatRest {
   /**
    * A grant to join a channel's call on one of the instance's voice servers
    * (POST /channels/{id}/join_call): the LiveKit server and its token.
+   * `recipients` are rung when the user is the first in a DM's or group's
+   * call (DataJoinCall in Stoat's server).
    */
-  async joinCall(channelId: string, node: string): Promise<{ url: string; token: string }> {
-    const data = await this.request("POST", `/channels/${channelId}/join_call`, { node });
+  async joinCall(channelId: string, node: string, recipients: string[] = []): Promise<{ url: string; token: string }> {
+    const data = await this.request("POST", `/channels/${channelId}/join_call`, recipients.length > 0 ? { node, recipients } : { node });
     const record = isRecord(data) ? data : {};
     const url = https(record.url, "wss:");
     if (!url || typeof record.token !== "string" || record.token === "") throw new StoatApiError(200, "UnexpectedResponse", "The voice server gave no usable address.");

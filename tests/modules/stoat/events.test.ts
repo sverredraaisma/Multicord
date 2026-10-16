@@ -63,7 +63,7 @@ describe("StoatEvents", () => {
   it("connects with protocol 1 JSON, asking Ready for what the client uses", () => {
     const { sockets, handlers } = setup();
     expect(sockets[0]!.url).toBe(
-      "wss://events.example?version=1&format=json&ready=users&ready=servers&ready=channels&ready=emojis&ready=channel_unreads",
+      "wss://events.example?version=1&format=json&ready=users&ready=servers&ready=channels&ready=emojis&ready=channel_unreads&ready=voice_states",
     );
     expect(handlers.status).toHaveBeenCalledWith("connecting");
   });
