@@ -39,7 +39,7 @@ android {
 }
 
 /**
- * The shared test cases (tests/fixtures: the network policy's and the validators'), copied from the repository
+ * The shared test cases (tests/fixtures: the network policy's, the validators' and the shell bridge's), copied from the repository
  * root at build time so the Kotlin tests run the very files the TypeScript tests run.
  */
 abstract class CopyFixtures : DefaultTask() {
@@ -62,7 +62,11 @@ abstract class CopyFixtures : DefaultTask() {
 }
 
 val copyFixtures = tasks.register<CopyFixtures>("copyFixtures") {
-    fixtures.from(repoRoot.resolve("tests/fixtures/netpolicy-cases.json"), repoRoot.resolve("tests/fixtures/engine-validator-cases.json"))
+    fixtures.from(
+        repoRoot.resolve("tests/fixtures/netpolicy-cases.json"),
+        repoRoot.resolve("tests/fixtures/engine-validator-cases.json"),
+        repoRoot.resolve("tests/fixtures/shell-bridge-cases.json"),
+    )
     outputDir.set(layout.buildDirectory.dir("generated/fixtures"))
 }
 
