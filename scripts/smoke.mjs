@@ -311,11 +311,13 @@ async function main() {
 
   // 1b. Offline, Discord's page cannot load: the shell's own "couldn't reach" page shows over it, and Try again tries.
   if (!ONLINE) {
-    const probe = `({ title: document.getElementById("unreachable-title").textContent, reason: document.getElementById("unreachable-reason").textContent, retry: document.getElementById("unreachable-retry").textContent, shown: document.visibilityState === "visible" })`;
+    // The page hears of a failure only while the service is in front, which is when the shell shows it (its visibility
+    // state says nothing here: Windows reports a covered window as hidden).
+    const probe = `({ title: document.getElementById("unreachable-title").textContent, reason: document.getElementById("unreachable-reason").textContent, retry: document.getElementById("unreachable-retry").textContent })`;
     let seen;
     const page = await until(async () => {
       const r = (seen = await evaluate(port, "/unreachable\\.html$", probe, 10_000));
-      return r.shown && /Couldn't reach Discord/.test(r.title) && r.reason ? r : undefined;
+      return /Couldn't reach Discord/.test(r.title) && r.reason ? r : undefined;
     }, "the couldn't-reach page over Discord", 45_000).catch((error) => error);
     check("an unreachable web service gets the shell's own page", !(page instanceof Error), page instanceof Error ? `${page.message}; last seen ${JSON.stringify(seen)}` : `"${page.title}": ${page.reason}`);
     if (!(page instanceof Error)) {
@@ -324,7 +326,7 @@ async function main() {
       await sleep(1500);
       const again = await until(async () => {
         const r = await evaluate(port, "/unreachable\\.html$", probe, 10_000);
-        return r.shown && r.retry === "Try again" ? r : undefined;
+        return r.retry === "Try again" ? r : undefined;
       }, "the retry to finish", 15_000).catch((error) => error);
       check("Try again reloads the service and the page stays while it is unreachable", !(again instanceof Error), again instanceof Error ? again.message : `"${again.retry}"`);
     }
