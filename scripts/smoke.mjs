@@ -108,7 +108,9 @@ function mainChecks(tag) {
     try {
       const sources = await within(desktopCapturer.getSources({ types: ["screen", "window"], thumbnailSize: { width: 16, height: 9 } }), 20_000, "getSources");
       const screens = sources.filter((s) => s.id.startsWith("screen:")).length;
-      const detail = `${screens} screen(s), ${sources.length - screens} window(s)`;
+      // With none, what Electron sees of the display, so the failure can be told apart from a bare X server.
+      const why = screens > 0 ? "" : `; ${require("electron").screen.getAllDisplays().length} display(s), session ${process.env.XDG_SESSION_TYPE || "unset"}, DISPLAY ${process.env.DISPLAY || "unset"}, WAYLAND_DISPLAY ${process.env.WAYLAND_DISPLAY || "unset"}`;
+      const detail = `${screens} screen(s), ${sources.length - screens} window(s)${why}`;
       if (screens > 0) result("capture-sources", "pass", detail, { access });
       else result("capture-sources", denied ? "skip" : "fail", denied ? `no Screen Recording permission (${access}); ${detail}` : detail, { access });
     } catch (error) {
