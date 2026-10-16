@@ -71,6 +71,8 @@ describe("the phone's shell page", () => {
     expect($("drawer-messages").querySelector(".drawer-badge")!.textContent).toBe("4");
     expect($("drawer-messages").classList.contains("unread")).toBe(true);
     $("menu").click();
+    // Drawn again (the drawer opened): still the one badge.
+    expect($("drawer-messages").querySelectorAll(".drawer-badge")).toHaveLength(1);
     $("drawer-messages").click();
     await flush();
     expect(document.body.dataset.page).toBe("messages");

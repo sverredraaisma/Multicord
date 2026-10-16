@@ -86,7 +86,8 @@ export function renderShell(doc: Document, state: UiState, actions: { open(key: 
   const messages = doc.getElementById("drawer-messages")!;
   messages.classList.toggle("active", state.screen.page === "messages");
   messages.classList.toggle("unread", state.messagesBadge.unread);
-  messages.querySelector(".badge")?.remove();
+  // The badge drawn last time (its class is drawer-badge): one at a time, not one more per render.
+  messages.querySelector(".drawer-badge")?.remove();
   const messagesBadge = countBadge(doc, state.messagesBadge.mentions, "drawer-badge");
   if (messagesBadge) messages.append(messagesBadge);
   doc.getElementById("home")!.hidden = state.screen.page !== "home";
