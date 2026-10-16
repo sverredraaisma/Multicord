@@ -1,8 +1,9 @@
 // The shell page on a phone: a bar on top (menu, title, settings), the rail
-// as a drawer, and the settings page. A service's chat view is a WebView of
+// as a drawer, the unified Messages list and the settings page. A service's chat view is a WebView of
 // its own that native code puts under the bar; while the drawer is open this
 // page lies over it.
 import { el, countBadge, setColor } from "../renderer/components/dom";
+import { MessagesPage, REFRESH_MS } from "../renderer/messages";
 import { serverIcon } from "../renderer/components/serverIcon";
 import { startSettings } from "../renderer/settings";
 import type { SettingsApi } from "../preload/settings";
@@ -81,6 +82,13 @@ export function renderShell(doc: Document, state: UiState, actions: { open(key: 
   drawer.hidden = !state.drawer;
   doc.getElementById("scrim")!.hidden = !state.drawer;
   doc.getElementById("settings")!.hidden = state.screen.page !== "settings";
+  doc.getElementById("messages")!.hidden = state.screen.page !== "messages";
+  const messages = doc.getElementById("drawer-messages")!;
+  messages.classList.toggle("active", state.screen.page === "messages");
+  messages.classList.toggle("unread", state.messagesBadge.unread);
+  messages.querySelector(".badge")?.remove();
+  const messagesBadge = countBadge(doc, state.messagesBadge.mentions, "drawer-badge");
+  if (messagesBadge) messages.append(messagesBadge);
   doc.getElementById("home")!.hidden = state.screen.page !== "home";
   renderDrawer(doc.getElementById("drawer-services")!, state, actions);
 }
@@ -91,6 +99,9 @@ export function startMobileShell(doc: Document, bridge: ShellBridge, modules?: r
   let settingsStarted = false;
   let pending: SettingsViewState | undefined;
   let drawerOpen = false;
+  // The desktop's Messages page, as is: a tap opens the conversation in its service's chat view.
+  const messages = new MessagesPage(doc.getElementById("messages")!, { open: (key) => void shell.openConversation(key) });
+  doc.defaultView!.setInterval(() => messages.renderList(), REFRESH_MS);
   const shell: MobileShell = new MobileShell(
     bridge,
     {
@@ -109,6 +120,7 @@ export function startMobileShell(doc: Document, bridge: ShellBridge, modules?: r
           startSettings(doc, api);
         }
         renderShell(doc, state, { open: (key) => void shell.open(key), show: (id) => shell.show(id) });
+        if (state.screen.page === "messages") messages.render(state.messages);
       },
       settings: (state) => {
         pending = state;
@@ -121,6 +133,7 @@ export function startMobileShell(doc: Document, bridge: ShellBridge, modules?: r
   doc.getElementById("scrim")!.addEventListener("click", () => shell.setDrawer(false));
   doc.getElementById("settings-button")!.addEventListener("click", () => shell.setSettingsOpen(doc.body.dataset.page !== "settings"));
   doc.getElementById("drawer-settings")!.addEventListener("click", () => shell.setSettingsOpen(true));
+  doc.getElementById("drawer-messages")!.addEventListener("click", () => shell.setMessagesOpen(true));
   doc.getElementById("home-settings")!.addEventListener("click", () => shell.setSettingsOpen(true));
   void shell.start().catch((error: Error) => {
     doc.getElementById("title")!.textContent = "Multicord could not start";

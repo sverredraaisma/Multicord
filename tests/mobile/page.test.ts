@@ -64,6 +64,31 @@ describe("the phone's shell page", () => {
     expect($("drawer").hidden).toBe(true);
   });
 
+  it("shows the unified Messages list from the drawer, and opens a conversation in its service", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval"] });
+    const { emit, sent } = await page(JSON.stringify([{ id: "discord", enabled: false }, { id: "fluxer", enabled: false }, { id: "telegram", name: "TG" }]));
+    await emit({ type: "engine", instance: "telegram", event: { type: "directs", directs: [{ key: "7", title: "Ana", preview: "hello", lastActivity: Date.now(), unread: true, mentions: 4 }] } });
+    expect($("drawer-messages").querySelector(".drawer-badge")!.textContent).toBe("4");
+    expect($("drawer-messages").classList.contains("unread")).toBe(true);
+    $("menu").click();
+    $("drawer-messages").click();
+    await flush();
+    expect(document.body.dataset.page).toBe("messages");
+    expect($("messages").hidden).toBe(false);
+    expect($("title").textContent).toBe("Messages");
+    expect($("drawer-messages").classList.contains("active")).toBe(true);
+    expect([...document.querySelectorAll(".conversation-title")].map((e) => e.textContent)).toEqual(["Ana"]);
+    expect(document.querySelector(".conversation-preview")!.textContent).toBe("hello");
+    vi.advanceTimersByTime(60_000);
+    expect(document.querySelectorAll(".conversation")).toHaveLength(1);
+    document.querySelector<HTMLElement>(".conversation-button")!.click();
+    await flush();
+    expect(sent.some((c) => c.type === "command" && c.instance === "telegram" && c.command.type === "openConversation" && c.command.key === "7")).toBe(true);
+    expect(document.body.dataset.page).toBe("service");
+    expect($("messages").hidden).toBe(true);
+    vi.useRealTimers();
+  });
+
   it("closes the drawer from its scrim", async () => {
     await page();
     $("menu").click();

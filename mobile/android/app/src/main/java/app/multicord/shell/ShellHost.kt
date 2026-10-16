@@ -174,6 +174,7 @@ class ShellHost(
             "/mobile.css" to ("mobile/mobile.css" to "text/css"),
             "/shell.css" to ("shell.css" to "text/css"),
             "/settings.css" to ("settings.css" to "text/css"),
+            "/messages.css" to ("messages.css" to "text/css"),
         )
 
         /** Added to shell.html's own policy (both apply): no connections, pictures over https or inline. */

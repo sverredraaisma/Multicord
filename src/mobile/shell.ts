@@ -11,7 +11,7 @@ import { SettingsController, type PlatformsConfig } from "../core/settingsContro
 import { SettingsStore, type SettingsPersistence } from "../core/settingsStore";
 import type { PlatformNotification } from "../shared/adapter";
 import { MAX_BODY_TEXT, MAX_KEY, MAX_TEXT } from "../shared/engine";
-import { isRailOrder, type RailState } from "../shared/ipc";
+import { isRailOrder, type MessagesState, type RailState } from "../shared/ipc";
 import {
   isSettingsAction,
   mediaAutoLoadLimit,
@@ -25,8 +25,11 @@ import {
 import { MOBILE_MODULES, type MobileModule } from "./modules";
 import { isBootInfo, isNativeEvent, MAX_COPY, type BootInfo, type NativeEvent, type ShellBridge, type ShellCommand } from "./protocol";
 
-/** What fills the screen: a service's chat view under the bar, the settings page, or the home page (no service yet). */
-export type Screen = { page: "service"; instance: string } | { page: "settings" } | { page: "home" };
+/**
+ * What fills the screen: a service's chat view under the bar, the unified Messages list, the settings
+ * page, or the home page (no service yet).
+ */
+export type Screen = { page: "service"; instance: string } | { page: "messages" } | { page: "settings" } | { page: "home" };
 
 /** Everything the page draws, whenever any of it changes. */
 export interface UiState {
@@ -39,6 +42,10 @@ export interface UiState {
   unread: boolean;
   /** The running services, in the order they started: their names and module colours, for the drawer's headings. */
   services: { id: string; name: string; label: string; color: string }[];
+  /** Every service's direct conversations, newest first, as the desktop's Messages page has them (no previews while streaming). */
+  messages: MessagesState;
+  /** Unread direct messages across every service, for the drawer's Messages entry. */
+  messagesBadge: { unread: boolean; mentions: number };
 }
 
 /** The page's side: it draws what the shell says. */
@@ -50,6 +57,9 @@ export interface ShellUi {
 
 /** A first run turns Discord off: it is not on the phone yet (docs/mobile.md, phase 3). */
 export const FIRST_PLATFORMS = `${JSON.stringify([{ id: "discord", enabled: false }], null, 2)}\n`;
+
+/** The bar's title for each page but a service's (which has the service's name). */
+const TITLES: Partial<Record<Screen["page"], string>> = { messages: "Messages", settings: "Settings", home: "Multicord" };
 
 const NO_CAPABILITIES = { directMessages: false, messagePreviews: false, voice: false, screenShare: false };
 
@@ -295,6 +305,23 @@ export class MobileShell {
     }
   }
 
+  /**
+   * Opens or closes the unified Messages list. Closing goes back to the service shown last, as the
+   * settings page does.
+   */
+  setMessagesOpen(open: boolean): void {
+    this.drawer = false;
+    if (open) return this.setScreen({ page: "messages" });
+    if (this.lastService) this.show(this.lastService);
+    else this.setScreen({ page: "home" });
+  }
+
+  /** A tap in the Messages list: the conversation opens in its service's chat view. Only keys the list holds. */
+  async openConversation(key: string): Promise<void> {
+    if (!this.registry.conversations().some((c) => c.key === key)) return;
+    await this.open(key);
+  }
+
   /** Shows a service's chat view. */
   show(id: string): void {
     if (!this.adapters.has(id)) return;
@@ -331,7 +358,7 @@ export class MobileShell {
   /** Back: closes the drawer, then the settings page; else native code leaves the app. */
   back(): void {
     if (this.drawer) return this.setDrawer(false);
-    if (this.screen.page === "settings" && this.lastService) return this.setSettingsOpen(false);
+    if ((this.screen.page === "settings" || this.screen.page === "messages") && this.lastService) return this.setSettingsOpen(false);
     this.send({ type: "backUnhandled" });
   }
 
@@ -355,6 +382,7 @@ export class MobileShell {
     }
     this.syncVisible();
     const { mentions, unread } = this.registry.totals();
+    const conversations = this.registry.conversations();
     if (mentions !== this.lastBadge) {
       this.lastBadge = mentions;
       this.send({ type: "badge", count: Math.min(mentions, 1_000_000) });
@@ -364,13 +392,16 @@ export class MobileShell {
       rail: this.registry.state(),
       screen: this.screen,
       drawer: this.drawer,
-      title: this.screen.page === "settings" ? "Settings" : instance ? this.defs.get(instance)!.name : "Multicord",
+      title: TITLES[this.screen.page] ?? this.defs.get(instance!)!.name,
       mentions,
       unread,
       services: [...this.defs.values()].map((def) => {
         const manifest = this.manifests.get(def.id)!;
         return { id: def.id, name: def.name, label: manifest.label, color: manifest.color };
       }),
+      // While streaming, the list says who wrote, never what (as on the desktop).
+      messages: { conversations: this.streaming() ? conversations.map(({ preview: _preview, ...c }) => c) : conversations, activeKey: this.registry.activeKeyValue },
+      messagesBadge: { unread: conversations.some((c) => c.unread), mentions: conversations.reduce((sum, c) => sum + c.mentions, 0) },
     });
   }
 

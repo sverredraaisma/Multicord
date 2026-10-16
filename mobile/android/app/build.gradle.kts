@@ -115,7 +115,7 @@ val bundleWeb = tasks.register<BundleWeb>("bundleWeb") {
     engines.from(listOf("matrix", "fluxer", "telegram", "stoat", "spacebar", "nerimity").map { distDir.resolve("engines/$it.js") })
     shell.from(
         listOf(
-            "native.html", "native.js", "native.css", "shell.css", "settings.css", "audio/rnnoise-worklet.js", "livekit-e2ee-worker.js",
+            "native.html", "native.js", "native.css", "shell.css", "settings.css", "messages.css", "audio/rnnoise-worklet.js", "livekit-e2ee-worker.js",
             "mobile/shell.html", "mobile/shell.js", "mobile/mobile.css",
         ).map { distDir.resolve(it) },
     )

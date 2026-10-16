@@ -105,6 +105,71 @@ describe("starting", () => {
   });
 });
 
+const DIRECTS = {
+  type: "engine",
+  instance: "tg",
+  event: {
+    type: "directs",
+    directs: [
+      { key: "1", title: "Ana", preview: "hi", lastActivity: 100, unread: true, mentions: 2 },
+      { key: "2", title: "Bo", lastActivity: 300, unread: false, mentions: 0 },
+    ],
+  },
+};
+
+describe("the unified Messages list", () => {
+  it("lists every service's direct conversations, newest first, with the unread badge", async () => {
+    const { emit, last } = await started();
+    await emit(DIRECTS);
+    await emit({ ...DIRECTS, instance: "matrix", event: { type: "directs", directs: [{ key: "!r", title: "Cy", lastActivity: 200, unread: false, mentions: 0 }] } });
+    expect(last().messages.conversations.map((c) => [c.key, c.title])).toEqual([["tg:dm:2", "Bo"], ["matrix:dm:!r", "Cy"], ["tg:dm:1", "Ana"]]);
+    expect(last().messages.conversations[2]).toMatchObject({ preview: "hi", module: { label: "Telegram" } });
+    expect(last().messagesBadge).toEqual({ unread: true, mentions: 2 });
+  });
+
+  it("opens as a page of its own, and back returns to the service shown before", async () => {
+    const { shell, last, of } = await started();
+    shell.setDrawer(true);
+    shell.setMessagesOpen(true);
+    expect(last()).toMatchObject({ screen: { page: "messages" }, title: "Messages", drawer: false });
+    expect(of("layout").at(-1)).toEqual({ type: "layout", instance: null, overlay: false });
+    shell.back();
+    expect(last()).toMatchObject({ screen: { page: "service", instance: "matrix" } });
+    shell.setMessagesOpen(true);
+    shell.setMessagesOpen(false);
+    expect(last().screen).toEqual({ page: "service", instance: "matrix" });
+  });
+
+  it("goes home when closed before any service was shown", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { shell, last } = await started({ platforms: JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]) });
+    expect(warn).toHaveBeenCalled();
+    shell.setMessagesOpen(true);
+    shell.setMessagesOpen(false);
+    expect(last()).toMatchObject({ screen: { page: "home" }, title: "Multicord" });
+  });
+
+  it("opens a conversation in its service's chat view, and only conversations it lists", async () => {
+    const { emit, shell, last, of } = await started();
+    await emit(DIRECTS);
+    shell.setMessagesOpen(true);
+    await shell.openConversation("tg:dm:1");
+    expect(of("command").at(-2)).toEqual({ type: "command", instance: "tg", command: { type: "openConversation", key: "1" } });
+    expect(last().screen).toEqual({ page: "service", instance: "tg" });
+    const sent = of("command").length;
+    await shell.openConversation("tg:dm:nope");
+    expect(of("command")).toHaveLength(sent);
+  });
+
+  it("keeps message previews out while streaming", async () => {
+    const { emit, shell, last } = await started();
+    await shell.settingsAction({ type: "update", patch: { general: { streamerMode: "on" } } });
+    await emit(DIRECTS);
+    expect(last().messages.conversations.every((c) => c.preview === undefined)).toBe(true);
+    expect(last().messages.conversations.map((c) => c.title)).toEqual(["Bo", "Ana"]);
+  });
+});
+
 describe("events from native code", () => {
   it("hands engine events to their adapter, and ignores what does not check out", async () => {
     const { emit, shell, last, of } = await started();
