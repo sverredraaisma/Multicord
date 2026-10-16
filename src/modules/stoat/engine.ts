@@ -1,15 +1,16 @@
-import { bridgeFetch, bridgeSecrets, engineInfo, lockHosts, fileSource, pickFiles, serveAdapter } from "../../engine/runtime";
+import { bridgeFetch, bridgeSecrets, bridgeWebSocket, engineInfo, lockHosts, fileSource, pickFiles, serveAdapter } from "../../engine/runtime";
 import type { EngineBridge } from "../../preload/engine";
 import { StoatAdapter } from "./adapter";
 import type { SocketFactory } from "./events";
 
 /**
  * Runs the Stoat client in its engine: builds the adapter on the bridge
- * (fetch, secrets and files all go through the shell's checks) and serves it.
+ * (fetch, the events socket, secrets and files all go through the shell's
+ * checks) and serves it.
  */
 export async function startStoatEngine(
   bridge: EngineBridge,
-  createSocket: SocketFactory = (url) => new WebSocket(url),
+  createSocket: SocketFactory = bridgeWebSocket(bridge),
 ): Promise<StoatAdapter> {
   const info = await engineInfo(bridge);
   let served: { sync(): void } | undefined;

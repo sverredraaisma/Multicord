@@ -13,6 +13,8 @@ function fakeBridge(token?: string) {
       switch (request.type) {
         case "info":
           return { id: "stoat-native", name: "Stoat", url: "https://stoat.chat", os: "linux" };
+        case "socketOpen":
+          return { id: "1" };
         case "secretLoad":
           return token;
         case "http":
@@ -27,6 +29,7 @@ function fakeBridge(token?: string) {
     render: vi.fn(),
     onCommand: (cb: (c: EngineCommand) => void) => void (command = cb),
     onAction: vi.fn(),
+    onSocket: vi.fn(),
   };
   return { bridge: bridge as unknown as EngineBridge & typeof bridge, command: (c: EngineCommand) => command(c) };
 }
@@ -44,20 +47,11 @@ describe("Stoat engine", () => {
     expect(bridge.emit).toHaveBeenCalledWith({ type: "homeBadge", badge: { unread: false, mentions: 0 } });
   });
 
-  it("resumes a saved session over the page's WebSocket", async () => {
-    const urls: string[] = [];
-    class StubSocket {
-      constructor(url: string) {
-        urls.push(url);
-      }
-      send() {}
-      close() {}
-      addEventListener() {}
-    }
-    vi.stubGlobal("WebSocket", StubSocket);
+  it("resumes a saved session over a WebSocket the shell opens", async () => {
     const { bridge } = fakeBridge("saved");
     await startStoatEngine(bridge);
-    expect(urls).toEqual([expect.stringMatching(/^wss:\/\/events\.stoat\.chat\?version=1&format=json&/)]);
+    expect(bridge.request).toHaveBeenCalledWith({ type: "socketOpen", url: expect.stringMatching(/^wss:\/\/events\.stoat\.chat\?version=1&format=json&/) });
+    expect(bridge.onSocket).toHaveBeenCalled();
     expect(bridge.emit).toHaveBeenCalledWith({ type: "account", account: { state: "signed-in" } });
   });
 
