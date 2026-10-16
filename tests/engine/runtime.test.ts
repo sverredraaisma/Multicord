@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { bridgeFetch, bridgeSecrets, engineInfo, fileSource, lockHosts, pickFiles, serveAdapter, ssoSignIn, type ServedAdapter } from "../../src/engine/runtime";
+import { bridgeFetch, bridgeSecrets, bridgeWebSocket, BridgedWebSocket, engineInfo, fileSource, lockHosts, pickFiles, serveAdapter, ssoSignIn, type ServedAdapter } from "../../src/engine/runtime";
 import { createEngineBridge, type EngineBridge, type EngineIpc } from "../../src/preload/engine";
 import type { AccountRef, DirectConversation, HomeBadge, IncomingCall, PlatformNotification, RailServer } from "../../src/shared/adapter";
 import { BaseAdapter } from "../../src/shared/baseAdapter";
-import { ENGINE_IPC, type EngineCommand, type EngineSocketEvent, type HttpResponse } from "../../src/shared/engine";
+import { ENGINE_IPC, type EngineCommand, type EngineRequest, type EngineSocketEvent, type HttpResponse } from "../../src/shared/engine";
 import type { AccountStatus, ServiceSettingStatus } from "../../src/shared/settings";
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -405,5 +405,182 @@ describe("serveAdapter commands", () => {
     await flush();
     expect(warn).toHaveBeenCalledWith("action: x");
     warn.mockRestore();
+  });
+});
+
+describe("bridgeWebSocket", () => {
+  function sockets(answer: (request: EngineRequest) => unknown = (request) => (request.type === "socketOpen" ? { id: "1" } : undefined)) {
+    const fake = fakeBridge();
+    fake.bridge.request.mockImplementation(async (request: EngineRequest) => answer(request));
+    const open = bridgeWebSocket(fake.bridge);
+    const log = (socket: BridgedWebSocket) => {
+      const events: unknown[] = [];
+      for (const type of ["open", "message", "error", "close"]) socket.addEventListener(type, (event) => events.push(event));
+      return events;
+    };
+    return { ...fake, open, log };
+  }
+
+  it("opens through the shell and relays frames both ways", async () => {
+    const { bridge, open, log, socket: shell } = sockets();
+    const socket = open("wss://gw.example/");
+    const events = log(socket);
+    expect(socket.url).toBe("wss://gw.example/");
+    expect(socket.readyState).toBe(BridgedWebSocket.CONNECTING);
+    expect(() => socket.send("too early")).toThrow("CONNECTING");
+    expect(bridge.request).toHaveBeenCalledWith({ type: "socketOpen", url: "wss://gw.example/" });
+    await flush();
+    shell({ type: "open", id: "1" });
+    expect(socket.readyState).toBe(BridgedWebSocket.OPEN);
+    socket.send("hello");
+    socket.send(new Uint8Array([1, 2, 3]).subarray(1));
+    socket.send(new Uint8Array([4]).buffer);
+    expect(bridge.request.mock.calls.slice(1).map((c) => c[0])).toEqual([
+      { type: "socketSend", id: "1", data: "hello" },
+      { type: "socketSend", id: "1", data: new Uint8Array([2, 3]) },
+      { type: "socketSend", id: "1", data: new Uint8Array([4]) },
+    ]);
+    shell({ type: "message", id: "1", data: "hi" });
+    shell({ type: "message", id: "1", data: new Uint8Array([9, 8, 7]).subarray(1) });
+    shell({ type: "message", id: "2", data: "not mine" });
+    shell({ type: "message", id: "1", data: { bad: true } });
+    shell({ type: "close", id: "1", code: 1000, reason: "bye" });
+    expect(socket.readyState).toBe(BridgedWebSocket.CLOSED);
+    expect(events).toEqual([
+      { type: "open" },
+      { type: "message", data: "hi" },
+      { type: "message", data: new Uint8Array([8, 7]).buffer },
+      { type: "close", code: 1000, reason: "bye", wasClean: true },
+    ]);
+    // Closed: nothing more is sent or delivered.
+    socket.send("late");
+    shell({ type: "message", id: "1", data: "late" });
+    shell({ type: "open", id: "1" });
+    expect(bridge.request).toHaveBeenCalledTimes(4);
+    expect(events).toHaveLength(4);
+  });
+
+  it("reports a refused socket as an error and an abnormal close", async () => {
+    const { open, log } = sockets(() => {
+      throw new Error("Socket refused: evil.example is not one of this module's hosts");
+    });
+    const socket = open("wss://evil.example/");
+    const events = log(socket);
+    await flush();
+    expect(socket.readyState).toBe(BridgedWebSocket.CLOSED);
+    expect(events).toEqual([{ type: "error" }, { type: "close", code: 1006, reason: "", wasClean: false }]);
+  });
+
+  it("closes on the module's word, also before the shell has answered", async () => {
+    const { bridge, open, log, socket: shell } = sockets();
+    const early = open("wss://a.example/");
+    early.close(4000, "changed my mind");
+    early.close();
+    expect(early.readyState).toBe(BridgedWebSocket.CLOSING);
+    await flush();
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "socketClose", id: "1", code: 4000, reason: "changed my mind" });
+    shell({ type: "open", id: "1" });
+    expect(early.readyState).toBe(BridgedWebSocket.CLOSING);
+    const events = log(early);
+    shell({ type: "close", id: "1", code: 4000, reason: "changed my mind" });
+    expect(events).toEqual([{ type: "close", code: 4000, reason: "changed my mind", wasClean: true }]);
+
+    const plain = open("wss://b.example/");
+    await flush();
+    shell({ type: "open", id: "1" });
+    plain.close();
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "socketClose", id: "1" });
+  });
+
+  it("checks close codes and reasons as a page's WebSocket does", () => {
+    const { open } = sockets();
+    const socket = open("wss://a.example/");
+    expect(() => socket.close(1001)).toThrow("1000 or between 3000 and 4999");
+    expect(() => socket.close(3000.5)).toThrow("1000 or between 3000 and 4999");
+    expect(() => socket.close(1000, "x".repeat(124))).toThrow("123 bytes");
+    socket.close(1000, "x".repeat(123));
+  });
+
+  it("closes a socket the shell would not take a frame for, and one whose close it lost", async () => {
+    let refuseSend = true;
+    const { bridge, open, log, socket: shell } = sockets((request) => {
+      if (request.type === "socketOpen") return { id: "1" };
+      if (request.type === "socketSend" && refuseSend) throw new Error("The socket's send queue is full");
+      if (request.type === "socketClose" && request.code === 3001) throw new Error("No such socket");
+      return undefined;
+    });
+    const socket = open("wss://a.example/");
+    const events = log(socket);
+    await flush();
+    shell({ type: "open", id: "1" });
+    socket.send("too much");
+    await flush();
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "socketClose", id: "1" });
+    expect(events.slice(1)).toEqual([{ type: "error" }, { type: "close", code: 1006, reason: "", wasClean: false }]);
+
+    refuseSend = false;
+    const other = open("wss://b.example/");
+    const otherEvents = log(other);
+    await flush();
+    shell({ type: "open", id: "1" });
+    other.close(3001, "x");
+    await flush();
+    expect(otherEvents.at(-1)).toEqual({ type: "close", code: 3001, reason: "x", wasClean: true });
+    const bare = new BridgedWebSocket("wss://c.example/", bridge);
+    bare.close();
+    bare.attached("9");
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "socketClose", id: "9" });
+  });
+
+  it("copes with a shell that no longer knows the socket", async () => {
+    const { open, log, socket: shell } = sockets((request) => {
+      if (request.type === "socketOpen") return { id: "1" };
+      throw new Error("No such open socket");
+    });
+    const broken = open("wss://a.example/");
+    const events = log(broken);
+    await flush();
+    shell({ type: "open", id: "1" });
+    broken.send("x");
+    await flush();
+    expect(events.at(-1)).toEqual({ type: "close", code: 1006, reason: "", wasClean: false });
+    const closing = open("wss://b.example/");
+    const closingEvents = log(closing);
+    await flush();
+    shell({ type: "open", id: "1" });
+    closing.close();
+    await flush();
+    expect(closingEvents.at(-1)).toEqual({ type: "close", code: 1005, reason: "", wasClean: true });
+  });
+
+  it("delivers messages only while open", () => {
+    const { bridge } = fakeBridge();
+    const socket = new BridgedWebSocket("wss://a.example/", bridge);
+    const first = vi.fn();
+    const second = vi.fn();
+    socket.addEventListener("message", first);
+    socket.addEventListener("message", second);
+    socket.receive({ type: "message", id: "1", data: "too early" });
+    socket.receive({ type: "open", id: "1" });
+    socket.receive({ type: "message", id: "1", data: "now" });
+    expect(first).toHaveBeenCalledTimes(1);
+    expect(second).toHaveBeenCalledWith({ type: "message", data: "now" });
+    const close = vi.fn();
+    socket.addEventListener("close", close);
+    socket.receive({ type: "close", id: "1", code: 1000, reason: "" });
+    socket.fail();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("stops calling a listener once it is removed", async () => {
+    const { open, socket: shell } = sockets();
+    const socket = open("wss://a.example/");
+    const listener = vi.fn();
+    socket.addEventListener("open", listener);
+    socket.removeEventListener("open", listener);
+    socket.removeEventListener("message", listener);
+    await flush();
+    shell({ type: "open", id: "1" });
+    expect(listener).not.toHaveBeenCalled();
   });
 });

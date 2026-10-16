@@ -295,7 +295,7 @@ src/
   main/webSockets.ts     the sockets the shell opens for engines, on Node's WebSocket
   main/netPolicy.ts      what engines may contact, and the HTTP bridge
   shared/engine.ts       the engine protocol and its validators
-  engine/runtime.ts      engine-side helpers: bridged fetch, secrets, files; serving an adapter
+  engine/runtime.ts      engine-side helpers: bridged fetch, WebSockets, secrets, files; serving an adapter
   modules/fluxer/        Fluxer client (engine): discovery, captcha, REST, gateway, state, adapter
   modules/telegram/      Telegram client (engine): GramJS glue and adapter
   modules/matrix/        Matrix client (engine): Client-Server API, Rust crypto, MatrixRTC calls, adapter

@@ -4,7 +4,7 @@
 
 import type { EngineBridge } from "../preload/engine";
 import type { DirectConversation, PlatformAdapter, RailServer } from "../shared/adapter";
-import type { EngineDirect, EngineInfo, EngineServer, HttpRequest, HttpResponse, PickedFile } from "../shared/engine";
+import { isEngineSocketEvent, MAX_CLOSE_REASON, type EngineDirect, type EngineInfo, type EngineRequest, type EngineServer, type EngineSocketEvent, type HttpRequest, type HttpResponse, type PickedFile } from "../shared/engine";
 import type { AccountStatus } from "../shared/settings";
 
 /** A file to upload, read in ranges so it never has to sit in memory whole. */
@@ -73,6 +73,140 @@ export async function ssoSignIn(bridge: EngineBridge, url: string): Promise<stri
   const answer = (await bridge.request({ type: "ssoSignIn", url })) as { loginToken?: unknown };
   if (typeof answer?.loginToken !== "string" || answer.loginToken === "") throw new Error("Single sign-on brought no login token");
   return answer.loginToken;
+}
+
+type SocketListener = (event: { type: string; data?: unknown; code?: number; reason?: string; wasClean?: boolean }) => void;
+
+/**
+ * A WebSocket the shell opens and relays for the engine (bridgeWebSocket).
+ * It behaves as a page's WebSocket does, as far as modules use one: the
+ * same ready states, open, message, error and close events, send() and
+ * close(). Binary messages arrive as ArrayBuffers.
+ */
+export class BridgedWebSocket {
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+  readyState = BridgedWebSocket.CONNECTING;
+  readonly binaryType = "arraybuffer";
+  private id: string | undefined;
+  private closeAsked: { code?: number; reason?: string } | undefined;
+  private readonly listeners = new Map<string, Set<SocketListener>>();
+
+  constructor(
+    readonly url: string,
+    private readonly bridge: EngineBridge,
+  ) {}
+
+  addEventListener(type: string, listener: SocketListener): void {
+    let set = this.listeners.get(type);
+    if (!set) this.listeners.set(type, (set = new Set()));
+    set.add(listener);
+  }
+
+  removeEventListener(type: string, listener: SocketListener): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  send(data: string | ArrayBuffer | ArrayBufferView): void {
+    if (this.readyState === BridgedWebSocket.CONNECTING) throw new DOMException("Still in CONNECTING state.", "InvalidStateError");
+    // As a page's WebSocket: frames after closing are dropped.
+    if (this.readyState !== BridgedWebSocket.OPEN) return;
+    const frame =
+      typeof data === "string" ? data
+      : data instanceof ArrayBuffer ? new Uint8Array(data.slice(0))
+      : new Uint8Array(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength));
+    this.bridge.request({ type: "socketSend", id: this.id!, data: frame }).catch(() => this.fail());
+  }
+
+  close(code?: number, reason?: string): void {
+    if (code !== undefined && code !== 1000 && !(Number.isInteger(code) && code >= 3000 && code <= 4999)) throw new DOMException(`The close code must be 1000 or between 3000 and 4999; ${code} is neither.`, "InvalidAccessError");
+    if (reason !== undefined && new TextEncoder().encode(reason).byteLength > MAX_CLOSE_REASON) throw new DOMException("The close reason must not be longer than 123 bytes.", "SyntaxError");
+    if (this.readyState >= BridgedWebSocket.CLOSING) return;
+    this.readyState = BridgedWebSocket.CLOSING;
+    this.closeAsked = { code, reason };
+    if (this.id !== undefined) this.askClose();
+  }
+
+  /** The shell opened the socket under this id. */
+  attached(id: string): void {
+    this.id = id;
+    if (this.closeAsked) this.askClose();
+  }
+
+  /** What the shell reports about this socket. */
+  receive(event: EngineSocketEvent): void {
+    switch (event.type) {
+      case "open":
+        if (this.readyState !== BridgedWebSocket.CONNECTING) return;
+        this.readyState = BridgedWebSocket.OPEN;
+        return this.dispatch({ type: "open" });
+      case "message": {
+        if (this.readyState !== BridgedWebSocket.OPEN) return;
+        const { data } = event;
+        return this.dispatch({ type: "message", data: typeof data === "string" ? data : data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) });
+      }
+      case "close":
+        return this.closed(event.code, event.reason);
+    }
+  }
+
+  /** The socket could not open, or broke: an error, then a close as for a lost connection. */
+  fail(): void {
+    if (this.id !== undefined && this.readyState !== BridgedWebSocket.CLOSED) void this.bridge.request({ type: "socketClose", id: this.id }).catch(() => {});
+    this.closed(1006, "");
+  }
+
+  private askClose(): void {
+    const { code, reason } = this.closeAsked!;
+    const request: EngineRequest = { type: "socketClose", id: this.id! };
+    if (code !== undefined) request.code = code;
+    if (reason !== undefined) request.reason = reason;
+    // The shell answers with a close event; a socket it no longer knows is closed already.
+    void this.bridge.request(request).catch(() => this.closed(code ?? 1005, reason ?? ""));
+  }
+
+  private closed(code: number, reason: string): void {
+    if (this.readyState === BridgedWebSocket.CLOSED) return;
+    this.readyState = BridgedWebSocket.CLOSED;
+    if (code === 1006) this.dispatch({ type: "error" });
+    this.dispatch({ type: "close", code, reason, wasClean: code !== 1006 });
+  }
+
+  private dispatch(event: Parameters<SocketListener>[0]): void {
+    for (const listener of [...(this.listeners.get(event.type) ?? [])]) listener(event);
+  }
+}
+
+/**
+ * WebSockets through the shell, for an engine that may not open its own
+ * (on a phone, where the shell holds the connections). The shell opens
+ * each socket with the engine's host policy (wss only, its hosts or lock,
+ * public addresses) and relays frames both ways, within MAX_SOCKETS sockets,
+ * MAX_SOCKET_FRAME a frame and MAX_SOCKET_QUEUE waiting to be sent.
+ * Returns a factory for a module's socket factory: `(url) => socket`.
+ */
+export function bridgeWebSocket(bridge: EngineBridge): (url: string) => BridgedWebSocket {
+  const sockets = new Map<string, BridgedWebSocket>();
+  bridge.onSocket((event) => {
+    if (!isEngineSocketEvent(event)) return;
+    const socket = sockets.get(event.id);
+    if (event.type === "close") sockets.delete(event.id);
+    socket?.receive(event);
+  });
+  return (url) => {
+    const socket = new BridgedWebSocket(url, bridge);
+    bridge.request({ type: "socketOpen", url }).then(
+      (answer) => {
+        const { id } = answer as { id: string };
+        sockets.set(id, socket);
+        socket.attached(id);
+      },
+      () => socket.fail(),
+    );
+    return socket;
+  };
 }
 
 /** The files a module may send: those the user picks, and those the shell hands it (sendFile actions). */
