@@ -46,7 +46,7 @@ import { computeLayout, splitContent, tooltipBounds } from "../core/layout";
 import { configurableModules, findModule, MODULES } from "./modules/index";
 import type { PlatformModule, ShellServices } from "./modules/types";
 import { loadPlatforms, type PlatformDef } from "./platforms";
-import { PlatformRegistry } from "./registry";
+import { PlatformRegistry } from "../core/registry";
 import { BADGE_SIZE, badgeBitmap } from "./badge";
 import { createDisplayMediaHandler } from "./screenShare";
 import { SettingsController } from "./settingsController";

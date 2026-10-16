@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { DiscordAdapter } from "../../src/main/adapters/discordAdapter";
 import { GenericWebAdapter } from "../../src/main/adapters/genericWebAdapter";
-import { flattenServers, MAX_DM_BUBBLES, PlatformRegistry, railKey, splitRailKey } from "../../src/main/registry";
+import { flattenServers, MAX_DM_BUBBLES, PlatformRegistry, railKey, splitRailKey } from "../../src/core/registry";
 import type { PlatformAdapter } from "../../src/shared/adapter";
 
 async function setup() {
@@ -184,6 +184,11 @@ describe("groups", () => {
         mentions: 0,
       },
     ]);
+  });
+
+  it("lists an expanded group without children on its own", () => {
+    const entries = flattenServers("discord", [{ ...server("folder:80"), kind: "group", expanded: true }]);
+    expect(entries.map((e) => e.key)).toEqual(["discord:folder:80"]);
   });
 
   it("toggles groups on open without switching views", async () => {

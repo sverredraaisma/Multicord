@@ -274,8 +274,8 @@ Global shortcuts, screen capture and opening or saving files go through the desk
 src/
   shared/adapter.ts      PlatformAdapter contract (from the study)
   shared/ipc.ts          IPC channels + validators for every renderer payload
-  core/                  logic free of Electron and Node, for the desktop and a later mobile host: layout
-  main/                  main process: app glue, registry, adapters, policies, credential store
+  core/                  logic free of Electron and Node, for the desktop and a later mobile host: layout, the rail registry and its order
+  main/                  main process: app glue, adapters, policies, credential store
   preload/discord/       Discord view preload (DOM hooks in dom.ts, store reads in storeBridge.ts)
   preload/shell.ts       contextBridge API for rail and picker
   preload/native.ts      bridge for native chat views (display state in, actions out)
