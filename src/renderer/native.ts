@@ -496,6 +496,14 @@ export class NativeView {
     const messagePanel = el(doc, "aside", "member-panel message-panel");
     messagePanel.id = "message-panel";
     messagePanel.hidden = true;
+    // Escape closes the search or the pinned messages, with focus back on the button that opened them.
+    messagePanel.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const toggle = this.searchOpen ? this.parts.searchToggle! : this.parts.pinsToggle!;
+      if (this.searchOpen) this.closeSearch();
+      else this.api.act({ type: "pins", open: false });
+      toggle.focus();
+    });
     // The panels sit beside the conversation, or over it where the window is narrow.
     const area = el(doc, "div", "conversation-area");
     // Someone's profile, opened from a message's author or a member row.

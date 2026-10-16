@@ -1877,6 +1877,27 @@ describe("pinned messages panel", () => {
   });
 });
 
+describe("closing the message panel with Escape", () => {
+  const can = { ...ALL, search: true, pins: true };
+  const panel = () => root.querySelector<HTMLElement>("#message-panel")!;
+  const escape = (target: Element) => target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+
+  it("ends the search, or closes the pinned messages, with focus back on the panel's button", () => {
+    view.update(chat({ channel: { ...chat().channel!, can } }));
+    root.querySelector<HTMLButtonElement>(".search-toggle")!.click();
+    expect(panel().hidden).toBe(false);
+    root.querySelector(".search-input")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    expect(panel().hidden).toBe(false);
+    escape(root.querySelector(".search-input")!);
+    expect(panel().hidden).toBe(true);
+    expect(document.activeElement).toBe(root.querySelector(".search-toggle"));
+    view.update(chat({ channel: { ...chat().channel!, can, pins: { messages: [], loading: false } } }));
+    escape(panel().querySelector(".profile-close")!);
+    expect(act).toHaveBeenLastCalledWith({ type: "pins", open: false });
+    expect(document.activeElement).toBe(root.querySelector(".pins-toggle"));
+  });
+});
+
 describe("searching a conversation", () => {
   const WITH_SEARCH = { ...ALL, search: true, pins: true };
   const found = (id: string) => ({ id, author: "Ana", content: `found ${id}`, timestamp: "2026-10-14T12:00:00Z" });
