@@ -52,7 +52,7 @@ shell, `g*` the gallery, `after-*` the rail and Messages page after the fixes.
 | 7 | Medium | Dialogs dropped focus to the page on closing (profile card, forward dialog); search and pins did not close with Escape. | Fixed in `baf304d` and `fb67a5c`: focus goes back to what opened them. |
 | 8 | Medium | Screen readers heard nothing when a message arrived: no live region (the list is redrawn on every update, so it cannot be one). | Fixed in `b10ba9a`: a polite status line, "Bo: hello". |
 | 9 | Medium | ARIA errors (axe critical/serious): `aria-expanded` on the composer's textarea, the unread divider a `separator` inside the message list, the composer unnamed when read only. | Fixed in `85ed12b` and `be9b456`. |
-| 10 | Medium | Hit targets: mute toggles 20px, category toggles 17px, text buttons 22px, author names 18px; on the phone the header buttons 32px, composer buttons 40px, call strip 40px, settings controls 26px. | Fixed in `e7c7184`, `ee41f39` and `be9b456` (24px desktop, 44px phone). Reactions fixed in round 2 (`21b8081`); inline links are left at their size on the phone. |
+| 10 | Medium | Hit targets: mute toggles 20px, category toggles 17px, text buttons 22px, author names 18px; on the phone the header buttons 32px, composer buttons 40px, call strip 40px, settings controls 26px. | Fixed in `e7c7184`, `ee41f39` and `be9b456` (24px desktop, 44px phone). Reactions fixed in round 2 (`21b8081`); links that stand on their own got 44px on the phone in round 3 (`e2f4a1d`); links within sentences keep the text's size. |
 | 11 | Medium | Tab never leaves the rail: each part of the window (rail, service, Settings) is a view of its own, and focus wraps inside it. A keyboard user cannot get from the rail to the conversation or back. | Fixed in round 2 (`13083ab`). |
 | 12 | Medium | The phone drawer's Messages entry gained one more unread badge on every redraw. | Fixed in `4fe29d7`. |
 | 13 | Medium | No light theme: every page is dark only (`color-scheme: dark`) and ignores `prefers-color-scheme`. | Fixed in round 2 (`65dcd5e`). |
@@ -62,7 +62,7 @@ shell, `g*` the gallery, `after-*` the rail and Messages page after the fixes.
 | 17 | Low | Forwarding listed invitations the user had not accepted. | Fixed in `baf304d`. |
 | 18 | Low | An incoming call's Accept and Decline sit at the bar's right end, where an open profile card or dialog covers them. | Fixed in round 2 (`281073f`). |
 | 19 | Low | Pinned messages and search results show raw Markdown (`**Bold**`, `# Release notes`). | Fixed in round 2 (`1d8a0a0`). |
-| 20 | Low | Sign-in screens: Telegram's "my.telegram.org" is plain text, not a link; the drawer does not move focus into itself or close with Escape (on Android, back closes it). | **Left**. |
+| 20 | Low | Sign-in screens: Telegram's "my.telegram.org" is plain text, not a link; the drawer does not move focus into itself or close with Escape (on Android, back closes it). | Fixed in round 3 (`2dee900`, `863b400`). |
 | 21 | Low | Moderate axe findings left: heading levels skip (h2 sidebar title, h3 panel headings), no h1 in the chat view. | Fixed in round 2 (`dfe8efb`), but for one (see round 2). |
 
 ### Contrast
@@ -141,6 +141,36 @@ axe's colour-contrast rule on every page in both themes.
   and the phone drawer neither moving focus into itself nor closing with
   Escape (#20); inline links in messages keep their size on the phone (#10).
 
+## Round 3
+
+The small items round 2 left, from `85cf248` on. The phone's pages were
+checked in the scratch Electron at 390px with the phone bridge, in both
+themes; the Android side in JVM tests and builds (`assembleDebug`,
+`testDebugUnitTest`, `lintDebug`, `assembleRelease`), not on a device.
+
+| Round 2 left | Now |
+|--------------|-----|
+| The drawer neither takes focus nor closes with Escape (#20). | Fixed in `863b400`: opening it focuses the open entry (the server or DMs, else the service, else Messages); Tab wraps inside it and the rest of the page is inert while it is open (natively, the chat view under it is hidden from TalkBack too); Escape, back and a tap on the scrim close it and focus the menu button again. An entry keeps focus when the drawer is redrawn (an unread count changed). The menu button already had `aria-expanded` and `aria-controls`. |
+| The theme on the phone: offered on the desktop only, and the WebViews always reported dark. | Fixed in `6e9cb6d` and `96f2d3a`: the tokens are `light-dark()` pairs, so a page follows `prefers-color-scheme` or a `data-theme` on its root; the phone's Settings offers the choice, the shell page applies it and tells native code, which passes it to every chat view and paints the screen behind the pages and the system bars. The app's theme is DayNight (Android 10 and later; light on 9), so "as the system" follows the phone, and algorithmic darkening is off in every WebView. |
+| One moderate axe finding: no main landmark on the phone's conversation list. | Fixed in `56cbf2c`: on the list pane the chat layout is the main ("Conversations", the list's navigation inside it); on the conversation pane the conversation's own main is the only one. |
+| Telegram's "my.telegram.org" is plain text (#20). | Fixed in `2dee900`: "Open my.telegram.org" under the explanation, to its API development tools page, opened in the browser as every link in the view is. |
+| Inline links keep their size on the phone (#10). | `e2f4a1d`: links that stand on their own reach 44px (a file is a 44px line; a link preview's title and a sign-in step's link get padding the text does not move with, measured at 44 to 45px with the text where it was). Links inside a message's sentences keep the text's size, as WCAG 2.5.8's inline exception allows. "Load older messages" was already 44px. |
+| — | `46ecbcd`: README's smoke-test paragraph names the couldn't-reach check and says the accessibility check runs after it. |
+
+`npm run a11y` after these: 82 page states, both themes, no serious or
+critical violations; with `--all` the only findings left are the rail's two
+moderate ones (no main landmark, no h1), as the rail is a strip of its own
+beside the content, whose page has both.
+
+### Left for a human
+
+- **On a device:** the theme in each setting, and switching the phone's dark
+  theme while Multicord is open with "as the system" (the activity keeps
+  running through the change; whether each WebView's
+  `prefers-color-scheme` follows at once, or only for pages loaded after,
+  is the WebView's); the drawer with TalkBack and with a hardware keyboard.
+- **F6 inside web services** (round 2) is unchanged.
+
 ## How to navigate Multicord
 
 - **The rail** on the left is the whole app: Messages at the top, then one
@@ -162,12 +192,14 @@ axe's colour-contrast rule on every page in both themes.
   and (in a chat view) its list, conversation and side panel; Tab moves
   within a part, and Escape closes what is open.
 - **On a phone** the bar's menu opens the drawer (Messages, each service's
-  home, servers and unread DMs, Settings); a conversation shows on its own
+  home, servers and unread DMs, Settings), with focus on what is open; back,
+  Escape or a tap beside it closes it. A conversation shows on its own
   with a back arrow, and in a call compact controls sit over it.
 
 A new user finds their way: the gear and Messages are where they expect
 them, each service has a recognisable bubble, sign-in screens say what they
 need, and empty states say what to do next. After round 2 an unreachable
 service says so instead of showing a blank page, F6 gets a keyboard user
-between the parts of the window, and the shell follows a light system theme.
-What is left is listed under round 2.
+between the parts of the window, and the shell follows a light system theme;
+after round 3 the phone takes the theme setting too, and its drawer works
+from the keyboard and with a screen reader. What is left is listed under round 3.
