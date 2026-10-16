@@ -552,6 +552,11 @@ export async function createShell(
     shortcutErrors: () => shortcutErrors,
     pushToTalkError: () => pushToTalkError,
     openService: showPlatform,
+    // A native module's engine starts again with a fresh crash count; a web module's page reloads.
+    restartService: (id) => {
+      if (engines?.restart(id)) return;
+      views.get(id)?.webContents.reload();
+    },
     clearSession: async (id) => {
       await session.fromPartition(`persist:${id}`).clearStorageData();
       await session.fromPartition(engineStoragePartition(id, true)).clearStorageData();

@@ -882,6 +882,20 @@ describe("settings", () => {
     expect(discordView.webContents.reload).toHaveBeenCalled();
   });
 
+  it("restarts one service: a web page reloads, a native module's engine starts again", async () => {
+    const { view, discordView } = await opened();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "restartService", id: "discord" });
+    await flush();
+    expect(discordView.webContents.reload).toHaveBeenCalledTimes(1);
+    const engine = WebContentsView.instances.find((v) => v.options.webPreferences.partition === "engine_fluxer")!;
+    engine.webContents.loadURL.mockClear();
+    ipcMain.emit(SETTINGS_IPC.action, senderEvent(view), { type: "restartService", id: "fluxer" });
+    await flush();
+    expect(engine.webContents.loadURL).toHaveBeenCalledTimes(1);
+    expect(discordView.webContents.reload).toHaveBeenCalledTimes(1);
+  });
+
   it("forgets a removed service's data", async () => {
     fs.writeFileSync(path.join(userData, "platforms.json"), JSON.stringify([{ id: "el", name: "Element", url: "https://app.element.io" }]));
     fs.writeFileSync(path.join(userData, "credentials.json"), JSON.stringify({ "el:x:token": "a", "fluxer:x:token": "b" }));

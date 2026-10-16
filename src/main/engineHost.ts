@@ -62,6 +62,8 @@ interface Running {
   sockets: EngineSockets;
   /** The hidden page that opens them in Chromium's network stack. */
   relay: SocketRelay;
+  /** A restart waiting out its back-off after a crash, if any. */
+  pending?: ReturnType<typeof setTimeout>;
 }
 
 /** Picked-file handles kept per engine; the oldest are forgotten first. */
@@ -107,6 +109,7 @@ export async function serveEngine(dist: string, engine: string, url: string): Pr
 export class EngineHub {
   private readonly byEngine = new Map<WebContents, Running>();
   private readonly byView = new Map<WebContents, Running>();
+  private readonly byId = new Map<string, Running>();
 
   constructor(
     private readonly deps: {
@@ -230,8 +233,16 @@ export class EngineHub {
         emit: (event) => this.deliver(running, ENGINE_IPC.socket, event),
       }),
     };
-    running.adapter =new EngineAdapter(spec.def.id, new URL(spec.def.url).host, spec.capabilities, (command) => this.deliver(running, ENGINE_IPC.command, command), spec.home);
+    running.adapter = new EngineAdapter(
+      spec.def.id,
+      new URL(spec.def.url).host,
+      spec.capabilities,
+      (command) => this.deliver(running, ENGINE_IPC.command, command),
+      spec.home,
+      "click Restart beside it in Settings to try again",
+    );
     this.byEngine.set(engine.webContents, running);
+    this.byId.set(spec.def.id, running);
     this.byView.set(spec.view.webContents, running);
 
     const report = (change: Partial<EngineHealth>): void => {
@@ -261,10 +272,40 @@ export class EngineHub {
       }
       console.warn(`[engine ${spec.def.id}] stopped (${details.reason}); restarting`);
       report({ state: "starting", responsive: true, restarts: running.health.restarts + 1, lastExit: details.reason });
-      setTimeout(() => void engine.webContents.reload(), restartDelay(running.crashes));
+      running.pending = setTimeout(() => {
+        running.pending = undefined;
+        void engine.webContents.reload();
+      }, restartDelay(running.crashes));
     });
     const start = (): void => void engine.webContents.loadURL(`${ENGINE_SCHEME}://${spec.engine}/engine.html`);
     return { adapter: running.adapter, engine, start };
+  }
+
+  /**
+   * Starts an engine again because the user asked (Settings, Restart): one
+   * left stopped after crashing repeatedly, or one that runs but seems stuck.
+   * It gets a fresh crash count; the app and the other engines keep running.
+   * Its sockets close and its picked files and pending asks are forgotten, as
+   * on a reload. False when no engine runs for `id`.
+   */
+  restart(id: string): boolean {
+    const running = this.byId.get(id);
+    if (!running) return false;
+    console.warn(`[engine ${id}] restarting at the user's request`);
+    clearTimeout(running.pending);
+    running.pending = undefined;
+    running.sso?.abort();
+    running.sockets.closeAll();
+    running.files.clear();
+    running.attachAskedAt = 0;
+    running.signInAskedAt = 0;
+    running.ready = false;
+    running.crashes = 0;
+    running.readyAt = 0;
+    running.health = { ...running.health, state: "starting", responsive: true };
+    running.adapter.setEngineHealth(running.health);
+    void running.engine.webContents.loadURL(`${ENGINE_SCHEME}://${running.spec.engine}/engine.html`);
+    return true;
   }
 
   /** The engine session: no permissions, no navigation, and network only to the module's hosts. */

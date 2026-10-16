@@ -454,9 +454,42 @@ describe("engine health", () => {
       {
         name: "Engine running",
         ok: false,
-        detail: "Stopped after crashing repeatedly; restart Multicord to try again. Nothing from this service arrives. It has restarted 5 times (last: crashed).",
+        detail: "Stopped after crashing repeatedly; click Restart beside it in Settings to try again. Nothing from this service arrives. It has restarted 5 times (last: crashed).",
       },
     ]);
+  });
+
+  it("restarts an engine at the user's request with a fresh crash count, cancelling a waiting restart", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { hub, adapter, engine, ask } = setup();
+    expect(hub.restart("other")).toBe(false);
+    for (let crash = 1; crash <= MAX_CRASHES; crash++) {
+      engine.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+      vi.advanceTimersByTime(30_000);
+      await ask({ type: "info" });
+    }
+    engine.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+    expect(adapter.health()[0]!.detail).toContain("Stopped after crashing repeatedly");
+    engine.webContents.loadURL.mockClear();
+    expect(hub.restart("demo")).toBe(true);
+    expect(engine.webContents.loadURL).toHaveBeenCalledWith(`${ENGINE_SCHEME}://demo/engine.html`);
+    expect(adapter.health()[0]!.detail).toMatch(/^Starting;/);
+    await ask({ type: "info" });
+    expect(adapter.health()[0]!.ok).toBe(true);
+    // A fresh count: it may crash and come back MAX_CRASHES times again.
+    engine.webContents.reload.mockClear();
+    engine.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+    expect(hub.restart("demo")).toBe(true); // overtakes the waiting restart
+    vi.advanceTimersByTime(60_000);
+    expect(engine.webContents.reload).not.toHaveBeenCalled();
+    for (let crash = 1; crash <= MAX_CRASHES; crash++) {
+      engine.webContents.reload.mockClear();
+      engine.webContents.emit("render-process-gone", {}, { reason: "crashed" });
+      vi.advanceTimersByTime(restartDelay(crash));
+      expect(engine.webContents.reload).toHaveBeenCalled();
+      await ask({ type: "info" });
+    }
   });
 
   it("starts a fresh count after the engine ran for a while", async () => {
