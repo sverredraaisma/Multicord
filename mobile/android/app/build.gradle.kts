@@ -9,6 +9,16 @@ plugins {
 /** The repository root: the desktop app's sources, tests and build output live there. */
 val repoRoot: File = rootProject.projectDir.resolve("../..").canonicalFile
 
+/**
+ * Release signing, never in the repository: a Gradle property (-P or ~/.gradle/gradle.properties) or an
+ * environment variable, e.g. multicord.keystore or MULTICORD_KEYSTORE. Without a keystore the release
+ * APK is built unsigned (app-release-unsigned.apk), as F-Droid builds it before signing with its own key.
+ */
+fun secret(property: String, variable: String): String? =
+    providers.gradleProperty(property).orElse(providers.environmentVariable(variable)).orNull?.takeIf { it.isNotBlank() }
+
+val releaseKeystore = secret("multicord.keystore", "MULTICORD_KEYSTORE")
+
 android {
     namespace = "app.multicord"
     compileSdk = 36
@@ -22,10 +32,34 @@ android {
         versionName = "0.1.0-dev"
     }
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = secret("multicord.keystorePassword", "MULTICORD_KEYSTORE_PASSWORD")
+                keyAlias = secret("multicord.keyAlias", "MULTICORD_KEY_ALIAS")
+                keyPassword = secret("multicord.keyPassword", "MULTICORD_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".debug"
         }
+        release {
+            // R8: shrinks and obfuscates our code and the libraries'; keep rules in proguard-rules.pro.
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            signingConfig = signingConfigs.findByName("release")
+        }
+    }
+
+    // No Google-encrypted dependency list in the APK's signing block: F-Droid cannot read it and asks for it to be off.
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 
     compileOptions {

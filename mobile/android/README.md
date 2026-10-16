@@ -17,6 +17,16 @@ cd mobile/android
 
 `npm run build` must run first: the `bundleWeb` task copies every native module's engine (`dist/engines/<engine>.js`), the native chat view (`native.html`, `native.js`, `native.css`, `shell.css`, the RNNoise worklet and LiveKit's E2EE worker), the settings page's `settings.css` and the Messages list's `messages.css`, and the shell page from `dist/mobile` (`shell.html`, `shell.js`, `mobile.css`, and `modules.json`, the table of each module's engine, hosts and storage) into the app's assets, and fails naming that command when they are missing. Point Gradle at the SDK with `ANDROID_HOME` or a `local.properties` file here (`sdk.dir=…`; git ignores it). The APK is `app/build/outputs/apk/debug/app-debug.apk` (about 18 MB, most of it the engines; Matrix's, with its WebAssembly crypto, is the largest).
 
+### Release builds
+
+`./gradlew assembleRelease` builds `app/build/outputs/apk/release/`: R8 shrinks and obfuscates the Kotlin and the libraries (`proguard-rules.pro` says why nothing of ours needs a keep rule: no `@JavascriptInterface`, no reflection, kotlinx.serialization only through `JsonElement`; the libraries bring their own rules), and unused resources go. The APK is about 5 MB (assets compressed; Matrix's engine is most of it). WebView inspection is off (`BuildConfig.DEBUG`).
+
+**Signing, without secrets in the repository.** The signing key comes from Gradle properties (`-P` or `~/.gradle/gradle.properties`) or the environment: `multicord.keystore` / `MULTICORD_KEYSTORE` (the keystore file), `multicord.keystorePassword` / `MULTICORD_KEYSTORE_PASSWORD`, `multicord.keyAlias` / `MULTICORD_KEY_ALIAS`, `multicord.keyPassword` / `MULTICORD_KEY_PASSWORD`. Without a keystore the release APK is unsigned (`app-release-unsigned.apk`), which is what CI builds and what F-Droid signs with its own key; to install one by hand, sign a copy with `apksigner` and a key of your own.
+
+**F-Droid.** The dependencies are free software only: androidx.webkit, androidx.browser, kotlinx-serialization-json and OkHttp (Apache 2.0), no Google Play Services, Firebase or proprietary SDKs, and the app's code is AGPL-3.0-or-later. The APK's signing block carries no Google-encrypted dependency list (`dependenciesInfo` off). A draft of the fdroiddata metadata is in [`fdroid/app.multicord.yml`](fdroid/app.multicord.yml) (not submitted). Open before submitting: the build needs Node 22+ on the build server (`npm ci && npm run build` at the root, before Gradle); esbuild runs as a prebuilt Go binary and Matrix's crypto is a prebuilt WebAssembly module from npm, which F-Droid may want built from source; Telegram earns the `NonFreeNet` anti-feature; and there is no release tag yet.
+
+**Reproducible, as far as checked.** The same commit should give the same unsigned APK: esbuild's output is deterministic for the same inputs and `package-lock.json` pins every npm package; Gradle's dependencies are pinned versions from Google's Maven and Maven Central; AGP writes zip entries with fixed timestamps (1981-01-01) and its `version-control-info.textproto` names the commit. Not yet checked: two builds on different machines compared byte for byte (the JDK and the build-tools version are the likely differences; F-Droid's reproducible-build check would show it).
+
 Install with `adb install -r app/build/outputs/apk/debug/app-debug.apk`. The app logs under the tag `Multicord` (`adb logcat -s Multicord`). Debug builds allow WebView inspection over adb (`chrome://inspect`); release builds do not.
 
 ## Architecture
@@ -152,4 +162,4 @@ For phase 2:
 - Calls: camera and microphone permissions for the views only, LiveKit's connections, audio routing; the voice settings and favourites in the chat views.
 - Binary messages as `ArrayBuffer`s (`WEB_MESSAGE_ARRAY_BUFFER`) instead of base64 for large bodies; a cap on incoming socket frames before they are read whole.
 - Matrix push through UnifiedPush, so Matrix need not keep a connection open.
-- Release signing and an F-Droid build.
+- Submitting the F-Droid build (see Release builds) and a first release tag.

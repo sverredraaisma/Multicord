@@ -1,0 +1,63 @@
+# DRAFT, not submitted. F-Droid build metadata for Multicord for Android (fdroiddata's metadata/app.multicord.yml).
+# Checked against nothing but the fdroiddata format; see mobile/android/README.md, "Release builds", for what is
+# still open before a merge request to fdroiddata (the Node toolchain, the prebuilt WebAssembly, the first tag).
+Categories:
+  - Internet
+  - Messaging
+License: AGPL-3.0-or-later
+AuthorName: Multicord contributors
+SourceCode: https://github.com/sverredraaisma/Multicord
+IssueTracker: https://github.com/sverredraaisma/Multicord/issues
+
+AutoName: Multicord
+Summary: Your chat services in one app
+Description: |-
+  Multicord puts your chat services side by side: Matrix, Fluxer, Telegram, Stoat, Spacebar and Nerimity
+  in Multicord's own chat view, and the web apps of Element, Stoat, Fluxer, Spacebar, Nerimity or any other
+  web chat, with one list of every direct conversation and one notification setting.
+
+  Each service runs on its own, in storage of its own, and reaches only its own servers. Sign-ins are kept
+  under a key in the phone's keystore. No Google services: a foreground service keeps the connections open
+  so messages and calls arrive.
+
+  Requires Android System WebView 140 or newer.
+
+# Telegram's and (later) Discord's servers are not free software; the app connects to them when the user adds them.
+AntiFeatures:
+  NonFreeNet:
+    en-US: Can connect to Telegram, whose servers are not free software.
+
+RepoType: git
+Repo: https://github.com/sverredraaisma/Multicord.git
+
+Builds:
+  - versionName: 0.1.0
+    versionCode: 1
+    # The release tag, once there is one.
+    commit: v0.1.0-android
+    subdir: mobile/android/app
+    sudo:
+      - apt-get update
+      # Node 22 or newer runs the build (scripts/build.mjs); how the buildserver gets one is still open.
+      - apt-get install -y nodejs npm
+    init: cd ../../.. && ELECTRON_SKIP_BINARY_DOWNLOAD=1 npm ci --ignore-scripts
+    gradle:
+      - yes
+    # The app bundles the desktop build's engines and pages (dist/), which bundleWeb copies in.
+    prebuild: cd ../../.. && npm run build
+    # scanignore and scandelete are relative to the repository root, not subdir.
+    scanignore:
+      # Matrix's end-to-end encryption, compiled to WebAssembly from Rust (matrix-org/matrix-rust-sdk);
+      # npm ships it built. To discuss with F-Droid: build it from source, or accept it as a scanned blob.
+      - node_modules/@matrix-org/matrix-sdk-crypto-wasm
+      # esbuild runs as a prebuilt Go binary per platform (@esbuild/linux-x64); F-Droid may want it built from source (srclibs).
+      - node_modules/@esbuild
+    scandelete:
+      - node_modules/electron
+      - node_modules/app-builder-bin
+      - node_modules/7zip-bin
+
+AutoUpdateMode: Version
+UpdateCheckMode: Tags ^v.*-android$
+CurrentVersion: 0.1.0
+CurrentVersionCode: 1
