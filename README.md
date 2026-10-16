@@ -46,7 +46,7 @@ Global shortcuts, screen capture and opening or saving files go through the desk
 
   A module therefore cannot read another module's tokens, cookies, storage or messages. Code under `src/modules` and `src/engine` may not import Electron, Node or main-process code; a test enforces it. Web-view modules (Discord, generic web apps) run their pages in their own sandboxed, partitioned views, with only narrow preload bridges.
 
-  A crashed engine restarts after 2 seconds, then with doubling delays up to 30 seconds. After five crashes in a row it stays stopped. Settings > Diagnostics shows whether each engine is running and responsive, and how often it has restarted, followed by the module's own checks of its service where it makes some, and for web apps whose service is known (Stoat, Spacebar, Nerimity), whether it answers.
+  A crashed engine restarts after 2 seconds, then with doubling delays up to 30 seconds. After five crashes in a row it stays stopped until you click Restart beside the service in Settings > Services & accounts, which starts that one service again with a fresh count, without restarting Multicord (a web app's page reloads instead). Settings > Diagnostics shows whether each engine is running and responsive, and how often it has restarted, followed by the module's own checks of its service where it makes some, and for web apps whose service is known (Stoat, Spacebar, Nerimity), whether it answers.
 - **Your own server order:** servers and folders from every platform form one list in the rail. Drag them into any order; the order is saved in `rail-order.json`, and new servers join at the end. Each platform's Home and DM bubbles stay at the top.
 - **Module labels:** hovering a rail icon shows a small dot in its module's colour with the module's initial (D, F, W) in the corner, and the hover name says it too, e.g. "Alpha · Fluxer".
 - **Unified Messages:** the button at the top of the rail lists the direct messages of every service in one list, most recently active first, with the last message where the service provides it (Fluxer, Telegram, Matrix, Stoat, Spacebar and Nerimity do; Discord does once its client has that message loaded, and not while Discord's own streamer mode is on) and a search box. Picking one opens it beside the list in its own service; the services hide their own DM sidebars meanwhile. The button shows the unread DM count.
@@ -310,7 +310,7 @@ src/
   renderer/              rail, tooltip, screen-share picker, native chat view, settings page, gallery
   entries/               bundle entry points (thin; excluded from coverage)
 tests/                   Vitest; tests/mocks/electron.ts fakes the Electron API
-mobile/android/          Multicord for Android, in progress: a Kotlin host that runs these bundles (its README)
+mobile/android/          Multicord for Android, in progress: a Kotlin host that runs these bundles, calls included (its README)
 mobile/android-spike/    the phase-0 Android spike (docs/mobile.md)
 ```
 
