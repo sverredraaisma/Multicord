@@ -23,9 +23,39 @@ export interface EngineBridge {
   onSocket(cb: (event: EngineSocketEvent) => void): void;
 }
 
+/** Network failures in words a user can act on, by Chromium's error code. */
+const NET_ERRORS: Record<string, string> = {
+  ERR_NAME_NOT_RESOLVED: "the server's address could not be found; check your internet connection",
+  ERR_INTERNET_DISCONNECTED: "there is no internet connection",
+  ERR_NETWORK_CHANGED: "the network connection changed; try again",
+  ERR_ADDRESS_UNREACHABLE: "the server cannot be reached from this network",
+  ERR_CONNECTION_REFUSED: "the server refused the connection",
+  ERR_CONNECTION_RESET: "the connection to the server was interrupted; try again",
+  ERR_CONNECTION_CLOSED: "the connection to the server was interrupted; try again",
+  ERR_CONNECTION_TIMED_OUT: "the server did not answer in time",
+  ERR_TIMED_OUT: "the server did not answer in time",
+  ERR_CERT_AUTHORITY_INVALID: "the server's certificate is not trusted",
+  ERR_CERT_DATE_INVALID: "the server's certificate has expired or is not yet valid",
+};
+
+/**
+ * A failed request's error as the engine passes it on to the user: without
+ * Electron's "Error invoking remote method '…': Error: " wrapper, and a
+ * network failure in plain words instead of its net:: code.
+ */
+export function requestError(error: unknown): Error {
+  const message = error instanceof Error ? error.message : String(error);
+  const bare = message.replace(/^Error invoking remote method '[^']*': /, "").replace(/^(?:Error: )+/, "");
+  const code = /net::(ERR_[A-Z_]+)/.exec(bare)?.[1];
+  return new Error((code && NET_ERRORS[code]) || bare);
+}
+
 export function createEngineBridge(ipc: EngineIpc): EngineBridge {
   return {
-    request: (request) => ipc.invoke(ENGINE_IPC.invoke, request),
+    request: (request) =>
+      ipc.invoke(ENGINE_IPC.invoke, request).catch((error: unknown) => {
+        throw requestError(error);
+      }),
     emit: (event) => ipc.send(ENGINE_IPC.event, event),
     render: (state) => ipc.send(ENGINE_IPC.render, state),
     onCommand: (cb) => ipc.on(ENGINE_IPC.command, (_event, command) => cb(command as EngineCommand)),

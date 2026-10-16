@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { bridgeFetch, bridgeSecrets, bridgeWebSocket, BridgedWebSocket, engineInfo, fileSource, lockHosts, pickFiles, serveAdapter, ssoSignIn, type ServedAdapter } from "../../src/engine/runtime";
-import { createEngineBridge, type EngineBridge, type EngineIpc } from "../../src/preload/engine";
+import { createEngineBridge, requestError, type EngineBridge, type EngineIpc } from "../../src/preload/engine";
 import type { AccountRef, DirectConversation, HomeBadge, IncomingCall, PlatformNotification, RailServer } from "../../src/shared/adapter";
 import { BaseAdapter } from "../../src/shared/baseAdapter";
 import { ENGINE_IPC, type EngineCommand, type EngineRequest, type EngineSocketEvent, type HttpResponse } from "../../src/shared/engine";
@@ -36,6 +36,19 @@ describe("createEngineBridge", () => {
     expect(onAction).toHaveBeenCalledWith({ do: "it" });
     listeners.get(ENGINE_IPC.socket)!({}, { type: "open", id: "1" });
     expect(onSocket).toHaveBeenCalledWith({ type: "open", id: "1" });
+  });
+});
+
+describe("requestError", () => {
+  it("drops Electron's wrapper and says network failures in plain words", async () => {
+    const wrapped = (inner: string) => new Error(`Error invoking remote method 'engine:invoke': Error: ${inner}`);
+    expect(requestError(wrapped("net::ERR_NAME_NOT_RESOLVED")).message).toBe("the server's address could not be found; check your internet connection");
+    expect(requestError(wrapped("HTTP 500 from the server")).message).toBe("HTTP 500 from the server");
+    expect(requestError(wrapped("net::ERR_SOMETHING_NEW")).message).toBe("net::ERR_SOMETHING_NEW");
+    expect(requestError(new Error("Error: Error: plain")).message).toBe("plain");
+    expect(requestError("a string").message).toBe("a string");
+    const ipc: EngineIpc = { send: vi.fn(), on: vi.fn(), invoke: vi.fn(async () => Promise.reject(wrapped("net::ERR_CONNECTION_REFUSED"))) };
+    await expect(createEngineBridge(ipc).request({ type: "info" })).rejects.toThrow("the server refused the connection");
   });
 });
 
