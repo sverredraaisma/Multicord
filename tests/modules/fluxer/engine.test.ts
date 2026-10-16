@@ -16,6 +16,8 @@ function fakeBridge(token?: string) {
       switch (request.type) {
         case "info":
           return { id: "fluxer", name: "Fluxer", url: "https://fluxer.app", os: "linux" };
+        case "socketOpen":
+          return { id: "1" };
         case "secretLoad":
           return token;
         case "http":
@@ -28,6 +30,7 @@ function fakeBridge(token?: string) {
     render: vi.fn(),
     onCommand: (cb: (c: EngineCommand) => void) => void (command = cb),
     onAction: vi.fn(),
+    onSocket: vi.fn(),
   };
   return { bridge: bridge as unknown as EngineBridge & typeof bridge, command: (c: EngineCommand) => command(c) };
 }
@@ -54,23 +57,11 @@ describe("Fluxer engine", () => {
     expect(bridge.emit).toHaveBeenCalledWith({ type: "homeBadge", badge: { unread: false, mentions: 0 } });
   });
 
-  it("resumes a saved session over the page's WebSocket, telling Fluxer the OS", async () => {
-    const sent: string[] = [];
-    const urls: string[] = [];
-    class StubSocket {
-      constructor(url: string) {
-        urls.push(url);
-      }
-      send(data: string) {
-        sent.push(data);
-      }
-      close() {}
-      addEventListener() {}
-    }
-    vi.stubGlobal("WebSocket", StubSocket);
+  it("resumes a saved session over a WebSocket the shell opens, telling Fluxer the OS", async () => {
     const { bridge } = fakeBridge("flx_saved");
     await startFluxerEngine(bridge);
-    expect(urls).toEqual(["wss://gw.fx/?v=1&encoding=json"]);
+    expect(bridge.request).toHaveBeenCalledWith({ type: "socketOpen", url: "wss://gw.fx/?v=1&encoding=json" });
+    expect(bridge.onSocket).toHaveBeenCalled();
     expect(bridge.emit).toHaveBeenCalledWith({ type: "account", account: { state: "signed-in" } });
   });
 });

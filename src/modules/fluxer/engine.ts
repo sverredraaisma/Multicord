@@ -1,15 +1,16 @@
-import { bridgeFetch, bridgeSecrets, engineInfo, fileSource, pickFiles, serveAdapter } from "../../engine/runtime";
+import { bridgeFetch, bridgeSecrets, bridgeWebSocket, engineInfo, fileSource, pickFiles, serveAdapter } from "../../engine/runtime";
 import type { EngineBridge } from "../../preload/engine";
 import { FluxerAdapter } from "./adapter";
 import type { SocketFactory } from "./gateway";
 
 /**
  * Runs the Fluxer client in its engine: builds the adapter on the bridge
- * (fetch, secrets and files all go through the shell's checks) and serves it.
+ * (fetch, the gateway socket, secrets and files all go through the shell's
+ * checks) and serves it.
  */
 export async function startFluxerEngine(
   bridge: EngineBridge,
-  createSocket: SocketFactory = (url) => new WebSocket(url),
+  createSocket: SocketFactory = bridgeWebSocket(bridge),
 ): Promise<FluxerAdapter> {
   const info = await engineInfo(bridge);
   let served: { sync(): void } | undefined;
