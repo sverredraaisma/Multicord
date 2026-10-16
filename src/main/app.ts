@@ -398,6 +398,8 @@ export async function createShell(
       return { action: "deny" };
     });
     if (manifest.screenShare) handleScreenShare(ses);
+    // Peers learn the addresses a call is offered from: never those of the local network (Chromium shows them to pages with the microphone).
+    if (manifest.peerToPeerCalls) view.webContents.setWebRTCIPHandlingPolicy("default_public_interface_only");
     // Favourites reach this view, our own page, and never its engine (whose session has no such scheme).
     ses.protocol.handle(MEDIA_SCHEME, (request) => favourites.serve(request.url));
     view.webContents.on("did-finish-load", () => sendFavourites(def.id, view));

@@ -51,6 +51,14 @@ export interface ModuleManifest {
   /** Engines only: route screen sharing in the module's view through the shell's picker. */
   screenShare?: boolean;
   /**
+   * Engines only: the module's calls are peer-to-peer WebRTC (Nerimity's),
+   * so its view connects straight to other people rather than to a voice
+   * server. The view then gets Chromium's WebRTC IP handling policy
+   * "default_public_interface_only": only the interface of the default
+   * route is used, so no local network or VPN address is offered to peers.
+   */
+  peerToPeerCalls?: boolean;
+  /**
    * Engines only: the engine holds media back until its view asks
    * (NativeAttachment.mediaKey). The view gets the service's limit for media
    * that loads by itself, and Settings offers a per-service choice of it.

@@ -737,6 +737,14 @@ describe("native Fluxer platform", () => {
     expect(handle.adapters.get("b")!.capabilities).toEqual({ directMessages: false, messagePreviews: false, voice: false, screenShare: false });
     expect(handle.adapters.get("b")!.openHome).toBeUndefined();
     expect(session.fromPartition("persist:b").displayMediaRequestHandler).toBeUndefined();
+    expect((handle.views.get("b") as unknown as InstanceType<typeof WebContentsView>).webContents.setWebRTCIPHandlingPolicy).not.toHaveBeenCalled();
+  });
+
+  it("keeps local addresses out of the calls of a module whose calls are peer-to-peer", async () => {
+    const p2p: PlatformModule = { manifest: { id: "p2p", name: "P2P", label: "P2P", color: "#000000", configurable: true, engine: "p2p", defaultUrl: "https://p2p.example", peerToPeerCalls: true } };
+    fs.writeFileSync(path.join(userData, "platforms.json"), JSON.stringify([{ id: "fluxer", enabled: false }, { id: "p", name: "P", module: "p2p" }]));
+    const handle = await createShell({ dist: DIST, userData }, "win32", undefined, [...MODULES, p2p]);
+    expect((handle.views.get("p") as unknown as InstanceType<typeof WebContentsView>).webContents.setWebRTCIPHandlingPolicy).toHaveBeenCalledWith("default_public_interface_only");
   });
 });
 

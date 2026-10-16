@@ -14,6 +14,7 @@ export class FakeWebContents extends EventEmitter {
   focus = vi.fn();
   sendInputEvent = vi.fn();
   setZoomFactor = vi.fn();
+  setWebRTCIPHandlingPolicy = vi.fn();
   windowOpenHandler?: (details: { url: string }) => { action: string };
   /** The view's session, from its partition (the default session without one). */
   session!: FakeSession;
