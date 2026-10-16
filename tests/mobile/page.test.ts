@@ -98,6 +98,68 @@ describe("the phone's shell page", () => {
     expect($("drawer").hidden).toBe(true);
   });
 
+  it("moves focus into the open drawer, keeps Tab there, and gives it back to the menu button as it closes", async () => {
+    const { emit } = await page();
+    const servers = (names: string[]) => ({ type: "engine", instance: "matrix", event: { type: "servers", servers: names.map((name) => ({ key: name, name, unread: false, mentions: 0 })) } });
+    await emit(servers(["a", "b"]));
+    const key = (event: string, shiftKey = false) => {
+      const e = new KeyboardEvent("keydown", { key: event, shiftKey, bubbles: true, cancelable: true });
+      (document.activeElement ?? document.body).dispatchEvent(e);
+      return e;
+    };
+    expect($("menu").getAttribute("aria-controls")).toBe("drawer");
+    // Closed, the page's keys are its own.
+    expect(key("Escape").defaultPrevented).toBe(false);
+    $("menu").focus();
+    $("menu").click();
+    expect($("menu").getAttribute("aria-expanded")).toBe("true");
+    // The open service's entry has focus; the rest of the page is out of reach.
+    const start = document.activeElement as HTMLElement;
+    expect($("drawer").contains(start)).toBe(true);
+    expect(start.dataset.service ?? start.dataset.key).toBeDefined();
+    expect(["bar", "home", "messages", "settings"].every((id) => $(id).hasAttribute("inert"))).toBe(true);
+    const items = [...$("drawer").querySelectorAll<HTMLElement>('button:not([tabindex="-1"])')];
+    items.at(-1)!.focus();
+    expect(key("Tab").defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(items[0]);
+    expect(key("Tab", true).defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(items.at(-1));
+    items[1]!.focus();
+    expect(key("Tab").defaultPrevented).toBe(false);
+    expect(key("Enter").defaultPrevented).toBe(false);
+    // Focus outside the drawer comes back into it.
+    (document.activeElement as HTMLElement).blur();
+    key("Tab", true);
+    expect(document.activeElement).toBe(items.at(-1));
+    // Drawn again while open: the same entry keeps focus, or, gone, the drawer's start has it.
+    const b = [...document.querySelectorAll<HTMLElement>(".drawer-name")].find((e) => e.textContent === "b")!;
+    const bKey = b.dataset.key;
+    b.focus();
+    await emit(servers(["a", "b", "c"]));
+    expect((document.activeElement as HTMLElement).dataset.key).toBe(bKey);
+    expect(bKey).toBeDefined();
+    expect(document.activeElement).not.toBe(b);
+    await emit(servers(["a"]));
+    expect($("drawer").contains(document.activeElement)).toBe(true);
+    document.querySelector<HTMLElement>(".drawer-heading")!.focus();
+    await emit(servers(["a", "d"]));
+    expect(document.activeElement).toBe(document.querySelector(".drawer-heading"));
+    $("drawer-messages").focus();
+    await emit(servers(["a"]));
+    expect(document.activeElement).toBe($("drawer-messages"));
+    // Escape closes it, and the menu button has focus again.
+    expect(key("Escape").defaultPrevented).toBe(true);
+    expect($("drawer").hidden).toBe(true);
+    expect(document.activeElement).toBe($("menu"));
+    expect($("bar").hasAttribute("inert")).toBe(false);
+    // So does back.
+    $("menu").click();
+    expect(document.activeElement).not.toBe($("menu"));
+    await emit({ type: "back" });
+    expect($("drawer").hidden).toBe(true);
+    expect(document.activeElement).toBe($("menu"));
+  });
+
   it("opens the settings page, built once, from the bar, the drawer and the home page", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const { sent } = await page(JSON.stringify([{ id: "fluxer", enabled: false }, { id: "telegram", enabled: false }]));

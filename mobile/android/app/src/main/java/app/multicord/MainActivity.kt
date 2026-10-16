@@ -13,6 +13,7 @@ import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
 import android.view.KeyEvent
+import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.WebView
@@ -85,6 +86,8 @@ class MainActivity : Activity(), Hub.Screen {
             (view.parent as? ViewGroup)?.removeView(view)
             viewArea.addView(view, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
         }
+        // Under the open drawer the chat view is out of a screen reader's reach, as the shell page's own parts are.
+        view?.importantForAccessibility = if (shellFull) View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS else View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
         for (i in root.childCount - 1 downTo 0) {
             val child = root.getChildAt(i)
             if (child !== viewArea && child !== shell) root.removeViewAt(i)
