@@ -27,5 +27,21 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Single sign-on comes back here from the browser: <applicationId>.sso:/<one-time path>?loginToken=...
+             Any app could register the same scheme; SsoBroker accepts only its one waiting request's path. -->
+        <activity
+            android:name=".sso.SsoRedirectActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="${applicationId}.sso" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

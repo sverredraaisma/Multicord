@@ -118,6 +118,8 @@ androidComponents {
 dependencies {
     // Profiles, document-start scripts and origin-restricted message listeners.
     implementation("androidx.webkit:webkit:1.17.1")
+    // Single sign-on in a Custom Tab (the user's browser, over the app).
+    implementation("androidx.browser:browser:1.8.0")
     // JSON for the bridge's messages and validators (no compiler plugin: only the JsonElement tree is used).
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     // The engines' HTTP and WebSockets: a DNS hook for the address check, no cookies, no cache.

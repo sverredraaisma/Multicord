@@ -4,6 +4,7 @@ package app.multicord
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import android.util.Log
 import android.util.TypedValue
@@ -12,6 +13,7 @@ import android.webkit.WebView
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.browser.customtabs.CustomTabsIntent
 import androidx.webkit.WebViewFeature
 import app.multicord.bridge.Validators
 import app.multicord.engine.EngineHost
@@ -113,6 +115,14 @@ class MainActivity : Activity(), EngineUi {
             Log.w(EngineHost.TAG, "No document picker: ${error.message}")
             false
         }
+    }
+
+    override fun openBrowser(url: String): Boolean = try {
+        CustomTabsIntent.Builder().setShowTitle(true).build().launchUrl(this, Uri.parse(url))
+        true
+    } catch (error: ActivityNotFoundException) {
+        Log.w(EngineHost.TAG, "No browser: ${error.message}")
+        false
     }
 
     @Deprecated("Activity results for the document picker")

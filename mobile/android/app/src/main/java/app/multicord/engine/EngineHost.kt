@@ -32,6 +32,8 @@ import app.multicord.net.NetPolicy
 import app.multicord.net.OkHttpTransport
 import app.multicord.net.UrlPolicy
 import app.multicord.secrets.ScopedSecrets
+import app.multicord.sso.Sso
+import app.multicord.sso.SsoBroker
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import kotlinx.serialization.json.JsonArray
@@ -60,6 +62,9 @@ interface EngineUi {
      * cancelled). False when a picker is already open or there is none.
      */
     fun pickDocuments(done: (List<String>) -> Unit): Boolean
+
+    /** Opens an address in the user's browser (a Custom Tab where there is one); false when there is none. */
+    fun openBrowser(url: String): Boolean
 }
 
 /** What the shell hears from an engine, already validated. */
@@ -92,6 +97,8 @@ class EngineHost(
     private val listener: EngineListener,
     private val ui: EngineUi,
     documents: DocumentSource = ContentDocuments(context.contentResolver),
+    /** Where single sign-on waits for the browser; one request at a time for the whole app. */
+    private val sso: SsoBroker = Sso.broker,
 ) {
     val origin = "https://${spec.instanceId}.engine.multicord.invalid"
     private val host = "${spec.instanceId}.engine.multicord.invalid"
@@ -173,6 +180,7 @@ class EngineHost(
     /** Stops the engine for good: its WebView, sockets and pending work. */
     fun destroy() {
         stopped = true
+        sso.cancel(this)
         sockets.closeAll()
         picked.clear()
         tearDown()
@@ -292,8 +300,7 @@ class EngineHost(
                 val end = (request["end"] as JsonPrimitive).content.toDouble().toLong()
                 off(network, done) { Wire.bytes(picked.read(handle, start, end)) }
             }
-            // Single sign-on needs the browser to bring a token back; not on this host yet.
-            "ssoSignIn" -> done(Result.failure(UnsupportedOperationException("Not available in Multicord for Android yet")))
+            "ssoSignIn" -> ssoSignIn(text("url"), done)
             else -> done(Result.failure(IllegalArgumentException("Malformed engine request")))
         }
     }
@@ -315,6 +322,25 @@ class EngineHost(
             off(network, done) { JsonArray(picked.add(documents).map(PickedFile::toJson)) }
         }
         if (!opened) done(Result.failure(IllegalStateException("No file picker could be opened")))
+    }
+
+    /**
+     * Single sign-on, as EngineHub.ssoSignIn: only within ASK_WINDOW_MS after the user submitted a sign-in step
+     * in this engine's view, once per submit, to a homeserver SSO address on a host the engine may reach. The
+     * browser comes back through SsoRedirectActivity; the token is the answer to this engine's request only.
+     */
+    private fun ssoSignIn(url: String, done: (Result<JsonElement?>) -> Unit) {
+        val asked = signInAskedAt
+        if (asked == 0L || SystemClock.elapsedRealtime() - asked > ASK_WINDOW_MS) {
+            return done(Result.failure(IllegalStateException("Single sign-on starts only when the user signs in")))
+        }
+        signInAskedAt = 0L
+        val refused = if (SsoBroker.isSsoUrl(url)) NetPolicy.checkUrl(url, UrlPolicy(listOf("https:"), allowed))?.message else "it is no single sign-on address"
+        if (refused != null) return done(Result.failure(IllegalStateException("Single sign-on refused: $refused")))
+        val target = sso.begin(url, this) { result ->
+            if (!stopped) done(result.map { JsonObject(mapOf("loginToken" to JsonPrimitive(it))) })
+        } ?: return done(Result.failure(IllegalStateException("Single sign-on refused: it is no single sign-on address")))
+        if (!ui.openBrowser(target)) sso.cancel(this, "No browser could be opened")
     }
 
     // Host -> engine ---------------------------------------------------------------------------------------

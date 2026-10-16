@@ -35,6 +35,7 @@ MainActivity
     HttpBridge + OkHttpTransport    bridged HTTP (bridgeFetch)
     SecretStore scope               this instance's secrets (KeystoreCipher)
     PickedFiles + ContentDocuments  files the user picked for this engine, by handle
+SsoBroker + SsoRedirectActivity    single sign-on: Custom Tab out, <applicationId>.sso:/<path> back
 NetPolicy, WebUrl, PublicDns        what engines may contact (ported from src/main/netPolicy.ts)
 Validators, Wire                    the desktop's validators (src/shared), JSON with {"$b64"} bytes
 ```
@@ -47,6 +48,7 @@ Validators, Wire                    the desktop's validators (src/shared), JSON 
 | `engine/EngineHost.kt` | `src/main/engineHost.ts` (EngineHub), `src/preload/engine.ts` |
 | `shell/ShellView.kt` | the native view's WebContentsView and `src/preload/native.ts` |
 | `engine/PickedFiles.kt`, `engine/ContentDocuments.kt` | `EngineHub.pickFiles`, `readFile` and `src/main/files.ts` |
+| `sso/SsoBroker.kt`, `sso/SsoRedirectActivity.kt` | `src/main/ssoLoopback.ts`, `EngineHub.ssoSignIn` |
 | `secrets/` | `src/main/credentials.ts` with `safeStorage` |
 | `bridge/BridgeScripts.kt`, `assets/bridge/` | the preloads (`src/preload/engine.ts`, `native.ts`) with context isolation and `contextBridge` |
 | `bridge/Validators.kt` | `isEngineRequest`, `isHttpRequest`, `isEngineEvent`, `isNativeAction`, `isServiceSettingStatus` |
@@ -66,24 +68,29 @@ The rules are the desktop's (docs/mobile.md, section 5); this is where each is e
 - **Storage apart.** One Profile per engine instance (its own cookies, IndexedDB, service workers) and its own origin; the shell has another. Engine Profiles accept no cookies.
 - **Secrets** are encrypted with a non-exportable AES-256-GCM Keystore key (StrongBox when present), one file per instance in app-private storage, each value bound to its instance and key as associated data. No backups (`allowBackup="false"`, data extraction rules exclude everything).
 - **Files** are picked with the system's document picker (`ACTION_OPEN_DOCUMENT`, no storage permission), only within 10 s after the user asked to attach in that engine's view and once per ask, as on the desktop; one picker at a time. Each picked document gets a random handle kept for that engine only (the oldest forgotten past 200); `readFile` reads at most 16 MB per request (the validator's cap), clipped to the document's size, through the read grant the picker gave.
+- **Single sign-on** (Matrix's `m.login.sso`) follows `EngineHub.ssoSignIn`: only within 10 s after the user submitted a sign-in step in that engine's view, once per submit, to an https homeserver SSO address (`/_matrix/client/{v3,r0}/login/sso/redirect[/<idp>]`, no credentials, query or fragment) on a host the engine may reach. The address opens in a Custom Tab (androidx.browser; the user's browser over the app) with `redirectUrl=<applicationId>.sso:/<48 random hex digits>` in place of the desktop's loopback server. The browser comes back to `SsoRedirectActivity` (exported, a `VIEW`/`BROWSABLE` filter for that scheme only, no UI, reads only the address), which hands the address to `SsoBroker`: one request waits at a time (a new one cancels it, as does its engine stopping), for 5 minutes; an address with another path changes nothing; the first with the path ends the request, with the `loginToken` if it has the desktop's token form (`[A-Za-z0-9._~+/=-]{1,1024}`) or as a failure. The token is the answer to the asking engine's own request only. **Any app could register the same scheme** (custom schemes are not verified, unlike https app links, which would need a domain of ours), so a redirect could reach another app; that is why the path is random and single-use, only one request waits, and the token's form is checked, and Matrix login tokens are short-lived and single-use themselves. An unexpected redirect is logged as ignored.
+  - *Homeservers and a non-http redirect:* the spec allows any URI. matrix.org (Matrix Authentication Service's compatibility layer) accepts `app.multicord.sso:/<path>` (`/login/sso/redirect` answers 303 to its sign-in page, as for an https redirect; it answers 400 to a value that is no URL). Synapse without MAS takes any `redirectUrl` too; its `sso.client_whitelist` only decides whether the user first sees a "continue to your application" page, so a homeserver need not list Multicord, and that page's link is a tap, which the browser needs anyway to hand an address to an app (Element Android uses `element://connect` the same way). Not checked against a Synapse without MAS here.
+  - *Browser sign-in* (Matrix's OAuth 2.0 device authorization grant, the first choice where the homeserver has an account service) needs no redirect: the view shows a code and a link, which opens in the browser like any https link from the view.
 - **Platform:** `INTERNET` is the only permission; cleartext is off and only system CAs are trusted; navigation is blocked in engines, and links from the view open in the browser.
 - **Weaker than the desktop**, accepted for now: all WebViews share one renderer process (no per-engine sandbox, docs/mobile.md section 5); on WebViews without `JS_INJECTION_IN_FRAME_AND_WORLD` the relay and the listener run in the page's main world (they are glue, not the boundary; the log says "bridge relay in the main world"); the shell's image loads are checked by name, then resolved again by the WebView.
 
 ## Tests
 
-`./gradlew testDebugUnitTest` runs JVM tests (36 in all):
+`./gradlew testDebugUnitTest` runs JVM tests (43 in all):
 
 - `NetPolicyFixtureTest` runs **every case of `tests/fixtures/netpolicy-cases.json`** (93: private and public hosts, numeric address forms, host patterns, checkUrl refusals, narrowing, resolved addresses, dropped headers, redirects, the redirect limit). The `copyFixtures` task copies the file from the repository root at build time; it is never duplicated.
 - `WebUrlTest`: the URL parser against browser behaviour (IPv4 and IPv6 forms, IDN, relative redirects).
 - `HttpBridgeTest`: the HTTP bridge with a scripted network (redirect checks, limits, cookies, PublicDns).
 - `ValidatorsTest` runs **every case of `tests/fixtures/engine-validator-cases.json`** (over 300 engine requests, HTTP requests, engine events, image URLs and view actions, each to accept or refuse), which `tests/shared/validatorCases.test.ts` runs against the TypeScript validators; the fixture states the limits it relies on, and both sides check them against their own constants. Copied in by `copyFixtures` as the network policy's cases are.
+- `PickedFilesTest`: handles, the handle cap, ranges clipped to the size, types and names.
+- `SsoBrokerTest`: which SSO addresses an engine may open, the redirect address, the one waiting request (other paths, schemes and authorities ignored, the first match ending it), token forms, the timeout and cancelling.
 - `SecretStoreTest`: scoping, associated data, quota (AES-GCM in software; the Keystore exists only on a device).
 - `EngineSocketsTest`: the socket relay's rules and caps.
 
 ## What is left
 
 For milestone 1:
-- Signing in. Matrix's sign-in uses the browser (OAuth) or single sign-on; both need the shell to open the browser and take the answer back for that engine only (an app link or a custom-tab redirect, in place of the desktop's loopback).
+- Single sign-on all the way through with a real account (it is checked up to the homeserver's sign-in page, and the redirect's rules in unit tests).
 
 For phase 2:
 - The shell with `src/core` (registry, settings, EngineAdapter) in the shell WebView, a phone layout (rail as a drawer), several instances, and the settings page.
