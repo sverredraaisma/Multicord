@@ -17,6 +17,7 @@ import { autoLoads, favouriteKind, messageItem, type MessageHandlers } from "./c
 import { callStrip, forumPosts, listedMessages, pendingFiles, pollForm, postForm, replyBar, voicePanel, type VoiceHandlers, type VoicePanelOptions } from "./components/panels";
 import { isOwnReaction } from "./components/reactions";
 import { attachMobilePanes } from "./mobilePanes";
+import { relayWebSockets } from "./relaySockets";
 import { VoiceCall } from "./voice";
 
 export { formatSize, formatTime, typingText } from "./components/format";
@@ -1556,6 +1557,8 @@ export function startNative(
   denoiser?: ConstructorParameters<typeof VoiceCall>[5],
   e2eeWorker?: ConstructorParameters<typeof VoiceCall>[6],
 ): void {
+  // The phone opens the view's WebSockets (a call's voice server) itself, with the engine's host policy.
+  if (api.sockets) relayWebSockets(doc.defaultView!, api.sockets);
   const view = new NativeView(doc.getElementById("app")!, api, denoiser, e2eeWorker);
   api.onState((state) => view.update(state));
   // The phone's bridge: one pane at a time, and the system's back.

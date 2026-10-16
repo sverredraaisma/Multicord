@@ -52,7 +52,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="68"
+            line="81"
             column="9"/>
     </issue>
 
@@ -63,7 +63,7 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="68"
+            line="81"
             column="9"/>
     </issue>
 
@@ -74,29 +74,18 @@
         errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="69"
+            line="82"
             column="9"/>
     </issue>
 
     <issue
         id="RequiresFeature"
         message="`postMessage` should only be called if the feature `WEB_MESSAGE_LISTENER` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
-        errorLine1="        proxy?.postMessage(JsonObject(mapOf(&quot;k&quot; to JsonPrimitive(&quot;back&quot;), &quot;id&quot; to JsonPrimitive(id))).toString())"
-        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
+        errorLine1="        proxy?.postMessage(message.toString())"
+        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="126"
-            column="9"/>
-    </issue>
-
-    <issue
-        id="RequiresFeature"
-        message="`postMessage` should only be called if the feature `WEB_MESSAGE_LISTENER` is present; to check call `androidx.webkit.WebViewFeature#isFeatureSupported`"
-        errorLine1="        proxy?.postMessage(JsonObject(mapOf(&quot;k&quot; to JsonPrimitive(kind), &quot;body&quot; to body)).toString())"
-        errorLine2="        ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~">
-        <location
-            file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="130"
+            line="154"
             column="9"/>
     </issue>
 
@@ -360,7 +349,7 @@
         errorLine2="                                 ~~~~~~~~~~~~~~~">
         <location
             file="src/main/java/app/multicord/shell/ChatView.kt"
-            line="142"
+            line="167"
             column="34"/>
     </issue>
 

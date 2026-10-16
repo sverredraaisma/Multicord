@@ -86,6 +86,9 @@ export interface BridgedSocketEvents {
 type BridgedSocketEvent = BridgedSocketEvents[keyof BridgedSocketEvents];
 type SocketListener = (event: BridgedSocketEvent) => void;
 
+/** What a bridged WebSocket needs of its bridge: socket requests, and the socket events coming back. */
+export type SocketBridge = Pick<EngineBridge, "request" | "onSocket">;
+
 /**
  * A WebSocket the shell opens and relays for the engine (bridgeWebSocket).
  * It behaves as a page's WebSocket does, as far as modules use one: the
@@ -99,9 +102,14 @@ export class BridgedWebSocket {
   static readonly CLOSING = 2;
   static readonly CLOSED = 3;
   readyState = BridgedWebSocket.CONNECTING;
-  readonly binaryType = "arraybuffer";
+  /** Binary messages arrive as ArrayBuffers only; a page may set it so (LiveKit does), never to blob. */
+  binaryType: "arraybuffer" = "arraybuffer";
   /** The subprotocol the server chose, once open; "" for none. */
   protocol = "";
+  /** No extensions are negotiated through the bridge. */
+  readonly extensions = "";
+  /** What waits to be sent is the shell's to count (MAX_SOCKET_QUEUE); never reported here. */
+  readonly bufferedAmount = 0;
   /** Handlers as a page's WebSocket has them; each runs after the listeners for its event. */
   onopen: ((event: BridgedSocketEvents["open"]) => void) | null = null;
   onmessage: ((event: BridgedSocketEvents["message"]) => void) | null = null;
@@ -110,16 +118,21 @@ export class BridgedWebSocket {
   private id: string | undefined;
   private closeAsked: { code?: number; reason?: string } | undefined;
   private readonly listeners = new Map<string, Set<SocketListener>>();
+  /** Listeners added with { once: true }: each runs for one event, then goes. */
+  private readonly once = new WeakSet<SocketListener>();
 
   constructor(
     readonly url: string,
-    private readonly bridge: EngineBridge,
+    private readonly bridge: SocketBridge,
   ) {}
 
-  addEventListener<K extends keyof BridgedSocketEvents>(type: K, listener: (event: BridgedSocketEvents[K]) => void): void {
+  addEventListener<K extends keyof BridgedSocketEvents>(type: K, listener: (event: BridgedSocketEvents[K]) => void, options?: boolean | { once?: boolean }): void {
     let set = this.listeners.get(type);
     if (!set) this.listeners.set(type, (set = new Set()));
+    if (set.has(listener as SocketListener)) return;
     set.add(listener as SocketListener);
+    if (typeof options === "object" && options.once) this.once.add(listener as SocketListener);
+    else this.once.delete(listener as SocketListener);
   }
 
   removeEventListener<K extends keyof BridgedSocketEvents>(type: K, listener: (event: BridgedSocketEvents[K]) => void): void {
@@ -193,7 +206,11 @@ export class BridgedWebSocket {
   }
 
   private dispatch(event: BridgedSocketEvent): void {
-    for (const listener of [...(this.listeners.get(event.type) ?? [])]) listener(event);
+    const set = this.listeners.get(event.type);
+    for (const listener of [...(set ?? [])]) {
+      if (this.once.has(listener)) set!.delete(listener);
+      listener(event);
+    }
     (this[`on${event.type}`] as SocketListener | null)?.call(this, event);
   }
 }
@@ -207,7 +224,7 @@ export class BridgedWebSocket {
  * Returns a factory for a module's socket factory: `(url, protocols?) =>
  * socket`, with subprotocols as a page's WebSocket takes them.
  */
-export function bridgeWebSocket(bridge: EngineBridge): (url: string, protocols?: string | string[]) => BridgedWebSocket {
+export function bridgeWebSocket(bridge: SocketBridge): (url: string, protocols?: string | string[]) => BridgedWebSocket {
   const sockets = new Map<string, BridgedWebSocket>();
   bridge.onSocket((event) => {
     if (!isEngineSocketEvent(event)) return;

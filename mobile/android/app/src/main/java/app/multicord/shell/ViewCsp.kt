@@ -7,9 +7,11 @@ package app.multicord.shell
  * origin only (LiveKit's end-to-end encryption worker for Matrix calls, served as livekit-e2ee-worker.js, and
  * RNNoise's audio worklet); pictures and media over https or inline. Network connections go only where the
  * view's engine may reach, as on the desktop (engineHost.ts, the view's request filter): a call's voice
- * server over https and wss. A WebView shows WebSockets to no request hook, so for them this header is the
- * only check; the hosts are those when the page loads (an engine's later host lock narrows them at the next
- * load). Fetches still pass ChatView's shouldInterceptRequest, which also refuses private addresses.
+ * server over https (LiveKit asks it over HTTP when a connection fails, and whether the network is back
+ * before it reconnects). These fetches also pass ChatView's shouldInterceptRequest, which refuses private
+ * addresses. No WebSockets at all: a WebView shows them to no request hook, so the view's calls get theirs
+ * from native code (ViewSockets), checked as an engine's are, with the engine's hosts as they are when each
+ * opens. A call's media is WebRTC (UDP through ICE, or TURN), which neither CSP nor this covers.
  */
 object ViewCsp {
     /** A host pattern as NetPolicy has them: a name, or "*." and a name. Anything else is left out. */
@@ -18,12 +20,12 @@ object ViewCsp {
     /** The policy for a view whose engine may reach `hosts` (null: any public host). */
     fun of(hosts: List<String>?): String {
         val network = if (hosts == null) {
-            listOf("https:", "wss:")
+            listOf("https:")
         } else {
             hosts.map { it.lowercase() }.filter { it.length <= 253 && HOST.matches(it) }.flatMap { host ->
                 // NetPolicy's "*.example.com" covers example.com itself; CSP's does not.
                 val names = if (host.startsWith("*.")) listOf(host.removePrefix("*."), host) else listOf(host)
-                names.flatMap { listOf("https://$it", "wss://$it") }
+                names.map { "https://$it" }
             }.distinct()
         }
         return listOf(

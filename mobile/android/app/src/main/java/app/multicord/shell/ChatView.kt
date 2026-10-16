@@ -3,6 +3,8 @@ package app.multicord.shell
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.PermissionRequest
@@ -20,6 +22,8 @@ import app.multicord.BuildConfig
 import app.multicord.bridge.BridgeScripts
 import app.multicord.bridge.Wire
 import app.multicord.call.AudioRoute
+import app.multicord.call.Call
+import app.multicord.engine.OkHttpSockets
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -32,7 +36,8 @@ import kotlinx.serialization.json.longOrNull
  * own session), so no instance's view shares storage or an origin with another's, the shell page's or any
  * engine's. It holds no service credentials. It gets display state from its own engine only, and its user
  * actions go to native code, which checks them and hands them to that engine alone. What it loads from the
- * network (pictures, media) may come only from public hosts its engine may reach, as on the desktop.
+ * network (pictures, media) may come only from public hosts its engine may reach, as on the desktop; its
+ * calls' WebSockets are opened by native code with the same policy as the engine's own (ViewSockets).
  */
 class ChatView(
     private val context: Context,
@@ -58,6 +63,14 @@ class ChatView(
     private var state: JsonObject? = null
     private var media: JsonElement? = null
     private var routes: JsonObject? = null
+    private val main = Handler(Looper.getMainLooper())
+    /** The view's call sockets (LiveKit's signalling): opened here, only while its engine reports a call. */
+    private val sockets = ViewSockets(
+        hosts = viewHosts,
+        inCall = { Call.of(instanceId, state) != null },
+        connect = OkHttpSockets({ main.post(it) })::connect,
+        emit = { post("socket", it) },
+    )
 
     /** Whether the view's page is up and can answer (a back press, say). */
     val ready: Boolean get() = proxy != null
@@ -92,6 +105,12 @@ class ChatView(
             when ((parsed["k"] as? JsonPrimitive)?.content) {
                 "act" -> onAction(parsed["body"])
                 "route" -> AudioRoute.of((parsed["route"] as? JsonPrimitive)?.takeIf { it.isString }?.content)?.let(onRoute)
+                "socket" -> {
+                    val n = (parsed["n"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull?.takeIf { it in 1..MAX_REQUEST } ?: return@install
+                    val answer = sockets.handle(parsed["body"])
+                    answer.exceptionOrNull()?.let { Log.w(TAG, "[view $instanceId] socket request refused: ${it.message}") }
+                    send(socketDone(n, answer))
+                }
                 "back" -> {
                     val id = (parsed["id"] as? JsonPrimitive)?.takeIf { !it.isString }?.longOrNull ?: return@install
                     onBack(id, (parsed["handled"] as? JsonPrimitive)?.content == "true")
@@ -123,14 +142,20 @@ class ChatView(
 
     /** Asks the view whether it can go back; it answers through onBack with this id. */
     fun back(id: Long) {
-        proxy?.postMessage(JsonObject(mapOf("k" to JsonPrimitive("back"), "id" to JsonPrimitive(id))).toString())
+        send(JsonObject(mapOf("k" to JsonPrimitive("back"), "id" to JsonPrimitive(id))))
     }
 
     private fun post(kind: String, body: JsonElement) {
-        proxy?.postMessage(JsonObject(mapOf("k" to JsonPrimitive(kind), "body" to body)).toString())
+        send(JsonObject(mapOf("k" to JsonPrimitive(kind), "body" to body)))
+    }
+
+    /** To the view's page, while it is up. */
+    private fun send(message: JsonObject) {
+        proxy?.postMessage(message.toString())
     }
 
     fun destroy() {
+        sockets.closeAll()
         webView?.let {
             (it.parent as? android.view.ViewGroup)?.removeView(it)
             it.destroy()
@@ -148,7 +173,10 @@ class ChatView(
         }
 
         override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
-            if (view === webView) proxy = null
+            if (view !== webView) return
+            proxy = null
+            // The page that opened them is gone.
+            sockets.closeAll()
         }
 
         override fun onRenderProcessGone(view: WebView, detail: RenderProcessGoneDetail): Boolean {
@@ -178,6 +206,17 @@ class ChatView(
         private const val LISTENER = "multicordView"
         /** The events view.js and the relay exchange (view.js has the same name). */
         private const val CHANNEL = "multicord-view"
+
+        /** Socket requests are numbered by the page from 1; as Number.MAX_SAFE_INTEGER. */
+        private const val MAX_REQUEST = 9007199254740991L
+
+        /** The answer to the view's socket request number `n`. */
+        fun socketDone(n: Long, answer: Result<JsonElement?>): JsonObject {
+            val fields = mutableMapOf<String, JsonElement>("k" to JsonPrimitive("socketDone"), "n" to JsonPrimitive(n), "ok" to JsonPrimitive(answer.isSuccess))
+            answer.onSuccess { fields["value"] = it ?: JsonNull }
+            answer.onFailure { fields["error"] = JsonPrimitive(it.message ?: "Socket request failed") }
+            return JsonObject(fields)
+        }
 
         /** The Profile an instance's chat view keeps its web storage in. */
         fun profileName(instanceId: String) = "view-$instanceId"

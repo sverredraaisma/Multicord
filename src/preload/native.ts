@@ -1,3 +1,4 @@
+import type { EngineRequest, EngineSocketEvent } from "../shared/engine";
 import { FAVOURITES_IPC, type FavouritesAction, type FavouritesState } from "../shared/favourites";
 import { IPC } from "../shared/ipc";
 import { NATIVE_IPC, type AudioRoute, type AudioRoutes, type NativeAction, type NativeViewState } from "../shared/native";
@@ -28,6 +29,11 @@ export interface NativeApi {
   onAudioRoutes?(cb: (routes: AudioRoutes) => void): void;
   /** Phones only: plays the call through this route, one the phone said is available. */
   setAudioRoute?(route: AudioRoute): void;
+  /**
+   * Phones only: WebSockets the phone opens and relays for the view's calls (LiveKit's signalling), as it
+   * does an engine's: socketOpen, socketSend and socketClose requests, and the socket events that follow.
+   */
+  sockets?: { request(request: EngineRequest): Promise<unknown>; onSocket(cb: (event: EngineSocketEvent) => void): void };
 }
 
 export function createNativeApi(ipc: PreloadIpc): NativeApi {

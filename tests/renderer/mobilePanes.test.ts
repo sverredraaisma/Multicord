@@ -84,6 +84,24 @@ describe("the chat view's panes on a phone", () => {
     expect(document.documentElement.classList.contains("mobile")).toBe(true);
     expect(onBack).toHaveBeenCalledOnce();
   });
+
+  it("opens the view's WebSockets through the phone's bridge, where it has one", () => {
+    const original = window.WebSocket;
+    document.body.innerHTML = '<div id="app"></div>';
+    const api = { onState: vi.fn(), act: vi.fn(), screenAudioEnded: vi.fn(), onVoiceSettings: vi.fn(), onMediaAutoLoad: vi.fn(), onCompact: vi.fn(), onVoiceCommand: vi.fn(), onFavourites: vi.fn(), favourites: vi.fn() } satisfies NativeApi;
+    startNative(document, api);
+    expect(window.WebSocket).toBe(original);
+    const sockets = { request: vi.fn(() => new Promise<unknown>(() => {})), onSocket: vi.fn() };
+    startNative(document, { ...api, onBack: vi.fn(), sockets });
+    try {
+      expect(window.WebSocket).not.toBe(original);
+      new window.WebSocket("wss://sfu.example/rtc");
+      expect(sockets.request).toHaveBeenCalledWith({ type: "socketOpen", url: "wss://sfu.example/rtc" });
+      expect(sockets.onSocket).toHaveBeenCalledOnce();
+    } finally {
+      Object.defineProperty(window, "WebSocket", { value: original, writable: true, configurable: true });
+    }
+  });
 });
 
 describe("calls on a phone", () => {

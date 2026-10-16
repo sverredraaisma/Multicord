@@ -498,6 +498,30 @@ describe("bridgeWebSocket", () => {
     expect(calls).toEqual(["listener open", "onopen open true", "onmessage 1,2", "onerror", "onclose 1006 false"]);
   });
 
+  it("takes listeners once, as a page's WebSocket does (LiveKit's signalling uses it)", async () => {
+    const { open, socket: shell } = sockets();
+    const socket = open("wss://a.example/");
+    expect(socket.extensions).toBe("");
+    expect(socket.bufferedAmount).toBe(0);
+    const calls: string[] = [];
+    const once = (event: { type: string }) => calls.push(`once ${event.type}`);
+    const always = (event: { type: string }) => calls.push(`always ${event.type}`);
+    socket.addEventListener("message", once, { once: true });
+    socket.addEventListener("message", always);
+    // The same listener again is no second listener.
+    socket.addEventListener("message", always, false);
+    // Removed and added again without once, a once listener stays.
+    const again = (event: { type: string }) => calls.push(`again ${event.type}`);
+    socket.addEventListener("message", again, { once: true });
+    socket.removeEventListener("message", again);
+    socket.addEventListener("message", again);
+    await flush();
+    shell({ type: "open", id: "1" });
+    shell({ type: "message", id: "1", data: "a" });
+    shell({ type: "message", id: "1", data: "b" });
+    expect(calls).toEqual(["once message", "always message", "again message", "always message", "again message"]);
+  });
+
   it("reports a refused socket as an error and an abnormal close", async () => {
     const { open, log } = sockets(() => {
       throw new Error("Socket refused: evil.example is not one of this module's hosts");

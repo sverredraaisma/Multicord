@@ -23,10 +23,10 @@ class ViewCspTest {
     }
 
     @Test
-    fun aCallsServerOnlyWhereTheEngineMayReach() {
-        assertEquals("connect-src 'self' data: blob: https: wss:", directive(ViewCsp.of(null), "connect-src"))
+    fun aCallsServerOverHttpsOnlyWhereTheEngineMayReachAndNoWebSockets() {
+        assertEquals("connect-src 'self' data: blob: https:", directive(ViewCsp.of(null), "connect-src"))
         assertEquals(
-            "connect-src 'self' data: blob: https://web.fluxer.app wss://web.fluxer.app https://fluxer.media wss://fluxer.media https://*.fluxer.media wss://*.fluxer.media",
+            "connect-src 'self' data: blob: https://web.fluxer.app https://fluxer.media https://*.fluxer.media",
             directive(ViewCsp.of(listOf("web.fluxer.app", "*.fluxer.media")), "connect-src"),
         )
         assertEquals("connect-src 'self' data: blob:", directive(ViewCsp.of(emptyList()), "connect-src"))
@@ -35,7 +35,8 @@ class ViewCspTest {
     @Test
     fun leavesOutAnythingThatIsNoHostPattern() {
         val csp = ViewCsp.of(listOf("ok.example", "a.com; script-src *", "https://x.example", "*", "*.*.example", "bad host", "x.example:443", "-x.example", "OK2.Example"))
-        assertEquals("connect-src 'self' data: blob: https://ok.example wss://ok.example https://ok2.example wss://ok2.example", directive(csp, "connect-src"))
+        assertEquals("connect-src 'self' data: blob: https://ok.example https://ok2.example", directive(csp, "connect-src"))
+        assertFalse(csp.contains("wss:") || csp.contains("ws:"))
         assertEquals(1, csp.split("script-src").size - 1)
     }
 }
