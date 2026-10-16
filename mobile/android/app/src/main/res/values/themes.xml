@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Multicord for Android. Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later. -->
+<resources>
+    <!-- The app's theme. Android 9 has no dark theme setting for apps to follow: light, as the pages are
+         "as the system" there (prefers-color-scheme: light). From Android 10, values-v29 follows the phone. -->
+    <style name="Theme.Multicord" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar" />
+</resources>

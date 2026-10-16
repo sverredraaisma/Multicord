@@ -22,6 +22,7 @@ import {
   typingIndicators,
   type ServiceSettingValues,
   type SettingsViewState,
+  type Theme,
 } from "../shared/settings";
 import { MOBILE_MODULES, type MobileModule } from "./modules";
 import { isBootInfo, isNativeEvent, MAX_COPY, type BootInfo, type NativeEvent, type ShellBridge, type ShellCommand } from "./protocol";
@@ -47,6 +48,8 @@ export interface UiState {
   messages: MessagesState;
   /** Unread direct messages across every service, for the drawer's Messages entry. */
   messagesBadge: { unread: boolean; mentions: number };
+  /** The theme setting: the page follows the system's, or is always light or dark. */
+  theme: Theme;
 }
 
 /** The page's side: it draws what the shell says. */
@@ -117,7 +120,13 @@ export class MobileShell {
     this.registry.onChange(() => this.changed());
     this.store.changed.on(({ patch }) => {
       if (patch.general?.railGrouping !== undefined) this.registry.setGrouping(this.store.get().general.railGrouping);
+      if (patch.general?.theme !== undefined) {
+        this.sendTheme();
+        this.changed();
+      }
     });
+    // The chat views and the screen behind the pages follow the theme setting too.
+    this.sendTheme();
 
     const rules = configurableModules(this.modules);
     const { platforms, errors } = loadPlatforms(() => this.platformsText, rules);
@@ -163,6 +172,8 @@ export class MobileShell {
       secretsPersistent: () => true,
       // "Start with your phone": native code reads it from the settings file at boot or after an update (BootReceiver).
       launchAtLoginSupported: true,
+      // The pages take the theme setting as data-theme, native code for the chat views and the screen.
+      themes: true,
       version: boot.version,
       streaming: () => this.streaming(),
       openService: (id) => this.show(id),
@@ -184,6 +195,10 @@ export class MobileShell {
 
   private send(command: ShellCommand): void {
     this.bridge.send(command);
+  }
+
+  private sendTheme(): void {
+    this.send({ type: "theme", theme: this.general().theme });
   }
 
   private general() {
@@ -432,6 +447,7 @@ export class MobileShell {
       // While streaming, the list says who wrote, never what (as on the desktop).
       messages: { conversations: this.streaming() ? conversations.map(({ preview: _preview, ...c }) => c) : conversations, activeKey: this.registry.activeKeyValue },
       messagesBadge: { unread: conversations.some((c) => c.unread), mentions: conversations.reduce((sum, c) => sum + c.mentions, 0) },
+      theme: this.general().theme,
     });
   }
 

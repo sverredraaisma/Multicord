@@ -328,6 +328,27 @@ describe("settings", () => {
     expect(settings.length).toBeGreaterThan(1);
   });
 
+  it("offers the theme setting, and passes it to native code and the page, at start and as it changes", async () => {
+    const { shell, settings, of, last } = await started({ platforms: TWO, settings: JSON.stringify({ general: { theme: "dark" } }) });
+    expect(of("theme")).toEqual([{ type: "theme", theme: "dark" }]);
+    expect(last().theme).toBe("dark");
+    shell.setSettingsOpen(true);
+    expect(settings.at(-1)!.themes).toBe(true);
+    const renders = of("theme").length;
+    await shell.settingsAction({ type: "update", patch: { general: { theme: "light" } } });
+    expect(of("theme").slice(renders)).toEqual([{ type: "theme", theme: "light" }]);
+    expect(last().theme).toBe("light");
+    // Other settings leave it alone.
+    await shell.settingsAction({ type: "update", patch: { general: { zoom: 1.1 } } });
+    expect(of("theme")).toHaveLength(2);
+  });
+
+  it("follows the system's theme by default", async () => {
+    const { of, last } = await started();
+    expect(of("theme")).toEqual([{ type: "theme", theme: "system" }]);
+    expect(last().theme).toBe("system");
+  });
+
   it("sends a service's settings to its engine, and its media limit to its view", async () => {
     const { shell, of } = await started();
     await shell.settingsAction({ type: "update", patch: { services: { matrix: { options: { readReceipts: false } } } } });

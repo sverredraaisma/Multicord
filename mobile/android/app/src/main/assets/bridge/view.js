@@ -9,6 +9,7 @@
 // Besides the desktop's API it has onBack: the system's back goes to the view first (one pane at a time,
 // src/renderer/mobilePanes.ts), and native code hears whether the view used it. And a call's audio routes:
 // onAudioRoutes hears where it plays and where it can, setAudioRoute asks for another (CallAudio.kt). And
+// onTheme: the theme setting, which the desktop passes on as prefers-color-scheme instead. And
 // sockets: the WebSockets of the view's calls (LiveKit's signalling), which native code opens and relays as it
 // does an engine's (ViewSockets.kt, bridgeWebSocket in src/engine/runtime.ts); the page has none of its own.
 // Messages are JSON; a Uint8Array travels as {"$b64": "<base64>"} (Wire.kt).
@@ -33,7 +34,7 @@
   const encode = (message) => JSON.stringify(message, (_key, v) => (v instanceof Uint8Array ? { [BYTES]: toBase64(v) } : v));
 
   const send = (message) => window.dispatchEvent(new CustomEvent(`${CHANNEL}:out`, { detail: encode(message) }));
-  const listeners = { state: [], media: [], back: [], routes: [], socket: [] };
+  const listeners = { state: [], media: [], theme: [], back: [], routes: [], socket: [] };
   // Socket requests waiting for native code's answer, by number.
   const pending = new Map();
   let requests = 0;
@@ -61,6 +62,10 @@
       case "media":
         if (message.body === null) return run(listeners.media, Infinity);
         if (typeof message.body === "number" && message.body >= 0) run(listeners.media, message.body);
+        return;
+      // The theme setting: as the system, or always light or dark.
+      case "theme":
+        if (message.body === "system" || message.body === "light" || message.body === "dark") run(listeners.theme, message.body);
         return;
       // Where a call plays and where it can (CallAudio.kt); the page checks the shape again (isAudioRoutes).
       case "routes":
@@ -97,6 +102,7 @@
     onState: (cb) => void listeners.state.push(cb),
     act: (action) => send({ k: "act", body: action }),
     onMediaAutoLoad: (cb) => void listeners.media.push(cb),
+    onTheme: (cb) => void listeners.theme.push(cb),
     onBack: (cb) => void listeners.back.push(cb),
     onAudioRoutes: (cb) => void listeners.routes.push(cb),
     // Native code takes only a route it offered (AudioRoute.of), for a call in progress.

@@ -2,7 +2,7 @@ import type { EngineRequest, EngineSocketEvent } from "../shared/engine";
 import { FAVOURITES_IPC, type FavouritesAction, type FavouritesState } from "../shared/favourites";
 import { IPC } from "../shared/ipc";
 import { NATIVE_IPC, type AudioRoute, type AudioRoutes, type NativeAction, type NativeViewState } from "../shared/native";
-import { isAutoLoadLimit, isVoiceCommand, SETTINGS_IPC, type VoiceCommand, type VoiceSettings } from "../shared/settings";
+import { isAutoLoadLimit, isVoiceCommand, SETTINGS_IPC, type Theme, type VoiceCommand, type VoiceSettings } from "../shared/settings";
 import type { PreloadIpc } from "./discord/index";
 
 /** The native chat view's whole bridge: display state in, user actions out. */
@@ -25,6 +25,8 @@ export interface NativeApi {
   favourites(action: FavouritesAction): void;
   /** Phones only (mobile/android's view bridge): the system's back; the callback says whether the view used it. */
   onBack?(cb: () => boolean): void;
+  /** Phones only: the theme setting, which the desktop passes on as prefers-color-scheme instead. */
+  onTheme?(cb: (theme: Theme) => void): void;
   /** Phones only: where a call plays (earpiece, speaker, headset), whenever that or what is available changes. */
   onAudioRoutes?(cb: (routes: AudioRoutes) => void): void;
   /** Phones only: plays the call through this route, one the phone said is available. */

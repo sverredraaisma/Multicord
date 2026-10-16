@@ -56,3 +56,12 @@ export function countBadge(doc: Document, count: number, className = "badge"): H
 export function setColor(element: HTMLElement, property: string, color: string | undefined): void {
   if (color) element.style.setProperty(property, color);
 }
+
+/**
+ * The theme setting on a page whose host cannot pass it on as prefers-color-scheme (the phone's WebViews):
+ * data-theme on the root pins light or dark (shell.css); as the system, the page follows prefers-color-scheme.
+ */
+export function applyTheme(doc: Document, theme: "system" | "light" | "dark"): void {
+  if (theme === "system") delete doc.documentElement.dataset.theme;
+  else doc.documentElement.dataset.theme = theme;
+}

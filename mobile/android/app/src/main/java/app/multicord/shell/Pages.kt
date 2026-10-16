@@ -9,6 +9,8 @@ import android.util.Log
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import app.multicord.net.NetPolicy
 import app.multicord.net.UrlPolicy
 import java.io.InputStream
@@ -31,6 +33,16 @@ internal object Pages {
             javaScriptCanOpenWindowsAutomatically = false
             safeBrowsingEnabled = false
         }
+        // Our pages draw their own light and dark themes, as the theme setting says (data-theme, prefers-color-scheme).
+        noAlgorithmicDarkening(view)
+    }
+
+    /**
+     * The WebView never darkens a page itself (algorithmic darkening; off by default for apps that target
+     * Android 13 and later, said here so a change of theme or target cannot turn it on): pages keep their own themes.
+     */
+    fun noAlgorithmicDarkening(view: WebView) {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) WebSettingsCompat.setAlgorithmicDarkeningAllowed(view.settings, false)
     }
 
     /**

@@ -91,6 +91,17 @@ describe("the phone's shell page", () => {
     vi.useRealTimers();
   });
 
+  it("takes the theme setting: as the system's, or always light or dark", async () => {
+    const { shell } = await page();
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+    await shell.settingsAction({ type: "update", patch: { general: { theme: "light" } } });
+    expect(document.documentElement.dataset.theme).toBe("light");
+    await shell.settingsAction({ type: "update", patch: { general: { theme: "dark" } } });
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    await shell.settingsAction({ type: "update", patch: { general: { theme: "system" } } });
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+  });
+
   it("closes the drawer from its scrim", async () => {
     await page();
     $("menu").click();

@@ -37,7 +37,7 @@
         android:label="Multicord"
         android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.DeviceDefault.NoActionBar"
+        android:theme="@style/Theme.Multicord"
         android:usesCleartextTraffic="false">
 
         <!-- The screen only: engines, views and the shell page live in the Hub, beyond the activity. -->

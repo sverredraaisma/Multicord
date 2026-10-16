@@ -4,10 +4,10 @@ import type { NativeApi } from "../preload/native";
 import type { FavouritesAction, FavouritesState } from "../shared/favourites";
 import type { NativeChannelCan, NativeChannelView, NativeListedMessage, NativeMessage, NativeViewState, PickerEmoji } from "../shared/native";
 import { channelCan, chatFolders, customEmojiList, emojiUrls, gifResults, incomingCall, isAudioRoutes, MAX_JOIN_ADDRESS, MAX_MESSAGE_LENGTH, memberList, MAX_SEARCH_QUERY, memberProfile, messageEmbeds, messageList, searchResults, stickerPacks, threadView, unreadMarker, type NativeUnread } from "../shared/native";
-import type { VoiceCommand, VoiceSettings } from "../shared/settings";
+import { isTheme, type VoiceCommand, type VoiceSettings } from "../shared/settings";
 import { loginForm, mfaForm, promptForm, setFormMessage, setIdentityKind, setPromptQr, type LoginForm } from "./components/auth";
 import { channelList, folderTabs } from "./components/channels";
-import { el, icon, ICONS } from "./components/dom";
+import { applyTheme, el, icon, ICONS } from "./components/dom";
 import { emojiPicker, type SourceBadge } from "./components/emojiPicker";
 import { MediaPicker, type MediaPickerData, type MediaPickerHandlers, type RecentMedia } from "./components/mediaPicker";
 import { typingText } from "./components/format";
@@ -1673,6 +1673,10 @@ export function startNative(
     // The full call panel is in the conversation list; over a conversation, compact controls stand in for it.
     const phone = { screenShare: false, strip: { onReturn: () => panes.showList() } };
     view.setVoiceOptions(phone);
+    // The theme setting, from the shell through native code (the desktop's comes as prefers-color-scheme).
+    api.onTheme?.((theme) => {
+      if (isTheme(theme)) applyTheme(doc, theme);
+    });
     const { onAudioRoutes, setAudioRoute } = api;
     if (onAudioRoutes && setAudioRoute) {
       onAudioRoutes((routes) => {

@@ -5,6 +5,7 @@ import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Color
 import android.media.AudioManager
 import android.net.Uri
@@ -15,6 +16,7 @@ import android.util.TypedValue
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.webkit.WebView
 import android.widget.FrameLayout
@@ -24,6 +26,7 @@ import android.window.OnBackInvokedDispatcher
 import androidx.browser.customtabs.CustomTabsIntent
 import app.multicord.background.NotificationTarget
 import app.multicord.call.Call
+import app.multicord.shell.Theme
 
 /**
  * The screen: the shell page (src/core with the bar, the drawer and the settings page) over the chat view
@@ -39,6 +42,8 @@ class MainActivity : Activity(), Hub.Screen {
     /** The open permission request's caller and what it asked; one request at a time. */
     private var permitting: Pair<List<String>, (Set<String>) -> Unit>? = null
     private var backCallback: OnBackInvokedCallback? = null
+    /** The theme setting, as the hub last said ("system" until the shell page says otherwise). */
+    private var theme = "system"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -64,6 +69,7 @@ class MainActivity : Activity(), Hub.Screen {
         viewArea = FrameLayout(this)
         root.addView(viewArea, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT).apply { topMargin = barHeight() })
         setContentView(root)
+        paintTheme()
         val hub = app.hub()
         this.hub = hub
         hub.attach(this, this)
@@ -100,6 +106,29 @@ class MainActivity : Activity(), Hub.Screen {
             root.addView(shell, params)
         } else {
             shell.layoutParams = params
+        }
+    }
+
+    override fun theme(theme: String) {
+        this.theme = theme
+        paintTheme()
+    }
+
+    /** The phone's dark theme was turned on or off (the manifest keeps the activity through uiMode changes). */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        paintTheme()
+    }
+
+    /** The screen behind the pages, and the system bars' icons, as the theme setting says. */
+    private fun paintTheme() {
+        if (!::root.isInitialized) return
+        val night = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
+        val dark = Theme.isDark(theme, night)
+        root.setBackgroundColor(Theme.background(dark))
+        if (Build.VERSION.SDK_INT >= 30) {
+            val light = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+            window.insetsController?.setSystemBarsAppearance(if (dark) 0 else light, light)
         }
     }
 
@@ -227,6 +256,6 @@ class MainActivity : Activity(), Hub.Screen {
         const val REQUEST_PICK = 1
         const val REQUEST_NOTIFY = 2
         const val REQUEST_PERMISSIONS = 3
-        val BACKGROUND = Color.rgb(0x1e, 0x1f, 0x22)
+        val BACKGROUND = Theme.DARK_BACKGROUND
     }
 }

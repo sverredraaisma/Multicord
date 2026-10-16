@@ -25,6 +25,8 @@ object ShellCommands {
     const val MAX_BADGE = 1_000_000
     const val MAX_EXIT = 200
     val FILES = setOf("settings", "platforms", "order")
+    /** The theme setting's values (src/shared/settings.ts, THEMES). */
+    val THEMES = setOf("system", "light", "dark")
     private val INSTANCE_ID = Regex("^[a-z0-9][a-z0-9-]{0,31}$")
 
     fun isInstanceId(value: JsonElement?): Boolean = value.string()?.let(INSTANCE_ID::matches) == true
@@ -56,6 +58,7 @@ object ShellCommands {
                 text(v["target"], Limits.MAX_KEY, 1) &&
                 optional(v["railKey"]) { text(it, Limits.MAX_KEY, 1) } &&
                 optional(v["urgent"]) { it.boolean() != null }
+            "theme" -> only(v, "type", "theme") && v["theme"].string() in THEMES
             "badge" -> only(v, "type", "count") && count(v["count"], MAX_BADGE.toDouble())
             "clearSession", "forgetSecrets", "restartEngine" -> only(v, "type", "instance") && isInstanceId(v["instance"])
             "restart", "backUnhandled" -> only(v, "type")

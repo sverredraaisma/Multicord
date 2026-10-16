@@ -74,6 +74,9 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
 
         /** A call is in progress (null: none): the screen stays on for video, volume keys set the call's volume. */
         fun inCall(call: Call?)
+
+        /** The theme setting ("system", "light" or "dark"): the screen behind the pages and the system bars follow it. */
+        fun theme(theme: String)
     }
 
     private val main = Handler(Looper.getMainLooper())
@@ -92,6 +95,8 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
     private var booted = false
     private var nextBack = 0L
     private var waitingBack: Long? = null
+    /** The theme setting, as the shell page last said. */
+    private var theme = "system"
 
     /** The launcher badge's count, as the shell page last said. */
     var badge = 0
@@ -133,6 +138,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
     fun attach(screen: Screen, activity: Context) {
         this.screen = screen
         screen.inCall(callsByInstance.values.firstOrNull())
+        screen.theme(theme)
         shellContext.baseContext = activity
         for (instance in instances.values) instance.context.baseContext = activity
         place()
@@ -229,6 +235,12 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
                 val limit = command["mediaAutoLoad"] ?: JsonNull
                 instance.media = limit
                 instance.view?.mediaAutoLoad(limit)
+            }
+            // Every chat view, now and when made, and the screen.
+            "theme" -> {
+                theme = text("theme")
+                for (instance in instances.values) instance.view?.theme(theme)
+                screen?.theme(theme)
             }
             "notify" -> {
                 val id = text("instance")
@@ -504,6 +516,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
             onRoute = { route -> if (callsByInstance.values.firstOrNull()?.instance == instance.id) callAudio.choose(route) },
         )
         view.start()
+        view.theme(theme)
         instance.media?.let(view::mediaAutoLoad)
         instance.state?.let(view::showState)
         instance.view = view

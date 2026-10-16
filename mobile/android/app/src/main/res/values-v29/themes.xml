@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Multicord for Android. Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later. -->
+<resources>
+    <!-- Light or dark as the phone's dark theme setting is: the WebViews take prefers-color-scheme from it
+         (isLightTheme), so pages with the theme setting "as the system" follow the phone; a page with light or
+         dark chosen pins it itself (data-theme). The WebViews never darken a page themselves (Pages.kt). -->
+    <style name="Theme.Multicord" parent="@android:style/Theme.DeviceDefault.DayNight">
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

@@ -5,7 +5,7 @@
 // holds the cases both sides run.
 import { PLATFORM_ID } from "../core/platforms";
 import { isEngineCommand, isEngineEvent, MAX_BODY_TEXT, MAX_KEY, MAX_TEXT, type EngineCommand, type EngineEvent } from "../shared/engine";
-import { isServiceSettingValues, type ServiceSettingValues } from "../shared/settings";
+import { isServiceSettingValues, isTheme, type ServiceSettingValues, type Theme } from "../shared/settings";
 
 /** The files native code keeps for the shell page, in app-private storage. */
 export const SHELL_FILES = ["settings", "platforms", "order"] as const;
@@ -52,6 +52,11 @@ export type ShellCommand =
   | { type: "layout"; instance: string | null; overlay: boolean }
   /** An instance's chat view's limit for media that loads by itself, in bytes; null for any size. */
   | { type: "viewSettings"; instance: string; mediaAutoLoad: number | null }
+  /**
+   * The theme setting (as the system, or always light or dark), for every chat view and the screen
+   * behind the pages; the shell page applies it to itself.
+   */
+  | { type: "theme"; theme: Theme }
   /** Shows a notification for an instance; tapping it comes back as openNotification. */
   | { type: "notify"; instance: string; title: string; body: string; target: string; railKey?: string; urgent?: boolean }
   /** The unread mention count, for the launcher badge. */
@@ -121,6 +126,8 @@ export function isShellCommand(value: unknown): value is ShellCommand {
       return only(value, ["type", "instance", "overlay"]) && (value.instance === null || isInstanceId(value.instance)) && typeof value.overlay === "boolean";
     case "viewSettings":
       return only(value, ["type", "instance", "mediaAutoLoad"]) && isInstanceId(value.instance) && (value.mediaAutoLoad === null || isCount(value.mediaAutoLoad, Number.MAX_SAFE_INTEGER));
+    case "theme":
+      return only(value, ["type", "theme"]) && isTheme(value.theme);
     case "notify":
       return (
         only(value, ["type", "instance", "title", "body", "target", "railKey", "urgent"]) &&

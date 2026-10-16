@@ -113,6 +113,23 @@ describe("the chat view's panes on a phone", () => {
     expect(onBack).toHaveBeenCalledOnce();
   });
 
+  it("takes the theme setting from the phone's bridge, and nothing else it might send", () => {
+    document.body.innerHTML = '<div id="app"></div>';
+    let theme: (t: unknown) => void = () => {};
+    const api = { onState: vi.fn(), act: vi.fn(), screenAudioEnded: vi.fn(), onVoiceSettings: vi.fn(), onMediaAutoLoad: vi.fn(), onCompact: vi.fn(), onVoiceCommand: vi.fn(), onFavourites: vi.fn(), favourites: vi.fn() } satisfies NativeApi;
+    startNative(document, { ...api, onBack: vi.fn(), onTheme: (cb) => void (theme = cb as (t: unknown) => void) });
+    try {
+      theme("light");
+      expect(document.documentElement.dataset.theme).toBe("light");
+      theme("sepia");
+      expect(document.documentElement.dataset.theme).toBe("light");
+      theme("system");
+      expect(document.documentElement.dataset.theme).toBeUndefined();
+    } finally {
+      delete document.documentElement.dataset.theme;
+    }
+  });
+
   it("opens the view's WebSockets through the phone's bridge, where it has one", () => {
     const original = window.WebSocket;
     document.body.innerHTML = '<div id="app"></div>';

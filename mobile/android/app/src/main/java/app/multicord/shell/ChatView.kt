@@ -62,6 +62,7 @@ class ChatView(
     /** What the view shows, kept for a view that (re)loads: its engine's last state, and its media limit. */
     private var state: JsonObject? = null
     private var media: JsonElement? = null
+    private var theme: String? = null
     private var routes: JsonObject? = null
     private val main = Handler(Looper.getMainLooper())
     /** The view's call sockets (LiveKit's signalling): opened here, only while its engine reports a call. */
@@ -99,6 +100,7 @@ class ChatView(
                 proxy = replyProxy
                 // A view that has just loaded gets what it missed.
                 media?.let { post("media", it) }
+                theme?.let { post("theme", JsonPrimitive(it)) }
                 state?.let { post("state", it) }
                 routes?.let { post("routes", it) }
             }
@@ -132,6 +134,12 @@ class ChatView(
     fun mediaAutoLoad(limit: JsonElement) {
         media = limit
         post("media", limit)
+    }
+
+    /** The theme setting ("system", "light" or "dark", checked by ShellCommands), for the view's page. */
+    fun theme(theme: String) {
+        this.theme = theme
+        post("theme", JsonPrimitive(theme))
     }
 
     /** Where the view's call plays now and where it could (AudioRoute.report). */

@@ -2,7 +2,7 @@
 // as a drawer, the unified Messages list and the settings page. A service's chat view is a WebView of
 // its own that native code puts under the bar; while the drawer is open this
 // page lies over it.
-import { el, countBadge, setColor } from "../renderer/components/dom";
+import { applyTheme, el, countBadge, setColor } from "../renderer/components/dom";
 import { MessagesPage, REFRESH_MS } from "../renderer/messages";
 import { serverIcon } from "../renderer/components/serverIcon";
 import { startSettings } from "../renderer/settings";
@@ -99,6 +99,8 @@ function keepDrawerFocus(doc: Document, drawer: HTMLElement): (() => void) | und
 /** Draws the bar, the drawer and which part of the page shows. */
 export function renderShell(doc: Document, state: UiState, actions: { open(key: string): void; show(id: string): void }): void {
   const body = doc.body;
+  // The theme setting: as the system's (prefers-color-scheme, as the WebView reports it), else always the one chosen.
+  applyTheme(doc, state.theme);
   body.dataset.page = state.screen.page;
   body.classList.toggle("drawer-open", state.drawer);
   doc.getElementById("title")!.textContent = state.title;

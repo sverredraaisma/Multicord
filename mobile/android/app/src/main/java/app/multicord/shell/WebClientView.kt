@@ -74,6 +74,8 @@ class WebClientView(
             // No URL lookups with a third party; the desktop's views have none either.
             safeBrowsingEnabled = false
         }
+        // The service's own themes, as on the desktop: the WebView does not darken the page itself.
+        Pages.noAlgorithmicDarkening(view)
         view.webViewClient = Client()
         view.webChromeClient = Chrome()
         // Keeps running while not shown, so its title (unread count) stays current, as on the desktop.
