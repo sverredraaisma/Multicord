@@ -2549,3 +2549,38 @@ describe("peer-to-peer calls", () => {
     expect(root.querySelector(".voice-roster")).toBeNull();
   });
 });
+
+describe("SFU calls", () => {
+  it("runs an SFU session in the peer runtime, sound alone, its offer going to the engine", async () => {
+    const fingerprint = `sha-256 ${Array.from({ length: 32 }, () => "AB").join(":")}`;
+    vi.stubGlobal(
+      "RTCPeerConnection",
+      class {
+        onconnectionstatechange = null;
+        localDescription: unknown = null;
+        signalingState = "stable";
+        transceivers: { mid: string | null; sender: { track: null; replaceTrack: () => Promise<void> } }[] = [];
+        addTransceiver() {
+          const transceiver = { mid: null, sender: { track: null, replaceTrack: async () => undefined } };
+          this.transceivers.push(transceiver);
+          return transceiver;
+        }
+        async createOffer() {
+          return { type: "offer", sdp: ["v=0", "m=audio 9 UDP/TLS/RTP/SAVPF 111", "a=mid:0", "a=ice-ufrag:Ab12", "a=ice-pwd:abcdefghijklmnopqrstuv", `a=fingerprint:${fingerprint}`, "a=rtpmap:111 opus/48000/2"].join("\r\n") };
+        }
+        async setLocalDescription(description: unknown) {
+          this.localDescription = description;
+        }
+        close() {}
+      },
+    );
+    const voice = { channelId: "7", channelName: "General", guildName: "Guild", mute: true, deaf: false, video: false, stream: false, sfu: { callId: "c1", self: "1", peers: [{ id: "2", name: "Ana" }] } };
+    view.setVoiceSettings(DEFAULT_SETTINGS.voice);
+    view.update(chat({ voice }));
+    await vi.waitFor(() => expect(root.querySelector(".voice-panel .voice-roster")!.textContent).toContain("Ana"));
+    expect([...root.querySelectorAll(".voice-controls button")].map((b) => b.textContent)).toEqual(["Unmute", "Deafen", "Leave"]);
+    await vi.waitFor(() => expect(act).toHaveBeenLastCalledWith({ type: "sfuSignal", signal: { t: "offer", ufrag: "Ab12", pwd: "abcdefghijklmnopqrstuv", fingerprint, opus: 111, extensions: [] } }));
+    view.update(chat({ voice: null }));
+    expect(root.querySelector(".voice-roster")).toBeNull();
+  });
+});

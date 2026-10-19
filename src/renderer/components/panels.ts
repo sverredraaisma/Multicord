@@ -58,9 +58,9 @@ export function voicePanel(doc: Document, voice: NativeVoiceSession, handlers: V
   const toggle = (label: string, on: boolean, change: Partial<VoiceFlags>) => controls.append(voiceToggle(doc, voice, handlers, label, on, change));
   toggle(voice.mute ? "Unmute" : "Mute", voice.mute, { mute: !voice.mute });
   toggle(voice.deaf ? "Undeafen" : "Deafen", voice.deaf, { deaf: !voice.deaf });
-  toggle(voice.video ? "Camera off" : "Camera", voice.video, { video: !voice.video });
-  // Peer-to-peer calls carry the microphone and camera only.
-  if (options.screenShare !== false && !voice.p2p) toggle(voice.stream ? "Stop sharing" : "Share screen", voice.stream, { stream: !voice.stream });
+  // SFU calls carry sound alone; peer-to-peer calls the microphone and camera only.
+  if (!voice.sfu) toggle(voice.video ? "Camera off" : "Camera", voice.video, { video: !voice.video });
+  if (options.screenShare !== false && !voice.p2p && !voice.sfu) toggle(voice.stream ? "Stop sharing" : "Share screen", voice.stream, { stream: !voice.stream });
   controls.append(...routeButton(doc, options.audio));
   const leave = el(doc, "button", "leave", "Leave");
   leave.addEventListener("click", handlers.onLeave);
@@ -85,7 +85,7 @@ export function callStrip(doc: Document, voice: NativeVoiceSession, handlers: Vo
   return [
     back,
     voiceToggle(doc, voice, handlers, voice.mute ? "Unmute" : "Mute", voice.mute, { mute: !voice.mute }),
-    voiceToggle(doc, voice, handlers, voice.video ? "Camera off" : "Camera", voice.video, { video: !voice.video }),
+    ...(voice.sfu ? [] : [voiceToggle(doc, voice, handlers, voice.video ? "Camera off" : "Camera", voice.video, { video: !voice.video })]),
     ...routeButton(doc, options.audio),
     hangUp,
   ];

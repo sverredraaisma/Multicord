@@ -1,8 +1,9 @@
-import { MAX_CALL_PARTICIPANTS, MESH_SOURCES, peerCall, type MeshSignal, type MeshSource, type MeshTrack, type NativeCallPeer, type NativePeerCall, type NativeVoiceSession, type VoiceNoticeFlag, type VoiceSignal } from "../shared/native";
+import { MAX_CALL_PARTICIPANTS, MAX_SFU_PEERS, MESH_SOURCES, peerCall, sfuCall, type MeshSignal, type MeshSource, type MeshTrack, type NativeCallPeer, type NativePeerCall, type NativeSfuCall, type NativeVoiceSession, type SfuSignal, type VoiceNoticeFlag, type VoiceSignal } from "../shared/native";
 import { DEFAULT_SETTINGS, type VoiceSettings } from "../shared/settings";
 import { avatar } from "./components/avatar";
 import { el } from "./components/dom";
 import { level, resolveDevice, type DeviceInfo } from "./media";
+import { SfuLink } from "./sfuLink";
 
 /** A sound level above this (RMS of the signal, 0 to 1) counts as speaking. */
 export const SPEAKING_LEVEL = 0.03;
@@ -606,6 +607,20 @@ const STATE_TEXT: Partial<Record<RTCPeerConnectionState, string>> = {
   closed: "Could not connect",
 };
 
+/** An SFU call's people as the roster and remote sound take them (offering nothing: they are not connected to). */
+function sfuPeers(sfu: NativeSfuCall): NativePeerCall {
+  const call: NativePeerCall = {
+    callId: sfu.callId,
+    self: sfu.self,
+    peers: sfu.peers.map(({ id, name, avatarUrl, muted }) => ({ id, name, offer: false, ...(avatarUrl ? { avatarUrl } : {}), ...(muted ? { muted } : {}) })),
+    iceServers: [],
+    relayOnly: false,
+    signals: [],
+  };
+  if (sfu.over) call.over = sfu.over;
+  return call;
+}
+
 const hasRelay = (call: NativePeerCall): boolean => call.iceServers.some((server) => server.urls.some((url) => url.startsWith("turn")));
 
 /**
@@ -638,6 +653,10 @@ export class PeerCall {
   private ticker: ReturnType<typeof setInterval> | undefined;
   private settings: VoiceSettings = DEFAULT_SETTINGS.voice;
   private queue: Promise<void> = Promise.resolve();
+  /** An SFU call (NativeSfuCall): its one connection to the voice server, and how that stands. */
+  private sfu: NativeSfuCall | undefined;
+  private sfuLink: SfuLink | undefined;
+  private sfuState: RTCPeerConnectionState = "new";
 
   constructor(
     private readonly stage: HTMLElement,
@@ -651,6 +670,8 @@ export class PeerCall {
     private readonly env: PeerCallEnv = browserPeerEnv(globalThis as Window & typeof globalThis),
     /** Makes the enhanced noise suppression processor; absent where it cannot run. */
     private readonly denoiser?: () => MicProcessor,
+    /** Sends a signal to the voice server of an SFU call, through the engine. */
+    private readonly onSfuSignal: (signal: SfuSignal) => void = () => undefined,
   ) {}
 
   /**
@@ -681,17 +702,20 @@ export class PeerCall {
   }
 
   private async apply(session: NativeVoiceSession | null): Promise<void> {
-    const call = session ? peerCall(session.p2p) : undefined;
+    const sfu = session && session.p2p === undefined ? sfuCall(session.sfu) : undefined;
+    const call = session ? (peerCall(session.p2p) ?? (sfu && sfuPeers(sfu))) : undefined;
     if (!session || !call) return this.leave();
     if (call.callId !== this.call?.callId) {
       this.leave();
       // Relay only, with no relay to go through: nothing could connect, and nothing goes another way.
-      if (call.relayOnly && !hasRelay(call)) throw new Error(NO_RELAY);
+      if (!sfu && call.relayOnly && !hasRelay(call)) throw new Error(NO_RELAY);
       this.call = call;
       this.output = (await this.deviceIds()).output;
       this.ticker = setInterval(() => this.measure(), METER_MS);
     }
     this.call = call;
+    this.sfu = sfu;
+    if (sfu) return this.applySfu(session, sfu);
     for (const id of [...this.links.keys()]) if (!call.peers.some((p) => p.id === id)) this.dropPeer(id);
     await this.setFlags(session);
     // In Fluxer's calls both sides start at once: the one who does not offer asks for an offer.
@@ -713,6 +737,31 @@ export class PeerCall {
     this.renderRoster();
   }
 
+  /** An SFU call: one connection to the voice server, playing the sound of each one in the call it names an SSRC for. */
+  private async applySfu(session: NativeVoiceSession, sfu: NativeSfuCall): Promise<void> {
+    await this.setFlags(session);
+    if (!this.sfuLink) {
+      this.sfuLink = new SfuLink(() => this.env.connect({ bundlePolicy: "max-bundle", rtcpMuxPolicy: "require", iceServers: [] }), {
+        signal: (signal) => this.onSfuSignal(signal),
+        track: (track, peer) => this.addRemote(this.call!.peers.find((p) => p.id === peer)!, track, undefined),
+        untrack: (track) => this.removeRemote(track.id),
+        state: (state) => {
+          this.sfuState = state;
+          this.renderRoster();
+        },
+      });
+      if (this.mic) this.sfuLink.addTrack(this.mic.sent, this.mic.stream);
+    }
+    this.sfuLink.setPeers(sfu.peers);
+    this.sfuLink.setAnswer(sfu.answer);
+    this.renderRoster();
+  }
+
+  /** Every connection the call has: one per peer, or the SFU call's one. */
+  private allLinks(): (PeerLink | MeshLink | SfuLink)[] {
+    return this.sfuLink ? [...this.links.values(), this.sfuLink] : [...this.links.values()];
+  }
+
   private async setFlags(flags: Flags): Promise<void> {
     const micOn = !flags.mute && !flags.deaf;
     if (!micOn) this.micFailed = false;
@@ -723,7 +772,8 @@ export class PeerCall {
     // Fluxer's peers are told (the microphone's track info), as Fluxer's client tells them.
     for (const link of this.links.values()) if (link instanceof MeshLink) link.setMuted(!micOn);
     for (const audio of this.speakers.querySelectorAll("audio")) audio.muted = flags.deaf;
-    if (flags.video && !this.camera) await this.startCamera();
+    // SFU calls carry sound alone.
+    if (flags.video && !this.camera && !this.sfu) await this.startCamera();
     else if (!flags.video && this.camera) this.stopCamera();
     this.flags = { mute: flags.mute, deaf: flags.deaf, video: flags.video };
   }
@@ -761,7 +811,7 @@ export class PeerCall {
       this.onError(`The microphone could not start: ${message(error)}`, {});
       return;
     }
-    for (const link of this.links.values()) link.addTrack(this.mic.sent, this.mic.stream);
+    for (const link of this.allLinks()) link.addTrack(this.mic.sent, this.mic.stream);
   }
 
   private async openMic(): Promise<Mic> {
@@ -802,7 +852,7 @@ export class PeerCall {
     const next = await this.openMic();
     next.raw.enabled = next.sent.enabled = old.sent.enabled;
     this.mic = next;
-    for (const link of this.links.values()) link.replaceTrack(old.sent, next.sent);
+    for (const link of this.allLinks()) link.replaceTrack(old.sent, next.sent);
     this.closeMic(old);
   }
 
@@ -952,6 +1002,8 @@ export class PeerCall {
     const now = new Set<string>();
     if (this.mic?.meter && !this.flags.mute && !this.flags.deaf && this.mic.meter.level() > SPEAKING_LEVEL) now.add(call.self);
     for (const entry of this.remote.values()) if (entry.meter && entry.meter.level() > SPEAKING_LEVEL) now.add(entry.peer);
+    // The voice server tells the others (op 5), as Discord's web client does.
+    this.sfuLink?.setSpeaking(now.has(call.self));
     if (now.size === this.speaking.size && [...now].every((id) => this.speaking.has(id))) return;
     this.speaking = now;
     for (const item of [...this.roster.querySelectorAll<HTMLElement>("[data-peer]"), ...this.stage.querySelectorAll<HTMLElement>("[data-peer]")]) {
@@ -976,8 +1028,9 @@ export class PeerCall {
       if (note) item.append(el(doc, "span", "roster-note", note));
       return item;
     };
-    const rows = [row(call.self, "You", undefined, this.flags.mute || this.flags.deaf ? "Muted" : undefined), ...call.peers.map((p) => row(p.id, p.name, p.avatarUrl, STATE_TEXT[this.states.get(p.id) ?? "new"]))];
-    if (call.over) rows.push(el(doc, "li", "roster-over", `${call.over} more in the call, not connected: calls here connect at most ${MAX_CALL_PARTICIPANTS} people.`));
+    const rows = [row(call.self, "You", undefined, this.flags.mute || this.flags.deaf ? "Muted" : undefined), ...call.peers.map((p) => row(p.id, p.name, p.avatarUrl, STATE_TEXT[(this.sfu ? this.sfuState : this.states.get(p.id)) ?? "new"]))];
+    const over = this.sfu ? `${call.over} more in the call, not played: calls here play at most ${MAX_SFU_PEERS} others.` : `${call.over} more in the call, not connected: calls here connect at most ${MAX_CALL_PARTICIPANTS} people.`;
+    if (call.over) rows.push(el(doc, "li", "roster-over", over));
     this.roster.replaceChildren(...rows);
   }
 
@@ -985,6 +1038,10 @@ export class PeerCall {
     clearInterval(this.ticker);
     this.ticker = undefined;
     for (const id of [...this.links.keys()]) this.dropPeer(id);
+    this.sfuLink?.close();
+    this.sfuLink = undefined;
+    this.sfu = undefined;
+    this.sfuState = "new";
     if (this.mic) this.closeMic(this.mic);
     this.camera?.track.stop();
     this.mic = undefined;

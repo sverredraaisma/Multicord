@@ -441,6 +441,7 @@ export class NativeView {
       (to, signal) => this.api.act({ type: "voiceSignal", to, signal }),
       undefined,
       this.denoiser,
+      (signal) => this.api.act({ type: "sfuSignal", signal }),
     );
     if (this.voiceSettings) void this.peerCall.configure(this.voiceSettings);
     const reply = el(doc, "div", "reply-bar");
@@ -1616,8 +1617,8 @@ export class NativeView {
     voice.hidden = !state.voice;
     voice.replaceChildren(...(state.voice ? [...voicePanel(this.doc, state.voice, voiceHandlers, this.voiceOptions), this.parts.roster!] : []));
     this.updateCallStrip(state, voiceHandlers);
-    // A session is one kind of call or the other; each runtime leaves when it is not its kind.
-    const p2p = state.voice?.p2p !== undefined;
+    // A session is one kind of call or the other; each runtime leaves when it is not its kind (the peer runtime runs SFU calls too).
+    const p2p = state.voice?.p2p !== undefined || state.voice?.sfu !== undefined;
     void this.call?.sync(p2p ? null : state.voice);
     void this.peerCall?.sync(p2p ? state.voice : null);
 

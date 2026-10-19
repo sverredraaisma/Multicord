@@ -9,7 +9,7 @@ import { messageItem, type MessageHandlers } from "../../src/renderer/components
 import { matchMentions, MAX_MENTION_SUGGESTIONS, mentionCandidates, mentionOptions, mentionQuery } from "../../src/renderer/components/mentions";
 import { isOwnReaction, quickReactions } from "../../src/renderer/components/reactions";
 import { moduleLabel, serverIcon, serverTooltip } from "../../src/renderer/components/serverIcon";
-import { pollForm } from "../../src/renderer/components/panels";
+import { callStrip, pollForm, voicePanel } from "../../src/renderer/components/panels";
 import { MAX_NEW_POLL_ANSWERS, type NativeMessage } from "../../src/shared/native";
 
 beforeEach(() => {
@@ -857,5 +857,15 @@ describe("authors and profile cards", () => {
     const bare = profileCard(document, { id: "7", name: "Bo", status: "Bot", roles: [] }, onClose).map((p) => p.className);
     expect(bare).toEqual(["profile-close", "presence-avatar", "profile-name", "profile-status"]);
     expect(profileCard(document, { id: "7", name: "Bo" }, onClose)).toHaveLength(3);
+  });
+});
+
+describe("SFU call controls", () => {
+  it("offer no camera nor screen sharing: these calls carry sound alone", () => {
+    const voice = { channelId: "7", channelName: "General", guildName: "Guild", mute: false, deaf: false, video: false, stream: false, sfu: { callId: "c", self: "1", peers: [] } };
+    const handlers = { onChange: vi.fn(), onLeave: vi.fn(), onReturn: vi.fn() };
+    const controls = voicePanel(document, voice, handlers)[2]!;
+    expect([...controls.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Mute", "Deafen", "Leave"]);
+    expect(callStrip(document, voice, handlers).map((b) => b.textContent)).toEqual(["General", "Mute", "Hang up"]);
   });
 });
