@@ -47,6 +47,9 @@ class CallPolicyTest {
         assertNull(Call.of("n", state("""{"screen":"chat","voice":{"channelName":"Ana","p2p":{"callId":"c1","self":""}}}""")))
         assertNull(Call.of("n", state("""{"screen":"chat","voice":{"channelName":"Ana","p2p":{"callId":"c1"}}}""")))
         assertNull(Call.of("n", state("""{"screen":"chat","voice":{"channelName":"Ana","p2p":"c1"}}""")))
+        // An SFU call (Spacebar's) the same way.
+        assertEquals(Call("s", "voice", false), Call.of("s", state("""{"screen":"chat","voice":{"channelName":"voice","video":false,"sfu":{"callId":"1","self":"42","peers":[]}}}""")))
+        assertNull(Call.of("s", state("""{"screen":"chat","voice":{"channelName":"voice","sfu":{"callId":"1"}}}""")))
     }
 
     @Test

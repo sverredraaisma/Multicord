@@ -23,14 +23,14 @@ data class Call(val instance: String, val channelName: String, val video: Boolea
 
         /**
          * The call in an engine's display state, or null: only a chat screen whose voice session has its
-         * server's address and grant, or a peer-to-peer call joined (`p2p` with its call id and the user's
-         * own id, as peerCall() in src/shared/native.ts needs them). A call still connecting has no
-         * microphone or camera yet.
+         * server's address and grant, a peer-to-peer call joined (`p2p` with its call id and the user's
+         * own id, as peerCall() in src/shared/native.ts needs them), or an SFU call (`sfu`, the same, as
+         * sfuCall() needs them: Spacebar's). A call still connecting has no microphone or camera yet.
          */
         fun of(instance: String, state: JsonObject?): Call? {
             if (state == null || text(state["screen"]) != "chat") return null
             val voice = state["voice"] as? JsonObject ?: return null
-            if (!peerToPeer(voice) && (text(voice["url"]).isNullOrEmpty() || text(voice["token"]).isNullOrEmpty())) return null
+            if (!joined(voice["p2p"]) && !joined(voice["sfu"]) && (text(voice["url"]).isNullOrEmpty() || text(voice["token"]).isNullOrEmpty())) return null
             val name = text(voice["channelName"])?.take(MAX_NAME)?.ifBlank { null } ?: "a call"
             val video = (voice["video"] as? JsonPrimitive)?.takeIf { !it.isString }?.content == "true"
             return Call(instance, name, video)
@@ -38,8 +38,9 @@ data class Call(val instance: String, val channelName: String, val video: Boolea
 
         private fun text(value: Any?): String? = (value as? JsonPrimitive)?.takeIf { it.isString }?.content
 
-        private fun peerToPeer(voice: JsonObject): Boolean {
-            val call = voice["p2p"] as? JsonObject ?: return false
+        /** A peer-to-peer or SFU call the view connects to itself: its call id and the user's own id. */
+        private fun joined(value: Any?): Boolean {
+            val call = value as? JsonObject ?: return false
             return text(call["callId"])?.let(CALL_ID::matches) == true && text(call["self"])?.let(MEMBER_ID::matches) == true
         }
     }
