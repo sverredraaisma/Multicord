@@ -1,12 +1,12 @@
-import { bridgeFetch, bridgeSecrets, bridgeWebSocket, engineInfo, fileSource, lockHosts, pickFiles, serveAdapter } from "../../engine/runtime";
+import { addVoiceHost, bridgeFetch, bridgeSecrets, bridgeWebSocket, engineInfo, fileSource, lockHosts, pickFiles, serveAdapter } from "../../engine/runtime";
 import type { EngineBridge } from "../../preload/engine";
 import { SpacebarAdapter } from "./adapter";
 import type { SocketFactory } from "./gateway";
 
 /**
  * Runs the Spacebar client in its engine: builds the adapter on the bridge
- * (fetch, the gateway socket, secrets, files and the host lock all go
- * through the shell's checks) and serves it.
+ * (fetch, the gateway and voice sockets, secrets, files, the host lock and
+ * the voice host all go through the shell's checks) and serves it.
  */
 export async function startSpacebarEngine(bridge: EngineBridge, createSocket: SocketFactory = bridgeWebSocket(bridge)): Promise<SpacebarAdapter> {
   const info = await engineInfo(bridge);
@@ -21,6 +21,7 @@ export async function startSpacebarEngine(bridge: EngineBridge, createSocket: So
       served?.sync();
     },
     lockHosts: (hosts) => lockHosts(bridge, hosts),
+    addVoiceHost: (host) => addVoiceHost(bridge, host),
     platform: info.os,
     files: { pick: () => pickFiles(bridge), open: (file) => fileSource(bridge, file) },
     settings: info.settings,

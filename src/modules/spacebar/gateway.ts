@@ -19,7 +19,7 @@ export interface GatewayHandlers {
   authFailed(): void;
 }
 
-const Op = { Dispatch: 0, Heartbeat: 1, Identify: 2, Resume: 6, Reconnect: 7, InvalidSession: 9, Hello: 10, HeartbeatAck: 11 };
+const Op = { Dispatch: 0, Heartbeat: 1, Identify: 2, VoiceStateUpdate: 4, Resume: 6, Reconnect: 7, InvalidSession: 9, Hello: 10, HeartbeatAck: 11 };
 const AUTH_FAILED = 4004;
 /** Close codes where reconnecting cannot help (Discord's, which Spacebar keeps). */
 const FATAL = new Set([4010, 4011, 4012, 4013, 4014]);
@@ -50,6 +50,20 @@ export class SpacebarGateway {
 
   connect(): void {
     this.open();
+  }
+
+  /** The session's id once READY: a voice server's identify names it. */
+  get session(): string | undefined {
+    return this.sessionId;
+  }
+
+  /**
+   * Joins, changes or leaves a call (op 4 Voice State Update, as Spacebar's
+   * src/gateway/opcodes/VoiceStateUpdate.ts takes it): a channel, or null
+   * for both to leave. Dropped while the socket is down, as a page's would be.
+   */
+  voiceState(d: { guild_id: string | null; channel_id: string | null; self_mute: boolean; self_deaf: boolean; self_video: boolean }): void {
+    this.send(Op.VoiceStateUpdate, d);
   }
 
   disconnect(): void {

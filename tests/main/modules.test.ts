@@ -38,7 +38,7 @@ describe("module registry", () => {
 
   it("gives every native module that calls the shared voice settings and screen-share picker", () => {
     const native = MODULES.filter((m) => m.manifest.preload === "preload-native.js" && m.manifest.capabilities?.voice);
-    expect(native.map((m) => m.manifest.id)).toEqual(["fluxer", "matrix-native", "stoat-native", "nerimity-native"]);
+    expect(native.map((m) => m.manifest.id)).toEqual(["fluxer", "matrix-native", "stoat-native", "spacebar-native", "nerimity-native"]);
     for (const { manifest } of native) {
       expect(manifest.usesVoiceSettings).toBe(true);
       expect(Boolean(manifest.screenShare)).toBe(Boolean(manifest.capabilities!.screenShare));

@@ -5,8 +5,11 @@ import type { PlatformModule } from "./types";
  * (sign-in, the gateway, REST) runs in the sandboxed "spacebar" engine and
  * renders in Multicord's own chat view. It declares no hosts: instances put
  * their API, gateway and CDN on hosts of their own, so the engine locks
- * itself to those once it has discovered them. The web-client module
- * "spacebar" stays for existing configurations and Spacebar's own client.
+ * itself to those once it has discovered them. Calls go through the
+ * instance's voice server (src/webrtc, Discord's web-client WebRTC
+ * protocol): the view connects to it, with signalling through the engine.
+ * The web-client module "spacebar" stays for existing configurations and
+ * Spacebar's own client.
  */
 export const spacebarNativeModule: PlatformModule = {
   manifest: {
@@ -21,6 +24,9 @@ export const spacebarNativeModule: PlatformModule = {
     engine: "spacebar",
     home: true,
     sendsTyping: true,
-    capabilities: { directMessages: true, messagePreviews: true, voice: false, screenShare: false },
+    usesVoiceSettings: true,
+    // Its voice server is named only when the user joins a call (VOICE_SERVER_UPDATE), after the lock: one host more for sockets, on the instance's own domain.
+    voiceHost: "sibling",
+    capabilities: { directMessages: true, messagePreviews: true, voice: true, screenShare: false },
   },
 };

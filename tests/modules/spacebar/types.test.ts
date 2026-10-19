@@ -8,6 +8,7 @@ import {
   parseGuild,
   parseMember,
   parseMessage,
+  parseVoiceState,
   parseReactionEmoji,
   parseReadState,
   parseRole,
@@ -156,5 +157,24 @@ describe("Spacebar types", () => {
     expect(compareIds("9", "9")).toBe(0);
     expect(timestampOf(undefined)).toBe(0);
     expect(timestampOf(String(1000n << 22n))).toBe(1420070401000);
+  });
+
+  it("reads voice states as toPublicVoiceState() sends them", () => {
+    expect(parseVoiceState({ user_id: "2", channel_id: "112", guild_id: "100", session_id: "x", mute: true, deaf: false, self_mute: true, self_deaf: true, self_video: false, self_stream: true, member: { user: { id: "2", username: "ana" } } })).toEqual({
+      userId: "2",
+      channelId: "112",
+      guildId: "100",
+      mute: true,
+      deaf: false,
+      selfMute: true,
+      selfDeaf: true,
+      selfVideo: true,
+      user: { id: "2", username: "ana" },
+    });
+    // READY's guilds leave the guild out of their own voice states; one who left has no channel.
+    expect(parseVoiceState({ user_id: "3", channel_id: null, member: { user: {} } }, "100")).toEqual({ userId: "3", guildId: "100", mute: false, deaf: false, selfMute: false, selfDeaf: false, selfVideo: false });
+    expect(parseVoiceState({ user_id: "3", channel_id: "900", guild_id: null })).toEqual({ userId: "3", channelId: "900", mute: false, deaf: false, selfMute: false, selfDeaf: false, selfVideo: false });
+    expect(parseVoiceState({ user_id: "x" })).toBeUndefined();
+    expect(parseVoiceState(null)).toBeUndefined();
   });
 });

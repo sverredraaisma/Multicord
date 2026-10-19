@@ -2,6 +2,7 @@ import type { DirectConversation, HealthCheck, HomeBadge, PlatformAdapter, RailS
 import {
   MAX_ATTACHMENTS,
   MAX_LISTED_MESSAGES,
+  MAX_SFU_PEERS,
   type NativeAction,
   type NativeAttachment,
   type NativeCustomEmoji,
@@ -13,9 +14,13 @@ import {
   type NativeMessageList,
   type NativeSearchResults,
   type NativeProfile,
+  type NativeSfuPeer,
   type NativeSidebarItem,
   type NativeUnread,
   type NativeViewState,
+  type NativeVoiceMember,
+  type NativeVoiceSession,
+  type SfuAnswer,
 } from "../../shared/native";
 import type { PickedFile } from "../../shared/engine";
 import { TYPING_SETTING, type AccountStatus, type ServiceSettingValues } from "../../shared/settings";
@@ -25,6 +30,7 @@ import { discoverInstance, instanceHosts, type SpacebarInstance } from "./discov
 import { SpacebarGateway, type GatewayStatus, type SocketFactory } from "./gateway";
 import { MEMBER_PAGE, PAGE_SIZE, SpacebarApiError, SpacebarRest, type LoginStep, type RestOptions } from "./rest";
 import { SpacebarState, TYPING_MS } from "./state";
+import { SpacebarVoiceServer, voiceEndpoint } from "./voice";
 import {
   ChannelType,
   MessageType,
@@ -58,8 +64,27 @@ const TOKEN_PROMPT = "token";
 /** How often the instance is asked whether its API and CDN answer. */
 export const HEALTH_INTERVAL_MS = 5 * 60_000;
 
-/** What the module offers the shell; its manifest must declare the same (tested). Spacebar's voice is not offered (see the README). */
-export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: false, screenShare: false };
+/** How long a join waits for the server's grant (VOICE_SERVER_UPDATE) before it is given up. */
+export const VOICE_JOIN_TIMEOUT_MS = 15_000;
+
+/** What the module offers the shell; its manifest must declare the same (tested). Calls carry sound alone (see the README). */
+export const CAPABILITIES: PlatformAdapter["capabilities"] = { directMessages: true, messagePreviews: true, voice: true, screenShare: false };
+
+/** The user's own call: where, how, and its connection to the voice server once granted. */
+interface VoiceCall {
+  /** The guild of a voice channel; none for a DM's or group's call. */
+  guildId?: string;
+  channelId: string;
+  mute: boolean;
+  deaf: boolean;
+  /** The voice server, once the grant came. */
+  server?: SpacebarVoiceServer;
+  /** The view's call (NativeSfuCall), once the server took the identify: new with each connection. */
+  callId?: string;
+  answer?: SfuAnswer;
+  /** The SSRC each other person's sound comes in under, by user id (op 12). */
+  ssrcs: Map<string, number>;
+}
 
 /** Which instance this is: the engine's own info. */
 export interface SpacebarInstanceDef {
@@ -79,6 +104,8 @@ export interface SpacebarAdapterDeps {
   render(state: NativeViewState): void;
   /** Narrows what the engine may reach to these hosts. */
   lockHosts?(hosts: string[]): Promise<void>;
+  /** Lets the engine's sockets reach its call's voice server too (the shell allows one, on the instance's own domain). */
+  addVoiceHost?(host: string): Promise<void>;
   rest?: Partial<RestOptions>;
   platform?: string;
   /** Lets the user pick files; the engine reads only what was picked. */
@@ -163,6 +190,10 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
   /** The open channel's search results, until the search ends; and a count that drops answers to earlier searches. */
   private search: { channelId: string; results: NativeSearchResults } | undefined;
   private searchCount = 0;
+  private voice: VoiceCall | undefined;
+  private voiceTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Counts the voice server connections, for each one's call id. */
+  private voiceConnections = 0;
 
   constructor(private readonly deps: SpacebarAdapterDeps) {
     super(deps.def.id, { platform: deps.def.id, instance: new URL(deps.def.url).host, accountId: "default" });
@@ -250,6 +281,19 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
         return this.mute(action.channelId, action.mute);
       case "forward":
         return this.forward(action.messageId, action.channelId);
+      case "joinVoice":
+        return this.joinVoice(action.channelId);
+      case "leaveVoice":
+        return this.leaveVoice(undefined);
+      case "voiceState":
+        return this.setVoiceFlags(action.mute, action.deaf);
+      case "voiceError":
+        return this.leaveVoice(`Voice failed: ${action.message}`);
+      case "voiceNotice":
+        this.error = action.message;
+        return this.render();
+      case "sfuSignal":
+        return this.voice?.server?.signal(action.signal);
       case "logout":
         return this.logout();
       default:
@@ -437,6 +481,9 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
       {
         dispatch: (event, data) => {
           this.state.apply(event, data);
+          if (event === "VOICE_SERVER_UPDATE") void this.onVoiceServer(data);
+          // A fresh session has no voice connection of ours.
+          if (event === "READY" && this.voice) this.dropVoice("Voice disconnected when the connection was reset.");
           // Someone pinned or unpinned in the channel whose pins are listed.
           if (event === "CHANNEL_PINS_UPDATE" && this.pins && isRecord(data) && data.channel_id === this.pins.channelId) void this.loadPins(this.pins.channelId);
           if (event === "READY") {
@@ -462,6 +509,7 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
   }
 
   private endSession(error: string | undefined): void {
+    this.dropVoice(undefined);
     this.gateway?.disconnect();
     this.gateway = undefined;
     if (this.rest) this.rest.token = undefined;
@@ -778,6 +826,149 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
     });
   }
 
+  // --- Voice -----------------------------------------------------------------
+
+  /**
+   * Joins a call: a guild's voice channel, or a DM's or group's (Spacebar
+   * takes those as "dm-voice"; it rings no one, having no call events). Op 4
+   * asks for a connection, and VOICE_SERVER_UPDATE grants it (its voice
+   * server's address and a token), as src/gateway/opcodes/VoiceStateUpdate.ts
+   * does it.
+   */
+  private joinVoice(channelId: string): void {
+    const channel = this.state.channels.get(channelId);
+    if (!channel || !this.gateway || !(channel.type === ChannelType.GuildVoice || isPrivate(channel)) || this.voice?.channelId === channelId) return;
+    if (this.voice) this.leaveVoice(undefined);
+    this.voice = { ...(channel.guildId ? { guildId: channel.guildId } : {}), channelId, mute: false, deaf: false, ssrcs: new Map() };
+    this.error = undefined;
+    this.sendVoiceState();
+    // Cleared by the grant, and by leaving.
+    this.voiceTimer = setTimeout(() => this.leaveVoice("Could not join voice: the server did not answer. Voice may be off on this instance."), VOICE_JOIN_TIMEOUT_MS);
+    this.render();
+  }
+
+  /** Where the user is and how (op 4); leaving sends no channel and no guild, as Discord's client leaves. */
+  private sendVoiceState(): void {
+    const voice = this.voice;
+    this.gateway?.voiceState({ guild_id: voice?.guildId ?? null, channel_id: voice?.channelId ?? null, self_mute: voice?.mute ?? false, self_deaf: voice?.deaf ?? false, self_video: false });
+  }
+
+  /**
+   * The grant for the user's join: its voice server's address, which the
+   * engine's sockets may reach only once the shell has added it (one host,
+   * on the instance's own domain), and the token the server checks with the
+   * session's voice state (Identify.ts).
+   */
+  private async onVoiceServer(data: unknown): Promise<void> {
+    const d = isRecord(data) ? data : {};
+    const voice = this.voice;
+    // For a guild its id, for a DM's call the channel's (only DM calls have channel_id).
+    if (!voice || (voice.guildId ? d.guild_id !== voice.guildId : d.channel_id !== voice.channelId) || typeof d.token !== "string" || d.token === "") return;
+    const endpoint = voiceEndpoint(d.endpoint);
+    const sessionId = this.gateway?.session;
+    if (!endpoint || !sessionId || !this.state.me) return this.leaveVoice(`Could not join voice: ${this.deps.def.name} named no voice server Multicord can use (${String(d.endpoint).slice(0, 100)}).`);
+    try {
+      await this.deps.addVoiceHost?.(endpoint.host);
+    } catch (error) {
+      if (this.voice === voice) this.leaveVoice(`Could not join voice: its server ${endpoint.host} is not on this instance's own domain, so Multicord does not connect to it (${messageOf(error)}).`);
+      return;
+    }
+    if (this.voice !== voice) return;
+    clearTimeout(this.voiceTimer);
+    voice.server?.close();
+    voice.callId = undefined;
+    voice.answer = undefined;
+    voice.ssrcs.clear();
+    voice.server = new SpacebarVoiceServer(endpoint.url, this.deps.createSocket, { serverId: voice.guildId ?? voice.channelId, userId: this.state.me.id, sessionId, token: d.token }, {
+      ready: () => {
+        voice.callId = String(++this.voiceConnections);
+        this.render();
+      },
+      answer: (answer) => {
+        if (!answer) return this.leaveVoice("Could not join voice: the voice server's answer could not be used.");
+        voice.answer = answer;
+        this.render();
+      },
+      sound: (userId, ssrc) => {
+        voice.ssrcs.set(userId, ssrc);
+        this.render();
+      },
+      left: (userId) => {
+        voice.ssrcs.delete(userId);
+        this.render();
+      },
+      // A server this side closed (a leave, or a new grant) says nothing more, so this is always the call's own.
+      closed: (code) => this.leaveVoice(`Voice disconnected: the voice server closed the connection (${code}).`),
+    });
+    this.render();
+  }
+
+  private setVoiceFlags(mute: boolean, deaf: boolean): void {
+    const voice = this.voice;
+    if (!voice) return;
+    voice.mute = mute;
+    voice.deaf = deaf;
+    this.sendVoiceState();
+    this.render();
+  }
+
+  /** Leaves the call on the server too, and says why where something went wrong. */
+  private leaveVoice(error: string | undefined): void {
+    if (!this.voice) return;
+    this.dropVoice(error);
+    this.sendVoiceState();
+  }
+
+  /** Forgets the call here: its voice server connection closes. */
+  private dropVoice(error: string | undefined): void {
+    clearTimeout(this.voiceTimer);
+    this.voice?.server?.close();
+    this.voice = undefined;
+    if (error) this.error = error;
+    this.render();
+  }
+
+  /** Who is in a call, as the sidebar lists them under its row. */
+  private voiceMembers(channelId: string): NativeVoiceMember[] {
+    return this.state.voiceMembers(channelId).map(({ user, state }) => {
+      const member: NativeVoiceMember = { name: user ? this.nameOf(user) : "Someone", muted: state.selfMute || state.selfDeaf || state.mute || state.deaf, video: state.selfVideo };
+      const avatarUrl = user && this.avatarUrl(user);
+      if (avatarUrl) member.avatarUrl = avatarUrl;
+      return member;
+    });
+  }
+
+  /** The user's call for the view: an SFU call once the voice server took the identify, with the others in it and the SSRC of each one's sound. */
+  private voiceView(): NativeVoiceSession | null {
+    const voice = this.voice;
+    const channel = voice && this.state.channels.get(voice.channelId);
+    if (!voice || !channel) return null;
+    const session: NativeVoiceSession = {
+      channelId: voice.channelId,
+      channelName: this.channelTitle(channel),
+      guildName: (voice.guildId && this.state.guilds.get(voice.guildId)?.name) || "",
+      mute: voice.mute,
+      deaf: voice.deaf,
+      video: false,
+      stream: false,
+    };
+    const me = this.state.me?.id;
+    if (!voice.callId || !me) return session;
+    const others = this.state.voiceMembers(voice.channelId).filter(({ state }) => state.userId !== me);
+    const peers = others.slice(0, MAX_SFU_PEERS).map(({ user, state }): NativeSfuPeer => {
+      const peer: NativeSfuPeer = { id: state.userId, name: user ? this.nameOf(user) : "Someone" };
+      const avatarUrl = user && this.avatarUrl(user);
+      if (avatarUrl) peer.avatarUrl = avatarUrl;
+      const ssrc = voice.ssrcs.get(state.userId);
+      if (ssrc !== undefined) peer.ssrc = ssrc;
+      // Muted or deafened by a moderator: Spacebar still forwards their sound, so it is not played here.
+      if (state.mute) peer.muted = true;
+      return peer;
+    });
+    session.sfu = { callId: voice.callId, self: me, peers, ...(others.length > peers.length ? { over: others.length - peers.length } : {}), ...(voice.answer ? { answer: voice.answer } : {}) };
+    return session;
+  }
+
   // --- Members and profiles --------------------------------------------------
 
   /** The member panel opened (fetching the open conversation's members afresh) or closed. */
@@ -1087,11 +1278,16 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
       ...(kind === "text" && this.state.isMuted(channel) ? { muted: true } : {}),
       ...(kind === "text" && this.canMute(channel) ? { canMute: true } : {}),
     });
-    if (this.selection.kind === "home") return this.state.privateChannels().map((c) => item(c, "dm"));
+    // Who is in a call, listed under its row.
+    const withMembers = (entry: NativeSidebarItem): NativeSidebarItem => {
+      const members = this.voiceMembers(entry.id);
+      return members.length > 0 ? { ...entry, members } : entry;
+    };
+    if (this.selection.kind === "home") return this.state.privateChannels().map((c) => withMembers(item(c, "dm")));
     return this.state
       .guildChannels(this.selection.guildId)
       .filter((c) => c.type === ChannelType.GuildCategory || c.type === ChannelType.GuildVoice || TEXT_CHANNEL_TYPES.has(c.type))
-      .map((c) => item(c, c.type === ChannelType.GuildCategory ? "category" : c.type === ChannelType.GuildVoice ? "voice" : "text"));
+      .map((c) => (c.type === ChannelType.GuildVoice ? withMembers(item(c, "voice")) : item(c, c.type === ChannelType.GuildCategory ? "category" : "text")));
   }
 
   viewState(): NativeViewState {
@@ -1142,10 +1338,10 @@ export class SpacebarAdapter extends BaseAdapter implements PlatformAdapter {
                 ...(members ? { members } : {}),
                 ...(this.pins?.channelId === channel.id ? { pins: this.pins.list } : {}),
                 ...(this.search?.channelId === channel.id ? { search: this.search.results } : {}),
-                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true, search: channel.guildId !== undefined, forward: true },
+                can: { reply: true, react: true, attach: this.deps.files !== undefined, typing: this.typingIndicators, members: true, pins: true, search: channel.guildId !== undefined, forward: true, ...(isPrivate(channel) ? { call: true } : {}) },
               }
             : null,
-          voice: null,
+          voice: this.voiceView(),
           emojiBase: `${this.cdn}/emojis`,
           customEmoji: this.customEmoji(channel?.guildId),
           ...(this.profile ? { profile: this.profile } : {}),

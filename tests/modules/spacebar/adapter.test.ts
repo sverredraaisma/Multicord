@@ -16,7 +16,10 @@ class FakeSocket implements GatewaySocket {
   send(data: string): void {
     this.sent.push(JSON.parse(data));
   }
-  close(): void {}
+  closed = false;
+  close(): void {
+    this.closed = true;
+  }
   addEventListener(type: string, listener: (event: never) => void): void {
     (this.listeners[type] ??= []).push(listener);
   }
@@ -28,7 +31,7 @@ class FakeSocket implements GatewaySocket {
   }
 }
 
-function setup(options: { token?: string; routes?: Handler[]; files?: SpacebarAdapterDeps["files"]; settings?: SpacebarAdapterDeps["settings"]; lockHosts?: SpacebarAdapterDeps["lockHosts"] | null } = {}) {
+function setup(options: { token?: string; routes?: Handler[]; files?: SpacebarAdapterDeps["files"]; settings?: SpacebarAdapterDeps["settings"]; lockHosts?: SpacebarAdapterDeps["lockHosts"] | null; addVoiceHost?: SpacebarAdapterDeps["addVoiceHost"] } = {}) {
   const calls: { url: string; init: RequestInit }[] = [];
   const routes: Handler[] = [...(options.routes ?? [])];
   const fetch = vi.fn(async (input: string | URL | Request, init: RequestInit = {}) => {
@@ -49,13 +52,16 @@ function setup(options: { token?: string; routes?: Handler[]; files?: SpacebarAd
     return { ok: reply.status < 300, status: reply.status, json: async () => body } as Response;
   });
   const sockets: FakeSocket[] = [];
+  const urls: string[] = [];
+  const addVoiceHost = options.addVoiceHost ?? vi.fn(async () => {});
   const secrets = new Map<string, string>(options.token ? [["token", options.token]] : []);
   const renders: NativeViewState[] = [];
   const lockHosts = options.lockHosts === null ? undefined : (options.lockHosts ?? vi.fn(async () => {}));
   const adapter = new SpacebarAdapter({
     def: DEF,
     fetch: fetch as unknown as typeof globalThis.fetch,
-    createSocket: () => {
+    createSocket: (url) => {
+      urls.push(url);
       const socket = new FakeSocket();
       sockets.push(socket);
       return socket;
@@ -67,6 +73,7 @@ function setup(options: { token?: string; routes?: Handler[]; files?: SpacebarAd
     },
     render: (state) => renders.push(state),
     lockHosts,
+    addVoiceHost,
     rest: { sleep: async () => {} },
     platform: "win32",
     files: options.files,
@@ -80,21 +87,23 @@ function setup(options: { token?: string; routes?: Handler[]; files?: SpacebarAd
   };
   const channel = () => chat().channel!;
   /** Completes the gateway handshake with the READY fixture. */
+  /** The gateway's socket: the last opened to the gateway (voice servers have sockets of their own). */
+  const gatewaySocket = () => sockets[urls.map((u) => u.startsWith("wss://gw.sb")).lastIndexOf(true)]!;
   const goOnline = async (ready: unknown = readyPayload()) => {
-    const socket = sockets.at(-1)!;
+    const socket = gatewaySocket();
     socket.receive({ op: 10, d: { heartbeat_interval: 40_000 } });
     socket.receive({ op: 0, s: 1, t: "READY", d: ready });
     await vi.advanceTimersByTimeAsync(100);
   };
   const dispatch = async (t: string, d: unknown) => {
-    sockets.at(-1)!.receive({ op: 0, s: 2, t, d });
+    gatewaySocket().receive({ op: 0, s: 2, t, d });
     await vi.advanceTimersByTimeAsync(100);
   };
   const online = async () => {
     await adapter.start();
     await goOnline();
   };
-  return { adapter, calls, routes, sockets, secrets, renders, last, chat, channel, goOnline, dispatch, online, lockHosts };
+  return { adapter, calls, routes, sockets, urls, secrets, renders, last, chat, channel, goOnline, dispatch, online, lockHosts, addVoiceHost, gatewaySocket };
 }
 
 const body = (init: RequestInit) => JSON.parse(String(init.body)) as Record<string, unknown>;
@@ -1092,5 +1101,227 @@ describe("SpacebarAdapter edge cases", () => {
     expect(ctx.chat().me).toBe("");
     expect(ctx.channel().members!.sections[0]!.members.map((m) => m.id)).toEqual(["2"]);
     expect(ctx.channel().name).toBe("Ana");
+  });
+});
+
+describe("SpacebarAdapter voice", () => {
+  const FINGERPRINT = `sha-256 ${Array.from({ length: 32 }, () => "4F").join(":")}`;
+  const ANSWER_SDP = `m=audio 6000 ICE/SDP\na=fingerprint:${FINGERPRINT}\nc=IN IP4 51.210.113.110\na=rtcp:6000\na=ice-ufrag:TqfRYaWUmsdzFVZC\na=ice-pwd:pqKqzWpZhpmpWkWRYBeVLycsnaFHmzLh\na=fingerprint:${FINGERPRINT}\na=candidate:4150473528 1 udp 2130706431 51.210.113.110 6000 typ host\n`;
+  const OFFER = { t: "offer" as const, ufrag: "Ab12", pwd: "abcdefghijklmnopqrstuv", fingerprint: FINGERPRINT, opus: 111, extensions: [] };
+  const voice = (ctx: ReturnType<typeof setup>) => ctx.chat().voice!;
+  const voiceSocket = (ctx: ReturnType<typeof setup>) => ctx.sockets[ctx.urls.map((u) => u.startsWith("wss://voice")).lastIndexOf(true)]!;
+  const lastOp4 = (ctx: ReturnType<typeof setup>) => ctx.gatewaySocket().sent.filter((p) => p.op === 4).at(-1)?.d;
+
+  /** Online, Ana in the voice channel, the user joining it and the server granting it. */
+  async function granted(extra: Record<string, unknown> = {}) {
+    const ctx = setup({ token: "t" });
+    await ctx.online();
+    await ctx.dispatch("VOICE_STATE_UPDATE", { user_id: "2", channel_id: "112", guild_id: "100", self_mute: true });
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { token: "vt", guild_id: "100", endpoint: "voice.sb:443", ...extra });
+    return ctx;
+  }
+
+  it("lists who is in a call under its row, and offers calls in DMs", async () => {
+    const ctx = setup({ token: "t" });
+    await ctx.online();
+    await ctx.dispatch("VOICE_STATE_UPDATE", { user_id: "2", channel_id: "112", guild_id: "100", self_mute: true });
+    await ctx.dispatch("VOICE_STATE_UPDATE", { user_id: "8", channel_id: "112", guild_id: "100", self_video: true });
+    await ctx.adapter.openServer("100");
+    expect(ctx.chat().sidebar.find((i) => i.id === "112")!.members).toEqual([
+      { name: "Ana", avatarUrl: "https://cdn.sb/avatars/2/abc123.png?size=64", muted: true, video: false },
+      { name: "Someone", muted: false, video: true },
+    ]);
+    expect(ctx.chat().sidebar.find((i) => i.id === "111")!.members).toBeUndefined();
+    expect(ctx.channel().can.call).toBeUndefined();
+    await ctx.dispatch("VOICE_STATE_UPDATE", { user_id: "2", channel_id: "900", guild_id: null, mute: true });
+    await ctx.adapter.openConversation("900");
+    expect(ctx.channel().can.call).toBe(true);
+    expect(ctx.chat().sidebar.find((i) => i.id === "900")!.members).toEqual([{ name: "Ana", avatarUrl: "https://cdn.sb/avatars/2/abc123.png?size=64", muted: true, video: false }]);
+  });
+
+  it("joins a voice channel, connects to the voice server it names, and runs the call there", async () => {
+    const ctx = setup({ token: "t" });
+    await ctx.online();
+    await ctx.dispatch("VOICE_STATE_UPDATE", { user_id: "2", channel_id: "112", guild_id: "100", mute: true });
+    // Only calls: a text channel is not joined.
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "111" });
+    expect(lastOp4(ctx)).toBeUndefined();
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    expect(lastOp4(ctx)).toEqual({ guild_id: "100", channel_id: "112", self_mute: false, self_deaf: false, self_video: false });
+    expect(voice(ctx)).toEqual({ channelId: "112", channelName: "voice", guildName: "Alpha", mute: false, deaf: false, video: false, stream: false });
+    // Again: nothing more.
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    expect(ctx.gatewaySocket().sent.filter((p) => p.op === 4)).toHaveLength(1);
+    // Another guild's grant is not this call's, nor one without a token.
+    await ctx.dispatch("VOICE_SERVER_UPDATE", null);
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { token: "vt", guild_id: "200", endpoint: "voice.sb" });
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { guild_id: "100", endpoint: "voice.sb" });
+    expect(ctx.addVoiceHost).not.toHaveBeenCalled();
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { token: "vt", guild_id: "100", endpoint: "voice.sb:443" });
+    expect(ctx.addVoiceHost).toHaveBeenCalledWith("voice.sb");
+    expect(ctx.urls.at(-1)).toBe("wss://voice.sb/?v=7");
+    const server = voiceSocket(ctx);
+    server.receive({ op: 8, d: { heartbeat_interval: 30_000 } });
+    expect(server.sent[0]).toEqual({ op: 0, d: { server_id: "100", user_id: "1", session_id: "s", token: "vt", video: false } });
+    expect(voice(ctx).sfu).toBeUndefined();
+    server.receive({ op: 2, d: { ssrc: 2, ip: "51.210.113.110", port: 6000, modes: [] } });
+    await vi.advanceTimersByTimeAsync(100);
+    // The others in the call, a moderator's mute kept, no SSRC until they send.
+    expect(voice(ctx).sfu).toEqual({ callId: "1", self: "1", peers: [{ id: "2", name: "Ana", avatarUrl: "https://cdn.sb/avatars/2/abc123.png?size=64", muted: true }] });
+    await ctx.adapter.handleAction({ type: "sfuSignal", signal: OFFER });
+    expect(server.sent.at(-1)!.op).toBe(1);
+    server.receive({ op: 4, d: { sdp: ANSWER_SDP, audio_codec: "opus" } });
+    server.receive({ op: 12, d: { user_id: "2", audio_ssrc: 7, video_ssrc: 0 } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(voice(ctx).sfu!.answer).toEqual(expect.objectContaining({ ip: "51.210.113.110", port: 6000 }));
+    expect(voice(ctx).sfu!.peers[0]!.ssrc).toBe(7);
+    server.receive({ op: 13, d: { user_id: "2" } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(voice(ctx).sfu!.peers[0]!.ssrc).toBeUndefined();
+    // Mute and deafen go to the gateway; video does not exist here.
+    await ctx.adapter.handleAction({ type: "voiceState", mute: true, deaf: true, video: true, stream: false });
+    expect(lastOp4(ctx)).toEqual({ guild_id: "100", channel_id: "112", self_mute: true, self_deaf: true, self_video: false });
+    expect(voice(ctx)).toEqual(expect.objectContaining({ mute: true, deaf: true, video: false }));
+    // A problem the call survives shows; leaving closes the voice server's socket and tells the gateway.
+    await ctx.adapter.handleAction({ type: "voiceNotice", message: "The microphone could not start." });
+    expect(ctx.chat().error).toBe("The microphone could not start.");
+    await ctx.adapter.handleAction({ type: "leaveVoice" });
+    expect(server.closed).toBe(true);
+    expect(lastOp4(ctx)).toEqual({ guild_id: null, channel_id: null, self_mute: false, self_deaf: false, self_video: false });
+    expect(ctx.chat().voice).toBeNull();
+    // Nothing to leave, change or signal now.
+    await ctx.adapter.handleAction({ type: "leaveVoice" });
+    await ctx.adapter.handleAction({ type: "voiceState", mute: true, deaf: false, video: false, stream: false });
+    await ctx.adapter.handleAction({ type: "sfuSignal", signal: OFFER });
+    expect(ctx.gatewaySocket().sent.filter((p) => p.op === 4)).toHaveLength(3);
+  });
+
+  it("joins a DM's call, which Spacebar identifies by the channel", async () => {
+    const ctx = setup({ token: "t" });
+    await ctx.online();
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "900" });
+    expect(lastOp4(ctx)).toEqual({ guild_id: null, channel_id: "900", self_mute: false, self_deaf: false, self_video: false });
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { token: "vt", guild_id: null, channel_id: "901", endpoint: "voice.sb" });
+    expect(ctx.addVoiceHost).not.toHaveBeenCalled();
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { token: "vt", guild_id: null, channel_id: "900", endpoint: "voice.sb" });
+    voiceSocket(ctx).receive({ op: 8, d: {} });
+    expect(voiceSocket(ctx).sent[0]!.d).toEqual(expect.objectContaining({ server_id: "900" }));
+    expect(voice(ctx)).toEqual(expect.objectContaining({ channelName: "Ana", guildName: "" }));
+    // Joining another call leaves this one first.
+    const dm = voiceSocket(ctx);
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    expect(dm.closed).toBe(true);
+    expect(ctx.gatewaySocket().sent.filter((p) => p.op === 4).map((p) => (p.d as { channel_id: unknown }).channel_id)).toEqual(["900", null, "112"]);
+  });
+
+  it("plays at most MAX_SFU_PEERS others, and counts the rest", async () => {
+    const ctx = await granted();
+    for (let i = 0; i < 66; i++) await ctx.dispatch("VOICE_STATE_UPDATE", { user_id: String(1000 + i), channel_id: "112", guild_id: "100" });
+    voiceSocket(ctx).receive({ op: 2, d: {} });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(voice(ctx).sfu!.peers).toHaveLength(64);
+    expect(voice(ctx).sfu!.over).toBe(3);
+  });
+
+  it("gives up a join the server does not answer", async () => {
+    const ctx = setup({ token: "t" });
+    await ctx.online();
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(ctx.chat().voice).toBeNull();
+    expect(ctx.chat().error).toMatch(/did not answer/);
+    expect(lastOp4(ctx)).toEqual(expect.objectContaining({ channel_id: null }));
+  });
+
+  it("does not connect to a voice server it cannot use", async () => {
+    let ctx = await granted({ endpoint: "127.0.0.1:3004" });
+    expect(ctx.chat().error).toMatch(/named no voice server Multicord can use \(127\.0\.0\.1:3004\)/);
+    expect(ctx.chat().voice).toBeNull();
+    // The shell refuses a host off the instance's domain.
+    ctx = setup({ token: "t", addVoiceHost: vi.fn(async () => Promise.reject(new Error("voice.elsewhere is not on the domain of this service's hosts"))) });
+    await ctx.online();
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { token: "vt", guild_id: "100", endpoint: "voice.elsewhere" });
+    expect(ctx.chat().error).toMatch(/its server voice\.elsewhere is not on this instance's own domain/);
+    expect(ctx.urls.some((u) => u.includes("elsewhere"))).toBe(false);
+  });
+
+  it("drops a grant that comes after the user left, refused or not", async () => {
+    let release!: () => void;
+    let refuse!: (error: Error) => void;
+    const addVoiceHost = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<void>((resolve) => (release = resolve)))
+      .mockImplementationOnce(() => new Promise<void>((_, reject) => (refuse = reject)));
+    const ctx = setup({ token: "t", addVoiceHost });
+    await ctx.online();
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { token: "vt", guild_id: "100", endpoint: "voice.sb" });
+    await ctx.adapter.handleAction({ type: "leaveVoice" });
+    release();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.urls.some((u) => u.startsWith("wss://voice"))).toBe(false);
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { token: "vt", guild_id: "100", endpoint: "voice.sb" });
+    await ctx.adapter.handleAction({ type: "leaveVoice" });
+    refuse(new Error("no"));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.chat().error).toBeUndefined();
+  });
+
+  it("ends the call when the server's answer cannot be used, or its socket closes", async () => {
+    let ctx = await granted();
+    voiceSocket(ctx).receive({ op: 4, d: { sdp: "m=audio 9 ICE/SDP\n" } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.chat().error).toBe("Could not join voice: the voice server's answer could not be used.");
+    expect(voiceSocket(ctx).closed).toBe(true);
+    ctx = await granted();
+    voiceSocket(ctx).serverClose(4013);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ctx.chat().error).toBe("Voice disconnected: the voice server closed the connection (4013).");
+    expect(ctx.chat().voice).toBeNull();
+  });
+
+  it("moves to a new voice server when granted another, and forgets the old one's closing", async () => {
+    const ctx = await granted();
+    const first = voiceSocket(ctx);
+    first.receive({ op: 2, d: {} });
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { token: "vt2", guild_id: "100", endpoint: "voice2.sb" });
+    expect(first.closed).toBe(true);
+    first.serverClose(1000);
+    expect(voice(ctx).sfu).toBeUndefined();
+    voiceSocket(ctx).receive({ op: 2, d: {} });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(voice(ctx).sfu!.callId).toBe("2");
+    expect(ctx.chat().error).toBeUndefined();
+  });
+
+  it("ends the call on a fresh session, on sign-out, and on a voice error", async () => {
+    let ctx = await granted();
+    await ctx.goOnline();
+    expect(ctx.chat().voice).toBeNull();
+    expect(ctx.chat().error).toBe("Voice disconnected when the connection was reset.");
+    ctx = await granted();
+    const server = voiceSocket(ctx);
+    await ctx.adapter.handleAction({ type: "logout" });
+    expect(server.closed).toBe(true);
+    ctx = await granted();
+    await ctx.adapter.handleAction({ type: "voiceError", message: "boom" });
+    expect(ctx.chat().error).toBe("Voice failed: boom");
+  });
+
+  it("shows no call whose channel is gone, and needs a session to identify with", async () => {
+    let ctx = await granted();
+    await ctx.dispatch("CHANNEL_DELETE", { id: "112" });
+    expect(ctx.chat().voice).toBeNull();
+    const ready = readyPayload() as Record<string, unknown>;
+    delete ready.session_id;
+    ctx = setup({ token: "t" });
+    await ctx.adapter.start();
+    await ctx.goOnline(ready);
+    await ctx.adapter.handleAction({ type: "joinVoice", channelId: "112" });
+    await ctx.dispatch("VOICE_SERVER_UPDATE", { token: "vt", guild_id: "100", endpoint: "voice.sb" });
+    expect(ctx.chat().error).toMatch(/named no voice server/);
   });
 });

@@ -367,3 +367,42 @@ export function parseMember(value: unknown): SpacebarMember | undefined {
   if (nick) member.nick = nick.slice(0, 100);
   return member;
 }
+
+/**
+ * Someone's voice connection, as Spacebar's VoiceState.toPublicVoiceState()
+ * sends it (src/database/entities/VoiceState.ts; READY's guilds carry their
+ * voice_states, VOICE_STATE_UPDATE each change): where they are and how. A
+ * user is in one call at most; one without a channel has left.
+ */
+export interface SpacebarVoiceState {
+  userId: string;
+  /** The voice channel, or the DM or group of a call. */
+  channelId?: string;
+  guildId?: string;
+  /** Muted or deafened by a moderator. */
+  mute: boolean;
+  deaf: boolean;
+  selfMute: boolean;
+  selfDeaf: boolean;
+  selfVideo: boolean;
+  /** Who they are, where the event carries their member object. */
+  user?: SpacebarUser;
+}
+
+export function parseVoiceState(value: unknown, guildId?: string): SpacebarVoiceState | undefined {
+  if (!isRecord(value) || !isId(value.user_id)) return undefined;
+  const state: SpacebarVoiceState = {
+    userId: value.user_id,
+    mute: value.mute === true,
+    deaf: value.deaf === true,
+    selfMute: value.self_mute === true,
+    selfDeaf: value.self_deaf === true,
+    selfVideo: value.self_video === true || value.self_stream === true,
+  };
+  if (isId(value.channel_id)) state.channelId = value.channel_id;
+  const guild = isId(value.guild_id) ? value.guild_id : guildId;
+  if (guild) state.guildId = guild;
+  const user = isRecord(value.member) ? parseUser(value.member.user) : undefined;
+  if (user) state.user = user;
+  return state;
+}

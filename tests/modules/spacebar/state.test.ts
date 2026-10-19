@@ -210,4 +210,30 @@ describe("SpacebarState", () => {
     expect(state.typingIn("111").map((u) => u.username)).toEqual(["cy"]);
     expect(state.typingIn("999")).toEqual([]);
   });
+
+  it("keeps who is in which call: READY's voice states, then each change, one call per user", () => {
+    const payload = readyPayload();
+    (payload.guilds[0] as Record<string, unknown>).voice_states = [{ user_id: "2", channel_id: "112", self_mute: true }, { user_id: "5", channel_id: "112" }, { bad: true }];
+    const state = new SpacebarState();
+    state.apply("READY", payload);
+    expect(state.voiceMembers("112").map(({ user, state: v }) => [user?.id, v.userId, v.guildId, v.selfMute])).toEqual([["2", "2", "100", true], [undefined, "5", "100", false]]);
+    // A change within the call keeps their place; one who joins with their member object becomes known.
+    state.apply("VOICE_STATE_UPDATE", { user_id: "2", channel_id: "112", guild_id: "100", self_mute: false });
+    state.apply("VOICE_STATE_UPDATE", { user_id: "6", channel_id: "112", guild_id: "100", member: { user: { id: "6", username: "six" } } });
+    expect(state.voiceMembers("112").map(({ user, state: v }) => [v.userId, v.selfMute, user?.username])).toEqual([["2", false, "ana"], ["5", false, undefined], ["6", false, "six"]]);
+    // A move ends where they were; a leave (no channel) ends it.
+    state.apply("VOICE_STATE_UPDATE", { user_id: "2", channel_id: "900", guild_id: null });
+    state.apply("VOICE_STATE_UPDATE", { user_id: "5", channel_id: null, guild_id: "100" });
+    state.apply("VOICE_STATE_UPDATE", { bad: true });
+    expect(state.voiceMembers("112").map(({ state: v }) => v.userId)).toEqual(["6"]);
+    expect(state.voiceMembers("900").map(({ state: v }) => v.userId)).toEqual(["2"]);
+    // A guild's voice states again (GUILD_CREATE) replace that guild's; a guild gone takes its calls along.
+    state.apply("GUILD_CREATE", { id: "100", name: "Alpha", voice_states: [{ user_id: "7", channel_id: "112" }] });
+    expect(state.voiceMembers("112").map(({ state: v }) => v.userId)).toEqual(["7"]);
+    state.apply("GUILD_DELETE", { id: "100" });
+    expect(state.voiceMembers("112")).toEqual([]);
+    expect(state.voiceMembers("900")).toHaveLength(1);
+    state.reset();
+    expect(state.voiceStates.size).toBe(0);
+  });
 });

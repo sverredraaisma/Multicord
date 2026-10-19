@@ -16,6 +16,7 @@ import {
   parseReadState,
   parseRole,
   parseUser,
+  parseVoiceState,
   type ReactionEmoji,
   type SpacebarChannel,
   type SpacebarEmoji,
@@ -25,6 +26,7 @@ import {
   type SpacebarReadState,
   type SpacebarRole,
   type SpacebarUser,
+  type SpacebarVoiceState,
 } from "./types";
 
 /** Most messages kept per channel. */
@@ -52,6 +54,8 @@ export class SpacebarState {
   readonly typing = new Map<string, Map<string, number>>();
   /** The user's notification settings per guild: what is muted. */
   readonly guildSettings = new Map<string, SpacebarGuildSettings>();
+  /** Who is in which call, by user id (one call each), in the order they joined. */
+  readonly voiceStates = new Map<string, SpacebarVoiceState>();
 
   readonly changed = new Emitter<void>();
   /** New messages from others, for acking in the open channel and notifying. */
@@ -59,7 +63,7 @@ export class SpacebarState {
 
   reset(): void {
     this.me = undefined;
-    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.emojis, this.roles, this.ownRoles, this.typing, this.guildSettings]) map.clear();
+    for (const map of [this.guilds, this.channels, this.readStates, this.users, this.messages, this.latest, this.emojis, this.roles, this.ownRoles, this.typing, this.guildSettings, this.voiceStates]) map.clear();
   }
 
   apply(event: string, data: unknown): void {
@@ -104,6 +108,9 @@ export class SpacebarState {
         if (roles) this.roles.set(d.guild_id as string, roles.filter((r) => r.id !== d.role_id));
         break;
       }
+      case "VOICE_STATE_UPDATE":
+        this.setVoiceState(parseVoiceState(data));
+        break;
       case "GUILD_MEMBER_UPDATE":
         if (isId(d.guild_id) && isRecord(d.user) && d.user.id === this.me?.id) this.ownRoles.set(d.guild_id, list(d.roles).filter(isId));
         break;
@@ -317,6 +324,10 @@ export class SpacebarState {
     }
     if (Array.isArray(record.emojis)) this.emojis.set(guild.id, record.emojis.flatMap((e) => parseEmoji(e) ?? []));
     if (Array.isArray(record.roles)) this.roles.set(guild.id, record.roles.flatMap((r) => parseRole(r) ?? []));
+    if (Array.isArray(record.voice_states)) {
+      for (const [user, v] of [...this.voiceStates]) if (v.guildId === guild.id) this.voiceStates.delete(user);
+      for (const v of record.voice_states) this.setVoiceState(parseVoiceState(v, guild.id));
+    }
     // The user's own member object, with their roles: in READY's merged_members, or among a guild's members.
     const own = [...list(members), ...list(record.members)].find((m) => isRecord(m) && (m.user_id === this.me?.id || m.id === this.me?.id || (isRecord(m.user) && m.user.id === this.me?.id)));
     if (isRecord(own)) this.ownRoles.set(guild.id, list(own.roles).flatMap((r) => (isId(r) ? [r] : isRecord(r) && isId(r.id) ? [r.id] : [])));
@@ -324,11 +335,26 @@ export class SpacebarState {
 
   private removeGuild(guildId: string): void {
     for (const map of [this.guilds, this.emojis, this.roles, this.ownRoles, this.guildSettings]) map.delete(guildId);
+    for (const [user, v] of [...this.voiceStates]) if (v.guildId === guildId) this.voiceStates.delete(user);
     for (const channel of [...this.channels.values()]) {
       if (channel.guildId !== guildId) continue;
       this.channels.delete(channel.id);
       this.messages.delete(channel.id);
     }
+  }
+
+  /** Someone joined, changed or left a call (a state without a channel): one call per user, so a move replaces where they were. */
+  private setVoiceState(state: SpacebarVoiceState | undefined): void {
+    if (!state) return;
+    this.addUser(state.user);
+    // A change within the same call keeps their place; a move or a leave does not.
+    if (this.voiceStates.get(state.userId)?.channelId !== state.channelId) this.voiceStates.delete(state.userId);
+    if (state.channelId) this.voiceStates.set(state.userId, state);
+  }
+
+  /** Who is in a call (a voice channel, or a DM's or group's), in the order they joined, with who they are where known. */
+  voiceMembers(channelId: string): { user: SpacebarUser | undefined; state: SpacebarVoiceState }[] {
+    return [...this.voiceStates.values()].filter((v) => v.channelId === channelId).map((state) => ({ user: this.users.get(state.userId), state }));
   }
 
   private addChannel(channel: SpacebarChannel | undefined): void {

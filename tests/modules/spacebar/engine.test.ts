@@ -45,6 +45,9 @@ describe("Spacebar engine", () => {
     await files.pick().catch(() => undefined);
     expect(bridge.request).toHaveBeenLastCalledWith({ type: "pickFiles" });
     expect(files.open({ handle: "h", name: "fav.gif", size: 1, type: "image/gif" }).filename).toBe("fav.gif");
+    // A call's voice server is added through the shell.
+    await (adapter as unknown as { deps: { addVoiceHost(host: string): Promise<void> } }).deps.addVoiceHost("voice.sb");
+    expect(bridge.request).toHaveBeenLastCalledWith({ type: "addVoiceHost", host: "voice.sb" });
   });
 
   it("resumes a saved session over a WebSocket the shell opens", async () => {
