@@ -52,6 +52,14 @@ describe("module registry", () => {
     }
   });
 
+  it("lets only native modules that call add a voice host", () => {
+    for (const { manifest } of MODULES.filter((m) => m.manifest.voiceHost !== undefined)) {
+      expect(manifest.engine).toBeDefined();
+      expect(manifest.capabilities?.voice).toBe(true);
+      expect(manifest.voiceHost).toBe("sibling");
+    }
+  });
+
   it("lets only native modules hold media back, those whose adapters use loadMedia keys", async () => {
     const holding = MODULES.filter((m) => m.manifest.holdsMedia);
     expect(holding.map((m) => m.manifest.id)).toEqual(["telegram", "matrix-native"]);

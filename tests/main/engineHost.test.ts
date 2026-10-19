@@ -199,6 +199,65 @@ describe("EngineHub", () => {
     expect(await cancelled(sockets, "wss://gw.demo.example/")).toBe(true);
   });
 
+  it("lets a module that declares it add one voice host on its domain, for WebSockets alone, once signed in", async () => {
+    const { ask, fromEngine, view } = setup({ voiceHost: true });
+    await ask({ type: "socketOpen", url: "wss://gateway.demo.example/" });
+    const relay = WebContentsView.instances.at(-1)!;
+    const sockets = session.fromPartition("engine_demo").beforeRequest!;
+    const http = session.fromPartition("engine_http_demo").beforeRequest!;
+    const viewFilter = (view.webContents.session as unknown as { beforeRequest: typeof sockets }).beforeRequest;
+    const cancelled = (filter: typeof sockets, url: string) => new Promise<boolean>((resolve) => filter({ url, webContents: relay.webContents } as { url: string }, (response) => resolve(response.cancel)));
+    await ask({ type: "lockHosts", hosts: ["api.rory.server.demo.example", "gateway.rory.server.demo.example"] });
+    await expect(ask({ type: "addVoiceHost", host: "voice.rory.server.demo.example" })).rejects.toThrow("only while signed in");
+    ipcMain.emit(ENGINE_IPC.event, fromEngine, { type: "account", account: { state: "signed-in" } });
+    await expect(ask({ type: "addVoiceHost", host: "voice.other.example" })).rejects.toThrow("voice.other.example is not on the domain of this service's hosts");
+    await expect(ask({ type: "addVoiceHost", host: "VOICE.demo.example" })).rejects.toThrow("Malformed engine request");
+    expect(await cancelled(sockets, "wss://voice.rory.server.demo.example/")).toBe(true);
+    expect(await ask({ type: "addVoiceHost", host: "voice.rory.server.demo.example" })).toBe("voice.rory.server.demo.example");
+    // Asked again for the same host: fine; for another: refused.
+    expect(await ask({ type: "addVoiceHost", host: "voice.rory.server.demo.example" })).toBe("voice.rory.server.demo.example");
+    await expect(ask({ type: "addVoiceHost", host: "voice2.rory.server.demo.example" })).rejects.toThrow("added its voice host already");
+    expect(await cancelled(sockets, "wss://voice.rory.server.demo.example/?v=7")).toBe(false);
+    expect(await cancelled(sockets, "wss://voice2.rory.server.demo.example/")).toBe(true);
+    // Never HTTP, nor the view.
+    expect(await cancelled(http, "https://voice.rory.server.demo.example/")).toBe(true);
+    expect(await cancelled(viewFilter, "wss://voice.rory.server.demo.example/")).toBe(true);
+    await expect(ask({ type: "http", request: { url: "https://voice.rory.server.demo.example/", method: "GET", headers: {} } })).rejects.toThrow("not one of this module's hosts");
+    // A narrower lock keeps it while it stays on the domain of a host still allowed, and drops it otherwise.
+    await ask({ type: "lockHosts", hosts: ["api.rory.server.demo.example"] });
+    expect(await cancelled(sockets, "wss://voice.rory.server.demo.example/")).toBe(false);
+  });
+
+  it("drops the voice host with a lock off its domain, and adds none for modules that do not declare it, nor where it would be private", async () => {
+    const declared = setup({ voiceHost: true, hosts: ["api.demo.example", "other.example"] });
+    ipcMain.emit(ENGINE_IPC.event, declared.fromEngine, { type: "account", account: { state: "signed-in" } });
+    await declared.ask({ type: "addVoiceHost", host: "voice.demo.example" });
+    await declared.ask({ type: "lockHosts", hosts: ["other.example"] });
+    await declared.ask({ type: "socketOpen", url: "wss://other.example/" });
+    const sockets = session.fromPartition("engine_demo").beforeRequest!;
+    const relay = WebContentsView.instances.at(-1)!;
+    expect(await new Promise<boolean>((resolve) => sockets({ url: "wss://voice.demo.example/", webContents: relay.webContents } as { url: string }, (r) => resolve(r.cancel)))).toBe(true);
+
+  });
+
+  it("adds no voice host for a module that does not declare it", async () => {
+    const plain = setup();
+    ipcMain.emit(ENGINE_IPC.event, plain.fromEngine, { type: "account", account: { state: "signed-in" } });
+    await expect(plain.ask({ type: "addVoiceHost", host: "voice.demo.example" })).rejects.toThrow("adds no voice host");
+  });
+
+  it("needs no voice host where the engine is not locked", async () => {
+    const open = setup({ voiceHost: true });
+    ipcMain.emit(ENGINE_IPC.event, open.fromEngine, { type: "account", account: { state: "signed-in" } });
+    expect(await open.ask({ type: "addVoiceHost", host: "voice.anywhere.example" })).toBe("voice.anywhere.example");
+  });
+
+  it("adds no voice host at a private address", async () => {
+    const internal = setup({ voiceHost: true, hosts: ["api.demo.internal"] });
+    ipcMain.emit(ENGINE_IPC.event, internal.fromEngine, { type: "account", account: { state: "signed-in" } });
+    await expect(internal.ask({ type: "addVoiceHost", host: "voice.demo.internal" })).rejects.toThrow("not on the domain");
+  });
+
   it("answers only its own engines, and holds messages until the engine is up", async () => {
     const { adapter, engine, view, fromEngine, ask } = setup();
     await expect(ipcMain.invoke(ENGINE_IPC.invoke, { sender: view.webContents }, { type: "info" })).rejects.toThrow("Not an engine");

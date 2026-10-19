@@ -59,6 +59,14 @@ export interface ModuleManifest {
    */
   peerToPeerCalls?: boolean;
   /**
+   * Engines only: the module's call servers are named only once the user
+   * joins a call (Spacebar's VOICE_SERVER_UPDATE), after the engine locked
+   * its hosts. "sibling": once signed in, the engine may add one host for
+   * WebSockets alone (EngineRequest addVoiceHost), with the registrable
+   * domain of a host it is locked to. Only for modules with `voice` (tested).
+   */
+  voiceHost?: "sibling";
+  /**
    * Engines only: the engine holds media back until its view asks
    * (NativeAttachment.mediaKey). The view gets the service's limit for media
    * that loads by itself, and Settings offers a per-service choice of it.

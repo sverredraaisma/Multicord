@@ -12,7 +12,16 @@ import kotlinx.serialization.json.booleanOrNull
  * storage; or, for a web-client module (`web`), nothing but that: the service's own web app in a plain WebView;
  * or Discord (`discord`): Discord's own web app in the Discord view.
  */
-data class NativeModule(val id: String, val engine: String?, val hosts: List<String>?, val storage: Boolean, val web: Boolean = false, val discord: Boolean = false)
+data class NativeModule(
+    val id: String,
+    val engine: String?,
+    val hosts: List<String>?,
+    val storage: Boolean,
+    val web: Boolean = false,
+    val discord: Boolean = false,
+    /** The engine may add one voice host for its WebSockets once signed in (ModuleManifest.voiceHost "sibling"). */
+    val voiceHost: Boolean = false,
+)
 
 /**
  * The modules the app runs, from dist/mobile/modules.json, which the desktop build writes from the
@@ -55,7 +64,12 @@ class ModuleTable(private val modules: Map<String, NativeModule>) {
                 }
                 if (hosts != null && (hosts.isEmpty() || !hosts.all(HOST::matches))) continue
                 val storage = (e["storage"] as? JsonPrimitive)?.booleanOrNull ?: false
-                modules[id] = NativeModule(id, engine, hosts, storage)
+                val voiceHost = when (val v = e["voiceHost"]) {
+                    null -> false
+                    is JsonPrimitive -> if (v.isString && v.content == "sibling") true else continue
+                    else -> continue
+                }
+                modules[id] = NativeModule(id, engine, hosts, storage, voiceHost = voiceHost)
             }
             return ModuleTable(modules)
         }

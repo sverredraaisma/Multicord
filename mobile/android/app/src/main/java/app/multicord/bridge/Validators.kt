@@ -20,6 +20,8 @@ import kotlinx.serialization.json.booleanOrNull
  * shared fixture tests/fixtures/engine-validator-cases.json).
  */
 object Validators {
+    /** A voice host (isEngineRequest's addVoiceHost): lower-case labels, at least two, the last not digits alone. */
+    private val VOICE_HOST = Regex("^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+(?=[a-z0-9-]*[a-z-])[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
     private val HOST_PATTERN = Regex("^(\\*\\.)?[a-z0-9]([a-z0-9-]{0,62})(\\.[a-z0-9]([a-z0-9-]{0,62}))+$")
     private val SOCKET_ID = Regex("^[a-z0-9-]{1,64}$")
     private val PROTOCOL_TOKEN = Regex("^[!#\$%&'*+.^_`|~0-9A-Za-z-]+$")
@@ -155,6 +157,7 @@ object Validators {
             "lockHosts" -> (v["hosts"] as? JsonArray)?.let { hosts ->
                 hosts.size in 1..Limits.MAX_LOCKED_HOSTS && hosts.all { h -> h.string()?.let { it.length <= 253 && HOST_PATTERN.matches(it) } == true }
             } == true
+            "addVoiceHost" -> v["host"].string()?.let { it.length <= 253 && VOICE_HOST.matches(it) } == true
             "readFile" -> isText(v["handle"], 64, 1) && isCount(v["start"]) && isCount(v["end"]) &&
                 v["end"].number()!! >= v["start"].number()!! && v["end"].number()!! - v["start"].number()!! <= Limits.MAX_READ
             "socketOpen" -> isText(v["url"], 8192, 1) && optional(v["protocols"], ::isSocketProtocols)

@@ -64,6 +64,16 @@ export async function lockHosts(bridge: EngineBridge, hosts: string[]): Promise<
 }
 
 /**
+ * Lets the engine's WebSockets (only those) reach one more host: its call's
+ * voice server, named once the user joined a call. The shell allows it only
+ * for a module that declares `voiceHost`, while signed in, once, and on the
+ * registrable domain of a host the engine is locked to; it rejects otherwise.
+ */
+export async function addVoiceHost(bridge: EngineBridge, host: string): Promise<void> {
+  await bridge.request({ type: "addVoiceHost", host });
+}
+
+/**
  * Signs in through the homeserver's single sign-on (Matrix's m.login.sso):
  * the shell opens `url` (the homeserver's SSO redirect) in the browser and
  * receives the login token that comes back. Works only right after the user

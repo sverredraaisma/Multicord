@@ -98,6 +98,23 @@ class NetPolicyFixtureTest {
             NetPolicy.afterRedirect(status, c.text("method")) == (c.text("nextMethod") to c["keepsBody"]!!.jsonPrimitive.boolean)
     }
 
+    /** The Public Suffix List the desktop bundles (copied in beside the fixtures). */
+    private val suffixes: PublicSuffixList by lazy {
+        val stream = javaClass.classLoader!!.getResourceAsStream("fixtures/public_suffix_list.dat")
+            ?: error("public_suffix_list.dat is missing: the copyFixtures task copies it from src/core/publicsuffix")
+        PublicSuffixList(stream.bufferedReader().readText())
+    }
+
+    @Test
+    fun registrableDomain() = each(section("registrableDomain").map { it.jsonObject }) { c ->
+        suffixes.registrableDomain(c.text("host")) == c["domain"].let { if (it == null || it is JsonNull) null else it.jsonPrimitive.content }
+    }
+
+    @Test
+    fun voiceHost() = each(section("voiceHost").map { it.jsonObject }) { c ->
+        suffixes.voiceHostAllowed(strings(c["locked"]), c.text("host")) == c["allowed"]!!.jsonPrimitive.boolean
+    }
+
     @Test
     fun maxRedirects() {
         assertEquals(cases["maxRedirects"]!!.jsonPrimitive.int, NetPolicy.MAX_REDIRECTS)

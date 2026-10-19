@@ -121,6 +121,15 @@ export type EngineRequest =
   /** From now on reach only these hosts ("example.com" or "*.example.com"); a lock can only narrow. */
   | { type: "lockHosts"; hosts: string[] }
   /**
+   * Lets the engine open WebSockets (only those, never HTTP) to one more host:
+   * its call's voice server, as the platform named it once the user joined a
+   * call. Only for modules whose manifest says so (ModuleManifest.voiceHost),
+   * only while signed in, once per instance, and only to a host with the
+   * registrable domain of a host the engine is locked to (voiceHostAllowed()
+   * in src/core/publicSuffix.ts). A lower-case DNS name (no IP address).
+   */
+  | { type: "addVoiceHost"; host: string }
+  /**
    * Single sign-on (Matrix's m.login.sso): the shell opens this homeserver
    * SSO redirect address in the browser with a loopback redirectUrl of its
    * own, and answers with the one login token that comes back. Only right
@@ -151,6 +160,8 @@ export type EngineSocketEvent =
 /** Hosts an engine may lock itself to at once. */
 export const MAX_LOCKED_HOSTS = 16;
 const HOST_PATTERN = /^(\*\.)?[a-z0-9]([a-z0-9-]{0,62})(\.[a-z0-9]([a-z0-9-]{0,62}))+$/;
+/** A voice host: lower-case labels of letters, digits and inner hyphens, at least two, the last not digits alone (no IPv4 address). */
+const VOICE_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?=[a-z0-9-]*[a-z-])[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
 export const MAX_SERVERS = 1000;
 export const MAX_DIRECTS = 500;
@@ -344,6 +355,8 @@ export function isEngineRequest(value: unknown): value is EngineRequest {
         value.hosts.length <= MAX_LOCKED_HOSTS &&
         value.hosts.every((h) => typeof h === "string" && h.length <= 253 && HOST_PATTERN.test(h))
       );
+    case "addVoiceHost":
+      return typeof value.host === "string" && value.host.length <= 253 && VOICE_HOST.test(value.host);
     case "readFile":
       return (
         isText(value.handle, 64, 1) &&

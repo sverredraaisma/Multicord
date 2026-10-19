@@ -4,6 +4,7 @@ import path from "node:path";
 import { dialog, ipcMain, session, shell, WebContentsView, type BaseWindow, type Session, type WebContents } from "electron";
 import { crashesInARow, EngineAdapter, engineStoragePartition, isEngineId, MAX_CRASHES, restartDelay, type EngineHealth } from "../core/engineAdapter";
 import { EngineSockets, type RelaySocket, type RelaySocketEvents } from "../core/engineSockets";
+import { voiceHostAllowed } from "../core/publicSuffix";
 import type { PlatformDef } from "../core/platforms";
 import type { PlatformAdapter } from "../shared/adapter";
 import { ENGINE_IPC, ENGINE_SCHEME, isEngineEvent, isEngineRequest, type EngineInfo, type EngineRequest, type PickedFile } from "../shared/engine";
@@ -12,7 +13,7 @@ import { isNativeAction, NATIVE_IPC, type NativeAction } from "../shared/native"
 import type { ServiceSettingValues } from "../shared/settings";
 import type { SecretStore } from "./credentials";
 import { contentTypeFor, readRange } from "./files";
-import { checkUrl, createAddressGuard, narrowHosts, performHttp, type UrlPolicy } from "./netPolicy";
+import { checkUrl, createAddressGuard, isPrivateHost, narrowHosts, performHttp, type UrlPolicy } from "./netPolicy";
 import { isSsoUrl, receiveLoginToken } from "./ssoLoopback";
 import { RELAY_IPC } from "../shared/relay";
 import { relayHost, serveRelay, SocketRelay, type RelayContents } from "./webSockets";
@@ -26,6 +27,8 @@ export interface EngineSpec {
   hosts?: readonly string[];
   /** Keep the engine's web storage on disk (see ModuleManifest.storage); otherwise it lives in memory. */
   persistent?: boolean;
+  /** The engine may add one voice host for its WebSockets once signed in (ModuleManifest.voiceHost). */
+  voiceHost?: boolean;
   home: boolean;
   capabilities: PlatformAdapter["capabilities"];
   /** The module's own view; it gets the engine's display state and sends user actions. */
@@ -55,7 +58,7 @@ interface Running {
   /** The single sign-on waiting for its token, if any: a new one cancels it. */
   sso?: AbortController;
   /** The hosts the engine may reach now: the module's, or narrower once the engine locks itself. */
-  allowed: { hosts?: readonly string[] };
+  allowed: { hosts?: readonly string[]; voiceHost?: string };
   /** Messages for the engine, held until it has loaded. */
   queue: { channel: string; payload: unknown }[];
   /** The WebSockets the shell opened for the engine (bridgeWebSocket). */
@@ -156,10 +159,11 @@ export class EngineHub {
     const ses = session.fromPartition(partition);
     const allowed: Running["allowed"] = { hosts: spec.hosts };
     // Engines reach the network only over bridged WebSockets: wss to their hosts, at public addresses.
+    // and its one voice host, if it added one (sockets only: never HTTP, nor the view).
     const socketPolicy: UrlPolicy = {
       schemes: ["wss:"],
       get hosts() {
-        return allowed.hosts;
+        return allowed.hosts && allowed.voiceHost ? [...allowed.hosts, allowed.voiceHost] : allowed.hosts;
       },
     };
     const socketAddress = createAddressGuard(async (host) => (await ses.resolveHost(host)).endpoints.map((e) => e.address));
@@ -381,8 +385,12 @@ export class EngineHub {
         const hosts = narrowHosts(running.allowed.hosts, request.hosts);
         if (!hosts) throw new Error("A host lock can only narrow what the engine may reach");
         running.allowed.hosts = hosts;
+        // A voice host stays only while it is on the domain of a host still allowed.
+        if (running.allowed.voiceHost && !voiceHostAllowed(hosts, running.allowed.voiceHost)) delete running.allowed.voiceHost;
         return hosts;
       }
+      case "addVoiceHost":
+        return this.addVoiceHost(running, request.host);
       case "pickFiles":
         return this.pickFiles(running);
       case "ssoSignIn":
@@ -399,6 +407,28 @@ export class EngineHub {
         return readRange(file.path, request.start, Math.min(request.end, file.size));
       }
     }
+  }
+
+  /**
+   * One more host for the engine's WebSockets (never its HTTP, nor its
+   * view): its call's voice server, which the platform names only once the
+   * user joins a call. Only for a module that declares it, only while the
+   * engine says the user is signed in, one host per instance, and only one
+   * with the registrable domain of a host the engine is locked to
+   * (voiceHostAllowed()). An engine not locked reaches it already.
+   */
+  private addVoiceHost(running: Running, host: string): string {
+    const { allowed } = running;
+    if (!running.spec.voiceHost) throw new Error("This module adds no voice host");
+    if (running.adapter.accountStatus().state !== "signed-in") throw new Error("A voice host is added only while signed in");
+    if (allowed.voiceHost !== undefined) {
+      if (allowed.voiceHost === host) return host;
+      throw new Error("This service has added its voice host already");
+    }
+    if (!allowed.hosts) return host;
+    if (isPrivateHost(host) || !voiceHostAllowed(allowed.hosts, host)) throw new Error(`${host} is not on the domain of this service's hosts`);
+    allowed.voiceHost = host;
+    return host;
   }
 
   /** The hosts a module's view may load from, as its engine may reach them now; undefined for any public host. */

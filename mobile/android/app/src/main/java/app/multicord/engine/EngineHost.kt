@@ -29,7 +29,9 @@ import app.multicord.net.HttpBridge
 import app.multicord.net.HttpRequest
 import app.multicord.net.NetPolicy
 import app.multicord.net.OkHttpTransport
+import app.multicord.net.PublicSuffixList
 import app.multicord.net.UrlPolicy
+import app.multicord.net.VoiceHostGrant
 import app.multicord.secrets.ScopedSecrets
 import app.multicord.sso.Sso
 import app.multicord.sso.SsoBroker
@@ -54,6 +56,8 @@ data class EngineSpec(
     val settings: JsonObject? = null,
     /** Keep the engine's web storage (IndexedDB) on disk; otherwise its Profile is cleared at every start. */
     val storage: Boolean = false,
+    /** The engine may add one voice host for its WebSockets once signed in (ModuleManifest.voiceHost). */
+    val voiceHost: Boolean = false,
 )
 
 /** What an engine may ask of the screen: only right after the user asked for it in the engine's view. */
@@ -113,6 +117,10 @@ class EngineHost(
     private val queue = ArrayDeque<Pair<String, JsonElement>>()
     /** The hosts the engine may reach now: the module's, or narrower once the engine locks itself. */
     private var allowed: List<String>? = spec.hosts
+    /** Its one voice host, for its WebSockets alone (EngineHub.addVoiceHost). */
+    private val voiceHost = VoiceHostGrant(spec.voiceHost)
+    /** Whether the engine last said the user is signed in (its account event). */
+    private var signedIn = false
     /** Core's restart policy: crashes in a row, back-off, and when to leave the engine stopped. */
     private val restartPolicy = RestartPolicy()
     /** Counts starts, so a delayed restart that a newer start overtook does nothing. */
@@ -133,7 +141,7 @@ class EngineHost(
     private val picked = PickedFiles(documents)
 
     private val sockets = EngineSockets(
-        check = { url -> NetPolicy.checkUrl(url, UrlPolicy(listOf("wss:"), allowed))?.message },
+        check = { url -> NetPolicy.checkUrl(url, UrlPolicy(listOf("wss:"), voiceHost.socketHosts(allowed)))?.message },
         connect = OkHttpSockets({ main.post(it) })::connect,
         emit = { deliver("socket", it) },
     )
@@ -246,7 +254,11 @@ class EngineHost(
                 if (!Validators.isEngineRequest(body)) return reply(replyProxy, id, Result.failure(IllegalArgumentException("Malformed engine request")))
                 answer(body as JsonObject) { result -> reply(replyProxy, id, result) }
             }
-            "emit" -> if (Validators.isEngineEvent(body)) listener.onEvent(this, body as JsonObject)
+            "emit" -> if (Validators.isEngineEvent(body)) {
+                body as JsonObject
+                if ((body["type"] as? JsonPrimitive)?.content == "account") signedIn = ((body["account"] as? JsonObject)?.get("state") as? JsonPrimitive)?.content == "signed-in"
+                listener.onEvent(this, body)
+            }
             "render" -> if (body is JsonObject) listener.onRender(this, body)
         }
     }
@@ -311,8 +323,10 @@ class EngineHost(
                 val hosts = NetPolicy.narrowHosts(allowed, (request["hosts"] as JsonArray).map { (it as JsonPrimitive).content })
                 if (hosts == null) return done(Result.failure(IllegalStateException("A host lock can only narrow what the engine may reach")))
                 allowed = hosts
+                voiceHost.narrowed(hosts) { suffixes(context) }
                 done(Result.success(JsonArray(hosts.map(::JsonPrimitive))))
             }
+            "addVoiceHost" -> done(voiceHost.add(allowed, signedIn, text("host")) { suffixes(context) }.map(::JsonPrimitive))
             "socketOpen" -> done(runCatching {
                 val protocols = (request["protocols"] as? JsonArray)?.map { (it as JsonPrimitive).content }
                 JsonObject(mapOf("id" to JsonPrimitive(sockets.open(text("url"), protocols))))
@@ -473,6 +487,12 @@ class EngineHost(
         private const val MAX_QUEUE = 1000
         /** How long after the user's attach click, or sign-in submit, the engine may open the picker or the browser (engineHost.ts). */
         const val ASK_WINDOW_MS = 10_000L
+
+        private var suffixList: PublicSuffixList? = null
+
+        /** The Public Suffix List the build bundles (web/mobile/public_suffix_list.dat), read once, on the main thread, when a voice host is first asked for. */
+        private fun suffixes(context: Context): PublicSuffixList =
+            suffixList ?: PublicSuffixList(context.assets.open("web/mobile/public_suffix_list.dat").bufferedReader().use { it.readText() }).also { suffixList = it }
 
         /** No network at all: HTTP and WebSockets go through the bridge. */
         private val CSP = listOf(

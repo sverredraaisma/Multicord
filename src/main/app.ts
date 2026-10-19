@@ -408,6 +408,7 @@ export async function createShell(
       engine: manifest.engine!,
       hosts: manifest.hosts,
       persistent: manifest.storage === true,
+      voiceHost: manifest.voiceHost === "sibling",
       home: manifest.home === true,
       capabilities: manifest.capabilities ?? { directMessages: false, messagePreviews: false, voice: false, screenShare: false },
       view,

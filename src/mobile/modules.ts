@@ -78,6 +78,8 @@ export interface NativeModuleSpec {
   hosts?: string[];
   /** Keep the module's web storage on disk (an engine's IndexedDB; a web app's cookies and storage always). */
   storage: boolean;
+  /** The engine may add one voice host for its WebSockets once signed in (ModuleManifest.voiceHost). */
+  voiceHost?: "sibling";
   /** A web-client module: native code shows the service's own web app, with no bridge and nothing injected. */
   web?: true;
   /** Discord: native code shows Discord's own web app with the Discord view's scripts and listener. */
@@ -86,12 +88,13 @@ export interface NativeModuleSpec {
 
 /** The table the build writes to dist/mobile/modules.json for native code. */
 export function nativeModuleTable(modules: readonly MobileModule[] = MOBILE_MODULES): NativeModuleSpec[] {
-  return modules.flatMap(({ manifest: { id, engine, hosts, storage }, web, discord }): NativeModuleSpec[] => {
+  return modules.flatMap(({ manifest: { id, engine, hosts, storage, voiceHost }, web, discord }): NativeModuleSpec[] => {
     if (discord) return [{ id, storage: true, discord: true }];
     if (web) return [{ id, storage: true, web: true }];
     if (!engine) return [];
     const spec: NativeModuleSpec = { id, engine, storage: storage === true };
     if (hosts) spec.hosts = [...hosts];
+    if (voiceHost) spec.voiceHost = voiceHost;
     return [spec];
   });
 }

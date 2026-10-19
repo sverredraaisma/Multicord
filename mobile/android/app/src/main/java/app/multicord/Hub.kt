@@ -402,7 +402,7 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
             instances[id] = instance
             web.start()
         } else {
-            val spec = EngineSpec(instanceId = id, engine = module.engine ?: return, name = name, url = url, hosts = module.hosts, settings = settings, storage = module.storage)
+            val spec = EngineSpec(instanceId = id, engine = module.engine ?: return, name = name, url = url, hosts = module.hosts, settings = settings, storage = module.storage, voiceHost = module.voiceHost)
             val engine = EngineHost(app, spec, secrets.scope(id), instance, this)
             instance.engine = engine
             instances[id] = instance

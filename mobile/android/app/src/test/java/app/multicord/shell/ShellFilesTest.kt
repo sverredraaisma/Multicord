@@ -34,6 +34,9 @@ class ShellFilesTest {
             """[
               {"id": "matrix-native", "engine": "matrix", "storage": true},
               {"id": "telegram", "engine": "telegram", "storage": false, "hosts": ["*.web.telegram.org"]},
+              {"id": "spacebar-native", "engine": "spacebar", "storage": false, "voiceHost": "sibling"},
+              {"id": "voice-other", "engine": "x", "voiceHost": "any"},
+              {"id": "voice-list", "engine": "x", "voiceHost": ["sibling"]},
               {"id": "Bad", "engine": "x"},
               {"id": "bad-engine", "engine": "../x"},
               {"id": "bad-hosts", "engine": "x", "hosts": ["*"]},
@@ -52,9 +55,10 @@ class ShellFilesTest {
         )
         assertEquals(NativeModule("matrix-native", "matrix", null, true), table["matrix-native"])
         assertEquals(NativeModule("telegram", "telegram", listOf("*.web.telegram.org"), false), table["telegram"])
+        assertEquals(NativeModule("spacebar-native", "spacebar", null, false, voiceHost = true), table["spacebar-native"])
         assertEquals(NativeModule("web", null, null, true, web = true), table["web"])
         assertEquals(NativeModule("discord", null, null, true, discord = true), table["discord"])
-        assertEquals(setOf("matrix-native", "telegram", "web", "discord"), table.ids)
+        assertEquals(setOf("matrix-native", "telegram", "spacebar-native", "web", "discord"), table.ids)
         assertEquals(emptySet<String>(), ModuleTable.parse("{}").ids)
     }
 }

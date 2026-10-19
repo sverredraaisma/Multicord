@@ -48,6 +48,8 @@ describe("module table", () => {
     expect(nativeModuleTable().filter((m) => m.web).map((m) => m.id)).toEqual(["matrix", "stoat", "fluxer-web", "spacebar", "nerimity", "web"]);
     expect(nativeModuleTable().find((m) => m.id === "web")).toEqual({ id: "web", storage: true, web: true });
     expect(nativeModuleTable().find((m) => m.id === "discord")).toEqual({ id: "discord", storage: true, discord: true });
+    // A module that adds a voice host says so to native code.
+    expect(nativeModuleTable([{ manifest: { id: "v", name: "V", label: "V", color: "#000000", configurable: true, engine: "v", voiceHost: "sibling" } }])).toEqual([{ id: "v", engine: "v", storage: false, voiceHost: "sibling" }]);
     // A module with neither an engine nor a web app does not run.
     expect(nativeModuleTable([{ manifest: { id: "web", name: "Web", label: "W", color: "#000000", configurable: true } }])).toEqual([]);
   });

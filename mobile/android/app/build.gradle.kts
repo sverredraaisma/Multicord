@@ -103,7 +103,7 @@ android {
 }
 
 /**
- * The shared test cases (tests/fixtures: the network policy's, the validators', the shell bridge's and Discord's), copied from the repository
+ * The shared test cases (tests/fixtures: the network policy's, the validators', the shell bridge's and Discord's) and the Public Suffix List, copied from the repository
  * root at build time so the Kotlin tests run the very files the TypeScript tests run.
  */
 abstract class CopyFixtures : DefaultTask() {
@@ -131,6 +131,8 @@ val copyFixtures = tasks.register<CopyFixtures>("copyFixtures") {
         repoRoot.resolve("tests/fixtures/engine-validator-cases.json"),
         repoRoot.resolve("tests/fixtures/shell-bridge-cases.json"),
         repoRoot.resolve("tests/fixtures/discord-bridge-cases.json"),
+        // The Public Suffix List the voice-host rule reads (PublicSuffixList.kt), as the desktop bundles it.
+        repoRoot.resolve("src/core/publicsuffix/public_suffix_list.dat"),
     )
     outputDir.set(layout.buildDirectory.dir("generated/fixtures"))
 }
@@ -186,7 +188,8 @@ val bundleWeb = tasks.register<BundleWeb>("bundleWeb") {
     )
     // The module table, the Discord view's document-start scripts (src/mobile/discordView.ts) and the USB camera's
     // page patch (src/mobile/usbCamera.ts), in web/mobile.
-    mobile.from(listOf("modules.json", "discord-page.js", "discord-relay.js", "usb-camera.js").map { distDir.resolve("mobile/$it") })
+    // The Public Suffix List for the voice-host rule (PublicSuffixList.kt), as the desktop bundles it.
+    mobile.from(listOf("modules.json", "discord-page.js", "discord-relay.js", "usb-camera.js", "public_suffix_list.dat").map { distDir.resolve("mobile/$it") })
     outputDir.set(layout.buildDirectory.dir("generated/web"))
 }
 

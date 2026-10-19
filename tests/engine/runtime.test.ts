@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { bridgeFetch, bridgeSecrets, bridgeWebSocket, BridgedWebSocket, engineInfo, fileSource, lockHosts, pickFiles, serveAdapter, ssoSignIn, type ServedAdapter } from "../../src/engine/runtime";
+import { bridgeFetch, bridgeSecrets, bridgeWebSocket, BridgedWebSocket, engineInfo, fileSource, lockHosts, addVoiceHost, pickFiles, serveAdapter, ssoSignIn, type ServedAdapter } from "../../src/engine/runtime";
 import { createEngineBridge, requestError, type EngineBridge, type EngineIpc } from "../../src/preload/engine";
 import type { AccountRef, DirectConversation, HomeBadge, IncomingCall, PlatformNotification, RailServer } from "../../src/shared/adapter";
 import { BaseAdapter } from "../../src/shared/baseAdapter";
@@ -92,6 +92,15 @@ describe("lockHosts", () => {
     bridge.request.mockResolvedValue(["a.example"]);
     await expect(lockHosts(bridge, ["a.example"])).resolves.toBeUndefined();
     expect(bridge.request).toHaveBeenCalledWith({ type: "lockHosts", hosts: ["a.example"] });
+  });
+});
+
+describe("addVoiceHost", () => {
+  it("asks the shell for one more host for the engine's sockets", async () => {
+    const { bridge } = fakeBridge();
+    bridge.request.mockResolvedValue("voice.a.example");
+    await expect(addVoiceHost(bridge, "voice.a.example")).resolves.toBeUndefined();
+    expect(bridge.request).toHaveBeenCalledWith({ type: "addVoiceHost", host: "voice.a.example" });
   });
 });
 

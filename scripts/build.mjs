@@ -125,3 +125,5 @@ await Promise.all([
 const table = await build({ entryPoints: ["src/entries/mobile-modules.ts"], bundle: true, write: false, format: "esm", platform: "neutral", logLevel: "warning" });
 const { default: modules } = await import(`data:text/javascript;base64,${Buffer.from(table.outputFiles[0].text).toString("base64")}`);
 writeFileSync("dist/mobile/modules.json", `${JSON.stringify(modules, null, 2)}\n`);
+// The Public Suffix List, which native code reads for the voice-host rule as the desktop bundles it (src/core/publicSuffix.ts).
+cpSync("src/core/publicsuffix/public_suffix_list.dat", "dist/mobile/public_suffix_list.dat");
