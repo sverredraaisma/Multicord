@@ -77,6 +77,7 @@ Validators, Wire                    the desktop's validators (src/shared), JSON 
 | Kotlin | Desktop counterpart |
 |---|---|
 | `net/NetPolicy.kt`, `net/WebUrl.kt` | `src/main/netPolicy.ts` (checkUrl, isPrivateHost, host locks) and `new URL()` |
+| `net/PublicSuffixList.kt`, `net/VoiceHostGrant.kt` | `src/core/publicSuffix.ts` (the vendored list, registrable domains, `voiceHostAllowed`) and EngineHub's `addVoiceHost`: one voice host per engine, for its sockets alone, on the domain of its locked hosts (the desktop build puts the same list in the assets as `web/mobile/public_suffix_list.dat`) |
 | `net/HttpBridge.kt`, `net/OkHttpNet.kt` | `performHttp`, the address guard, the HTTP bridge's session |
 | `engine/EngineSockets.kt`, `engine/OkHttpSockets.kt` | `src/core/engineSockets.ts`, `src/main/webSockets.ts` (relay page) |
 | `engine/EngineHost.kt` | `src/main/engineHost.ts` (EngineHub), `src/preload/engine.ts` |
@@ -180,7 +181,7 @@ Milestone 2 on the Android 16 emulator (WebView 134, 1.5 GB), checked over the d
 
 `./gradlew testDebugUnitTest` runs JVM tests:
 
-- `NetPolicyFixtureTest` runs **every case of `tests/fixtures/netpolicy-cases.json`** (93: private and public hosts, numeric address forms, host patterns, checkUrl refusals, narrowing, resolved addresses, dropped headers, redirects, the redirect limit). The `copyFixtures` task copies the file from the repository root at build time; it is never duplicated.
+- `NetPolicyFixtureTest` runs **every case of `tests/fixtures/netpolicy-cases.json`** (143: private and public hosts, numeric address forms, host patterns, checkUrl refusals, narrowing, resolved addresses, dropped headers, redirects, the redirect limit, and registrable domains and voice hosts against the Public Suffix List the desktop bundles, IDN rules and public suffixes such as co.uk and github.io among them). The `copyFixtures` task copies the file from the repository root at build time; it is never duplicated.
 - `WebUrlTest`: the URL parser against browser behaviour (IPv4 and IPv6 forms, IDN, relative redirects).
 - `HttpBridgeTest`: the HTTP bridge with a scripted network (redirect checks, limits, cookies, PublicDns).
 - `ValidatorsTest` runs **every case of `tests/fixtures/engine-validator-cases.json`** (over 300 engine requests, HTTP requests, engine events, image URLs and view actions, each to accept or refuse), which `tests/shared/validatorCases.test.ts` runs against the TypeScript validators; the fixture states the limits it relies on, and both sides check them against their own constants. Copied in by `copyFixtures` as the network policy's cases are.
@@ -194,8 +195,9 @@ Milestone 2 on the Android 16 emulator (WebView 134, 1.5 GB), checked over the d
 - `PickedFilesTest`: handles, the handle cap, ranges clipped to the size, types and names.
 - `SsoBrokerTest`: which SSO addresses an engine may open, the redirect address, the one waiting request (other paths, schemes and authorities ignored, the first match ending it), token forms, the timeout and cancelling.
 - `SecretStoreTest`: scoping, associated data, quota (AES-GCM in software; the Keystore exists only on a device).
+- `VoiceHostGrantTest`: an engine's one voice host (only declared, signed in, once, on its locked domain, never private, dropped by a lock off it; sockets only).
 - `EngineSocketsTest`: the socket relay's rules and caps. `ViewSocketsTest`: a chat view's call sockets (only during a call, wss to public hosts the engine may reach as they are at each open, the caps, only socket requests, the answers by request number).
-- `CallPolicyTest`: what counts as a call in an engine's display state, which camera and microphone requests a chat view gets, and the background service's types. `AudioRouteTest`: route names, which route a call takes (the user's choice, headsets, earpiece or speaker), the report to the view, and which audio devices stand for which route. `ViewCspTest`: the chat view's CSP (workers and WebAssembly for calls, https only to the engine's hosts and no WebSockets, nothing that is no host pattern).
+- `CallPolicyTest`: what counts as a call in an engine's display state (a grant, a peer-to-peer call or an SFU call), which camera and microphone requests a chat view gets, and the background service's types. `AudioRouteTest`: route names, which route a call takes (the user's choice, headsets, earpiece or speaker), the report to the view, and which audio devices stand for which route. `ViewCspTest`: the chat view's CSP (workers and WebAssembly for calls, https only to the engine's hosts and no WebSockets, nothing that is no host pattern).
 
 ## What is left
 

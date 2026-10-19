@@ -24,6 +24,10 @@ The bundles in the app's assets carry the licences of the desktop app's dependen
 them @matrix-org/matrix-sdk-crypto-wasm (Apache License 2.0), livekit-client (Apache License 2.0) and
 @sapphi-red/web-noise-suppressor (Apache License 2.0; RNNoise, BSD 3-Clause).
 
+The app's assets include the Public Suffix List (https://publicsuffix.org/), as web/mobile/public_suffix_list.dat,
+for the rule on an engine's voice host. Mozilla Public License 2.0; its source and licence are in the repository
+at src/core/publicsuffix (the list's commit 52b71b3c4576ff77450cc7ebcfc7f34a916af3f9, 2026-10-17).
+
 It includes this third-party software as source, in app/src/main/cpp/third_party, for the USB camera
 (versions and upstream commits in app/src/main/cpp/third_party/README.md):
 
