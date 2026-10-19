@@ -361,3 +361,5 @@ Each file's header says how to run it; the servers run in Docker on this machine
 [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-or-later`).
 
 It includes the [Public Suffix List](https://publicsuffix.org/) (in `src/core/publicsuffix`, at the list's commit `52b71b3` of 2026-10-17), under the [Mozilla Public License 2.0](src/core/publicsuffix/LICENSE).
+
+[NOTICE.md](NOTICE.md) lists the third-party code the app ships and its licences. The build writes the licence texts of everything it bundles into `dist/THIRD_PARTY_LICENSES.txt`, which ships with the app. The build fails if a shipped package is missing from NOTICE.md.

@@ -2,7 +2,8 @@ import { build } from "esbuild";
 import { cpSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { telegramBrowser } from "./telegramBrowser.mjs";
 
-const common = { bundle: true, sourcemap: true, target: "chrome140", logLevel: "info" };
+// metafile: every bundle's inputs, for the third-party notice check at the end.
+const common = { bundle: true, sourcemap: true, metafile: true, target: "chrome140", logLevel: "info" };
 
 /**
  * Module engines: every src/entries/engine-<id>.ts becomes dist/engines/<id>.js,
@@ -47,7 +48,7 @@ cpSync("node_modules/@sapphi-red/web-noise-suppressor/dist/rnnoise/workletProces
 // LiveKit's end-to-end encryption worker, for encrypted Matrix calls; a file of our own, so native.html's CSP needs no blob: workers.
 cpSync("node_modules/livekit-client/dist/livekit-client.e2ee.worker.js", "dist/livekit-e2ee-worker.js");
 
-await Promise.all([
+const results = await Promise.all([
   build({
     ...common,
     entryPoints: { main: "src/entries/main.ts" },
@@ -127,3 +128,29 @@ const { default: modules } = await import(`data:text/javascript;base64,${Buffer.
 writeFileSync("dist/mobile/modules.json", `${JSON.stringify(modules, null, 2)}\n`);
 // The Public Suffix List, which native code reads for the voice-host rule as the desktop bundles it (src/core/publicSuffix.ts).
 cpSync("src/core/publicsuffix/public_suffix_list.dat", "dist/mobile/public_suffix_list.dat");
+
+// Third-party code in the bundles (and the two files copied above) goes out with its licence texts,
+// in dist/THIRD_PARTY_LICENSES.txt; packages installed beside the app keep their own licence files.
+// Every package the app ships either way must be named in NOTICE.md, so a new one is looked at first.
+const packageDir = (file) => /^(.*node_modules\/(?:@[^/]+\/)?[^/]+)\//.exec(file.replace(/\\/g, "/"))?.[1];
+const bundled = new Set(["node_modules/@sapphi-red/web-noise-suppressor", "node_modules/livekit-client"]);
+for (const { metafile } of results) for (const input of Object.keys(metafile.inputs)) bundled.add(packageDir(input));
+bundled.delete(undefined);
+// livekit-client's own build carries these inside it.
+for (const name of ["@livekit/mutex", "@bufbuild/protobuf", "events", "jose", "loglevel", "sdp", "sdp-transform", "tslib", "webrtc-adapter"]) bundled.add(`node_modules/${name}`);
+const nameOf = (dir) => dir.replace(/^.*node_modules\//, "");
+const texts = [...bundled]
+  .map((dir) => ({ dir, pkg: JSON.parse(readFileSync(`${dir}/package.json`, "utf8")) }))
+  .sort((a, b) => nameOf(a.dir).localeCompare(nameOf(b.dir)) || a.pkg.version.localeCompare(b.pkg.version))
+  .map(({ dir, pkg }) => {
+    const file = readdirSync(dir).find((f) => /^(licen[cs]e|copying)/i.test(f));
+    const text = file ? readFileSync(`${dir}/${file}`, "utf8").trim() : `The package has no licence file; its licence is ${pkg.license}. See NOTICE.md.`;
+    return `${nameOf(dir)} ${pkg.version} (${pkg.license})\n\n${text}\n`;
+  });
+writeFileSync("dist/THIRD_PARTY_LICENSES.txt", `Third-party code bundled into Multicord, with its licences.\n\n${[...new Set(texts)].join(`\n${"=".repeat(72)}\n\n`)}`);
+const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+const shipped = new Set([...bundled].map(nameOf));
+for (const name of Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies })) shipped.add(name);
+const notice = readFileSync("NOTICE.md", "utf8");
+const unnamed = [...shipped].filter((name) => !notice.includes(`\`${name}\``)).sort();
+if (unnamed.length > 0) throw new Error(`NOTICE.md does not name these shipped packages: ${unnamed.join(", ")}`);
