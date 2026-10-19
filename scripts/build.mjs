@@ -55,6 +55,8 @@ await Promise.all([
     format: "cjs",
     // Shipped as a dependency; it loads its own platform-specific parts.
     external: ["electron", "electron-updater", "uiohook-napi", "@vencord/venmic"],
+    // The Public Suffix List (src/core/publicSuffix.ts) as its text.
+    loader: { ".dat": "text" },
     outdir: "dist",
   }),
   // Sandboxed preloads can only require("electron"), so each is bundled into one file.

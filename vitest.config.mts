@@ -1,6 +1,8 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
+  // .dat files load as their text, as esbuild's "text" loader bundles them (the Public Suffix List).
+  plugins: [{ name: "dat-text", transform: (code: string, id: string) => (id.endsWith(".dat") ? { code: `export default ${JSON.stringify(code)};`, map: null } : undefined) }],
   test: {
     include: ["tests/**/*.test.ts"],
     restoreMocks: true,
