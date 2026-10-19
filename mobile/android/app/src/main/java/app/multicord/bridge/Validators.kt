@@ -253,6 +253,7 @@ object Validators {
     const val MAX_JOIN_ADDRESS = 255
     const val MAX_SDP = 32768
     const val MAX_ICE_CANDIDATE = 1024
+    const val MAX_SFU_EXTENSIONS = 16
 
     private val ID = Regex("^([0-9]{1,20}|[0-9A-HJKMNP-TV-Z]{26})$")
     private val PROMPT_ID = Regex("^[a-z][a-z0-9-]{0,31}$")
@@ -372,6 +373,36 @@ object Validators {
         }
     }
 
+    private val SFU_UFRAG = Regex("^[A-Za-z0-9+/]{4,256}$")
+    private val SFU_PWD = Regex("^[A-Za-z0-9+/]{22,256}$")
+    private val FINGERPRINT = Regex("^sha-(?:1|224|256|384|512) [0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){15,63}$")
+    private val EXTENSION_URI = Regex("^(?:urn:[A-Za-z0-9:._-]{1,200}|https?:\\/\\/[A-Za-z0-9._~/-]{1,200})$")
+
+    /** An integer from `min` to `max`. */
+    private fun isIntIn(value: JsonElement?, min: Double, max: Double): Boolean = isInteger(value) && value.number()!! >= min && value.number()!! <= max
+
+    /**
+     * A signal a view sends to the voice server of its SFU call (isSfuSignal), with nothing beyond its fields:
+     * its offer's ICE credentials, fingerprint, Opus payload type and header extensions, its microphone's SSRC,
+     * or whether the user speaks.
+     */
+    fun isSfuSignal(value: JsonElement?): Boolean {
+        val v = value.record() ?: return false
+        return when (v["t"].string()) {
+            "offer" -> v.keys == setOf("t", "ufrag", "pwd", "fingerprint", "opus", "extensions") &&
+                v["ufrag"].string()?.let(SFU_UFRAG::matches) == true && v["pwd"].string()?.let(SFU_PWD::matches) == true &&
+                v["fingerprint"].string()?.let(FINGERPRINT::matches) == true && isIntIn(v["opus"], 96.0, 127.0) &&
+                (v["extensions"] as? JsonArray)?.let { extensions ->
+                    extensions.size <= MAX_SFU_EXTENSIONS && extensions.all { e ->
+                        e.record()?.let { it.keys == setOf("id", "uri") && isIntIn(it["id"], 1.0, 255.0) && it["uri"].string()?.let(EXTENSION_URI::matches) == true } == true
+                    }
+                } == true
+            "ssrc" -> v.keys == setOf("t", "audio") && isIntIn(v["audio"], 1.0, 4294967295.0)
+            "speaking" -> v.keys == setOf("t", "on") && isBoolean(v["on"])
+            else -> false
+        }
+    }
+
     /** A user action from a module's own view; `sendFile` is the shell's alone and never accepted from a view. */
     fun isNativeAction(value: JsonElement?): Boolean {
         val v = value.record() ?: return false
@@ -407,6 +438,7 @@ object Validators {
             "voiceError" -> isText(v["message"], 500, 1)
             "voiceNotice" -> isText(v["message"], 500, 1) && optional(v["off"]) { it.string() == "video" || it.string() == "stream" }
             "voiceSignal" -> v["to"].string()?.let(MEMBER_ID::matches) == true && (isVoiceSignal(v["signal"]) || isMeshSignal(v["signal"]))
+            "sfuSignal" -> isSfuSignal(v["signal"])
             "loadMedia" -> v["key"].string()?.let(MEDIA_KEY::matches) == true
             "sendSticker" -> v["stickerId"].string()?.let(MEDIA_ID::matches) == true && optional(v["replyTo"], ::id)
             "searchGifs" -> isText(v["query"], MAX_GIF_QUERY)

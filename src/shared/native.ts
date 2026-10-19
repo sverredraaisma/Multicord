@@ -152,6 +152,13 @@ export interface NativeVoiceSession {
    * signalling through the engine. Read through peerCall().
    */
   p2p?: NativePeerCall;
+  /**
+   * Set instead of `url` and `token` for a call through a voice server
+   * that speaks Discord's web-client WebRTC protocol (Spacebar's): the view
+   * connects to the server itself, with signalling through the engine. Read
+   * through sfuCall().
+   */
+  sfu?: NativeSfuCall;
 }
 
 /**
@@ -474,8 +481,186 @@ export function peerCall(value: unknown): NativePeerCall | undefined {
   return call;
 }
 
-/** Whether the user is in the call itself: a voice server's grant, or a peer-to-peer call to connect to. */
-export const voiceConnected = (voice: NativeVoiceSession): boolean => Boolean(voice.token) || peerCall(voice.p2p) !== undefined;
+/**
+ * A call through a voice server that speaks the WebRTC protocol of
+ * Discord's web client (Spacebar's src/webrtc with its SFU): one connection
+ * to the server, whose description the view writes itself from the
+ * server's few fields (`answer`), and every other person's sound coming in
+ * on it under the SSRC the server named for them (`peers`).
+ */
+export interface NativeSfuCall {
+  /** New with each join: a new call, whose connection starts afresh. */
+  callId: string;
+  /** The user's own id. */
+  self: string;
+  /** The others in the call, at most MAX_SFU_PEERS, each with the SSRC of their sound once they send it. */
+  peers: NativeSfuPeer[];
+  /** Others in the call beyond the cap, not played. */
+  over?: number;
+  /** The server's answer to the view's offer, once it came. */
+  answer?: SfuAnswer;
+}
+
+export interface NativeSfuPeer {
+  id: string;
+  name: string;
+  avatarUrl?: string;
+  /** The SSRC their sound comes in under; absent until they send any. */
+  ssrc?: number;
+  /** The platform muted them (a server mute): their sound is not played. */
+  muted?: boolean;
+}
+
+/** An ICE candidate of the voice server's, as the view writes it into the description. */
+export interface SfuCandidate {
+  foundation: string;
+  component: number;
+  protocol: "udp" | "tcp";
+  priority: number;
+  ip: string;
+  port: number;
+}
+
+/** What the voice server answered (op 4 Session Description): where it is, its ICE credentials, its DTLS fingerprint and its candidate. */
+export interface SfuAnswer {
+  ip: string;
+  port: number;
+  ufrag: string;
+  pwd: string;
+  fingerprint: string;
+  candidate: SfuCandidate;
+}
+
+/** A header extension the view's offer names, by its id and URI. */
+export interface SfuExtension {
+  id: number;
+  uri: string;
+}
+
+/**
+ * What the view tells the voice server, through the engine (which writes
+ * the voice gateway's messages): its offer's ICE credentials, DTLS
+ * fingerprint, Opus payload type and header extensions (op 1 Select
+ * Protocol), the SSRC its microphone sends under once connected (op 12),
+ * and whether the user speaks (op 5).
+ */
+export type SfuSignal =
+  | { t: "offer"; ufrag: string; pwd: string; fingerprint: string; opus: number; extensions: SfuExtension[] }
+  | { t: "ssrc"; audio: number }
+  | { t: "speaking"; on: boolean };
+
+/** Others an SFU call plays at most. */
+export const MAX_SFU_PEERS = 64;
+/** Header extensions an offer may name. */
+export const MAX_SFU_EXTENSIONS = 16;
+const ICE_UFRAG_SFU = /^[A-Za-z0-9+/]{4,256}$/;
+const ICE_PWD = /^[A-Za-z0-9+/]{22,256}$/;
+const FINGERPRINT = /^sha-(?:1|224|256|384|512) [0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){15,63}$/;
+const EXTENSION_URI = /^(?:urn:[A-Za-z0-9:._-]{1,200}|https?:\/\/[A-Za-z0-9._~/-]{1,200})$/;
+const FOUNDATION = /^[A-Za-z0-9+/]{1,32}$/;
+const isSsrc = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 0xffffffff;
+const isPort = (value: unknown): value is number => typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65535;
+
+/** A public IPv4 address in dotted form: none on this machine, a private network, link-local, shared, multicast or reserved. */
+export function isPublicIpv4(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(value)) return false;
+  const parts = value.split(".");
+  if (parts.some((part) => Number(part) > 255 || (part.length > 1 && part.startsWith("0")))) return false;
+  const [a, b] = parts.map(Number) as [number, number];
+  return !(a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19)) || a >= 224);
+}
+
+function sfuCandidate(value: unknown): SfuCandidate | undefined {
+  const v = record(value);
+  if (!v || typeof v.foundation !== "string" || !FOUNDATION.test(v.foundation) || !(v.component === 1 || v.component === 2)) return undefined;
+  if (!(v.protocol === "udp" || v.protocol === "tcp") || !(typeof v.priority === "number" && Number.isInteger(v.priority) && v.priority >= 0 && v.priority <= 0xffffffff)) return undefined;
+  if (!isPublicIpv4(v.ip) || !isPort(v.port)) return undefined;
+  return { foundation: v.foundation, component: v.component, protocol: v.protocol, priority: v.priority, ip: v.ip, port: v.port };
+}
+
+/** The server's answer as the view trusts it: every field in its strict form (nothing that could break out of a description's line), at public addresses; undefined otherwise. */
+export function sfuAnswer(value: unknown): SfuAnswer | undefined {
+  const v = record(value);
+  const candidate = sfuCandidate(v?.candidate);
+  if (!v || !candidate || !isPublicIpv4(v.ip) || !isPort(v.port)) return undefined;
+  if (typeof v.ufrag !== "string" || !ICE_UFRAG_SFU.test(v.ufrag) || typeof v.pwd !== "string" || !ICE_PWD.test(v.pwd) || typeof v.fingerprint !== "string" || !FINGERPRINT.test(v.fingerprint)) return undefined;
+  return { ip: v.ip, port: v.port, ufrag: v.ufrag, pwd: v.pwd, fingerprint: v.fingerprint, candidate };
+}
+
+/**
+ * A view's signal as Multicord trusts it, rebuilt from its known fields;
+ * undefined if it is none of the forms or a field is off.
+ */
+export function sfuSignal(value: unknown): SfuSignal | undefined {
+  const v = record(value);
+  switch (v?.t) {
+    case "offer": {
+      if (typeof v.ufrag !== "string" || !ICE_UFRAG_SFU.test(v.ufrag) || typeof v.pwd !== "string" || !ICE_PWD.test(v.pwd) || typeof v.fingerprint !== "string" || !FINGERPRINT.test(v.fingerprint)) return undefined;
+      if (!(typeof v.opus === "number" && Number.isInteger(v.opus) && v.opus >= 96 && v.opus <= 127)) return undefined;
+      if (!Array.isArray(v.extensions) || v.extensions.length > MAX_SFU_EXTENSIONS) return undefined;
+      const extensions: SfuExtension[] = [];
+      for (const raw of v.extensions) {
+        const e = record(raw);
+        if (!e || !(typeof e.id === "number" && Number.isInteger(e.id) && e.id >= 1 && e.id <= 255) || typeof e.uri !== "string" || !EXTENSION_URI.test(e.uri)) return undefined;
+        extensions.push({ id: e.id, uri: e.uri });
+      }
+      return { t: "offer", ufrag: v.ufrag, pwd: v.pwd, fingerprint: v.fingerprint, opus: v.opus, extensions };
+    }
+    case "ssrc":
+      return isSsrc(v.audio) ? { t: "ssrc", audio: v.audio } : undefined;
+    case "speaking":
+      return typeof v.on === "boolean" ? { t: "speaking", on: v.on } : undefined;
+    default:
+      return undefined;
+  }
+}
+
+/** A signal the view sends: one of the forms with nothing else in it (what sfuSignal() keeps, and only that). */
+export function isSfuSignal(value: unknown): value is SfuSignal {
+  const v = record(value);
+  if (!v || sfuSignal(v) === undefined) return false;
+  switch (v.t) {
+    case "offer":
+      return onlyKeys(v, ["t", "ufrag", "pwd", "fingerprint", "opus", "extensions"]) && (v.extensions as Record<string, unknown>[]).every((e) => onlyKeys(e, ["id", "uri"]));
+    case "ssrc":
+      return onlyKeys(v, ["t", "audio"]);
+    default:
+      return onlyKeys(v, ["t", "on"]);
+  }
+}
+
+/**
+ * An SFU call as the view trusts it: a usable call id and own id, peers
+ * with ids and names (each once, never the user, at most MAX_SFU_PEERS, an
+ * SSRC only where it is one and no other peer has it), and the answer when
+ * sfuAnswer() keeps it. Undefined without a call id or own id.
+ */
+export function sfuCall(value: unknown): NativeSfuCall | undefined {
+  const v = record(value);
+  if (!v || typeof v.callId !== "string" || !CALL_ID.test(v.callId) || !isMemberId(v.self)) return undefined;
+  const self = v.self;
+  const peers: NativeSfuPeer[] = [];
+  for (const raw of Array.isArray(v.peers) ? v.peers : []) {
+    const p = record(raw);
+    const name = shortText(p?.name);
+    if (!p || !isMemberId(p.id) || p.id === self || !name || peers.some((o) => o.id === p.id)) continue;
+    if (peers.length === MAX_SFU_PEERS) break;
+    const peer: NativeSfuPeer = { id: p.id, name };
+    if (typeof p.avatarUrl === "string" && p.avatarUrl.startsWith("https://")) peer.avatarUrl = p.avatarUrl;
+    if (isSsrc(p.ssrc) && !peers.some((o) => o.ssrc === p.ssrc)) peer.ssrc = p.ssrc;
+    if (p.muted === true) peer.muted = true;
+    peers.push(peer);
+  }
+  const call: NativeSfuCall = { callId: v.callId, self, peers };
+  const over = count(v.over);
+  if (over > 0) call.over = over;
+  const answer = sfuAnswer(v.answer);
+  if (answer) call.answer = answer;
+  return call;
+}
+
+/** Whether the user is in the call itself: a voice server's grant, or a peer-to-peer or SFU call to connect to. */
+export const voiceConnected = (voice: NativeVoiceSession): boolean => Boolean(voice.token) || peerCall(voice.p2p) !== undefined || sfuCall(voice.sfu) !== undefined;
 
 /** A participant's media key for an end-to-end encrypted call. */
 export interface NativeMediaKey {
@@ -1440,6 +1625,8 @@ export type NativeAction =
   | { type: "voiceNotice"; message: string; off?: VoiceNoticeFlag }
   /** A signal for one peer of the peer-to-peer call the user is in (NativePeerCall), which the engine passes on. */
   | { type: "voiceSignal"; to: string; signal: VoiceSignal | MeshSignal }
+  /** A signal for the voice server of the SFU call the user is in (NativeSfuCall), which the engine passes on. */
+  | { type: "sfuSignal"; signal: SfuSignal }
   | { type: "removeAttachment"; index: number }
   /** Fetch an attachment the engine holds back until asked (NativeAttachment.mediaKey). */
   | { type: "loadMedia"; key: string }
@@ -1597,6 +1784,8 @@ export function isNativeAction(value: unknown): value is NativeAction {
       return text(v.message, 1, 500) && (v.off === undefined || v.off === "video" || v.off === "stream");
     case "voiceSignal":
       return isMemberId(v.to) && (isVoiceSignal(v.signal) || isMeshSignal(v.signal));
+    case "sfuSignal":
+      return isSfuSignal(v.signal);
     case "loadMedia":
       return isMediaKey(v.key);
     case "sendSticker":

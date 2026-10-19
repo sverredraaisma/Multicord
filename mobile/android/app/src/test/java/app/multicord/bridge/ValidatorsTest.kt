@@ -89,6 +89,7 @@ class ValidatorsTest {
             "MAX_GIF_QUERY" to Validators.MAX_GIF_QUERY, "MAX_JOIN_ADDRESS" to Validators.MAX_JOIN_ADDRESS,
             "MAX_POLL_OPTIONS" to Validators.MAX_POLL_OPTIONS, "MAX_NEW_POLL_QUESTION" to Validators.MAX_NEW_POLL_QUESTION,
             "MAX_SDP" to Validators.MAX_SDP, "MAX_ICE_CANDIDATE" to Validators.MAX_ICE_CANDIDATE,
+            "MAX_SFU_EXTENSIONS" to Validators.MAX_SFU_EXTENSIONS,
         )
         assertEquals(own, limits)
     }
