@@ -28,7 +28,7 @@
     "@vitest/coverage-v8": "^5.0.4",
     "altcha-lib": "^2.6.0",
     "axe-core": "4.13.0",
-    "electron": "^44.7.2",
+    "electron": "^44.9.0",
     "electron-builder": "^26.17.0",
     "emojibase-data": "^17.0.0",
     "esbuild": "^0.28.2",
