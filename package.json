@@ -104,7 +104,7 @@
     }
   },
   "optionalDependencies": {
-    "@vencord/venmic": "7.2.3"
+    "@vencord/venmic": "7.2.5"
   },
   "overrides": {
     "@vencord/venmic": {
