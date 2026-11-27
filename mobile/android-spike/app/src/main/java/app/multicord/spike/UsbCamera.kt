@@ -278,7 +278,8 @@ object UsbCamera {
             }
             val handle = UvcNative.open(connection.fileDescriptor)
             drainNativeLog()
-            if (handle <= 0) {
+            // libuvc's errors are -1 to -99; a handle may be negative too (Android's tagged heap pointers on arm64).
+            if (handle in -99L..0L) {
                 SpikeLog.add(SECTION, "${label(d)}: libuvc could not open it: ${UvcNative.errorName(handle.toInt())}")
                 connection.close()
                 return@execute
