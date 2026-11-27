@@ -1,6 +1,7 @@
 // Multicord for Android. Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later, see LICENSE at the repo root.
 package app.multicord
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -119,7 +120,10 @@ class Hub(private val app: Context) : EngineUi, WebClientView.Ui {
     var onCallsChanged: (() -> Unit)? = null
     /** The phone's USB camera (Tier B), made when a view first needs it; shared by every view whose service has it on. */
     private var usbCamera: UsbCamera? = null
-    private fun camera(): UsbCamera = usbCamera ?: UsbCamera(app).also { usbCamera = it }
+    private fun camera(): UsbCamera = usbCamera ?: UsbCamera(app) { done ->
+        // Android shows a USB camera's own prompt only to an app that holds CAMERA (asked on the screen, if any).
+        requestPermissions(listOf(Manifest.permission.CAMERA)) { granted -> done(Manifest.permission.CAMERA in granted) }
+    }.also { usbCamera = it }
 
     private val callAudio = CallAudio(app) { current, available ->
         val call = callsByInstance.values.firstOrNull { it.inChatView } ?: return@CallAudio

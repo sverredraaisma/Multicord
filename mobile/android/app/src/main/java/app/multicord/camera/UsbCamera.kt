@@ -1,12 +1,14 @@
 // Multicord for Android. Copyright (C) 2026 Multicord contributors. AGPL-3.0-or-later, see LICENSE at the repo root.
 package app.multicord.camera
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.hardware.usb.UsbConstants
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
@@ -30,7 +32,7 @@ import java.util.concurrent.TimeUnit
  *
  * Main thread for everything but the work that blocks (one worker thread) and the capture (a thread of its own).
  */
-class UsbCamera(context: Context) {
+class UsbCamera(context: Context, private val askCamera: (done: (granted: Boolean) -> Unit) -> Boolean) {
     /** A page's end of the frame channel (CameraPort). */
     interface Sink {
         /** On the main thread: the camera there is (streaming or not), or none; also right after adding. */
@@ -59,6 +61,8 @@ class UsbCamera(context: Context) {
     /** A device whose permission was asked for since it was attached: asked once per attach. */
     private var asked: String? = null
     private var starting = false
+    /** A device that could not be opened: not tried again until no page wants it, or it is plugged in again. */
+    private var failed: String? = null
     private var registered = false
     private val stopLater = Runnable { worker.execute { close("no page uses it") } }
 
@@ -92,6 +96,7 @@ class UsbCamera(context: Context) {
         val wanted = sinks.any { it.wanted }
         val current = device
         if (!wanted || current == null) {
+            failed = null
             if (session != null || starting) {
                 main.removeCallbacks(stopLater)
                 main.postDelayed(stopLater, STOP_AFTER_MS)
@@ -99,11 +104,27 @@ class UsbCamera(context: Context) {
             return
         }
         main.removeCallbacks(stopLater)
-        if (session != null || starting) return
+        if (session != null || starting || failed == current.deviceName) return
         val usb = manager ?: return
         if (!usb.hasPermission(current)) {
             if (asked == current.deviceName) return
             asked = current.deviceName
+            // From Android 9 the system refuses a video device's USB permission, without showing its prompt, to
+            // an app that does not hold CAMERA ("Camera permission required for USB video class devices"): ask
+            // for that first, then for the device. Refused, it is not asked again until the camera is plugged in again.
+            if (app.checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                Log.i(TAG, "[camera] asking the camera permission first (Android requires it for USB cameras)")
+                val asking = askCamera { granted ->
+                    Log.i(TAG, "[camera] camera permission ${if (granted) "granted" else "not granted"}")
+                    if (granted && asked == current.deviceName) {
+                        asked = null
+                        demand()
+                    }
+                }
+                // No screen to ask on now (or another question open): ask again the next time a page wants it.
+                if (!asking) asked = null
+                return
+            }
             // Android's own prompt for this device; explicit (this package only) and immutable.
             val pending = PendingIntent.getBroadcast(app, 0, Intent(ACTION_PERMISSION).setPackage(app.packageName), PendingIntent.FLAG_IMMUTABLE)
             Log.i(TAG, "[camera] asking USB permission for ${describe(current)}")
@@ -142,6 +163,7 @@ class UsbCamera(context: Context) {
         if (found?.deviceName != device?.deviceName) {
             device = found
             asked = null
+            failed = null
             Log.i(TAG, "[camera] ${if (found == null) "no USB camera" else "USB camera ${describe(found)}"}")
             if (session != null) worker.execute { close("camera unplugged or replaced") }
             publish(found?.let { CameraStatus(name(it), CameraFormats.PREFERRED, streaming = false) })
@@ -183,7 +205,7 @@ class UsbCamera(context: Context) {
             }
             val handle = UvcNative.open(connection.fileDescriptor)
             drainLog()
-            if (handle <= 0) {
+            if (UvcNative.isError(handle)) {
                 Log.w(TAG, "[camera] libuvc could not open ${describe(d)}: ${UvcNative.errorName(handle.toInt())}")
                 connection.close()
                 return
@@ -204,8 +226,11 @@ class UsbCamera(context: Context) {
             val name = name(d)
             main.post { if (device?.deviceName == d.deviceName) publish(CameraStatus(name, format, streaming = true)) }
         } finally {
+            val opened = session != null
             main.post {
                 starting = false
+                // Opening again at once would fail the same way, in a loop: wait for the next want or plug-in.
+                if (!opened) failed = d.deviceName
                 // Whatever changed while it opened (a page let go, the camera went) applies now.
                 demand()
             }

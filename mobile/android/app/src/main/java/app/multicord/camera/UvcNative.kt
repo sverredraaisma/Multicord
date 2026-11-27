@@ -33,8 +33,16 @@ object UvcNative {
         }
     }
 
-    /** A handle (> 0), or a negative libuvc error code. */
+    /** A handle (a native pointer), or a negative libuvc error code: tell them apart with [isError]. */
     @JvmStatic external fun open(fd: Int): Long
+
+    /**
+     * Whether what [open] returned is a libuvc error (UVC_ERROR_IO -1 to UVC_ERROR_OTHER -99), not a handle. A
+     * handle may well be negative as a Long: Android tags heap pointers on arm64 in their top byte (0xb4…).
+     */
+    fun isError(handle: Long): Boolean = handle in MIN_ERROR..0L
+
+    private const val MIN_ERROR = -99L
 
     /** One line per format and size: "MJPEG 1280x720 fps=30,24 max=1843200". */
     @JvmStatic external fun formats(handle: Long): String
